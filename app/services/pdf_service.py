@@ -75,153 +75,116 @@ def generate_invoice_pdf(
     items: list = None,
     org_name: str = 'ShreeJewels Pvt Ltd',
     customer_gstin: str = '',
-    customer_address: str = '',
+    customer_city: str = '',
     gst_rate: float = 3.0
 ) -> bytes:
-    """
-    Generate professional invoice PDF.
-    Returns bytes — upload directly to WhatsApp media API.
-    """
     pdf = InvoicePDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.set_margins(14, 14, 14)
 
-    W = 182  # usable width (210 - 28)
-    L = 14   # left margin
-    R = L + W
+    W = 182
+    L = 14
 
-    # ── HEADER — Company (left) + Invoice Badge (right) ──
-    y0 = 14
-
-    # Company name
-    pdf.set_xy(L, y0)
-    pdf.set_font('Helvetica', 'B', 19)
-    pdf.set_text_color(*BLUE)
-    pdf.cell(110, 9, org_name, align='L')
-
-    # Invoice badge (right)
-    pdf.set_fill_color(*BLUE)
-    pdf.set_xy(140, y0)
-    pdf.set_font('Helvetica', 'B', 14)
-    pdf.set_text_color(*WHITE)
-    pdf.cell(56, 10, 'TAX INVOICE', fill=True, align='C')
-
-    # Company tagline
-    pdf.set_xy(L, y0 + 9)
-    pdf.set_font('Helvetica', 'I', 8)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(110, 5, 'Powered by OrchestrAI   |   Automate With AI', align='L')
-
-    # Invoice meta (right of badge)
     from datetime import datetime, timedelta
     today = datetime.now()
     due   = today + timedelta(days=30)
 
-    pdf.set_xy(140, y0 + 11)
-    pdf.set_font('Helvetica', '', 8.5)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(26, 5, 'Invoice No:', align='L')
-    pdf.set_text_color(*DARKTEXT)
-    pdf.set_font('Helvetica', 'B', 8.5)
-    pdf.cell(30, 5, invoice_number, align='R')
+    # ── HEADER ───────────────────────────────────────────
+    y = 14
 
-    pdf.set_xy(140, y0 + 16)
-    pdf.set_font('Helvetica', '', 8.5)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(26, 5, 'Date:', align='L')
-    pdf.set_text_color(*DARKTEXT)
-    pdf.set_font('Helvetica', 'B', 8.5)
-    pdf.cell(30, 5, today.strftime('%d %b %Y'), align='R')
+    # Company name — left
+    pdf.set_xy(L, y)
+    pdf.set_font('Helvetica', 'B', 20)
+    pdf.set_text_color(*BLUE)
+    pdf.cell(100, 10, org_name, align='L')
 
-    pdf.set_xy(140, y0 + 21)
-    pdf.set_font('Helvetica', '', 8.5)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(26, 5, 'Due Date:', align='L')
-    pdf.set_text_color(*DARKTEXT)
-    pdf.set_font('Helvetica', 'B', 8.5)
-    pdf.cell(30, 5, due.strftime('%d %b %Y'), align='R')
+    # TAX INVOICE badge — right
+    pdf.set_fill_color(*BLUE)
+    pdf.set_xy(142, y)
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.set_text_color(*WHITE)
+    pdf.cell(54, 10, 'TAX INVOICE', fill=True, align='C')
 
-    # Company address
-    pdf.set_xy(L, y0 + 14)
-    pdf.set_font('Helvetica', '', 8)
+    # Tagline — below company name
+    pdf.set_xy(L, y + 11)
+    pdf.set_font('Helvetica', 'I', 8)
     pdf.set_text_color(*MUTED)
-    addr_lines = [
-        '42, Zaveri Bazaar, Mumbai - 400 002',
-        'GSTIN: 27AABCS1234A1ZX   |   PAN: AABCS1234A',
-        'Tel: +91 98765 43210   |   sales@aitamate.com'
+    pdf.cell(100, 4.5, 'Powered by OrchestrAI   |   Automate With AI', align='L')
+
+    # Invoice meta — below badge
+    meta = [
+        ('Invoice No:', invoice_number),
+        ('Date:', today.strftime('%d %b %Y')),
+        ('Due Date:', due.strftime('%d %b %Y')),
     ]
-    for line in addr_lines:
-        pdf.cell(120, 4.5, line, align='L')
-        pdf.ln(4.5)
+    my = y + 11
+    for label, value in meta:
+        pdf.set_xy(142, my)
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_text_color(*MUTED)
+        pdf.cell(28, 5, label, align='L')
+        pdf.set_font('Helvetica', 'B', 8.5)
+        pdf.set_text_color(*DARKTEXT)
+        pdf.cell(26, 5, value, align='R')
+        my += 5.5
 
-    # Blue divider line
-    y_div = y0 + 30
+    # Blue divider
+    y_div = y + 27
     pdf.set_draw_color(*BLUE)
     pdf.set_line_width(0.8)
-    pdf.line(L, y_div, R, y_div)
+    pdf.line(L, y_div, L + W, y_div)
     pdf.set_line_width(0.2)
+    pdf.set_draw_color(*BORDER)
 
-    # ── BILL TO + PAYMENT INFO ──
-    y1 = y_div + 6
+    # ── BILL TO ───────────────────────────────────────────
+    y = y_div + 7
 
-    # BILL TO label
-    pdf.set_xy(L, y1)
+    pdf.set_xy(L, y)
     pdf.set_font('Helvetica', 'B', 7.5)
     pdf.set_text_color(*BLUE)
-    pdf.cell(90, 4, 'BILL TO', align='L')
+    pdf.cell(W, 4.5, 'BILL TO', align='L')
 
-    # PAYMENT INFO label
-    pdf.set_xy(L + 95, y1)
-    pdf.set_text_color(*BLUE)
-    pdf.cell(87, 4, 'PAYMENT DETAILS', align='L')
-
-    # Customer name
-    pdf.set_xy(L, y1 + 5)
-    pdf.set_font('Helvetica', 'B', 12)
+    y += 6
+    pdf.set_xy(L, y)
+    pdf.set_font('Helvetica', 'B', 13)
     pdf.set_text_color(*DARKTEXT)
-    pdf.cell(90, 6, customer_name, align='L')
+    pdf.cell(W, 7, customer_name, align='L')
 
-    # Customer details
-    pdf.set_xy(L, y1 + 12)
-    pdf.set_font('Helvetica', '', 8)
-    pdf.set_text_color(*MUTED)
-    c_addr = customer_address or 'Address on file'
-    c_gst  = customer_gstin or 'GSTIN: Provided separately'
-    for line in [c_addr, c_gst]:
-        pdf.cell(90, 4.2, line, align='L')
-        pdf.ln(4.2)
+    y += 8
+    sub_lines = []
+    if customer_city:
+        sub_lines.append(customer_city)
+    if customer_gstin:
+        sub_lines.append(f'GSTIN: {customer_gstin}')
+    if not sub_lines:
+        sub_lines.append('Customer details on file')
 
-    # Payment details (right column)
-    pdf.set_xy(L + 95, y1 + 5)
-    pdf.set_font('Helvetica', '', 8)
-    pdf.set_text_color(*MUTED)
-    pay_lines = [
-        'Bank: HDFC Bank Ltd',
-        'A/C: 50100123456789',
-        'IFSC: HDFC0001234',
-        'Mode: NEFT / RTGS / UPI',
-    ]
-    for line in pay_lines:
-        pdf.cell(87, 4.5, line, align='L')
-        pdf.ln(4.5)
+    for line in sub_lines:
+        pdf.set_xy(L, y)
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_text_color(*MUTED)
+        pdf.cell(W, 5, line, align='L')
+        y += 5
 
-    # ── ITEMS TABLE ──
-    y2 = y1 + 30
+    y += 6
 
-    # Column widths
-    cw = [78, 14, 28, 22, 30]  # Desc, Qty, Unit Price, GST, Total
+    # ── ITEMS TABLE ───────────────────────────────────────
+    # Column widths: Desc, Qty, Unit Price, GST, Total
+    cw     = [80, 14, 30, 24, 34]
+    aligns = ['L', 'C', 'R', 'R', 'R']
 
-    # Table header
-    pdf.set_xy(L, y2)
+    # Header row
+    pdf.set_xy(L, y)
     pdf.set_fill_color(*BLUE)
     pdf.set_text_color(*WHITE)
     pdf.set_font('Helvetica', 'B', 8.5)
-    headers = ['Description', 'Qty', 'Unit Price', f'GST {gst_rate:.0f}%', 'Total']
-    aligns  = ['L', 'C', 'R', 'R', 'R']
-    for i, (h, w, a) in enumerate(zip(headers, cw, aligns)):
-        pdf.cell(w, 8, h, fill=True, align=a, border=0)
-    pdf.ln(8)
+    for col, w, a in zip(
+        ['Description', 'Qty', 'Unit Price', f'GST {gst_rate:.0f}%', 'Total'],
+        cw, aligns
+    ):
+        pdf.cell(w, 8.5, col, fill=True, align=a, border=0)
+    pdf.ln(8.5)
 
     # Items
     if not items:
@@ -240,120 +203,117 @@ def generate_invoice_pdf(
         pdf.set_fill_color(*LIGHTBG) if row_fill else pdf.set_fill_color(*WHITE)
         pdf.set_text_color(*DARKTEXT)
         pdf.set_font('Helvetica', '', 8.5)
-
-        desc   = str(item.get('description', 'Item'))[:52]
-        qty    = str(item.get('qty', 1))
-        up     = f"Rs.{float(item.get('unit_price', 0)):,.0f}"
-        gst_v  = f"Rs.{float(item.get('gst', 0)):,.0f}"
-        tot    = f"Rs.{float(item.get('total', amount)):,.0f}"
-
-        row_data = [desc, qty, up, gst_v, tot]
-        for val, w, a in zip(row_data, cw, aligns):
-            pdf.cell(w, 7.5, val, fill=True, align=a, border=0)
-        pdf.ln(7.5)
+        vals = [
+            str(item.get('description', 'Item'))[:50],
+            str(item.get('qty', 1)),
+            f"Rs.{float(item.get('unit_price', 0)):,.0f}",
+            f"Rs.{float(item.get('gst', 0)):,.0f}",
+            f"Rs.{float(item.get('total', amount)):,.0f}",
+        ]
+        for val, w, a in zip(vals, cw, aligns):
+            pdf.cell(w, 8, val, fill=True, align=a, border=0)
+        pdf.ln(8)
         row_fill = not row_fill
 
-    # Table bottom border
+    # Bottom border
     pdf.set_draw_color(*BORDER)
-    pdf.line(L, pdf.get_y(), R, pdf.get_y())
+    pdf.line(L, pdf.get_y(), L + W, pdf.get_y())
 
-    # ── TOTALS BOX (right aligned) ──
-    y3 = pdf.get_y() + 6
-    subtotal_val   = round(amount / (1 + gst_rate / 100), 2)
-    gst_val        = round(amount - subtotal_val, 2)
-    tx = L + 95  # totals start x
+    # ── TOTALS (right-aligned block) ──────────────────────
+    subtotal_val = round(amount / (1 + gst_rate / 100), 2)
+    gst_val      = round(amount - subtotal_val, 2)
 
-    def total_row(label, value, bold=False, highlight=False):
-        nonlocal y3
+    ty = pdf.get_y() + 5
+    tx = L + 92   # totals block x start
+    tw = W - 92   # totals block width = 90
+
+    def _trow(label, value, highlight=False):
+        nonlocal ty
+        pdf.set_xy(tx, ty)
         if highlight:
             pdf.set_fill_color(*BLUE)
-            pdf.set_xy(tx, y3)
-            pdf.cell(87, 8, '', fill=True)
-            pdf.set_xy(tx, y3)
-            pdf.set_font('Helvetica', 'B', 9.5)
             pdf.set_text_color(*WHITE)
-            pdf.cell(55, 8, label, align='L')
-            pdf.cell(32, 8, value, align='R')
+            pdf.set_font('Helvetica', 'B', 9.5)
+            pdf.cell(tw, 9, label, fill=True, align='L', border=0)
+            pdf.set_xy(tx, ty)
+            pdf.cell(tw, 9, value, fill=True, align='R', border=0)
+            ty += 9
         else:
-            pdf.set_xy(tx, y3)
-            pdf.set_font('Helvetica', 'B' if bold else '', 8.5)
+            pdf.set_font('Helvetica', '', 8.5)
             pdf.set_text_color(*MUTED)
-            pdf.cell(55, 6, label, align='L')
+            pdf.cell(55, 6.5, label, align='L')
             pdf.set_text_color(*DARKTEXT)
-            pdf.cell(32, 6, value, align='R')
+            pdf.cell(tw - 55, 6.5, value, align='R')
             pdf.set_draw_color(*BORDER)
-            pdf.line(tx, y3 + 6, tx + 87, y3 + 6)
-        y3 += 8 if highlight else 6.5
+            pdf.line(tx, ty + 6.5, tx + tw, ty + 6.5)
+            ty += 7
 
-    total_row('Subtotal', f'Rs.{subtotal_val:,.0f}')
-    total_row(f'GST @ {gst_rate:.0f}%', f'Rs.{gst_val:,.0f}')
-    total_row('Discount', 'Rs.0')
-    y3 += 2
-    total_row('TOTAL AMOUNT', f'Rs.{amount:,.0f}', highlight=True)
+    _trow('Subtotal', f'Rs.{subtotal_val:,.0f}')
+    _trow(f'GST @ {gst_rate:.0f}%', f'Rs.{gst_val:,.0f}')
+    _trow('Discount', 'Rs.0')
+    ty += 2
+    _trow('TOTAL AMOUNT', f'Rs.{amount:,.0f}', highlight=True)
 
-    # ── AMOUNT IN WORDS ──
-    y4 = y3 + 8
-    pdf.set_xy(L, y4)
+    # ── AMOUNT IN WORDS ───────────────────────────────────
+    wy = ty + 8
+    pdf.set_xy(L, wy)
     pdf.set_fill_color(*LIGHTBG)
+    pdf.rect(L, wy, W, 9, style='F')
     pdf.set_draw_color(*BLUE)
     pdf.set_line_width(0.8)
-    pdf.rect(L, y4, W, 9, style='F')
-    pdf.line(L, y4, L, y4 + 9)
+    pdf.line(L, wy, L, wy + 9)
     pdf.set_line_width(0.2)
-
-    pdf.set_xy(L + 3, y4 + 1.5)
+    pdf.set_xy(L + 3, wy + 2)
     pdf.set_font('Helvetica', '', 8)
     pdf.set_text_color(*MUTED)
-    pdf.cell(40, 5, 'Amount in words:', align='L')
+    pdf.cell(38, 5, 'Amount in words:', align='L')
     pdf.set_font('Helvetica', 'B', 8)
     pdf.set_text_color(*DARKTEXT)
-    pdf.cell(W - 43, 5, _amount_in_words(amount), align='L')
+    pdf.cell(W - 41, 5, _amount_in_words(amount), align='L')
 
-    # ── FOOTER — Terms + Signature ──
-    y5 = y4 + 16
+    # ── FOOTER ────────────────────────────────────────────
+    fy = wy + 16
     pdf.set_draw_color(*BORDER)
-    pdf.line(L, y5, R, y5)
+    pdf.line(L, fy, L + W, fy)
 
-    pdf.set_xy(L, y5 + 5)
-    pdf.set_font('Helvetica', '', 7.5)
-    pdf.set_text_color(*MUTED)
+    # Terms (left)
     terms = [
-        'Terms & Conditions:',
-        '1. Payment due within 30 days of invoice date.',
-        '2. Late payment attracts 2% interest per month.',
-        '3. Subject to Mumbai jurisdiction only.',
-        '4. Goods once sold will not be taken back.'
+        ('Terms & Conditions:', True),
+        ('1. Payment due within 30 days of invoice date.', False),
+        ('2. Late payment attracts 2% interest per month.', False),
+        ('3. Subject to Mumbai jurisdiction only.', False),
+        ('4. Goods once sold will not be taken back.', False),
     ]
-    for i, line in enumerate(terms):
-        pdf.set_font('Helvetica', 'B' if i == 0 else '', 7.5)
-        pdf.set_text_color(BLUE if i == 0 else MUTED)
-        pdf.cell(100, 4, line, align='L')
-        pdf.ln(4)
+    ty2 = fy + 5
+    for text, bold in terms:
+        pdf.set_xy(L, ty2)
+        pdf.set_font('Helvetica', 'B' if bold else '', 7.5)
+        pdf.set_text_color(*BLUE if bold else MUTED)
+        pdf.cell(100, 4.5, text, align='L')
+        ty2 += 4.5
 
-    # Signature box
-    pdf.set_xy(140, y5 + 5)
+    # Signature (right)
+    pdf.set_xy(140, fy + 5)
     pdf.set_font('Helvetica', '', 7.5)
     pdf.set_text_color(*MUTED)
-    pdf.cell(56, 4, 'For  ' + org_name, align='C')
-    pdf.set_xy(140, y5 + 22)
-    pdf.set_draw_color(*DARKTEXT)
-    pdf.line(145, y5 + 22, 195, y5 + 22)
-    pdf.set_xy(140, y5 + 23)
-    pdf.set_font('Helvetica', '', 7.5)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(56, 4, 'Authorised Signatory', align='C')
+    pdf.cell(56, 4, f'For  {org_name}', align='C')
 
-    # Company stamp outline box
+    # Stamp box
     pdf.set_draw_color(*BLUE)
     pdf.set_line_width(0.5)
-    pdf.rect(148, y5 + 7, 40, 13)
-    pdf.set_xy(148, y5 + 10)
+    pdf.rect(148, fy + 10, 40, 13)
+    pdf.set_xy(148, fy + 13)
     pdf.set_font('Helvetica', 'B', 7)
     pdf.set_text_color(*BLUE)
     pdf.cell(40, 4, org_name.upper(), align='C')
-    pdf.set_xy(148, y5 + 14)
-    pdf.set_font('Helvetica', '', 6)
+
+    # Signature line
+    pdf.set_draw_color(*DARKTEXT)
+    pdf.set_line_width(0.3)
+    pdf.line(143, fy + 28, 195, fy + 28)
+    pdf.set_xy(140, fy + 29)
+    pdf.set_font('Helvetica', '', 7.5)
     pdf.set_text_color(*MUTED)
-    pdf.cell(40, 3, 'GSTIN: 27AABCS1234A1ZX', align='C')
+    pdf.cell(56, 4, 'Authorised Signatory', align='C')
 
     return bytes(pdf.output())

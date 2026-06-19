@@ -17,7 +17,7 @@ async def create_invoice(
     Creates invoice record, generates PDF, sends via WhatsApp.
     """
     customer = await fetch_one("""
-        SELECT id, name, credit_limit
+        SELECT id, name, credit_limit, gst_number, city
         FROM customers
         WHERE org_id = $1 AND name ILIKE $2
         ORDER BY similarity(name, $3) DESC
@@ -29,6 +29,10 @@ async def create_invoice(
             "success": False,
             "message": f"❌ Customer *{customer_name}* not found."
         }
+
+    # Fetch org name
+    org = await fetch_one("SELECT name FROM orgs WHERE id = $1", org_id)
+    org_name = org["name"] if org else "Organisation"
 
     # Auto-generate invoice number
     count_row = await fetch_one(
@@ -52,7 +56,10 @@ async def create_invoice(
             invoice_number=invoice_number,
             customer_name=customer["name"],
             amount=amount,
-            items=items_data
+            items=items_data,
+            org_name=org_name,
+            customer_gstin=customer.get("gst_number", ""),
+            customer_city=customer.get("city", "")
         )
         # Send PDF via WhatsApp
         await send_document(
