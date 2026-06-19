@@ -299,6 +299,7 @@ def generate_invoice_pdf(
     pdf.cell(56, 4, f'For  {org_name}', align='C')
 
     # Stamp box
+    # Calculations
     pdf.set_draw_color(*BLUE)
     pdf.set_line_width(0.5)
     pdf.rect(148, fy + 10, 40, 13)
