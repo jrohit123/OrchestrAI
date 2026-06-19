@@ -44,6 +44,11 @@ async def receive_message(request: Request):
 
         msg      = changes["messages"][0]
         phone    = msg["from"]
+
+        # Normalize: WhatsApp omits +, DB stores with +
+        if phone and not phone.startswith('+'):
+            phone = '+' + phone
+
         msg_type = msg.get("type", "text")
 
         if msg_type == "text":
