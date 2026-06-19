@@ -24,7 +24,23 @@ def tier1_exact(text: str):
 
 
 # ── TIER 2: KEYWORD CLASSIFIER ───────────────────────
+# NOTE: weekly_dues_report MUST come before check_outstanding
+# to avoid "dues report" matching the dues\s+(.+) pattern first
 KEYWORD_RULES = [
+    {
+        "intent": "weekly_dues_report",
+        "patterns": [
+            r"dues\s+report",
+            r"outstanding\s+report",
+            r"dues\s+summary",
+            r"all\s+overdue",
+            r"all\s+dues",
+            r"60\+\s*(days|overdue)",
+            r"overdue\s+report",
+            r"overdue\s+summary",
+        ],
+        "entity": None
+    },
     {
         "intent": "check_stock",
         "patterns": [
@@ -58,15 +74,6 @@ KEYWORD_RULES = [
         ],
         "entity": "customer+amount"
     },
-    {
-        "intent": "weekly_dues_report",
-        "patterns": [
-            r"(dues|outstanding)\s+(report|summary)",
-            r"(all|total)\s+(overdue|dues)",
-            r"60\+\s+(days|overdue)",
-        ],
-        "entity": None
-    },
 ]
 
 
@@ -78,7 +85,7 @@ def tier2_keyword(text: str):
             if m:
                 return {
                     "intent": rule["intent"],
-                    "entity_raw": m.group(1).strip() if m.lastindex else None,
+                    "entity_raw": m.group(1).strip() if m.lastindex and rule["entity"] else None,
                     "tier": 2,
                     "confidence": 0.85
                 }

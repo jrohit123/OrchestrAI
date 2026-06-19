@@ -19,9 +19,9 @@ async def execute_intent(
     Routes classified intent to the correct adapter.
     Returns a formatted string ready to send as WhatsApp message.
     """
-
     org_id  = user["org_id"]
     user_id = user["user_id"]
+    phone   = user["phone"]
 
     # ── CHECK STOCK ───────────────────────────────────
     if intent == "check_stock":
@@ -55,13 +55,14 @@ async def execute_intent(
         if not amount:
             return "🤔 What amount? Try: *invoice Mehta ₹50000*"
 
-        # OTP gate — trigger if above threshold
+        # OTP gate
         if amount >= OTP_THRESHOLD and not session.get("otp_verified"):
             action_context = {
                 "intent": "create_invoice",
                 "customer_name": customer_name,
                 "amount": amount,
                 "raw_text": raw_text,
+                "phone": phone,
                 "description": f"create an invoice for {customer_name} — ₹{amount:,.0f}"
             }
             sent = await generate_and_send_otp(
@@ -79,20 +80,21 @@ async def execute_intent(
                 })
                 return (
                     f"🔐 *Verification Required*\n\n"
-                    f"Invoice for *{customer_name}* — ₹{amount:,.0f} requires your approval.\n\n"
+                    f"Invoice for *{customer_name}* — ₹{amount:,.0f} requires approval.\n\n"
                     f"A 4-digit code has been sent to *{user['email']}*.\n"
                     f"Reply with the code to confirm.\n\n"
-                    f"_Code expires in 3 minutes._"
+                    f"_Code expires in 3 minutes. Reply 'retry' to cancel._"
                 )
             else:
-                return "❌ Could not send verification email. Check your email address with admin."
+                return "❌ Could not send verification email. Contact admin."
 
-        # OTP verified or below threshold — create invoice
+        # Create invoice
         result = await accounting.create_invoice(
             org_id=org_id,
             user_id=user_id,
             customer_name=customer_name,
-            amount=amount
+            amount=amount,
+            phone=phone
         )
         await _log(org_id, user_id, intent, raw_text,
                    "success" if result["success"] else "failed",
@@ -103,22 +105,22 @@ async def execute_intent(
 
 
 async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
-    """Called after OTP is verified — resumes the pending intent."""
+    """Called after OTP verified — resumes pending intent."""
     pending = session.get("pending_intent")
     if not pending:
         return "✅ Verified! Please resend your original request."
 
-    intent = pending.get("intent")
-    if intent == "create_invoice":
+    if pending.get("intent") == "create_invoice":
         result = await accounting.create_invoice(
             org_id=user["org_id"],
             user_id=user["user_id"],
             customer_name=pending["customer_name"],
-            amount=pending["amount"]
+            amount=pending["amount"],
+            phone=pending.get("phone", user["phone"])
         )
         await _log(
             user["org_id"], user["user_id"],
-            intent, pending["raw_text"], "success", otp_used=True
+            "create_invoice", pending["raw_text"], "success", otp_used=True
         )
         return result["message"]
 

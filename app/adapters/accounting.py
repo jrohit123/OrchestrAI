@@ -1,5 +1,8 @@
 import re
+import json
 from app.db import fetch_one, execute
+from app.services.pdf_service import generate_invoice_pdf
+from app.services.whatsapp import send_document
 
 
 async def create_invoice(
@@ -7,10 +10,11 @@ async def create_invoice(
     user_id: str,
     customer_name: str,
     amount: float,
+    phone: str,
     items: list = None
 ) -> dict:
     """
-    Creates an invoice record. OTP gate is handled upstream in executor.
+    Creates invoice record, generates PDF, sends via WhatsApp.
     """
     customer = await fetch_one("""
         SELECT id, name, credit_limit
@@ -32,27 +36,49 @@ async def create_invoice(
     )
     invoice_number = f"INV-{1100 + int(count_row['cnt'])}"
 
-    items_data = items or [{"description": "As discussed", "amount": amount}]
+    items_data = items or [{"description": "As per order", "qty": 1,
+                            "unit_price": amount, "total": amount}]
 
     await execute("""
         INSERT INTO invoices
         (org_id, invoice_number, customer_id, created_by, items, amount, status)
         VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'approved')
     """, org_id, invoice_number, customer["id"], user_id,
-        str(items_data).replace("'", '"'), amount)
+        json.dumps(items_data), amount)
+
+    # Generate PDF
+    try:
+        pdf_bytes = generate_invoice_pdf(
+            invoice_number=invoice_number,
+            customer_name=customer["name"],
+            amount=amount,
+            items=items_data
+        )
+        # Send PDF via WhatsApp
+        await send_document(
+            to=phone,
+            pdf_bytes=pdf_bytes,
+            filename=f"{invoice_number}.pdf",
+            caption=f"🧾 Invoice {invoice_number} for {customer['name']} — ₹{amount:,.0f}"
+        )
+        pdf_sent = True
+    except Exception as e:
+        print(f"[PDF] Error generating/sending PDF: {e}")
+        pdf_sent = False
 
     return {
         "success": True,
         "invoice_number": invoice_number,
         "customer": customer["name"],
         "amount": amount,
+        "pdf_sent": pdf_sent,
         "message": (
             f"✅ *Invoice Created*\n\n"
             f"Invoice #: *{invoice_number}*\n"
             f"Customer: {customer['name']}\n"
             f"Amount: *₹{amount:,.0f}*\n"
             f"Status: Approved\n\n"
-            f"_PDF generation coming in Day 3._"
+            f"{'📄 PDF sent above ↑' if pdf_sent else '⚠️ PDF could not be sent.'}"
         )
     }
 

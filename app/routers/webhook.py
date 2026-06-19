@@ -7,14 +7,15 @@ from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp
 from app.classifier.classifier import classify_message
 from app.executor.workflow_executor import execute_intent, resume_after_otp
-from app.redis_client import get_session, set_session
+from app.redis_client import get_session, set_session, get_redis
 from app.db import execute
 
 load_dotenv()
 
 router = APIRouter()
 
-VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify")
+VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify_2024")
+WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 
 
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
@@ -39,18 +40,37 @@ async def receive_message(request: Request):
         entry   = body["entry"][0]
         changes = entry["changes"][0]["value"]
 
+        # ── Ignore status updates (delivered, read, sent) ──
+        if "statuses" in changes and "messages" not in changes:
+            return {"status": "ok"}
+
+        # ── Ignore if no messages ──
         if "messages" not in changes:
             return {"status": "ok"}
 
         msg      = changes["messages"][0]
         phone    = msg["from"]
+        msg_id   = msg["id"]
+        msg_type = msg.get("type", "text")
 
-        # Normalize: WhatsApp omits +, DB stores with +
+        # ── Ignore echo (message from our own bot number) ──
+        if phone == WHATSAPP_PHONE_ID:
+            return {"status": "ok"}
+
+        # ── Deduplication — ignore already processed message IDs ──
+        redis = get_redis()
+        dedup_key = f"msg_processed:{msg_id}"
+        already_processed = await redis.get(dedup_key)
+        if already_processed:
+            print(f"[WEBHOOK] Duplicate msg_id {msg_id} — skipping")
+            return {"status": "ok"}
+        await redis.setex(dedup_key, 300, "1")  # TTL 5 min
+
+        # ── Normalize: WhatsApp omits +, DB stores with + ──
         if phone and not phone.startswith('+'):
             phone = '+' + phone
 
-        msg_type = msg.get("type", "text")
-
+        # ── Extract text ──
         if msg_type == "text":
             text = msg["text"]["body"]
         elif msg_type == "interactive":
@@ -128,6 +148,11 @@ async def handle_message(phone: str, text: str):
         )
         return
 
+    if intent == "action:retry_otp":
+        await set_session(session_id, {})
+        await send_text(phone, "🔄 Session cleared. Please resend your original request.")
+        return
+
     if intent == "unknown":
         await send_text(phone,
             "🤔 Didn't understand that.\n"
@@ -135,7 +160,7 @@ async def handle_message(phone: str, text: str):
         )
         return
 
-    # 7. Save session and execute via workflow executor
+    # 7. Save session and execute
     await set_session(session_id, {**session, "last_intent": intent})
 
     reply = await execute_intent(
@@ -152,7 +177,6 @@ async def handle_message(phone: str, text: str):
 
 # ── OTP REPLY HANDLER ─────────────────────────────────
 async def _handle_otp_reply(phone, text, user, session, session_id):
-    # Allow retry
     if text.strip().lower() == "retry":
         await set_session(session_id, {})
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
