@@ -92,8 +92,8 @@ def generate_invoice_pdf(
         pdf.set_fill_color(245, 245, 255) if fill else pdf.set_fill_color(255, 255, 255)
         desc = str(item.get("description", "Item"))[:50]
         qty  = str(item.get("qty", 1))
-        up   = f"₹{float(item.get('unit_price', 0)):,.0f}"
-        tot  = f"₹{float(item.get('total', amount)):,.0f}"
+        up   = f"Rs.{float(item.get('unit_price', 0)):,.0f}"
+        tot  = f"Rs.{float(item.get('total', amount)):,.0f}"
 
         pdf.cell(90, 8, desc, fill=True, align="L", border=0)
         pdf.cell(25, 8, qty, fill=True, align="C", border=0)
@@ -114,7 +114,7 @@ def generate_invoice_pdf(
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(74, 0, 224)
     pdf.cell(150, 9, "TOTAL AMOUNT", align="R")
-    pdf.cell(35, 9, f"₹{amount:,.0f}", align="R")
+    pdf.cell(35, 9, f"Rs.{amount:,.0f}", align="R")
     pdf.ln(12)
 
     # ── Footer Note ──
