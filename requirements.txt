@@ -1,2 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
+asyncpg
+redis
+openai
+python-dotenv
+httpx
+apscheduler
