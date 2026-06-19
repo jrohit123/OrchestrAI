@@ -78,7 +78,7 @@ async def create_invoice(
             f"Customer: {customer['name']}\n"
             f"Amount: *₹{amount:,.0f}*\n"
             f"Status: Approved\n\n"
-            f"{'📄 PDF sent above ↑' if pdf_sent else '⚠️ PDF could not be sent.'}"
+            f"{'📄 PDF sent above' if pdf_sent else '⚠️ PDF could not be sent.'}"
         )
     }
 
