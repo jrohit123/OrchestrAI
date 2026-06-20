@@ -11,8 +11,8 @@ from app.db import fetch_one, execute
 load_dotenv()
 
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-SENDER_EMAIL  = "noreply@aitamate.com"
-SENDER_NAME   = "OrchestrAI Security"
+SENDER_EMAIL  = "sales@aitamate.com"
+SENDER_NAME   = "OrchestrAI | ShreeJewels"
 OTP_EXPIRY_MINUTES = 3
 MAX_ATTEMPTS = 3
 
