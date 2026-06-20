@@ -14,7 +14,7 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 def test_brevo(to_email: str):
     payload = {
         "sender": {"name": "OrchestrAI Test", "email": "sales@aitamate.com"},
-        "to": [{"email": to_email, "name": "Test User"}],
+        "to": [{"email": "kartikbatchu2003@gmail.com", "name": "Test User"}],
         "subject": "🔐 OrchestrAI — Brevo Test",
         "htmlContent": """
         <div style="font-family:Arial,sans-serif;max-width:480px">
