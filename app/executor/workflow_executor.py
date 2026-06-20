@@ -135,6 +135,8 @@ async def execute_intent(
         await _log(org_id, user_id, intent, raw_text,
                    "success" if result["success"] else "failed",
                    otp_used=session.get("otp_verified", False))
+        # Clear otp_verified so next transaction needs fresh OTP
+        await set_session(session_id, {})
         return result["message"]
 
     return "🤔 Didn't understand that. Type *help* for the menu."
@@ -186,6 +188,8 @@ async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
         )
         await _log(org_id, user_id, "create_invoice",
                    pending.get("raw_text", ""), "success", otp_used=True)
+        # Clear otp_verified so next transaction needs fresh OTP
+        await set_session(session_id, {})
         return result["message"]
 
     return "✅ Verified! Please resend your original request."
