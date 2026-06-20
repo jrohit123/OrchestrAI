@@ -6,7 +6,9 @@ from app.services.identity import resolve_identity, check_permission
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp
 from app.classifier.classifier import classify_message
-from app.executor.workflow_executor import execute_intent, resume_after_otp
+from app.executor.workflow_executor import (
+    execute_intent, resume_after_otp, handle_approval_response
+)
 from app.redis_client import get_session, set_session, get_redis
 from app.db import execute
 
@@ -79,7 +81,7 @@ async def receive_message(request: Request):
             return {"status": "ok"}
 
         print(f"[WEBHOOK] From: {phone} | Message: {text}")
-        await handle_message(phone=phone, text=text)
+        await handle_message(phone=phone, text=text, msg_type=msg_type)
 
     except (KeyError, IndexError) as e:
         print(f"[WEBHOOK] Parse error: {e}")
@@ -88,8 +90,7 @@ async def receive_message(request: Request):
 
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
-async def handle_message(phone: str, text: str):
-    # 1. Identity
+async def handle_message(phone: str, text: str, msg_type: str = "text"):
     user = await resolve_identity(phone)
     if not user:
         await send_text(phone,
@@ -102,11 +103,15 @@ async def handle_message(phone: str, text: str):
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
         return
 
-    # 2. Session
     session_id = f"{user['org_id']}:{phone}"
-    session = await get_session(session_id)
+    session    = await get_session(session_id)
 
-    # 3. OTP state
+    # ── Handle approval button responses FIRST ──
+    if msg_type == "interactive" and text in ("action:approve", "action:reject"):
+        await handle_approval_response(phone, text, user)
+        return
+
+    # ── OTP state ──
     if session.get("state") == "awaiting_otp":
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
@@ -132,7 +137,7 @@ async def handle_message(phone: str, text: str):
             f"You can ask:\n"
             f"• *stock [item]* — check inventory\n"
             f"• *dues [customer]* — check outstanding\n"
-            f"• *invoice [customer] ₹amount* — create invoice\n"
+            f"• *invoice [customer] [qty] [item] [amount]* — create invoice\n"
             f"• *dues report* — all overdue summary\n"
             f"• *help* — show this menu"
         )
@@ -142,8 +147,9 @@ async def handle_message(phone: str, text: str):
         await send_text(phone,
             f"📋 *What can I help with?*\n\n"
             f"📦 *Stock* — stock gold ring\n"
-            f"💰 *Dues* — dues Mehta Jewellers\n"
-            f"🧾 *Invoice* — invoice Mehta ₹50000\n"
+            f"💰 *Dues* — dues Mehta\n"
+            f"🧾 *Invoice* — invoice Mehta 25000\n"
+            f"🧾 *Invoice with items* — invoice Mehta 15 gold rings 120000\n"
             f"📊 *Report* — dues report"
         )
         return

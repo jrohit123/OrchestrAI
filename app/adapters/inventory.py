@@ -1,16 +1,12 @@
-from app.db import fetch_one, fetch_all
+from app.db import fetch_one, fetch_all, execute
 
 
 async def check_stock(org_id: str, product_name: str) -> dict:
-    """
-    Fuzzy search product by name and return stock info.
-    Uses pg_trgm similarity for partial matches.
-    """
+    """Fuzzy search product by name and return stock info."""
     row = await fetch_one("""
-        SELECT name, qty, location, reorder_level, unit_price
+        SELECT name, qty, location, reorder_level, unit_price, sku
         FROM inventory
-        WHERE org_id = $1
-          AND name ILIKE $2
+        WHERE org_id = $1 AND name ILIKE $2
         ORDER BY similarity(name, $3) DESC
         LIMIT 1
     """, org_id, f"%{product_name}%", product_name)
@@ -22,10 +18,11 @@ async def check_stock(org_id: str, product_name: str) -> dict:
         }
 
     low_stock = row["qty"] <= row["reorder_level"]
-    warning = "⚠️ _Below reorder level!_" if low_stock else ""
+    warning = "\n⚠️ _Below reorder level!_" if low_stock else ""
 
     return {
         "found": True,
+        "sku": row["sku"],
         "name": row["name"],
         "qty": row["qty"],
         "location": row["location"],
@@ -37,9 +34,62 @@ async def check_stock(org_id: str, product_name: str) -> dict:
             f"Available: *{row['qty']} pcs*\n"
             f"Location: {row['location']}\n"
             f"Reorder level: {row['reorder_level']}\n"
-            f"Unit price: ₹{row['unit_price']:,.0f}\n"
+            f"Unit price: Rs.{row['unit_price']:,.0f}"
             f"{warning}"
         ).strip()
+    }
+
+
+async def check_stock_availability(org_id: str, item_name: str, qty: int) -> dict:
+    """Check if required qty is available before creating invoice."""
+    row = await fetch_one("""
+        SELECT name, qty, sku, unit_price
+        FROM inventory
+        WHERE org_id = $1 AND name ILIKE $2
+        ORDER BY similarity(name, $3) DESC
+        LIMIT 1
+    """, org_id, f"%{item_name}%", item_name)
+
+    if not row:
+        return {
+            "available": False,
+            "message": f"❌ Product *{item_name}* not found in inventory."
+        }
+
+    if row["qty"] < qty:
+        return {
+            "available": False,
+            "message": (
+                f"❌ Insufficient stock for *{row['name']}*.\n"
+                f"Requested: {qty} pcs | Available: {row['qty']} pcs"
+            )
+        }
+
+    return {
+        "available": True,
+        "item_name": row["name"],
+        "sku": row["sku"],
+        "unit_price": float(row["unit_price"]) if row["unit_price"] else None,
+        "available_qty": row["qty"]
+    }
+
+
+async def deduct_stock(org_id: str, sku: str, qty: int) -> dict:
+    """Deduct qty from inventory after invoice is created."""
+    await execute("""
+        UPDATE inventory
+        SET qty = qty - $1, updated_at = NOW()
+        WHERE org_id = $2 AND sku = $3
+    """, qty, org_id, sku)
+
+    row = await fetch_one(
+        "SELECT name, qty FROM inventory WHERE org_id = $1 AND sku = $2",
+        org_id, sku
+    )
+    return {
+        "success": True,
+        "item": row["name"] if row else sku,
+        "remaining": row["qty"] if row else 0
     }
 
 
@@ -51,5 +101,4 @@ async def get_low_stock_items(org_id: str) -> list:
         WHERE org_id = $1 AND qty <= reorder_level
         ORDER BY qty ASC
     """, org_id)
-
     return [dict(r) for r in rows]
