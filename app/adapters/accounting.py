@@ -30,6 +30,16 @@ async def create_invoice(
     """, org_id, f"%{customer_name}%", customer_name)
 
     if not customer:
+        first_word = customer_name.split()[0]
+        customer = await fetch_one("""
+            SELECT id, name, credit_limit, gst_number, city
+            FROM customers
+            WHERE org_id = $1 AND name ILIKE $2
+            ORDER BY similarity(name, $3) DESC
+            LIMIT 1
+        """, org_id, f"%{first_word}%", first_word)
+
+    if not customer:
         return {
             "success": False,
             "message": f"❌ Customer *{customer_name}* not found."
@@ -151,7 +161,7 @@ def parse_invoice_details(raw_text: str) -> dict:
         }
 
     # Simple format: customer amount
-    m = re.search(r'^([\w\s]+?)\s+(\d{4,})\s*$', text.strip())
+    m = re.search(r'^(\w+)\s+(\d{3,})\s*$', text.strip())
     if m:
         return {
             'customer': m.group(1).strip().title(),

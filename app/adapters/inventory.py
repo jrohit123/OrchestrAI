@@ -6,10 +6,10 @@ async def check_stock(org_id: str, product_name: str) -> dict:
     row = await fetch_one("""
         SELECT name, qty, location, reorder_level, unit_price, sku
         FROM inventory
-        WHERE org_id = $1 AND name ILIKE $2
-        ORDER BY similarity(name, $3) DESC
+        WHERE org_id = $1 AND similarity(name, $2) > 0.1
+        ORDER BY similarity(name, $2) DESC
         LIMIT 1
-    """, org_id, f"%{product_name}%", product_name)
+    """, org_id, product_name)
 
     if not row:
         return {
@@ -45,10 +45,10 @@ async def check_stock_availability(org_id: str, item_name: str, qty: int) -> dic
     row = await fetch_one("""
         SELECT name, qty, sku, unit_price
         FROM inventory
-        WHERE org_id = $1 AND name ILIKE $2
-        ORDER BY similarity(name, $3) DESC
+        WHERE org_id = $1 AND similarity(name, $2) > 0.1
+        ORDER BY similarity(name, $2) DESC
         LIMIT 1
-    """, org_id, f"%{item_name}%", item_name)
+    """, org_id, item_name)
 
     if not row:
         return {
