@@ -1,12 +1,91 @@
 import json
+import re
 from app.adapters import inventory, crm, accounting
 from app.services.otp_service import generate_and_send_otp
 from app.services.whatsapp import send_text, send_buttons
 from app.redis_client import set_session
 from app.db import fetch_one, execute
+from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 OTP_THRESHOLD      = 50000.0   # OTP required above this
 APPROVAL_THRESHOLD = 100000.0  # MD approval required above this
+
+
+def _parse_schedule(text: str) -> dict:
+    """Parse day + time from natural language schedule command."""
+    t = text.lower()
+
+    # Stop/cancel
+    if any(w in t for w in ["stop", "cancel", "pause", "off"]):
+        return {"action": "stop"}
+
+    # Status check
+    if any(w in t for w in ["when", "what time", "status", "check"]):
+        return {"action": "status"}
+
+    # Parse day
+    day_map = {
+        "monday": "mon", "tuesday": "tue", "wednesday": "wed",
+        "thursday": "thu", "friday": "fri", "saturday": "sat", "sunday": "sun",
+        "mon": "mon", "tue": "tue", "wed": "wed", "thu": "thu",
+        "fri": "fri", "sat": "sat", "sun": "sun",
+        "daily": "*", "everyday": "*", "every day": "*"
+    }
+    day = "mon"  # default
+    for word, code in day_map.items():
+        if word in t:
+            day = code
+            break
+
+    # Parse hour — AM/PM format
+    hour = None
+    m = re.search(r"(\d{1,2})\s*(am|pm)", t)
+    if m:
+        h = int(m.group(1))
+        period = m.group(2)
+        if period == "pm" and h != 12:
+            h += 12
+        elif period == "am" and h == 12:
+            h = 0
+        hour = h
+
+    # Parse 24hr format like "at 14" or "14:00"
+    if hour is None:
+        m = re.search(r"at\s+(\d{1,2})(?::00)?(?:\s|$)", t)
+        if m:
+            hour = int(m.group(1))
+
+    # Plain number after "every X at Y"
+    if hour is None:
+        m = re.search(r"(\d{1,2})\s*(?:am|pm|ist|o.clock|baje)", t)
+        if m:
+            hour = int(m.group(1))
+
+    if hour is None:
+        return {
+            "action": "error",
+            "message": (
+                "🤔 Could not parse time.\n"
+                "Try: *schedule dues report every Monday 9 AM*\n"
+                "Or: *send report every Tuesday 2 PM*"
+            )
+        }
+
+    day_labels = {
+        "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+        "thu": "Thursday", "fri": "Friday", "sat": "Saturday",
+        "sun": "Sunday", "*": "day"
+    }
+    period = "AM" if hour < 12 else "PM"
+    display_hour = hour if hour <= 12 else hour - 12
+    display_hour = 12 if display_hour == 0 else display_hour
+
+    return {
+        "action": "set",
+        "day": day,
+        "hour": hour,
+        "label": f"every {day_labels.get(day, day)} at {display_hour}:00 {period} IST"
+    }
 
 
 async def execute_intent(
@@ -42,6 +121,42 @@ async def execute_intent(
         result = await crm.get_all_overdue(org_id)
         await _log(org_id, user_id, intent, raw_text, "success")
         return result["message"]
+
+    # ── MANAGE SCHEDULE ───────────────────────────────
+    if intent == "manage_schedule":
+        if user["role"] != "owner":
+            return "❌ Only the Owner can change schedule settings."
+
+        parsed = _parse_schedule(raw_text)
+
+        if parsed["action"] == "error":
+            return parsed["message"]
+
+        if parsed["action"] == "status":
+            schedule = get_job_schedule()
+            return f"📅 Dues report is scheduled for: *{schedule}*"
+
+        if parsed["action"] == "stop":
+            stop_dues_report()
+            await execute("""
+                UPDATE workflows SET is_scheduled = false
+                WHERE intent_key = 'weekly_dues_report' AND org_id = $1
+            """, org_id)
+            return "⏸ Dues report schedule *paused*.\nSend *schedule dues report every Monday 9 AM* to restart."
+
+        if parsed["action"] == "set":
+            reschedule_dues_report(parsed["day"], parsed["hour"])
+            await execute("""
+                UPDATE workflows
+                SET is_scheduled = true,
+                    schedule_cron = $1
+                WHERE intent_key = 'weekly_dues_report' AND org_id = $2
+            """, f"0 {parsed['hour']} * * {parsed['day']}", org_id)
+            return (
+                f"✅ *Schedule Updated*\n\n"
+                f"Dues report will now be sent *{parsed['label']}*\n"
+                f"Next run: {get_job_schedule()}"
+            )
 
     # ── CREATE INVOICE ────────────────────────────────
     if intent == "create_invoice":

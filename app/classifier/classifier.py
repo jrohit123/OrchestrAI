@@ -45,6 +45,23 @@ KEYWORD_RULES = [
         "entity": None
     },
     {
+        "intent": "manage_schedule",
+        "patterns": [
+            r"schedule\s+dues",
+            r"schedule\s+report",
+            r"send\s+dues\s+report\s+every",
+            r"send\s+report\s+every",
+            r"change\s+.*report.*to",
+            r"reschedule",
+            r"stop\s+dues\s+report",
+            r"stop\s+schedule",
+            r"cancel\s+schedule",
+            r"when\s+is\s+dues\s+report",
+            r"dues\s+report\s+schedule",
+        ],
+        "entity": None
+    },
+    {
         "intent": "check_outstanding",
         "patterns": [
             r"(.+)\s+ka\s+kitna",
