@@ -64,7 +64,7 @@ async def get_outstanding(org_id: str, customer_name: str) -> dict:
     }
 
 
-async def get_all_overdue(org_id: str) -> dict:
+async def get_all_overdue(org_id: str, limit: int = None) -> dict:
     """Used for weekly dues report — all overdue invoices across all customers."""
     rows = await fetch_all("""
         SELECT c.name as customer_name, c.city,
@@ -79,10 +79,12 @@ async def get_all_overdue(org_id: str) -> dict:
     """, org_id)
 
     if not rows:
-        return {
-            "count": 0,
-            "message": "✅ No overdue invoices! All accounts are clear."
-        }
+        return {"count": 0, "message": "✅ No overdue invoices! All clear."}
+
+    # Apply limit if specified
+    total_count = len(rows)
+    if limit:
+        rows = rows[:limit]
 
     grand_total = sum(r["total_overdue"] for r in rows)
     lines = []
@@ -92,12 +94,15 @@ async def get_all_overdue(org_id: str) -> dict:
             f"₹{r['total_overdue']:,.0f} ({r['invoice_count']} invoice{'s' if r['invoice_count'] > 1 else ''})"
         )
 
+    title = f"Top {limit}" if limit else "All"
     return {
-        "count": len(rows),
+        "count": total_count,
+        "shown": len(rows),
         "grand_total": float(grand_total),
         "message": (
-            f"📊 *Overdue Dues Report*\n\n"
+            f"📊 *{title} Overdue Customers*\n\n"
             + "\n".join(lines)
-            + f"\n\n*Grand Total: ₹{grand_total:,.0f}*"
+            + f"\n\n*Total shown: ₹{grand_total:,.0f}*"
+            + (f"\n_(showing {limit} of {total_count})_" if limit and limit < total_count else "")
         )
     }

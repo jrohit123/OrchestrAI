@@ -39,9 +39,12 @@ KEYWORD_RULES = [
             r"stop\s+dues\s+report",
             r"stop\s+schedule",
             r"cancel\s+schedule",
-            r"when\s+is\s+dues\s+report",
+            r"when\s+is\s+due",
+            r"when\s+is\s+report",
             r"dues\s+report\s+schedule",
             r"dues\s+report\s+every",
+            r"report\s+scheduled",
+            r"due\s+report\s +schedul",
         ],
         "entity": None
     },
@@ -68,11 +71,11 @@ KEYWORD_RULES = [
             r"(.+)\s+ka\s+kitna",
             r"(.+)\s+ka\s+bacha",
             r"kitna\s+bacha\s+(.+)",
-            r"dues?\s+(.+)",
-            r"outstanding\s+(.+)",
-            r"balance\s+(.+)",
+            r"^dues?\s+([a-zA-Z][\w\s]{2,20})$",
+            r"outstanding\s+([a-zA-Z][\w\s]{2,20})",
+            r"balance\s+([a-zA-Z][\w\s]{2,20})",
             r"(.+)\s+owes",
-            r"pending\s+(?:of\s+)?(.+)",
+            r"pending\s+(?:of\s+)?([a-zA-Z][\w\s]{2,20})$",
             r"how\s+much\s+(?:is\s+)?(?:pending|due|owed)\s+(?:of\s+|for\s+)?(.+)",
         ],
         "entity": "customer"
@@ -114,9 +117,18 @@ def tier2_keyword(text: str):
                         if entity.startswith(prep):
                             entity = entity[len(prep):]
                     entity = entity.strip().title()
+
+                # Extract limit for "top N" queries
+                limit = None
+                if rule["intent"] == "weekly_dues_report":
+                    lm = re.search(r"top\s+(\d+)", t)
+                    if lm:
+                        limit = int(lm.group(1))
+
                 return {
                     "intent": rule["intent"],
                     "entity_raw": entity,
+                    "limit": limit,
                     "tier": 2,
                     "confidence": 0.85
                 }

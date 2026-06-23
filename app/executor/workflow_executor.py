@@ -136,9 +136,13 @@ async def execute_intent(
 
     # ── WEEKLY DUES REPORT ────────────────────────────
     if intent == "weekly_dues_report":
-        result = await crm.get_all_overdue(org_id)
+        limit = None
+        lm = re.search(r"top\s+(\d+)", raw_text.lower())
+        if lm:
+            limit = int(lm.group(1))
+        result_data = await crm.get_all_overdue(org_id, limit=limit)
         await _log(org_id, user_id, intent, raw_text, "success")
-        return result["message"]
+        return result_data["message"]
 
     # ── MANAGE SCHEDULE ───────────────────────────────
     if intent == "manage_schedule":
