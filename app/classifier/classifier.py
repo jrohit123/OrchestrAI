@@ -38,32 +38,38 @@ KEYWORD_RULES = [
             r"60\+\s*(days|overdue)",
             r"overdue\s+report",
             r"overdue\s+summary",
+            r"top\s+\d+\s+dues",
+            r"top\s+\d+\s+outstanding",
+            r"give\s+me\s+top",
         ],
         "entity": None
+    },
+    {
+        "intent": "check_outstanding",
+        "patterns": [
+            r"(.+)\s+ka\s+kitna",
+            r"(.+)\s+ka\s+bacha",
+            r"kitna\s+bacha\s+(.+)",
+            r"dues?\s+(.+)",
+            r"outstanding\s+(.+)",
+            r"balance\s+(.+)",
+            r"(.+)\s+owes",
+            r"pending\s+(?:of\s+)?(.+)",
+            r"how\s+much\s+(?:is\s+)?(?:pending|due|owed)\s+(?:of\s+|for\s+)?(.+)",
+        ],
+        "entity": "customer"
     },
     {
         "intent": "check_stock",
         "patterns": [
             r"stock\s+(.+)",
             r"how many\s+(.+)",
-            r"kitna\s+(.+)\s+hai",
             r"(.+)\s+available",
             r"(.+)\s+stock",
             r"inventory\s+(.+)",
+            r"kitna\s+(.+)\s+hai",
         ],
         "entity": "product"
-    },
-    {
-        "intent": "check_outstanding",
-        "patterns": [
-            r"dues?\s+(.+)",
-            r"outstanding\s+(.+)",
-            r"balance\s+(.+)",
-            r"(.+)\s+ka bacha",
-            r"(.+)\s+owes",
-            r"pending\s+(.+)",
-        ],
-        "entity": "customer"
     },
     {
         "intent": "create_invoice",
@@ -83,9 +89,16 @@ def tier2_keyword(text: str):
         for pattern in rule["patterns"]:
             m = re.search(pattern, t)
             if m:
+                entity = m.group(1).strip() if m.lastindex and rule["entity"] else None
+                # Strip leading prepositions
+                if entity:
+                    for prep in ["of ", "for ", "ka ", "ki ", "ke "]:
+                        if entity.startswith(prep):
+                            entity = entity[len(prep):]
+                    entity = entity.strip().title()
                 return {
                     "intent": rule["intent"],
-                    "entity_raw": m.group(1).strip() if m.lastindex and rule["entity"] else None,
+                    "entity_raw": entity,
                     "tier": 2,
                     "confidence": 0.85
                 }
