@@ -11,28 +11,35 @@ async def send_weekly_dues_report():
     print("[SCHEDULER] Running dues report...")
     from app.adapters.crm import get_all_overdue
 
-    orgs = await fetch_all("""
-        SELECT o.id as org_id, o.name as org_name,
-               u.phone as owner_phone, u.name as owner_name
-        FROM orgs o
-        JOIN users u ON u.org_id = o.id
-        JOIN roles r ON r.id = u.role_id
-        WHERE o.is_active = true AND r.name = 'owner'
-        AND u.is_active = true AND u.phone IS NOT NULL
+    workflows = await fetch_all("""
+        SELECT org_id, scheduled_by
+        FROM workflows
+        WHERE intent_key = 'weekly_dues_report' AND is_scheduled = true
     """)
 
-    for org in orgs:
+    for wf in workflows:
         try:
-            report = await get_all_overdue(str(org["org_id"]))
+            user = await fetch_one("""
+                SELECT u.phone, u.name, o.name as org_name
+                FROM users u
+                JOIN orgs o ON o.id = u.org_id
+                WHERE u.id = $1 AND u.is_active = true AND u.phone IS NOT NULL
+            """, wf["scheduled_by"])
+
+            if not user:
+                print(f"[SCHEDULER] User {wf['scheduled_by']} not found or inactive")
+                continue
+
+            report = await get_all_overdue(str(wf["org_id"]))
             message = (
-                f"📊 *Scheduled Dues Report — {org['org_name']}*\n\n"
+                f"📊 *Scheduled Dues Report — {user['org_name']}*\n\n"
                 + (report["message"] if report["count"] > 0
                    else "✅ No overdue invoices. All clear!")
             )
-            await send_text(org["owner_phone"], message)
-            print(f"[SCHEDULER] Sent to {org['org_name']}")
+            await send_text(user["phone"], message)
+            print(f"[SCHEDULER] Sent to {user['name']} ({user['org_name']})")
         except Exception as e:
-            print(f"[SCHEDULER] Error for {org['org_name']}: {e}")
+            print(f"[SCHEDULER] Error for workflow: {e}")
 
 
 def reschedule_dues_report(day_of_week: str, hour: int, minute: int = 0):

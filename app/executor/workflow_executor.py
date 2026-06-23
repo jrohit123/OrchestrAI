@@ -171,9 +171,10 @@ async def execute_intent(
             await execute("""
                 UPDATE workflows
                 SET is_scheduled = true,
-                    schedule_cron = $1
-                WHERE intent_key = 'weekly_dues_report' AND org_id = $2
-            """, f"{parsed.get('minute', 0)} {parsed['hour']} * * {parsed['day']}", org_id)
+                    schedule_cron = $1,
+                    scheduled_by = $2
+                WHERE intent_key = 'weekly_dues_report' AND org_id = $3
+            """, f"{parsed.get('minute', 0)} {parsed['hour']} * * {parsed['day']}", user_id, org_id)
             return (
                 f"✅ *Schedule Updated*\n\n"
                 f"Dues report will now be sent *{parsed['label']}*\n"
