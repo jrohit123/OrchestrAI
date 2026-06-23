@@ -97,10 +97,24 @@ _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 async def tier3_llm(text: str, org_name: str) -> dict:
-    prompt = f"""You are an intent parser for {org_name}, a jewellery business.
-Extract the intent and entities from the user's message.
+    prompt = f"""You are an intent parser for {org_name}, a jewellery business in India.
+Extract the intent and entity from the user's message.
 
-Allowed intents: check_stock, create_invoice, check_outstanding, weekly_dues_report, unknown
+Allowed intents:
+- check_stock: user wants to know stock/inventory of a product
+- check_outstanding: user wants to know pending dues/payments of a customer
+- create_invoice: user wants to create a bill or invoice
+- weekly_dues_report: user wants summary of all overdue customers
+- unknown: cannot determine intent
+
+Rules for entity extraction:
+- Remove prepositions from entity: strip "of", "for", "ka", "ki", "ke", "kا" from the START of entity
+- Entity should be just the name — no extra words
+- For Hindi queries: "ka kitna bacha hai" = check_outstanding, "ka stock" = check_stock
+- "pending of Sharma" → entity = "Sharma" (strip "of")
+- "Mehta ka kitna bacha hai" → intent = check_outstanding, entity = "Mehta"
+- "Sharma Gold House ka dues" → intent = check_outstanding, entity = "Sharma Gold House"
+- "kitna gold ring hai" → intent = check_stock, entity = "gold ring"
 
 Return ONLY valid JSON with no extra text:
 {{"intent": "...", "entity_raw": "...", "confidence": 0.0}}
@@ -116,6 +130,13 @@ User message: {text}"""
     raw = response.choices[0].message.content.strip()
     try:
         parsed = json.loads(raw)
+        # Clean entity — strip leading prepositions
+        if parsed.get("entity_raw"):
+            entity = parsed["entity_raw"].strip()
+            for prep in ["of ", "for ", "ka ", "ki ", "ke "]:
+                if entity.lower().startswith(prep):
+                    entity = entity[len(prep):]
+            parsed["entity_raw"] = entity.strip().title()
     except Exception:
         parsed = {"intent": "unknown", "entity_raw": None, "confidence": 0.0}
 

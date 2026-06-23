@@ -47,7 +47,10 @@ def check_permission(user: dict, intent: str) -> bool:
     """
     Returns True if the user's role has permission for this intent.
     Action intents (approve/reject/greet/menu) are always allowed.
+    Unknown intent is always allowed (will be handled gracefully).
     """
     if intent.startswith("action:"):
+        return True
+    if intent == "unknown":
         return True
     return intent in user.get("permissions", [])
