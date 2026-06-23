@@ -37,29 +37,45 @@ def _parse_schedule(text: str) -> dict:
             day = code
             break
 
-    # Parse hour — AM/PM format
+    # Parse hour + minute — AM/PM format like "5:15 PM" or "5 PM"
     hour = None
-    m = re.search(r"(\d{1,2})\s*(am|pm)", t)
+    minute = 0
+
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)", t)
     if m:
-        h = int(m.group(1))
-        period = m.group(2)
-        if period == "pm" and h != 12:
-            h += 12
-        elif period == "am" and h == 12:
-            h = 0
-        hour = h
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        period = m.group(3)
+        if period == "pm" and hour != 12:
+            hour += 12
+        elif period == "am" and hour == 12:
+            hour = 0
 
-    # Parse 24hr format like "at 14" or "14:00"
+    # No minutes — just hour + AM/PM like "5 PM"
     if hour is None:
-        m = re.search(r"at\s+(\d{1,2})(?::00)?(?:\s|$)", t)
+        m = re.search(r"(\d{1,2})\s*(am|pm)", t)
         if m:
             hour = int(m.group(1))
+            minute = 0
+            period = m.group(2)
+            if period == "pm" and hour != 12:
+                hour += 12
+            elif period == "am" and hour == 12:
+                hour = 0
 
-    # Plain number after "every X at Y"
+    # 24hr with minutes like "17:10" or "at 14:30"
     if hour is None:
-        m = re.search(r"(\d{1,2})\s*(?:am|pm|ist|o.clock|baje)", t)
+        m = re.search(r"(\d{1,2}):(\d{2})", t)
         if m:
             hour = int(m.group(1))
+            minute = int(m.group(2))
+
+    # Plain hour like "at 17"
+    if hour is None:
+        m = re.search(r"at\s+(\d{1,2})(?:\s|$)", t)
+        if m:
+            hour = int(m.group(1))
+            minute = 0
 
     if hour is None:
         return {
@@ -76,15 +92,17 @@ def _parse_schedule(text: str) -> dict:
         "thu": "Thursday", "fri": "Friday", "sat": "Saturday",
         "sun": "Sunday", "*": "day"
     }
-    period = "AM" if hour < 12 else "PM"
     display_hour = hour if hour <= 12 else hour - 12
     display_hour = 12 if display_hour == 0 else display_hour
+    period = "AM" if hour < 12 else "PM"
+    minute_str = f":{minute:02d}" if minute > 0 else ":00"
 
     return {
         "action": "set",
         "day": day,
         "hour": hour,
-        "label": f"every {day_labels.get(day, day)} at {display_hour}:00 {period} IST"
+        "minute": minute,
+        "label": f"every {day_labels.get(day, day)} at {display_hour}{minute_str} {period} IST"
     }
 
 
@@ -145,13 +163,13 @@ async def execute_intent(
             return "⏸ Dues report schedule *paused*.\nSend *schedule dues report every Monday 9 AM* to restart."
 
         if parsed["action"] == "set":
-            reschedule_dues_report(parsed["day"], parsed["hour"])
+            reschedule_dues_report(parsed["day"], parsed["hour"], parsed.get("minute", 0))
             await execute("""
                 UPDATE workflows
                 SET is_scheduled = true,
                     schedule_cron = $1
                 WHERE intent_key = 'weekly_dues_report' AND org_id = $2
-            """, f"0 {parsed['hour']} * * {parsed['day']}", org_id)
+            """, f"{parsed.get('minute', 0)} {parsed['hour']} * * {parsed['day']}", org_id)
             return (
                 f"✅ *Schedule Updated*\n\n"
                 f"Dues report will now be sent *{parsed['label']}*\n"

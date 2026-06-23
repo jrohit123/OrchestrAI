@@ -28,23 +28,6 @@ def tier1_exact(text: str):
 # to avoid "dues report" matching the dues\s+(.+) pattern first
 KEYWORD_RULES = [
     {
-        "intent": "weekly_dues_report",
-        "patterns": [
-            r"dues\s+report",
-            r"outstanding\s+report",
-            r"dues\s+summary",
-            r"all\s+overdue",
-            r"all\s+dues",
-            r"60\+\s*(days|overdue)",
-            r"overdue\s+report",
-            r"overdue\s+summary",
-            r"top\s+\d+\s+dues",
-            r"top\s+\d+\s+outstanding",
-            r"give\s+me\s+top",
-        ],
-        "entity": None
-    },
-    {
         "intent": "manage_schedule",
         "patterns": [
             r"schedule\s+dues",
@@ -58,6 +41,24 @@ KEYWORD_RULES = [
             r"cancel\s+schedule",
             r"when\s+is\s+dues\s+report",
             r"dues\s+report\s+schedule",
+            r"dues\s+report\s+every",
+        ],
+        "entity": None
+    },
+    {
+        "intent": "weekly_dues_report",
+        "patterns": [
+            r"^dues\s+report$",
+            r"outstanding\s+report",
+            r"dues\s+summary",
+            r"all\s+overdue",
+            r"all\s+dues",
+            r"60\+\s*(days|overdue)",
+            r"overdue\s+report",
+            r"overdue\s+summary",
+            r"top\s+\d+\s+dues",
+            r"top\s+\d+\s+outstanding",
+            r"give\s+me\s+top",
         ],
         "entity": None
     },

@@ -35,9 +35,9 @@ async def send_weekly_dues_report():
             print(f"[SCHEDULER] Error for {org['org_name']}: {e}")
 
 
-def reschedule_dues_report(day_of_week: str, hour: int):
+def reschedule_dues_report(day_of_week: str, hour: int, minute: int = 0):
     """Reschedule dues report job at runtime — no restart needed."""
-    trigger_kwargs = {"hour": hour, "minute": 0, "timezone": "Asia/Kolkata"}
+    trigger_kwargs = {"hour": hour, "minute": minute, "timezone": "Asia/Kolkata"}
     if day_of_week != "*":
         trigger_kwargs["day_of_week"] = day_of_week
 
