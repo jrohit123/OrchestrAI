@@ -181,11 +181,18 @@ description field — write a specific, data-oriented sentence the AI classifier
   GOOD: "Fetches and returns the approved credit limit for a named customer"
   BAD:  "Credit limit workflow"
 
+adapter_method — which existing adapter method should this workflow call?
+  For customer data: "get_credit_limit", "get_outstanding"
+  For inventory: "check_stock"
+  For reports: "get_all_overdue"
+  If no suitable method exists, use "generic" and admin will implement it later
+
 Return ONLY valid JSON (no markdown fences, no backticks):
 {{
   "name": "2-4 word name",
   "intent_key": "unique_snake_case_key",
   "description": "Specific sentence describing what data this returns and for what entity type",
+  "adapter_method": "get_credit_limit or get_outstanding or check_stock or get_all_overdue or generic",
   "trigger_patterns": [
     "credit limit (?:of|for)\\\\s+(.+)",
     "check (?:the )?credit limit (?:of|for|of) (.+)",
@@ -241,15 +248,16 @@ async def save_generated_workflow(request: Request):
     
     await execute("""
         INSERT INTO workflows (
-            org_id, name, intent_key, description, trigger_patterns,
+            org_id, name, intent_key, description, trigger_patterns, adapter_method,
             otp_required, otp_threshold, approval_threshold, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
     """, 
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
         json.dumps(body.get("trigger_patterns", [])),
+        body.get("adapter_method", "generic"),
         body.get("otp_required", False),
         body.get("otp_threshold"),
         body.get("approval_threshold")
@@ -369,6 +377,16 @@ input:checked+.slider:before{{transform:translateX(18px)}}
             <div class="stat-label">Intent Key</div>
             <input class="threshold-input" type="text" id="wfIntentKey" style="width:100%">
           </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div class="stat-label">Adapter Method</div>
+          <select id="wfAdapterMethod" class="threshold-input" style="width:100%">
+            <option value="get_credit_limit">get_credit_limit (customer credit limit)</option>
+            <option value="get_outstanding">get_outstanding (customer dues)</option>
+            <option value="check_stock">check_stock (inventory)</option>
+            <option value="get_all_overdue">get_all_overdue (all overdue report)</option>
+            <option value="generic">generic (admin will implement)</option>
+          </select>
         </div>
         <div style="margin-bottom:12px">
           <div class="stat-label">Description</div>
@@ -544,6 +562,7 @@ async function generateWorkflow() {{
     
     document.getElementById('wfName').value = config.name || '';
     document.getElementById('wfIntentKey').value = config.intent_key || '';
+    document.getElementById('wfAdapterMethod').value = config.adapter_method || 'generic';
     document.getElementById('wfDescription').value = config.description || '';
     document.getElementById('wfPatterns').value = (config.trigger_patterns || []).join('\\n');
     document.getElementById('wfOtpRequired').checked = config.otp_required || false;
@@ -563,6 +582,7 @@ async function saveWorkflow() {{
   const config = {{
     name: document.getElementById('wfName').value.trim(),
     intent_key: document.getElementById('wfIntentKey').value.trim(),
+    adapter_method: document.getElementById('wfAdapterMethod').value,
     description: document.getElementById('wfDescription').value.trim(),
     trigger_patterns: document.getElementById('wfPatterns').value
       .split('\\n')

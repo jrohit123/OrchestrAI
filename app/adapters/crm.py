@@ -2,6 +2,42 @@ from app.db import fetch_one, fetch_all
 from datetime import datetime, timezone
 
 
+async def get_credit_limit(org_id: str, customer_name: str) -> dict:
+    """
+    Fetch the credit limit for a customer.
+    """
+    customer = await fetch_one("""
+        SELECT id, name, city, credit_limit
+        FROM customers
+        WHERE org_id = $1
+          AND name ILIKE $2
+        ORDER BY similarity(name, $3) DESC
+        LIMIT 1
+    """, org_id, f"%{customer_name}%", customer_name)
+
+    if not customer:
+        return {
+            "found": False,
+            "message": f"❌ No customer found matching *{customer_name}*.\nCheck spelling or contact admin."
+        }
+
+    credit_limit = customer.get("credit_limit")
+    if credit_limit is None:
+        return {
+            "found": True,
+            "customer": customer["name"],
+            "credit_limit": None,
+            "message": f"ℹ️ *{customer['name']}* has no credit limit set."
+        }
+
+    return {
+        "found": True,
+        "customer": customer["name"],
+        "credit_limit": float(credit_limit),
+        "message": f"💳 *{customer['name']}* — Credit Limit\n\n₹{credit_limit:,.0f}"
+    }
+
+
 async def get_outstanding(org_id: str, customer_name: str) -> dict:
     """
     Fuzzy search customer and return all overdue invoices with totals.

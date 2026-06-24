@@ -8,47 +8,43 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
-async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str) -> str:
+async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str) -> str:
     """
     Generic dispatcher for DB-registered workflows that have no hardcoded handler.
-    Routes to the right adapter based on keywords in the intent key.
-    Add new elif blocks here as you add adapter methods.
+    Dynamically calls the adapter method specified in the workflow config.
     """
-    k = intent.lower()
+    if not entity and adapter_method not in ["get_all_overdue"]:
+        return "🤔 Which customer or product? Please specify."
 
-    # ── Credit / financial customer info ─────────────
-    if any(x in k for x in ["credit_limit", "credit_score", "credit_rating", "credit_check"]):
-        if not entity:
-            return "🤔 Which customer? Example: *credit limit Mehta*"
-        try:
-            result = await crm.get_credit_limit(org_id, entity)
-            return result["message"]
-        except AttributeError:
-            return "⚙️ Credit limit lookup is not yet implemented in the CRM adapter. Contact admin."
+    # Map adapter methods to actual adapter functions
+    adapter_map = {
+        "get_credit_limit": crm.get_credit_limit,
+        "get_outstanding": crm.get_outstanding,
+        "check_stock": inventory.check_stock,
+        "get_all_overdue": crm.get_all_overdue,
+    }
 
-    # ── Outstanding / balance / dues (generic catch) ──
-    if any(x in k for x in ["outstanding", "balance", "dues", "pending", "owed"]):
-        if not entity:
-            return "🤔 Which customer?"
-        result = await crm.get_outstanding(org_id, entity)
+    if adapter_method == "generic":
+        return (
+            f"⚙️ Workflow *{intent.replace('_', ' ').title()}* was recognised "
+            f"but has no adapter method configured. Contact your admin."
+        )
+
+    if adapter_method not in adapter_map:
+        return f"⚙️ Unknown adapter method: {adapter_method}. Contact admin."
+
+    try:
+        adapter_func = adapter_map[adapter_method]
+        
+        # Call the adapter with appropriate arguments
+        if adapter_method == "get_all_overdue":
+            result = await adapter_func(org_id)
+        else:
+            result = await adapter_func(org_id, entity)
+        
         return result["message"]
-
-    # ── Stock / inventory (generic catch) ────────────
-    if any(x in k for x in ["stock", "inventory", "quantity", "available", "qty"]):
-        if not entity:
-            return "🤔 Which product?"
-        result = await inventory.check_stock(org_id, entity)
-        return result["message"]
-
-    # ── Report / summary (generic catch) ─────────────
-    if any(x in k for x in ["report", "summary", "list"]):
-        result = await crm.get_all_overdue(org_id)
-        return result["message"]
-
-    return (
-        f"⚙️ Workflow *{intent.replace('_', ' ').title()}* was recognised "
-        f"but has no executor configured yet. Contact your admin."
-    )
+    except Exception as e:
+        return f"⚙️ Error executing {adapter_method}: {str(e)}"
 
 
 async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
@@ -352,12 +348,13 @@ async def execute_intent(
     # ── DYNAMIC DB WORKFLOW ───────────────────────────
     # For any DB-registered intent with no hardcoded handler above
     db_workflow = await fetch_one("""
-        SELECT name FROM workflows
+        SELECT name, adapter_method FROM workflows
         WHERE intent_key = $1 AND org_id = $2 AND is_active = true
     """, intent, org_id)
 
     if db_workflow:
-        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text)
+        adapter_method = db_workflow.get("adapter_method", "generic")
+        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method)
         await _log(org_id, user_id, intent, raw_text, "success")
         return result_msg
 
