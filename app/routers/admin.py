@@ -206,19 +206,12 @@ input:checked+.slider:before{{transform:translateX(18px)}}
         <div>
           <div class="stat-label">Session Timeout</div>
           <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
-            <input class="threshold-input" type="number" id="ttl_minutes"
-              value="480" min="5" max="10080" style="width:80px">
-            <span style="font-size:12px;color:#888">minutes</span>
-            <select id="ttl_preset" onchange="applyPreset()"
-              style="border:1px solid var(--color-border-secondary);border-radius:6px;
-                     padding:4px 8px;font-size:12px;color:#555">
-              <option value="">— Quick presets —</option>
-              <option value="30">30 minutes</option>
-              <option value="60">1 hour</option>
-              <option value="120">2 hours</option>
-              <option value="240">4 hours</option>
-              <option value="480">8 hours</option>
-              <option value="1440">24 hours</option>
+            <input class="threshold-input" type="number" id="ttl_value"
+              value="8" min="1" max="10080" style="width:70px">
+            <select id="ttl_unit" style="border:1px solid #e8edf5;border-radius:6px;
+              padding:4px 8px;font-size:12px;color:#555;background:#fff">
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
             </select>
             <button class="save-btn" onclick="saveTTL()">Save</button>
           </div>
@@ -280,23 +273,16 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 const TOKEN = "{token}";
 const API = (path) => `/admin/api${{path}}?token=${{TOKEN}}`;
 
-function applyPreset() {{
-  const val = document.getElementById('ttl_preset').value;
-  if (val) document.getElementById('ttl_minutes').value = val;
-}}
-
 async function saveTTL() {{
-  const mins = parseInt(document.getElementById('ttl_minutes').value);
-  const resp = await fetch(API('/security/ttl'), {{
+  const val = parseInt(document.getElementById('ttl_value').value);
+  const unit = document.getElementById('ttl_unit').value;
+  const minutes = unit === 'hours' ? val * 60 : val;
+  await fetch(API('/security/ttl'), {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
-    body: JSON.stringify({{minutes: mins}})
+    body: JSON.stringify({{minutes: minutes}})
   }});
-  const hours = Math.floor(mins / 60);
-  const rem   = mins % 60;
-  const label = mins < 60 ? `${{mins}} minutes`
-              : rem === 0 ? `${{hours}} hour${{hours > 1 ? 's' : ''}}`
-              : `${{hours}}h ${{rem}}m`;
+  const label = unit === 'hours' ? `${{val}} hour${{val > 1 ? 's' : ''}}` : `${{val}} minute${{val > 1 ? 's' : ''}}`;
   alert(`✅ Session timeout set to ${{label}}`);
 }}
 
@@ -316,7 +302,14 @@ async function loadData() {{
 
     try {{
       const sec = await fetch(API('/security')).then(r => r.json());
-      document.getElementById('ttl_minutes').value = sec.session_ttl_minutes || 480;
+      const mins = sec.session_ttl_minutes || 480;
+      if (mins >= 60 && mins % 60 === 0) {{
+        document.getElementById('ttl_value').value = mins / 60;
+        document.getElementById('ttl_unit').value = 'hours';
+      }} else {{
+        document.getElementById('ttl_value').value = mins;
+        document.getElementById('ttl_unit').value = 'minutes';
+      }}
     }} catch(e) {{}}
 
     // Stats
