@@ -3,7 +3,7 @@ import re
 from app.adapters import inventory, crm, accounting
 from app.services.otp_service import generate_and_send_otp
 from app.services.whatsapp import send_text, send_buttons
-from app.redis_client import set_session
+from app.redis_client import set_session, clear_all_sessions
 from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
@@ -180,6 +180,19 @@ async def execute_intent(
                 f"Dues report will now be sent *{parsed['label']}*\n"
                 f"Next run: {get_job_schedule()}"
             )
+
+    # ── CLEAR ALL SESSIONS ────────────────────────────────
+    if intent == "clear_sessions":
+        if user["role"] != "owner":
+            return "❌ Only the Owner can clear all sessions."
+        await clear_all_sessions(org_id)
+        await _log(org_id, user_id, intent, raw_text, "success")
+        return (
+            "🔒 *Emergency Lockdown Activated*\n\n"
+            "All active sessions have been cleared.\n"
+            "Every user will need to re-verify their identity on their next message.\n\n"
+            "_Action logged in audit trail._"
+        )
 
     # ── CREATE INVOICE ────────────────────────────────
     if intent == "create_invoice":

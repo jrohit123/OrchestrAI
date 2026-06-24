@@ -28,6 +28,20 @@ def tier1_exact(text: str):
 # to avoid "dues report" matching the dues\s+(.+) pattern first
 KEYWORD_RULES = [
     {
+        "intent": "clear_sessions",
+        "patterns": [
+            r"clear\s+all\s+sessions",
+            r"lock\s+all\s+accounts",
+            r"emergency\s+lock",
+            r"lockdown",
+            r"clear\s+sessions",
+            r"logout\s+everyone",
+            r"revoke\s+all\s+access",
+            r"kick\s+everyone",
+        ],
+        "entity": None
+    },
+    {
         "intent": "manage_schedule",
         "patterns": [
             r"schedule\s+dues",

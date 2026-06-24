@@ -38,3 +38,27 @@ async def set_session(session_id: str, data: dict, ttl: int = 600):
 
 async def delete_session(session_id: str):
     await _redis.delete(f"session:{session_id}")
+
+
+# ── AUTH TOKEN (session TTL security) ─────────────────
+async def set_auth_token(org_id: str, phone: str, ttl_minutes: int = 480):
+    """Mark user as authenticated for X minutes."""
+    key = f"auth:{org_id}:{phone}"
+    await _redis.setex(key, ttl_minutes * 60, "1")
+
+
+async def check_auth_token(org_id: str, phone: str) -> bool:
+    """Returns True if user is still within auth window."""
+    key = f"auth:{org_id}:{phone}"
+    val = await _redis.get(key)
+    return val is not None
+
+
+async def clear_all_sessions(org_id: str):
+    """Emergency lockdown — delete all auth + session keys for org."""
+    patterns = [f"auth:{org_id}:*", f"session:{org_id}:*"]
+    for pattern in patterns:
+        keys = await _redis.keys(pattern)
+        if keys:
+            await _redis.delete(*keys)
+    print(f"[SECURITY] All sessions cleared for org {org_id}")

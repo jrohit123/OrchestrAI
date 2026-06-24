@@ -99,6 +99,37 @@ async def update_threshold(workflow_id: str, request: Request):
     return {"otp_threshold": threshold}
 
 
+@router.get("/admin/api/security")
+async def get_security_settings(request: Request):
+    _check_token(request)
+    org = await fetch_one(
+        "SELECT session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1"
+    )
+    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480}
+
+
+@router.post("/admin/api/security/ttl")
+async def update_session_ttl(request: Request):
+    _check_token(request)
+    body = await request.json()
+    minutes = int(body.get("minutes", 480))
+    if minutes < 5 or minutes > 10080:  # 5 min to 7 days
+        raise HTTPException(status_code=400, detail="TTL must be between 5 and 10080 minutes")
+    await execute(
+        "UPDATE orgs SET session_ttl_minutes = $1 WHERE is_active = true", minutes
+    )
+    return {"session_ttl_minutes": minutes}
+
+
+@router.post("/admin/api/sessions/clear")
+async def admin_clear_sessions(request: Request):
+    _check_token(request)
+    from app.redis_client import clear_all_sessions
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    await clear_all_sessions(str(org["id"]))
+    return {"cleared": True, "message": "All sessions cleared"}
+
+
 def _build_html(token: str) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -169,6 +200,45 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 
     <div class="stats" id="statsGrid"></div>
 
+    <div class="card" style="border-left:4px solid #dc2626;margin-bottom:20px">
+      <div class="card-title" style="color:#dc2626">🔒 Security — Session Management</div>
+      <div style="display:flex;align-items:flex-start;gap:32px;flex-wrap:wrap">
+        <div>
+          <div class="stat-label">Session Timeout</div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <input class="threshold-input" type="number" id="ttl_minutes"
+              value="480" min="5" max="10080" style="width:80px">
+            <span style="font-size:12px;color:#888">minutes</span>
+            <select id="ttl_preset" onchange="applyPreset()"
+              style="border:1px solid var(--color-border-secondary);border-radius:6px;
+                     padding:4px 8px;font-size:12px;color:#555">
+              <option value="">— Quick presets —</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+              <option value="120">2 hours</option>
+              <option value="240">4 hours</option>
+              <option value="480">8 hours</option>
+              <option value="1440">24 hours</option>
+            </select>
+            <button class="save-btn" onclick="saveTTL()">Save</button>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:4px">
+            Users re-verify via email OTP after this duration of inactivity
+          </div>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <button onclick="clearSessions()"
+            style="background:#dc2626;color:#fff;border:none;border-radius:6px;
+                   padding:10px 20px;cursor:pointer;font-size:13px;font-weight:500">
+            🔒 Clear All Sessions
+          </button>
+          <div style="font-size:11px;color:#aaa;margin-top:4px">
+            Emergency: forces all users to re-authenticate immediately
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-title">⚙️ Workflow Configuration</div>
       <table>
@@ -210,12 +280,44 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 const TOKEN = "{token}";
 const API = (path) => `/admin/api${{path}}?token=${{TOKEN}}`;
 
+function applyPreset() {{
+  const val = document.getElementById('ttl_preset').value;
+  if (val) document.getElementById('ttl_minutes').value = val;
+}}
+
+async function saveTTL() {{
+  const mins = parseInt(document.getElementById('ttl_minutes').value);
+  const resp = await fetch(API('/security/ttl'), {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{minutes: mins}})
+  }});
+  const hours = Math.floor(mins / 60);
+  const rem   = mins % 60;
+  const label = mins < 60 ? `${{mins}} minutes`
+              : rem === 0 ? `${{hours}} hour${{hours > 1 ? 's' : ''}}`
+              : `${{hours}}h ${{rem}}m`;
+  alert(`✅ Session timeout set to ${{label}}`);
+}}
+
+async function clearSessions() {{
+  if (!confirm('⚠️ This will immediately log out ALL users.\\nThey must re-verify on next message.\\n\\nProceed?')) return;
+  const resp = await fetch(API('/sessions/clear'), {{method: 'POST'}});
+  const data = await resp.json();
+  alert('🔒 All sessions cleared. Every user must re-authenticate.');
+}}
+
 async function loadData() {{
   try {{
     const resp = await fetch(API('/data'));
     const data = await resp.json();
 
     document.getElementById('orgName').textContent = data.org.name;
+
+    try {{
+      const sec = await fetch(API('/security')).then(r => r.json());
+      document.getElementById('ttl_minutes').value = sec.session_ttl_minutes || 480;
+    }} catch(e) {{}}
 
     // Stats
     const s = data.stats;

@@ -4,19 +4,22 @@ from dotenv import load_dotenv
 
 from app.services.identity import resolve_identity, check_permission
 from app.services.whatsapp import send_text
-from app.services.otp_service import verify_otp
+from app.services.otp_service import verify_otp, generate_and_send_otp
 from app.classifier.classifier import classify_message
 from app.executor.workflow_executor import (
     execute_intent, resume_after_otp, handle_approval_response
 )
-from app.redis_client import get_session, set_session, get_redis
-from app.db import execute
+from app.redis_client import (
+    get_session, set_session, delete_session, get_redis,
+    set_auth_token, check_auth_token
+)
+from app.db import fetch_one, execute
 
 load_dotenv()
 
 router = APIRouter()
 
-VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify_2024")
+VERIFY_TOKEN      = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify_2024")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 
 
@@ -91,6 +94,7 @@ async def receive_message(request: Request):
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
 async def handle_message(phone: str, text: str, msg_type: str = "text"):
+    # 1. Identity
     user = await resolve_identity(phone)
     if not user:
         await send_text(phone,
@@ -103,26 +107,92 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
         return
 
+    # 2. Fetch org TTL
+    org_row = await fetch_one(
+        "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
+        user["org_id"]
+    )
+    ttl_minutes = org_row["session_ttl_minutes"] if org_row else 480
+
+    # 3. Security auth check
+    sec_session_id = f"sec:{user['org_id']}:{phone}"
+    is_authenticated = await check_auth_token(user["org_id"], phone)
+
+    if not is_authenticated:
+        pre_session = await get_session(sec_session_id)
+
+        if pre_session.get("state") == "awaiting_security_otp":
+            # User is replying with security OTP
+            result = await verify_otp(user["user_id"], text.strip())
+            if result["valid"]:
+                await set_auth_token(user["org_id"], phone, ttl_minutes)
+                pending_text = pre_session.get("pending_text", "")
+                await delete_session(sec_session_id)
+                hours   = ttl_minutes // 60
+                mins    = ttl_minutes % 60
+                ttl_str = f"{hours}h {mins}m" if mins else f"{hours}h"
+                if ttl_minutes < 60:
+                    ttl_str = f"{ttl_minutes} mins"
+                await send_text(phone,
+                    f"✅ Identity verified!\n"
+                    f"_Session active for {ttl_str}. Processing your request..._"
+                )
+                if pending_text:
+                    await handle_message(phone=phone, text=pending_text, msg_type="text")
+            else:
+                await send_text(phone, f"❌ {result['reason']}")
+            return
+
+        # Session expired — send security OTP
+        sent = await generate_and_send_otp(
+            user_id=user["user_id"],
+            user_email=user["email"],
+            user_name=user["user_name"],
+            org_name=user["org_name"],
+            action_context={"type": "security_auth"}
+        )
+        if sent:
+            await set_session(sec_session_id, {
+                "state": "awaiting_security_otp",
+                "pending_text": text
+            }, ttl=300)
+            hours   = ttl_minutes // 60
+            mins    = ttl_minutes % 60
+            ttl_str = f"{hours} hours" if not mins else f"{hours}h {mins}m"
+            if ttl_minutes < 60:
+                ttl_str = f"{ttl_minutes} minutes"
+            await send_text(phone,
+                f"🔐 *Security Verification Required*\n\n"
+                f"Your session has expired.\n"
+                f"A verification code has been sent to *{user['email']}*.\n"
+                f"Reply with the code to continue.\n\n"
+                f"_Required every {ttl_str} for security._"
+            )
+        else:
+            await send_text(phone, "❌ Could not send verification email. Contact admin.")
+        return
+
+    # 4. Normal session
     session_id = f"{user['org_id']}:{phone}"
     session    = await get_session(session_id)
 
-    # ── Handle approval button responses FIRST ──
+    # 5. Approval button responses
     if msg_type == "interactive" and text in ("action:approve", "action:reject"):
         await handle_approval_response(phone, text, user)
         return
 
-    # ── OTP state ──
+    # 6. OTP state (for invoice high value)
     if session.get("state") == "awaiting_otp":
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
 
-    # 4. Classify
+    # 7. Classify
     result = await classify_message(text, org_name=user["org_name"])
     intent = result["intent"]
     tier   = result["tier"]
     print(f"[CLASSIFIER] Intent: {intent} | Tier: {tier}")
 
-    # 5. Permission gate
+    # 8. Permission gate
     if not check_permission(user, intent):
         await send_text(phone,
             f"❌ You don't have permission for: *{intent}*\n"
@@ -130,8 +200,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    # 6. Static action intents
+    # 9. Static intents
     if intent == "action:greet":
+        hours   = ttl_minutes // 60
+        mins    = ttl_minutes % 60
+        ttl_str = f"{hours}h" if not mins else f"{hours}h {mins}m"
+        if ttl_minutes < 60:
+            ttl_str = f"{ttl_minutes}m"
         await send_text(phone,
             f"👋 Hi *{user['user_name']}*! I'm OrchestrAI.\n\n"
             f"You can ask:\n"
@@ -139,7 +214,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             f"• *dues [customer]* — check outstanding\n"
             f"• *invoice [customer] [qty] [item] [amount]* — create invoice\n"
             f"• *dues report* — all overdue summary\n"
-            f"• *help* — show this menu"
+            f"• *help* — show this menu\n\n"
+            f"_Session valid for {ttl_str}_"
         )
         return
 
@@ -150,7 +226,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             f"💰 *Dues* — dues Mehta\n"
             f"🧾 *Invoice* — invoice Mehta 25000\n"
             f"🧾 *Invoice with items* — invoice Mehta 15 gold rings 120000\n"
-            f"📊 *Report* — dues report"
+            f"📊 *Report* — dues report\n"
+            f"📅 *Schedule* — schedule dues report every Monday 9 AM"
         )
         return
 
@@ -166,7 +243,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    # 7. Save session and execute
     await set_session(session_id, {**session, "last_intent": intent})
 
     reply = await execute_intent(
@@ -177,11 +253,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         session=session,
         raw_text=text
     )
-
     await send_text(phone, reply)
 
 
-# ── OTP REPLY HANDLER ─────────────────────────────────
+# ── OTP REPLY HANDLER (invoice high value) ────────────
 async def _handle_otp_reply(phone, text, user, session, session_id):
     if text.strip().lower() == "retry":
         await set_session(session_id, {})
@@ -191,6 +266,12 @@ async def _handle_otp_reply(phone, text, user, session, session_id):
     result = await verify_otp(user["user_id"], text.strip())
 
     if result["valid"]:
+        # Refresh auth token on successful OTP
+        org_row = await fetch_one(
+            "SELECT session_ttl_minutes FROM orgs WHERE id = $1", user["org_id"]
+        )
+        ttl = org_row["session_ttl_minutes"] if org_row else 480
+        await set_auth_token(user["org_id"], phone, ttl)
         await set_session(session_id, {**session, "state": "otp_verified", "otp_verified": True})
         reply = await resume_after_otp(user, session_id, session)
         await send_text(phone, reply)
