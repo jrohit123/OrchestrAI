@@ -113,6 +113,13 @@ async def update_approval_threshold(workflow_id: str, request: Request):
     return {"approval_threshold": threshold}
 
 
+@router.get("/admin/api/roles")
+async def get_roles(request: Request):
+    _check_token(request)
+    roles = await fetch_all("SELECT name FROM roles ORDER BY name")
+    return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
+
+
 @router.get("/admin/api/security")
 async def get_security_settings(request: Request):
     _check_token(request)
@@ -236,7 +243,17 @@ async def save_generated_workflow(request: Request):
         body.get("approval_threshold")
     )
     
-    return {"success": True, "message": "Workflow saved successfully"}
+    # Add permission to selected roles
+    intent_key = body.get("intent_key")
+    selected_roles = body.get("roles", ["owner"])  # Default to owner if none selected
+    for role_name in selected_roles:
+        await execute("""
+            UPDATE roles 
+            SET permissions = array_append(permissions, $1)
+            WHERE name = $2 AND NOT $1 = ANY(permissions)
+        """, intent_key, role_name)
+    
+    return {"success": True, "message": f"Workflow saved and permission added to {len(selected_roles)} role(s)"}
 
 
 def _build_html(token: str) -> str:
@@ -363,6 +380,12 @@ input:checked+.slider:before{{transform:translateX(18px)}}
             <input class="threshold-input" type="number" id="wfApprovalThreshold" style="width:80px">
           </div>
         </div>
+        <div style="margin-bottom:12px">
+          <div class="stat-label">Allowed Roles</div>
+          <div id="roleCheckboxes" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+            <!-- Role checkboxes loaded dynamically -->
+          </div>
+        </div>
         <div style="display:flex;gap:8px">
           <button onclick="saveWorkflow()" 
             style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;
@@ -484,6 +507,18 @@ async function generateWorkflow() {{
   btn.textContent = '⏳ Generating...';
   
   try {{
+    // Load roles first
+    const rolesResp = await fetch(API('/roles'));
+    const roles = await rolesResp.json();
+    
+    const roleCheckboxes = document.getElementById('roleCheckboxes');
+    roleCheckboxes.innerHTML = roles.map(r => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <input type="checkbox" value="${{r.name}}" ${{r.selected ? 'checked' : ''}}>
+        <span>${{r.name}}</span>
+      </label>
+    `).join('');
+    
     const resp = await fetch(API('/workflow/generate'), {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
@@ -519,11 +554,17 @@ async function saveWorkflow() {{
       .filter(p => p),
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
-    approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null
+    approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null,
+    roles: Array.from(document.querySelectorAll('#roleCheckboxes input:checked')).map(cb => cb.value)
   }};
   
   if (!config.name || !config.intent_key || !config.description) {{
     alert('Please fill in name, intent key, and description');
+    return;
+  }}
+  
+  if (config.roles.length === 0) {{
+    alert('Please select at least one role');
     return;
   }}
   
@@ -536,7 +577,7 @@ async function saveWorkflow() {{
     const result = await resp.json();
     
     if (result.success) {{
-      alert('✅ Workflow saved successfully!');
+      alert('✅ ' + result.message);
       cancelWorkflow();
       loadData();
     }} else {{

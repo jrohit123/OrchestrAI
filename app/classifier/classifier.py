@@ -128,7 +128,10 @@ async def load_patterns_from_db(org_id: str) -> list:
     
     # Return cached if available
     if org_id in _db_patterns_cache:
+        print(f"[CLASSIFIER] Using cached patterns for org {org_id}")
         return _db_patterns_cache[org_id]
+    
+    print(f"[CLASSIFIER] Loading patterns from DB for org {org_id}")
     
     try:
         from app.db import fetch_all
@@ -137,6 +140,8 @@ async def load_patterns_from_db(org_id: str) -> list:
             FROM workflows
             WHERE org_id = $1 AND is_active = true AND trigger_patterns IS NOT NULL
         """, org_id)
+        
+        print(f"[CLASSIFIER] Found {len(rows)} workflows with patterns")
         
         db_rules = []
         for row in rows:
@@ -150,10 +155,13 @@ async def load_patterns_from_db(org_id: str) -> list:
                     "patterns": patterns,
                     "entity": None  # Will be extracted from pattern capture groups
                 })
+                print(f"[CLASSIFIER] Loaded {len(patterns)} patterns for intent: {row['intent_key']}")
         
         _db_patterns_cache[org_id] = db_rules
+        print(f"[CLASSIFIER] Total DB rules loaded: {len(db_rules)}")
         return db_rules
-    except Exception:
+    except Exception as e:
+        print(f"[CLASSIFIER] Error loading patterns from DB: {e}")
         # Return empty list on error (fallback to hardcoded patterns)
         return []
 
