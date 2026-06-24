@@ -522,6 +522,9 @@ async function generateWorkflow() {{
     }});
     const config = await resp.json();
     
+    // Store the full config for save
+    window.generatedConfig = config;
+    
     document.getElementById('wfName').value = config.name || '';
     document.getElementById('wfIntentKey').value = config.intent_key || '';
     document.getElementById('wfDescription').value = config.description || '';
@@ -544,7 +547,7 @@ async function saveWorkflow() {{
     intent_key: document.getElementById('wfIntentKey').value.trim(),
     description: document.getElementById('wfDescription').value.trim(),
     trigger_patterns: [],
-    adapter_method: null, // Will be set by AI
+    adapter_method: (window.generatedConfig && window.generatedConfig.adapter_method) || 'generic',
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
     approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null,
