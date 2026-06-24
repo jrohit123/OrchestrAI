@@ -7,8 +7,21 @@ from app.redis_client import set_session, clear_all_sessions
 from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
-OTP_THRESHOLD      = 50000.0   # OTP required above this
-APPROVAL_THRESHOLD = 100000.0  # MD approval required above this
+
+async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
+    """Fetch OTP and approval thresholds from DB. Returns (otp_threshold, approval_threshold)."""
+    row = await fetch_one("""
+        SELECT otp_threshold, approval_threshold, otp_required
+        FROM workflows
+        WHERE org_id = $1 AND intent_key = 'create_invoice'
+    """, org_id)
+
+    if not row or not row["otp_required"]:
+        return (999999999, 999999999)  # effectively disabled
+
+    otp = float(row["otp_threshold"]) if row["otp_threshold"] else 50000.0
+    approval = float(row["approval_threshold"]) if row["approval_threshold"] else 100000.0
+    return (otp, approval)
 
 
 def _parse_schedule(text: str) -> dict:
@@ -214,8 +227,11 @@ async def execute_intent(
             if not stock["available"]:
                 return stock["message"]
 
+        # Fetch thresholds from DB
+        otp_threshold, approval_threshold = await _get_invoice_thresholds(org_id)
+
         # OTP gate
-        if amount >= OTP_THRESHOLD and not session.get("otp_verified"):
+        if amount >= otp_threshold and not session.get("otp_verified"):
             action_context = {
                 "intent": "create_invoice",
                 "customer_name": customer_name,
@@ -252,7 +268,7 @@ async def execute_intent(
                 return "❌ Could not send verification email. Contact admin."
 
         # Approval gate (after OTP or for below-threshold)
-        if amount >= APPROVAL_THRESHOLD and user["role"] != "owner":
+        if amount >= approval_threshold and user["role"] != "owner":
             sent = await _send_approval_request(
                 user=user,
                 customer_name=customer_name,
@@ -308,8 +324,11 @@ async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
         item_name = pending.get("item_name")
         qty       = pending.get("qty")
 
+        # Fetch thresholds from DB
+        _, approval_threshold = await _get_invoice_thresholds(org_id)
+
         # Check approval gate after OTP
-        if amount >= APPROVAL_THRESHOLD and user["role"] != "owner":
+        if amount >= approval_threshold and user["role"] != "owner":
             sent = await _send_approval_request(
                 user=user,
                 customer_name=customer,

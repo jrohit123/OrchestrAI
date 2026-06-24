@@ -187,7 +187,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         return
 
     # 7. Classify
-    result = await classify_message(text, org_name=user["org_name"])
+    result = await classify_message(text, org_name=user["org_name"], org_id=user["org_id"])
     intent = result["intent"]
     tier   = result["tier"]
     print(f"[CLASSIFIER] Intent: {intent} | Tier: {tier}")

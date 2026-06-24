@@ -3,10 +3,12 @@ import json
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from app.db import fetch_all, fetch_one, execute
+from openai import AsyncOpenAI
 
 router = APIRouter()
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "orchestrai_admin_2024")
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def _check_token(request: Request):
@@ -35,7 +37,7 @@ async def admin_data(request: Request):
 
     workflows = await fetch_all("""
         SELECT id, name, intent_key, is_active, otp_required,
-               otp_threshold, last_run
+               otp_threshold, approval_threshold, last_run
         FROM workflows WHERE org_id = $1
         ORDER BY created_at
     """, org_id)
@@ -99,6 +101,18 @@ async def update_threshold(workflow_id: str, request: Request):
     return {"otp_threshold": threshold}
 
 
+@router.post("/admin/api/workflow/{workflow_id}/approval_threshold")
+async def update_approval_threshold(workflow_id: str, request: Request):
+    _check_token(request)
+    body = await request.json()
+    threshold = float(body.get("threshold", 100000))
+    await execute(
+        "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
+        threshold, workflow_id
+    )
+    return {"approval_threshold": threshold}
+
+
 @router.get("/admin/api/security")
 async def get_security_settings(request: Request):
     _check_token(request)
@@ -128,6 +142,101 @@ async def admin_clear_sessions(request: Request):
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
     await clear_all_sessions(str(org["id"]))
     return {"cleared": True, "message": "All sessions cleared"}
+
+
+@router.post("/admin/api/workflow/generate")
+async def generate_workflow_config(request: Request):
+    _check_token(request)
+    body = await request.json()
+    description = body.get("description", "")
+    
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
+    
+    prompt = f"""You are a workflow configuration generator for a WhatsApp business automation system.
+
+Generate a workflow configuration based on this user description:
+"{description}"
+
+Return ONLY valid JSON with this exact structure:
+{{
+  "name": "Short workflow name",
+  "intent_key": "snake_case_intent_key",
+  "description": "Brief description of what this workflow does",
+  "trigger_patterns": [
+    "regex pattern 1 with (.+) for entity capture",
+    "regex pattern 2",
+    "pattern 3"
+  ],
+  "otp_required": true/false,
+  "otp_threshold": 50000 or null,
+  "approval_threshold": 100000 or null
+}}
+
+Rules:
+- intent_key must be snake_case, unique, and descriptive
+- trigger_patterns should be regex patterns that match natural language queries
+- Use (.+) to capture the entity (customer name, product name, etc.)
+- Generate 4-6 patterns covering different ways users might ask
+- otp_required should be true for sensitive operations (money, customer data)
+- Set thresholds to reasonable defaults or null if not applicable
+- Return ONLY the JSON, no other text"""
+
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=500,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    content = response.choices[0].message.content.strip()
+    
+    # Clean up if AI adds markdown code blocks
+    if content.startswith("```"):
+        content = content.replace("```json", "").replace("```", "").strip()
+    
+    try:
+        config = json.loads(content)
+        return config
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Failed to parse AI response")
+
+
+@router.post("/admin/api/workflow/save")
+async def save_generated_workflow(request: Request):
+    _check_token(request)
+    body = await request.json()
+    
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org found")
+    
+    org_id = str(org["id"])
+    
+    # Check if intent_key already exists
+    existing = await fetch_one(
+        "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = $2",
+        org_id, body.get("intent_key")
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Intent key already exists")
+    
+    await execute("""
+        INSERT INTO workflows (
+            org_id, name, intent_key, description, trigger_patterns,
+            otp_required, otp_threshold, approval_threshold, is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+    """, 
+        org_id,
+        body.get("name"),
+        body.get("intent_key"),
+        body.get("description"),
+        json.dumps(body.get("trigger_patterns", [])),
+        body.get("otp_required", False),
+        body.get("otp_threshold"),
+        body.get("approval_threshold")
+    )
+    
+    return {"success": True, "message": "Workflow saved successfully"}
 
 
 def _build_html(token: str) -> str:
@@ -200,6 +309,75 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 
     <div class="stats" id="statsGrid"></div>
 
+    <div class="card" style="border-left:4px solid #8b5cf6;margin-bottom:20px">
+      <div class="card-title" style="color:#8b5cf6">🤖 AI Workflow Builder</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <div class="stat-label">Describe the workflow you want to add</div>
+          <textarea id="workflowDescription" rows="2" placeholder="e.g., I want users to check customer credit limits"
+            style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
+                   margin-top:6px;font-family:inherit;resize:vertical"></textarea>
+        </div>
+        <button onclick="generateWorkflow()" 
+          style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;
+                 padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;width:fit-content">
+          ✨ Generate Config
+        </button>
+      </div>
+      
+      <div id="workflowForm" style="display:none;margin-top:16px;padding-top:16px;
+                                   border-top:1px solid #e8edf5">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div>
+            <div class="stat-label">Workflow Name</div>
+            <input class="threshold-input" type="text" id="wfName" style="width:100%">
+          </div>
+          <div>
+            <div class="stat-label">Intent Key</div>
+            <input class="threshold-input" type="text" id="wfIntentKey" style="width:100%">
+          </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div class="stat-label">Description</div>
+          <textarea id="wfDescription" rows="2"
+            style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
+                   font-family:inherit;resize:vertical"></textarea>
+        </div>
+        <div style="margin-bottom:12px">
+          <div class="stat-label">Trigger Patterns (one per line)</div>
+          <textarea id="wfPatterns" rows="4" placeholder="credit limit of (.+)&#10;credit limit for (.+)"
+            style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
+                   font-family:monospace;resize:vertical"></textarea>
+        </div>
+        <div style="display:flex;gap:20px;align-items:center;margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" id="wfOtpRequired">
+            <span>Require OTP verification</span>
+          </label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:13px">OTP Threshold:</span>
+            <input class="threshold-input" type="number" id="wfOtpThreshold" style="width:80px">
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:13px">Approval Threshold:</span>
+            <input class="threshold-input" type="number" id="wfApprovalThreshold" style="width:80px">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="saveWorkflow()" 
+            style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;
+                   padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500">
+            💾 Save Workflow
+          </button>
+          <button onclick="cancelWorkflow()" 
+            style="background:#e5e7eb;color:#374151;border:none;border-radius:6px;
+                   padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="card" style="border-left:4px solid #dc2626;margin-bottom:20px">
       <div class="card-title" style="color:#dc2626">🔒 Security — Session Management</div>
       <div style="display:flex;align-items:flex-start;gap:32px;flex-wrap:wrap">
@@ -242,6 +420,7 @@ input:checked+.slider:before{{transform:translateX(18px)}}
             <th>Status</th>
             <th>OTP Required</th>
             <th>OTP Threshold (Rs.)</th>
+            <th>Approval Threshold (Rs.)</th>
             <th>Last Run</th>
           </tr>
         </thead>
@@ -291,6 +470,86 @@ async function clearSessions() {{
   const resp = await fetch(API('/sessions/clear'), {{method: 'POST'}});
   const data = await resp.json();
   alert('🔒 All sessions cleared. Every user must re-authenticate.');
+}}
+
+async function generateWorkflow() {{
+  const desc = document.getElementById('workflowDescription').value.trim();
+  if (!desc) {{
+    alert('Please describe the workflow first');
+    return;
+  }}
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating...';
+  
+  try {{
+    const resp = await fetch(API('/workflow/generate'), {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{description: desc}})
+    }});
+    const config = await resp.json();
+    
+    document.getElementById('wfName').value = config.name || '';
+    document.getElementById('wfIntentKey').value = config.intent_key || '';
+    document.getElementById('wfDescription').value = config.description || '';
+    document.getElementById('wfPatterns').value = (config.trigger_patterns || []).join('\\n');
+    document.getElementById('wfOtpRequired').checked = config.otp_required || false;
+    document.getElementById('wfOtpThreshold').value = config.otp_threshold || '';
+    document.getElementById('wfApprovalThreshold').value = config.approval_threshold || '';
+    
+    document.getElementById('workflowForm').style.display = 'block';
+  }} catch(e) {{
+    alert('Failed to generate workflow: ' + e.message);
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = '✨ Generate Config';
+  }}
+}}
+
+async function saveWorkflow() {{
+  const config = {{
+    name: document.getElementById('wfName').value.trim(),
+    intent_key: document.getElementById('wfIntentKey').value.trim(),
+    description: document.getElementById('wfDescription').value.trim(),
+    trigger_patterns: document.getElementById('wfPatterns').value
+      .split('\\n')
+      .map(p => p.trim())
+      .filter(p => p),
+    otp_required: document.getElementById('wfOtpRequired').checked,
+    otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
+    approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null
+  }};
+  
+  if (!config.name || !config.intent_key || !config.description) {{
+    alert('Please fill in name, intent key, and description');
+    return;
+  }}
+  
+  try {{
+    const resp = await fetch(API('/workflow/save'), {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(config)
+    }});
+    const result = await resp.json();
+    
+    if (result.success) {{
+      alert('✅ Workflow saved successfully!');
+      cancelWorkflow();
+      loadData();
+    }} else {{
+      alert('Failed to save: ' + (result.message || 'Unknown error'));
+    }}
+  }} catch(e) {{
+    alert('Failed to save workflow: ' + e.message);
+  }}
+}}
+
+function cancelWorkflow() {{
+  document.getElementById('workflowDescription').value = '';
+  document.getElementById('workflowForm').style.display = 'none';
 }}
 
 async function loadData() {{
@@ -361,6 +620,14 @@ async function loadData() {{
             <button class="save-btn" onclick="saveThreshold('${{w.id}}')">Save</button>
           </div>
         </td>
+        <td>
+          ${{w.intent_key === 'create_invoice' ? `
+          <div style="display:flex;gap:6px;align-items:center">
+            <input class="threshold-input" type="number" id="apr_${{w.id}}"
+              value="${{w.approval_threshold || 100000}}" step="1000">
+            <button class="save-btn" onclick="saveApprovalThreshold('${{w.id}}')">Save</button>
+          </div>` : '—'}}
+        </td>
         <td style="color:#888;font-size:12px">
           ${{w.last_run ? new Date(w.last_run).toLocaleDateString('en-IN') : '—'}}</td>
       </tr>
@@ -412,6 +679,16 @@ async function saveThreshold(id) {{
     body: JSON.stringify({{threshold: parseFloat(val)}})
   }});
   alert('Threshold updated to Rs.' + Number(val).toLocaleString('en-IN'));
+}}
+
+async function saveApprovalThreshold(id) {{
+  const val = document.getElementById('apr_' + id).value;
+  await fetch(API(`/workflow/${{id}}/approval_threshold`), {{
+    method:'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{threshold: parseFloat(val)}})
+  }});
+  alert('Approval threshold updated to Rs.' + Number(val).toLocaleString('en-IN'));
 }}
 
 loadData();

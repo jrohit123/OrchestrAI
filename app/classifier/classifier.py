@@ -118,9 +118,55 @@ KEYWORD_RULES = [
 ]
 
 
-def tier2_keyword(text: str):
+# Cache for DB-loaded patterns
+_db_patterns_cache = {}
+
+
+async def load_patterns_from_db(org_id: str) -> list:
+    """Load trigger patterns from database for dynamic workflows."""
+    global _db_patterns_cache
+    
+    # Return cached if available
+    if org_id in _db_patterns_cache:
+        return _db_patterns_cache[org_id]
+    
+    try:
+        from app.db import fetch_all
+        rows = await fetch_all("""
+            SELECT intent_key, trigger_patterns, description
+            FROM workflows
+            WHERE org_id = $1 AND is_active = true AND trigger_patterns IS NOT NULL
+        """, org_id)
+        
+        db_rules = []
+        for row in rows:
+            patterns = row.get("trigger_patterns", [])
+            if isinstance(patterns, str):
+                patterns = json.loads(patterns)
+            
+            if patterns:  # Only add if patterns exist
+                db_rules.append({
+                    "intent": row["intent_key"],
+                    "patterns": patterns,
+                    "entity": None  # Will be extracted from pattern capture groups
+                })
+        
+        _db_patterns_cache[org_id] = db_rules
+        return db_rules
+    except Exception:
+        # Return empty list on error (fallback to hardcoded patterns)
+        return []
+
+
+def tier2_keyword(text: str, db_rules: list = None):
     t = text.strip().lower()
-    for rule in KEYWORD_RULES:
+    
+    # Combine hardcoded rules with DB-loaded rules
+    all_rules = KEYWORD_RULES.copy()
+    if db_rules:
+        all_rules.extend(db_rules)
+    
+    for rule in all_rules:
         for pattern in rule["patterns"]:
             m = re.search(pattern, t)
             if m:
@@ -201,14 +247,19 @@ User message: {text}"""
 
 
 # ── MAIN ROUTER ──────────────────────────────────────
-async def classify_message(text: str, org_name: str = "your organisation") -> dict:
+async def classify_message(text: str, org_name: str = "your organisation", org_id: str = None) -> dict:
     # Tier 1 — free, instant
     t1 = tier1_exact(text)
     if t1:
         return {"intent": t1, "tier": 1, "confidence": 1.0, "entity_raw": None}
 
-    # Tier 2 — near-free regex
-    t2 = tier2_keyword(text)
+    # Load DB patterns if org_id provided
+    db_rules = None
+    if org_id:
+        db_rules = await load_patterns_from_db(org_id)
+
+    # Tier 2 — near-free regex (hardcoded + DB-loaded)
+    t2 = tier2_keyword(text, db_rules)
     if t2:
         return t2
 
