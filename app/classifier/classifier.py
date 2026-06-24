@@ -122,6 +122,17 @@ KEYWORD_RULES = [
 _db_patterns_cache = {}
 
 
+def invalidate_patterns_cache(org_id: str = None):
+    """Call after adding/updating workflows so new patterns are loaded immediately."""
+    global _db_patterns_cache
+    if org_id:
+        _db_patterns_cache.pop(org_id, None)
+        print(f"[CLASSIFIER] Cache invalidated for org {org_id}")
+    else:
+        _db_patterns_cache.clear()
+        print("[CLASSIFIER] Full pattern cache cleared")
+
+
 async def load_patterns_from_db(org_id: str) -> list:
     """Load trigger patterns from database for dynamic workflows."""
     global _db_patterns_cache
@@ -153,7 +164,8 @@ async def load_patterns_from_db(org_id: str) -> list:
                 db_rules.append({
                     "intent": row["intent_key"],
                     "patterns": patterns,
-                    "entity": None  # Will be extracted from pattern capture groups
+                    "entity": None,
+                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}"
                 })
                 print(f"[CLASSIFIER] Loaded {len(patterns)} patterns for intent: {row['intent_key']}")
         
@@ -193,6 +205,7 @@ def tier2_keyword(text: str, db_rules: list = None):
                     if lm:
                         limit = int(lm.group(1))
 
+                print(f"[CLASSIFIER] Matched pattern: {pattern} -> intent: {rule['intent']}")
                 return {
                     "intent": rule["intent"],
                     "entity_raw": entity,
@@ -200,6 +213,7 @@ def tier2_keyword(text: str, db_rules: list = None):
                     "tier": 2,
                     "confidence": 0.85
                 }
+    print(f"[CLASSIFIER] No pattern matched for: {t}")
     return None
 
 
@@ -207,27 +221,40 @@ def tier2_keyword(text: str, db_rules: list = None):
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-async def tier3_llm(text: str, org_name: str) -> dict:
-    prompt = f"""You are an intent parser for {org_name}, a jewellery business in India.
-Extract the intent and entity from the user's message.
+async def tier3_llm(text: str, org_name: str, db_rules: list = None) -> dict:
+    base_intents = [
+        ("check_stock",        "user wants to know stock/inventory/quantity of a product"),
+        ("check_outstanding",  "user wants to know pending dues/payments/balance owed by a customer"),
+        ("create_invoice",     "user wants to create a bill, invoice, or receipt"),
+        ("weekly_dues_report", "user wants a summary of all overdue/outstanding customers"),
+        ("manage_schedule",    "user wants to schedule, reschedule, pause, or check a report schedule"),
+        ("clear_sessions",     "user wants to clear all sessions, emergency lockout, kick everyone out"),
+    ]
 
-Allowed intents:
-- check_stock: user wants to know stock/inventory of a product
-- check_outstanding: user wants to know pending dues/payments of a customer
-- create_invoice: user wants to create a bill or invoice
-- weekly_dues_report: user wants summary of all overdue customers
-- unknown: cannot determine intent
+    dynamic_intents = []
+    if db_rules:
+        for rule in db_rules:
+            desc = rule.get("description", "").strip()
+            if desc:
+                dynamic_intents.append((rule["intent"], desc))
 
-Rules for entity extraction:
-- Remove prepositions from entity: strip "of", "for", "ka", "ki", "ke", "kا" from the START of entity
-- Entity should be just the name — no extra words
-- For Hindi queries: "ka kitna bacha hai" = check_outstanding, "ka stock" = check_stock
-- "pending of Sharma" → entity = "Sharma" (strip "of")
-- "Mehta ka kitna bacha hai" → intent = check_outstanding, entity = "Mehta"
-- "Sharma Gold House ka dues" → intent = check_outstanding, entity = "Sharma Gold House"
-- "kitna gold ring hai" → intent = check_stock, entity = "gold ring"
+    all_intents = base_intents + dynamic_intents + [("unknown", "cannot determine intent")]
+    valid_keys  = [k for k, _ in all_intents]
+    intent_lines = "\n".join(f"- {k}: {d}" for k, d in all_intents)
 
-Return ONLY valid JSON with no extra text:
+    prompt = f"""You are an intent classifier for {org_name}.
+Identify the intent and entity from the user message.
+
+VALID INTENTS — return ONLY one of these exact intent keys:
+{intent_lines}
+
+RULES:
+- You MUST return one of: {json.dumps(valid_keys)}
+- Do NOT invent or modify intent keys
+- Prefer specific custom intents over generic ones when both could match
+- Strip prepositions (of / for / ka / ki / ke) from the START of the entity only
+
+Return ONLY valid JSON, no extra text:
 {{"intent": "...", "entity_raw": "...", "confidence": 0.0}}
 
 User message: {text}"""
@@ -241,7 +268,10 @@ User message: {text}"""
     raw = response.choices[0].message.content.strip()
     try:
         parsed = json.loads(raw)
-        # Clean entity — strip leading prepositions
+        # Hard-reject any key the LLM invented
+        if parsed.get("intent") not in valid_keys:
+            print(f"[CLASSIFIER] LLM returned invalid intent '{parsed.get('intent')}', defaulting to unknown")
+            parsed["intent"] = "unknown"
         if parsed.get("entity_raw"):
             entity = parsed["entity_raw"].strip()
             for prep in ["of ", "for ", "ka ", "ki ", "ke "]:
@@ -262,7 +292,7 @@ async def classify_message(text: str, org_name: str = "your organisation", org_i
         return {"intent": t1, "tier": 1, "confidence": 1.0, "entity_raw": None}
 
     # Load DB patterns if org_id provided
-    db_rules = None
+    db_rules = []
     if org_id:
         db_rules = await load_patterns_from_db(org_id)
 
@@ -271,6 +301,6 @@ async def classify_message(text: str, org_name: str = "your organisation", org_i
     if t2:
         return t2
 
-    # Tier 3 — LLM last resort
-    t3 = await tier3_llm(text, org_name)
+    # Pass db_rules so LLM knows about dynamic intents
+    t3 = await tier3_llm(text, org_name, db_rules)
     return t3

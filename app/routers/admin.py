@@ -161,37 +161,49 @@ async def generate_workflow_config(request: Request):
         raise HTTPException(status_code=400, detail="Description is required")
     
     prompt = f"""You are a workflow configuration generator for a WhatsApp business automation system.
+This system works for ANY type of business — retail, services, finance, manufacturing, etc.
 
-Generate a workflow configuration based on this user description:
+User wants to add this workflow:
 "{description}"
 
-Return ONLY valid JSON with this exact structure:
-{{
-  "name": "Short workflow name",
-  "intent_key": "snake_case_intent_key",
-  "description": "Brief description of what this workflow does",
-  "trigger_patterns": [
-    "regex pattern 1 with (.+) for entity capture",
-    "regex pattern 2",
-    "pattern 3"
-  ],
-  "otp_required": true/false,
-  "otp_threshold": 50000 or null,
-  "approval_threshold": 100000 or null
-}}
+Generate regex trigger patterns that cover ALL common phrasings users might type.
 
-Rules:
-- intent_key must be snake_case, unique, and descriptive
-- trigger_patterns should be regex patterns that match natural language queries
-- Use (.+) to capture the entity (customer name, product name, etc.)
-- Generate 4-6 patterns covering different ways users might ask
-- otp_required should be true for sensitive operations (money, customer data)
-- Set thresholds to reasonable defaults or null if not applicable
-- Return ONLY the JSON, no other text"""
+Pattern requirements — generate 8-12 patterns that:
+1. Use different prepositions: "of", "for", "to", "with" → combine with (?:of|for)\\s+
+2. Use different verbs: "check", "show", "get", "find", "what is", "tell me", "give me"
+3. Include casual short forms (e.g. "credit limit mehta", "limit mehta")
+4. Include longer formal forms (e.g. "can you please tell me the credit limit for mehta")
+5. Use (.+) to capture entity names
+6. Use (?:the\\s+)? or (?:me\\s+)? for optional filler words
+7. All patterns are matched via re.search, case-insensitively
+
+description field — write a specific, data-oriented sentence the AI classifier can use.
+  GOOD: "Fetches and returns the approved credit limit for a named customer"
+  BAD:  "Credit limit workflow"
+
+Return ONLY valid JSON (no markdown fences, no backticks):
+{{
+  "name": "2-4 word name",
+  "intent_key": "unique_snake_case_key",
+  "description": "Specific sentence describing what data this returns and for what entity type",
+  "trigger_patterns": [
+    "credit limit (?:of|for)\\\\s+(.+)",
+    "check (?:the )?credit limit (?:of|for|of) (.+)",
+    "what(?:'s| is) (?:the )?credit limit (?:of|for) (.+)",
+    "show (?:me )?(?:the )?credit limit (?:for|of) (.+)",
+    "how much credit (?:is |does )?(.+) have",
+    "(.+) credit limit",
+    "credit (.+)",
+    "limit (?:for|of) (.+)"
+  ],
+  "otp_required": false,
+  "otp_threshold": null,
+  "approval_threshold": null
+}}"""
 
     response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
-        max_tokens=500,
+        max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -252,6 +264,10 @@ async def save_generated_workflow(request: Request):
             SET permissions = array_append(permissions, $1)
             WHERE name = $2 AND NOT $1 = ANY(permissions)
         """, intent_key, role_name)
+    
+    # Invalidate classifier cache so new patterns are active immediately
+    from app.classifier.classifier import invalidate_patterns_cache
+    invalidate_patterns_cache(org_id)
     
     return {"success": True, "message": f"Workflow saved and permission added to {len(selected_roles)} role(s)"}
 

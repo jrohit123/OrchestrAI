@@ -8,6 +8,49 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
+async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str) -> str:
+    """
+    Generic dispatcher for DB-registered workflows that have no hardcoded handler.
+    Routes to the right adapter based on keywords in the intent key.
+    Add new elif blocks here as you add adapter methods.
+    """
+    k = intent.lower()
+
+    # ── Credit / financial customer info ─────────────
+    if any(x in k for x in ["credit_limit", "credit_score", "credit_rating", "credit_check"]):
+        if not entity:
+            return "🤔 Which customer? Example: *credit limit Mehta*"
+        try:
+            result = await crm.get_credit_limit(org_id, entity)
+            return result["message"]
+        except AttributeError:
+            return "⚙️ Credit limit lookup is not yet implemented in the CRM adapter. Contact admin."
+
+    # ── Outstanding / balance / dues (generic catch) ──
+    if any(x in k for x in ["outstanding", "balance", "dues", "pending", "owed"]):
+        if not entity:
+            return "🤔 Which customer?"
+        result = await crm.get_outstanding(org_id, entity)
+        return result["message"]
+
+    # ── Stock / inventory (generic catch) ────────────
+    if any(x in k for x in ["stock", "inventory", "quantity", "available", "qty"]):
+        if not entity:
+            return "🤔 Which product?"
+        result = await inventory.check_stock(org_id, entity)
+        return result["message"]
+
+    # ── Report / summary (generic catch) ─────────────
+    if any(x in k for x in ["report", "summary", "list"]):
+        result = await crm.get_all_overdue(org_id)
+        return result["message"]
+
+    return (
+        f"⚙️ Workflow *{intent.replace('_', ' ').title()}* was recognised "
+        f"but has no executor configured yet. Contact your admin."
+    )
+
+
 async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
     """Fetch OTP and approval thresholds from DB. Returns (otp_threshold, approval_threshold)."""
     row = await fetch_one("""
@@ -305,6 +348,18 @@ async def execute_intent(
         # Clear otp_verified so next transaction needs fresh OTP
         await set_session(session_id, {})
         return result["message"]
+
+    # ── DYNAMIC DB WORKFLOW ───────────────────────────
+    # For any DB-registered intent with no hardcoded handler above
+    db_workflow = await fetch_one("""
+        SELECT name FROM workflows
+        WHERE intent_key = $1 AND org_id = $2 AND is_active = true
+    """, intent, org_id)
+
+    if db_workflow:
+        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text)
+        await _log(org_id, user_id, intent, raw_text, "success")
+        return result_msg
 
     return "🤔 Didn't understand that. Type *help* for the menu."
 
