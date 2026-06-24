@@ -190,7 +190,11 @@ def tier2_keyword(text: str, db_rules: list = None):
         for pattern in rule["patterns"]:
             m = re.search(pattern, t)
             if m:
-                entity = m.group(1).strip() if m.lastindex and rule["entity"] else None
+                # Extract entity from capture group if available
+                entity = None
+                if m.lastindex:
+                    entity = m.group(1).strip() if m.group(1) else None
+                
                 # Strip leading prepositions
                 if entity:
                     for prep in ["of ", "for ", "ka ", "ki ", "ke "]:
@@ -205,7 +209,7 @@ def tier2_keyword(text: str, db_rules: list = None):
                     if lm:
                         limit = int(lm.group(1))
 
-                print(f"[CLASSIFIER] Matched pattern: {pattern} -> intent: {rule['intent']}")
+                print(f"[CLASSIFIER] Matched pattern: {pattern} -> intent: {rule['intent']}, entity: {entity}")
                 return {
                     "intent": rule["intent"],
                     "entity_raw": entity,
