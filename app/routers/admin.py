@@ -161,34 +161,27 @@ async def generate_workflow_config(request: Request):
         raise HTTPException(status_code=400, detail="Description is required")
     
     prompt = f"""You are a workflow configuration generator for a WhatsApp business automation system.
-This system works for ANY type of business — retail, services, finance, manufacturing, etc.
 
 User wants to add this workflow:
 "{description}"
 
-Generate a workflow configuration with these fields:
-
-name — 2-4 word name for the workflow
-
-intent_key — unique snake_case key (e.g., "check_customer_credit_limit")
-
-description — specific, data-oriented sentence the AI classifier can use
-  GOOD: "Fetches and returns the approved credit limit for a named customer"
-  BAD:  "Credit limit workflow"
-
-adapter_method — choose the right one based on the workflow description
-
-trigger_patterns — leave as empty array []
-  (We use LLM-based classification instead of regex patterns)
-
-Return ONLY valid JSON (no markdown fences, no backticks):
+Generate ONLY this JSON structure with no other text:
 {{
   "name": "2-4 word name",
   "intent_key": "unique_snake_case_key",
-  "description": "Specific sentence describing what data this returns and for what entity type",
-  "adapter_method": "get_credit_limit or get_outstanding or check_stock or get_all_overdue or generic",
+  "description": "Specific sentence describing what data this returns",
+  "adapter_method": "choose based on what the workflow does",
   "trigger_patterns": []
-}}"""
+}}
+
+Rules:
+- name: 2-4 words
+- intent_key: snake_case, unique, descriptive
+- description: data-oriented, specific
+- adapter_method: infer from the workflow purpose (credit-related= get_credit_limit, dues/balance= get_outstanding, stock/inventory= check_stock, overdue report= get_all_overdue, anything else= generic)
+- trigger_patterns: always empty array []
+
+Return ONLY the JSON. No explanations, no markdown, no extra text."""
 
     response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
@@ -204,8 +197,6 @@ Return ONLY valid JSON (no markdown fences, no backticks):
     
     try:
         config = json.loads(content)
-        # Store the AI-generated config in session for save endpoint
-        request.session["generated_config"] = config
         return config
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse AI response")
@@ -216,9 +207,8 @@ async def save_generated_workflow(request: Request):
     _check_token(request)
     body = await request.json()
     
-    # Get AI-generated config from session
-    generated_config = request.session.get("generated_config", {})
-    adapter_method = generated_config.get("adapter_method", "generic")
+    # Use AI-generated adapter_method
+    adapter_method = body.get("adapter_method", "generic")
     
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
     if not org:
