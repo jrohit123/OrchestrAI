@@ -47,10 +47,15 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
         if result.get("found") and not result.get("single_match", True):
             matches = result.get("matches", [])
             if matches and session_id:
+                # Convert UUID to string for JSON serialization
+                serializable_matches = [
+                    {"id": str(m["id"]), "name": m["name"], "city": m["city"]} 
+                    for m in matches
+                ]
                 # Store matches in session for selection
                 await set_session(session_id, {
                     "disambiguation": True,
-                    "matches": matches,
+                    "matches": serializable_matches,
                     "intent": intent,
                     "adapter_method": adapter_method,
                     "entity": entity
