@@ -166,26 +166,20 @@ This system works for ANY type of business — retail, services, finance, manufa
 User wants to add this workflow:
 "{description}"
 
-Generate regex trigger patterns that cover ALL common phrasings users might type.
+Generate a workflow configuration with these fields:
 
-Pattern requirements — generate 8-12 patterns that:
-1. Use different prepositions: "of", "for", "to", "with" → combine with (?:of|for)\\s+
-2. Use different verbs: "check", "show", "get", "find", "what is", "tell me", "give me"
-3. Include casual short forms (e.g. "credit limit mehta", "limit mehta")
-4. Include longer formal forms (e.g. "can you please tell me the credit limit for mehta")
-5. Use (.+) to capture entity names
-6. Use (?:the\\s+)? or (?:me\\s+)? for optional filler words
-7. All patterns are matched via re.search, case-insensitively
+name — 2-4 word name for the workflow
 
-description field — write a specific, data-oriented sentence the AI classifier can use.
+intent_key — unique snake_case key (e.g., "check_customer_credit_limit")
+
+description — specific, data-oriented sentence the AI classifier can use
   GOOD: "Fetches and returns the approved credit limit for a named customer"
   BAD:  "Credit limit workflow"
 
-adapter_method — which existing adapter method should this workflow call?
-  For customer data: "get_credit_limit", "get_outstanding"
-  For inventory: "check_stock"
-  For reports: "get_all_overdue"
-  If no suitable method exists, use "generic" and admin will implement it later
+adapter_method — choose the right one based on the workflow description
+
+trigger_patterns — leave as empty array []
+  (We use LLM-based classification instead of regex patterns)
 
 Return ONLY valid JSON (no markdown fences, no backticks):
 {{
@@ -193,19 +187,7 @@ Return ONLY valid JSON (no markdown fences, no backticks):
   "intent_key": "unique_snake_case_key",
   "description": "Specific sentence describing what data this returns and for what entity type",
   "adapter_method": "get_credit_limit or get_outstanding or check_stock or get_all_overdue or generic",
-  "trigger_patterns": [
-    "credit limit (?:of|for)\\\\s+(.+)",
-    "check (?:the )?credit limit (?:of|for|of) (.+)",
-    "what(?:'s| is) (?:the )?credit limit (?:of|for) (.+)",
-    "show (?:me )?(?:the )?credit limit (?:for|of) (.+)",
-    "how much credit (?:is |does )?(.+) have",
-    "(.+) credit limit",
-    "credit (.+)",
-    "limit (?:for|of) (.+)"
-  ],
-  "otp_required": false,
-  "otp_threshold": null,
-  "approval_threshold": null
+  "trigger_patterns": []
 }}"""
 
     response = await openai_client.chat.completions.create(
@@ -222,6 +204,8 @@ Return ONLY valid JSON (no markdown fences, no backticks):
     
     try:
         config = json.loads(content)
+        # Store the AI-generated config in session for save endpoint
+        request.session["generated_config"] = config
         return config
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse AI response")
@@ -231,6 +215,10 @@ Return ONLY valid JSON (no markdown fences, no backticks):
 async def save_generated_workflow(request: Request):
     _check_token(request)
     body = await request.json()
+    
+    # Get AI-generated config from session
+    generated_config = request.session.get("generated_config", {})
+    adapter_method = generated_config.get("adapter_method", "generic")
     
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
     if not org:
@@ -256,8 +244,8 @@ async def save_generated_workflow(request: Request):
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
-        json.dumps(body.get("trigger_patterns", [])),
-        body.get("adapter_method", "generic"),
+        json.dumps([]),  # Empty patterns - using LLM classification
+        adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),
         body.get("approval_threshold")
@@ -371,34 +359,18 @@ input:checked+.slider:before{{transform:translateX(18px)}}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div>
             <div class="stat-label">Workflow Name</div>
-            <input class="threshold-input" type="text" id="wfName" style="width:100%">
+            <input class="threshold-input" type="text" id="wfName" style="width:100%" readonly>
           </div>
           <div>
             <div class="stat-label">Intent Key</div>
-            <input class="threshold-input" type="text" id="wfIntentKey" style="width:100%">
+            <input class="threshold-input" type="text" id="wfIntentKey" style="width:100%" readonly>
           </div>
         </div>
         <div style="margin-bottom:12px">
-          <div class="stat-label">Adapter Method</div>
-          <select id="wfAdapterMethod" class="threshold-input" style="width:100%">
-            <option value="get_credit_limit">get_credit_limit (customer credit limit)</option>
-            <option value="get_outstanding">get_outstanding (customer dues)</option>
-            <option value="check_stock">check_stock (inventory)</option>
-            <option value="get_all_overdue">get_all_overdue (all overdue report)</option>
-            <option value="generic">generic (admin will implement)</option>
-          </select>
-        </div>
-        <div style="margin-bottom:12px">
           <div class="stat-label">Description</div>
-          <textarea id="wfDescription" rows="2"
+          <textarea id="wfDescription" rows="2" readonly
             style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
                    font-family:inherit;resize:vertical"></textarea>
-        </div>
-        <div style="margin-bottom:12px">
-          <div class="stat-label">Trigger Patterns (one per line)</div>
-          <textarea id="wfPatterns" rows="4" placeholder="credit limit of (.+)&#10;credit limit for (.+)"
-            style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
-                   font-family:monospace;resize:vertical"></textarea>
         </div>
         <div style="display:flex;gap:20px;align-items:center;margin-bottom:12px">
           <label style="display:flex;align-items:center;gap:6px;font-size:13px">
@@ -562,9 +534,7 @@ async function generateWorkflow() {{
     
     document.getElementById('wfName').value = config.name || '';
     document.getElementById('wfIntentKey').value = config.intent_key || '';
-    document.getElementById('wfAdapterMethod').value = config.adapter_method || 'generic';
     document.getElementById('wfDescription').value = config.description || '';
-    document.getElementById('wfPatterns').value = (config.trigger_patterns || []).join('\\n');
     document.getElementById('wfOtpRequired').checked = config.otp_required || false;
     document.getElementById('wfOtpThreshold').value = config.otp_threshold || '';
     document.getElementById('wfApprovalThreshold').value = config.approval_threshold || '';
@@ -582,12 +552,9 @@ async function saveWorkflow() {{
   const config = {{
     name: document.getElementById('wfName').value.trim(),
     intent_key: document.getElementById('wfIntentKey').value.trim(),
-    adapter_method: document.getElementById('wfAdapterMethod').value,
     description: document.getElementById('wfDescription').value.trim(),
-    trigger_patterns: document.getElementById('wfPatterns').value
-      .split('\\n')
-      .map(p => p.trim())
-      .filter(p => p),
+    trigger_patterns: [],
+    adapter_method: null, // Will be set by AI
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
     approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null,

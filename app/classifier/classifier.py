@@ -160,7 +160,8 @@ async def load_patterns_from_db(org_id: str) -> list:
             if isinstance(patterns, str):
                 patterns = json.loads(patterns)
             
-            if patterns:  # Only add if patterns exist
+            # Only add if patterns exist (skip empty arrays for LLM-based workflows)
+            if patterns:  
                 db_rules.append({
                     "intent": row["intent_key"],
                     "patterns": patterns,
@@ -168,6 +169,15 @@ async def load_patterns_from_db(org_id: str) -> list:
                     "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}"
                 })
                 print(f"[CLASSIFIER] Loaded {len(patterns)} patterns for intent: {row['intent_key']}")
+            else:
+                # Skip patterns but still add for LLM tier3 (description-based matching)
+                db_rules.append({
+                    "intent": row["intent_key"],
+                    "patterns": [],  # Empty - will skip tier2
+                    "entity": None,
+                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}"
+                })
+                print(f"[CLASSIFIER] Loaded LLM-only workflow: {row['intent_key']}")
         
         _db_patterns_cache[org_id] = db_rules
         print(f"[CLASSIFIER] Total DB rules loaded: {len(db_rules)}")
@@ -187,6 +197,10 @@ def tier2_keyword(text: str, db_rules: list = None):
         all_rules.extend(db_rules)
     
     for rule in all_rules:
+        # Skip rules with empty patterns (LLM-based workflows)
+        if not rule.get("patterns"):
+            continue
+            
         for pattern in rule["patterns"]:
             m = re.search(pattern, t)
             if m:
