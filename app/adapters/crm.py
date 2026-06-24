@@ -5,98 +5,131 @@ from datetime import datetime, timezone
 async def get_credit_limit(org_id: str, customer_name: str) -> dict:
     """
     Fetch the credit limit for a customer.
+    Returns multiple matches if found for disambiguation.
     """
-    customer = await fetch_one("""
+    customers = await fetch_all("""
         SELECT id, name, city, credit_limit
         FROM customers
         WHERE org_id = $1
           AND name ILIKE $2
         ORDER BY similarity(name, $3) DESC
-        LIMIT 1
     """, org_id, f"%{customer_name}%", customer_name)
 
-    if not customer:
+    if not customers:
         return {
             "found": False,
+            "matches": [],
             "message": f"❌ No customer found matching *{customer_name}*.\nCheck spelling or contact admin."
         }
 
-    credit_limit = customer.get("credit_limit")
-    if credit_limit is None:
+    # If only one match, return the result directly
+    if len(customers) == 1:
+        customer = customers[0]
+        credit_limit = customer.get("credit_limit")
+        if credit_limit is None:
+            return {
+                "found": True,
+                "single_match": True,
+                "customer": customer["name"],
+                "customer_id": customer["id"],
+                "credit_limit": None,
+                "message": f"ℹ️ *{customer['name']}* has no credit limit set."
+            }
+
         return {
             "found": True,
+            "single_match": True,
             "customer": customer["name"],
-            "credit_limit": None,
-            "message": f"ℹ️ *{customer['name']}* has no credit limit set."
+            "customer_id": customer["id"],
+            "credit_limit": float(credit_limit),
+            "message": f"💳 *{customer['name']}* — Credit Limit\n\n₹{credit_limit:,.0f}"
         }
 
+    # Multiple matches - return for disambiguation
     return {
         "found": True,
-        "customer": customer["name"],
-        "credit_limit": float(credit_limit),
-        "message": f"💳 *{customer['name']}* — Credit Limit\n\n₹{credit_limit:,.0f}"
+        "single_match": False,
+        "matches": [{"id": c["id"], "name": c["name"], "city": c["city"]} for c in customers],
+        "message": f"Found {len(customers)} customers matching *{customer_name}*."
     }
 
 
 async def get_outstanding(org_id: str, customer_name: str) -> dict:
     """
     Fuzzy search customer and return all overdue invoices with totals.
+    Returns multiple matches if found for disambiguation.
     """
-    customer = await fetch_one("""
+    customers = await fetch_all("""
         SELECT id, name, city, credit_limit
         FROM customers
         WHERE org_id = $1
           AND name ILIKE $2
         ORDER BY similarity(name, $3) DESC
-        LIMIT 1
     """, org_id, f"%{customer_name}%", customer_name)
 
-    if not customer:
+    if not customers:
         return {
             "found": False,
+            "matches": [],
             "message": f"❌ No customer found matching *{customer_name}*.\nCheck spelling or contact admin."
         }
 
-    invoices = await fetch_all("""
-        SELECT invoice_number, amount, status, due_date, created_at
-        FROM invoices
-        WHERE org_id = $1
-          AND customer_id = $2
-          AND status IN ('overdue', 'approved', 'draft')
-        ORDER BY due_date ASC
-    """, org_id, customer["id"])
+    # If only one match, proceed with invoice lookup
+    if len(customers) == 1:
+        customer = customers[0]
+        
+        invoices = await fetch_all("""
+            SELECT invoice_number, amount, status, due_date, created_at
+            FROM invoices
+            WHERE org_id = $1
+              AND customer_id = $2
+              AND status IN ('overdue', 'approved', 'draft')
+            ORDER BY due_date ASC
+        """, org_id, customer["id"])
 
-    if not invoices:
+        if not invoices:
+            return {
+                "found": True,
+                "single_match": True,
+                "customer": customer["name"],
+                "customer_id": customer["id"],
+                "total_outstanding": 0,
+                "message": f"✅ *{customer['name']}* has no outstanding dues."
+            }
+
+        total = sum(r["amount"] for r in invoices)
+        overdue_total = sum(r["amount"] for r in invoices if r["status"] == "overdue")
+        now = datetime.now(timezone.utc)
+
+        lines = []
+        for inv in invoices:
+            days = (now.date() - inv["due_date"]).days if inv["due_date"] else 0
+            status_icon = "🔴" if inv["status"] == "overdue" else "🟡"
+            days_str = f"{days}d overdue" if days > 0 else "due soon"
+            lines.append(f"{status_icon} {inv['invoice_number']} — ₹{inv['amount']:,.0f} ({days_str})")
+
         return {
             "found": True,
+            "single_match": True,
             "customer": customer["name"],
-            "total_outstanding": 0,
-            "message": f"✅ *{customer['name']}* has no outstanding dues."
+            "customer_id": customer["id"],
+            "total_outstanding": float(total),
+            "overdue_total": float(overdue_total),
+            "invoice_count": len(invoices),
+            "message": (
+                f"💰 *{customer['name']}* — Outstanding\n\n"
+                + "\n".join(lines)
+                + f"\n\n*Total: ₹{total:,.0f}*"
+                + (f"\n🔴 Overdue: ₹{overdue_total:,.0f}" if overdue_total > 0 else "")
+            )
         }
 
-    total = sum(r["amount"] for r in invoices)
-    overdue_total = sum(r["amount"] for r in invoices if r["status"] == "overdue")
-    now = datetime.now(timezone.utc)
-
-    lines = []
-    for inv in invoices:
-        days = (now.date() - inv["due_date"]).days if inv["due_date"] else 0
-        status_icon = "🔴" if inv["status"] == "overdue" else "🟡"
-        days_str = f"{days}d overdue" if days > 0 else "due soon"
-        lines.append(f"{status_icon} {inv['invoice_number']} — ₹{inv['amount']:,.0f} ({days_str})")
-
+    # Multiple matches - return for disambiguation
     return {
         "found": True,
-        "customer": customer["name"],
-        "total_outstanding": float(total),
-        "overdue_total": float(overdue_total),
-        "invoice_count": len(invoices),
-        "message": (
-            f"💰 *{customer['name']}* — Outstanding\n\n"
-            + "\n".join(lines)
-            + f"\n\n*Total: ₹{total:,.0f}*"
-            + (f"\n🔴 Overdue: ₹{overdue_total:,.0f}" if overdue_total > 0 else "")
-        )
+        "single_match": False,
+        "matches": [{"id": c["id"], "name": c["name"], "city": c["city"]} for c in customers],
+        "message": f"Found {len(customers)} customers matching *{customer_name}*."
     }
 
 

@@ -181,18 +181,54 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await handle_approval_response(phone, text, user)
         return
 
-    # 6. OTP state (for invoice high value)
+    # 6. Disambiguation state (customer selection)
+    if session.get("disambiguation"):
+        # Check if user replied with a number
+        if text.strip().isdigit():
+            selection = int(text.strip()) - 1  # Convert to 0-index
+            matches = session.get("matches", [])
+            
+            if 0 <= selection < len(matches):
+                # User selected a valid customer
+                selected_customer = matches[selection]
+                intent = session.get("intent")
+                adapter_method = session.get("adapter_method")
+                entity = session.get("entity")
+                
+                # Clear disambiguation state
+                await set_session(session_id, {})
+                
+                # Execute with selected customer
+                from app.executor.workflow_executor import _dispatch_dynamic_intent
+                reply = await _dispatch_dynamic_intent(
+                    intent, 
+                    selected_customer["name"], 
+                    user["org_id"], 
+                    raw_text=text,
+                    adapter_method=adapter_method,
+                    session_id=session_id
+                )
+                await send_text(phone, reply)
+                return
+            else:
+                await send_text(phone, f"❌ Invalid selection. Please reply with a number between 1 and {len(matches)}.")
+                return
+        else:
+            await send_text(phone, "❌ Please reply with a number to select a customer.")
+            return
+
+    # 7. OTP state (for invoice high value)
     if session.get("state") == "awaiting_otp":
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
 
-    # 7. Classify
+    # 8. Classify
     result = await classify_message(text, org_name=user["org_name"], org_id=user["org_id"])
     intent = result["intent"]
     tier   = result["tier"]
     print(f"[CLASSIFIER] Intent: {intent} | Tier: {tier}")
 
-    # 8. Permission gate
+    # 9. Permission gate
     if not check_permission(user, intent):
         await send_text(phone,
             f"❌ You don't have permission for: *{intent}*\n"
@@ -200,7 +236,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    # 9. Static intents
+    # 10. Static intents
     if intent == "action:greet":
         hours   = ttl_minutes // 60
         mins    = ttl_minutes % 60

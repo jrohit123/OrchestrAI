@@ -8,10 +8,11 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
-async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str) -> str:
+async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None) -> str:
     """
     Generic dispatcher for DB-registered workflows that have no hardcoded handler.
     Dynamically calls the adapter method specified in the workflow config.
+    Handles disambiguation when multiple customer matches are found.
     """
     if not entity and adapter_method not in ["get_all_overdue"]:
         return "🤔 Which customer or product? Please specify."
@@ -41,6 +42,23 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
             result = await adapter_func(org_id)
         else:
             result = await adapter_func(org_id, entity)
+        
+        # Check if multiple matches found (disambiguation needed)
+        if result.get("found") and not result.get("single_match", True):
+            matches = result.get("matches", [])
+            if matches and session_id:
+                # Store matches in session for selection
+                await set_session(session_id, {
+                    "disambiguation": True,
+                    "matches": matches,
+                    "intent": intent,
+                    "adapter_method": adapter_method,
+                    "entity": entity
+                })
+                
+                # Present numbered options
+                options = "\n".join([f"{i+1}. {m['name']} ({m['city']})" for i, m in enumerate(matches)])
+                return f"🔍 {result['message']}\n\nReply with number:\n{options}"
         
         return result["message"]
     except Exception as e:
@@ -354,7 +372,7 @@ async def execute_intent(
 
     if db_workflow:
         adapter_method = db_workflow.get("adapter_method", "generic")
-        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method)
+        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method, session_id)
         await _log(org_id, user_id, intent, raw_text, "success")
         return result_msg
 
