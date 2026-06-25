@@ -203,21 +203,46 @@ Return ONLY the JSON. No explanations, no markdown, no extra text."""
 
     response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
-        max_tokens=800,
+        max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
     
     content = response.choices[0].message.content.strip()
     
-    # Clean up if AI adds markdown code blocks
-    if content.startswith("```"):
-        content = content.replace("```json", "").replace("```", "").strip()
+    # Clean up if AI adds markdown code blocks or extra text
+    if "```json" in content:
+        # Extract content between ```json and ```
+        start = content.find("```json") + 7
+        end = content.find("```", start)
+        if end != -1:
+            content = content[start:end].strip()
+    elif "```" in content:
+        # Extract content between first ``` and next ```
+        start = content.find("```") + 3
+        end = content.find("```", start)
+        if end != -1:
+            content = content[start:end].strip()
+    
+    # Try to find JSON object boundaries
+    if content.startswith("{") and content.endswith("}"):
+        # Already looks like JSON
+        pass
+    else:
+        # Try to extract JSON from mixed content
+        start_idx = content.find("{")
+        end_idx = content.rfind("}") + 1
+        if start_idx != -1 and end_idx > start_idx:
+            content = content[start_idx:end_idx]
     
     try:
         config = json.loads(content)
         return config
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="Failed to parse AI response")
+    except json.JSONDecodeError as e:
+        # Return the raw content for debugging
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to parse AI response. Error: {str(e)}. Raw response: {content[:500]}"
+        )
 
 
 @router.post("/admin/api/workflow/save")
