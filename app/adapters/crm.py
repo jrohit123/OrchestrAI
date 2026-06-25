@@ -95,7 +95,7 @@ async def get_outstanding(org_id: str, entity_raw: str = None, user_id: str = No
             FROM invoices
             WHERE org_id = $1
               AND customer_id = $2
-              AND status IN ('overdue', 'approved', 'draft')
+              AND status IN ('pending', 'overdue')
             ORDER BY due_date ASC
         """, org_id, customer["id"])
 
