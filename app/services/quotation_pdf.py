@@ -71,7 +71,7 @@ def generate_quotation_pdf(
     gst_pct: float,
     gst_amount: float,
     total_amount: float,
-    org_name: str = 'ShreeJewels Pvt Ltd',
+    org_name: str = 'Baanganga Gold And Diamond (I) Ltd.',
     customer_city: str = '',
     valid_days: int = 3
 ) -> bytes:

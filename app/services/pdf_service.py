@@ -73,7 +73,7 @@ def generate_invoice_pdf(
     customer_name: str,
     amount: float,
     items: list = None,
-    org_name: str = 'ShreeJewels Pvt Ltd',
+    org_name: str = 'Baanganga Gold And Diamond (I) Ltd.',
     customer_gstin: str = '',
     customer_city: str = '',
     gst_rate: float = 3.0

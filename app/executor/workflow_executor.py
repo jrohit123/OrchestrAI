@@ -36,7 +36,7 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
             "user_id": user_id,
             "phone": phone,
             "raw_text": raw_text,
-            "entity": entity
+            "entity_raw": entity
         }
         
         # Call the adapter with appropriate arguments
@@ -201,33 +201,7 @@ async def execute_intent(
     user_id = user["user_id"]
     phone   = user["phone"]
 
-    # ── CHECK STOCK ───────────────────────────────────
-    if intent == "check_stock":
-        if not entity_raw:
-            return "🤔 Which product? Try: *stock gold ring*"
-        result = await inventory.check_stock(org_id, entity_raw)
-        await _log(org_id, user_id, intent, raw_text, "success")
-        return result["message"]
-
-    # ── CHECK OUTSTANDING ─────────────────────────────
-    if intent == "check_outstanding":
-        if not entity_raw:
-            return "🤔 Which customer? Try: *dues Mehta*"
-        result = await crm.get_outstanding(org_id, entity_raw)
-        await _log(org_id, user_id, intent, raw_text, "success")
-        return result["message"]
-
-    # ── WEEKLY DUES REPORT ────────────────────────────
-    if intent == "weekly_dues_report":
-        limit = None
-        lm = re.search(r"top\s+(\d+)", raw_text.lower())
-        if lm:
-            limit = int(lm.group(1))
-        result_data = await crm.get_all_overdue(org_id, limit=limit)
-        await _log(org_id, user_id, intent, raw_text, "success")
-        return result_data["message"]
-
-    # ── MANAGE SCHEDULE ───────────────────────────────
+    # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
         if user["role"] != "owner":
             return "❌ Only the Owner can change schedule settings."
@@ -264,7 +238,6 @@ async def execute_intent(
                 f"Next run: {get_job_schedule()}"
             )
 
-    # ── CLEAR ALL SESSIONS ────────────────────────────────
     if intent == "clear_sessions":
         if user["role"] != "owner":
             return "❌ Only the Owner can clear all sessions."
@@ -277,107 +250,8 @@ async def execute_intent(
             "_Action logged in audit trail._"
         )
 
-    # ── CREATE INVOICE ────────────────────────────────
-    if intent == "create_invoice":
-        details = accounting.parse_invoice_details(raw_text)
-
-        customer_name = details.get("customer") or entity_raw
-        amount        = details.get("amount")
-        qty           = details.get("qty")
-        item_name     = details.get("item")
-
-        if not customer_name:
-            return "🤔 Which customer? Try: *invoice Mehta 120000*"
-        if not amount:
-            return "🤔 What amount? Try: *invoice Mehta 120000*\nWith items: *invoice Mehta 15 gold rings 120000*"
-
-        # Stock check if item specified
-        if item_name and qty:
-            stock = await inventory.check_stock_availability(org_id, item_name, qty)
-            if not stock["available"]:
-                return stock["message"]
-
-        # Fetch thresholds from DB
-        otp_threshold, approval_threshold = await _get_invoice_thresholds(org_id)
-
-        # OTP gate
-        if amount >= otp_threshold and not session.get("otp_verified"):
-            action_context = {
-                "intent": "create_invoice",
-                "customer_name": customer_name,
-                "amount": amount,
-                "qty": qty,
-                "item_name": item_name,
-                "raw_text": raw_text,
-                "phone": phone,
-                "description": f"create invoice for {customer_name} — Rs.{amount:,.0f}"
-                + (f" ({qty} × {item_name})" if item_name and qty else "")
-            }
-            sent = await generate_and_send_otp(
-                user_id=user_id,
-                user_email=user["email"],
-                user_name=user["user_name"],
-                org_name=user["org_name"],
-                action_context=action_context
-            )
-            if sent:
-                await set_session(session_id, {
-                    **session,
-                    "state": "awaiting_otp",
-                    "pending_intent": action_context
-                })
-                return (
-                    f"🔐 *Verification Required*\n\n"
-                    f"Invoice for *{customer_name}* — Rs.{amount:,.0f}"
-                    + (f"\n{qty} × {item_name}" if item_name and qty else "")
-                    + f"\n\nA 4-digit code was sent to *{user['email']}*.\n"
-                    f"Reply with the code to confirm.\n\n"
-                    f"_Expires in 3 minutes. Reply 'retry' to cancel._"
-                )
-            else:
-                return "❌ Could not send verification email. Contact admin."
-
-        # Approval gate (after OTP or for below-threshold)
-        if amount >= approval_threshold and user["role"] != "owner":
-            sent = await _send_approval_request(
-                user=user,
-                customer_name=customer_name,
-                amount=amount,
-                qty=qty,
-                item_name=item_name,
-                raw_text=raw_text,
-                session_id=session_id
-            )
-            if sent:
-                await _log(org_id, user_id, intent, raw_text, "pending_approval",
-                           otp_used=session.get("otp_verified", False))
-                return (
-                    f"✅ Identity verified!\n\n"
-                    f"Invoice for *{customer_name}* — Rs.{amount:,.0f} requires MD approval.\n"
-                    f"Approval request sent. You'll be notified once approved."
-                )
-            else:
-                return "❌ Could not find owner to send approval. Contact admin."
-
-        # Create invoice directly
-        result = await accounting.create_invoice(
-            org_id=org_id,
-            user_id=user_id,
-            customer_name=customer_name,
-            amount=amount,
-            phone=phone,
-            item_name=item_name,
-            qty=qty
-        )
-        await _log(org_id, user_id, intent, raw_text,
-                   "success" if result["success"] else "failed",
-                   otp_used=session.get("otp_verified", False))
-        # Clear otp_verified so next transaction needs fresh OTP
-        await set_session(session_id, {})
-        return result["message"]
-
     # ── DYNAMIC DB WORKFLOW ───────────────────────────
-    # For any DB-registered intent with no hardcoded handler above
+    # All business intents are now routed through DB
     db_workflow = await fetch_one("""
         SELECT name, adapter_method FROM workflows
         WHERE intent_key = $1 AND org_id = $2 AND is_active = true
@@ -398,6 +272,13 @@ async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
     if not pending:
         return "✅ Verified! Please resend your original request."
 
+    # For security OTP (not invoice-specific), re-execute the original intent
+    if pending.get("type") == "security_auth":
+        # Clear the OTP state
+        await set_session(session_id, {"otp_verified": True, "verified_at": "now"})
+        return "✅ Identity verified! Session active for 4h. Please resend your request."
+
+    # For invoice OTP (legacy)
     if pending.get("intent") == "create_invoice":
         amount    = pending["amount"]
         org_id    = user["org_id"]

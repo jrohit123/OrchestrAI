@@ -37,15 +37,16 @@ ACTIVE_STATUSES = ["confirmed", "in_production", "quality_check", "ready"]
 
 async def create_order(
     org_id: str,
-    user_id: str,
-    phone: str,
-    raw_text: str,
-    entity: str = None,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
     customer_name: str = None,
     description: str = None,
     metal_type: str = None,
     estimated_amount: float = None,
-    quotation_id: str = None
+    quotation_id: str = None,
+    **kwargs
 ) -> dict:
     """Create a new production order."""
     
@@ -58,7 +59,7 @@ async def create_order(
             return await accept_quotation(org_id, user_id, parsed["quotation_number"], phone)
         
         if not customer_name:
-            customer_name = entity
+            customer_name = entity_raw
         if not description:
             # Try to extract from raw_text
             t = raw_text.lower()
@@ -138,9 +139,10 @@ async def create_order(
 
 async def update_order_status(
     org_id: str,
-    user_id: str,
-    raw_text: str,
-    entity: str = None,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
     order_number_or_text: str = None,
     new_status_text: str = None,
     **kwargs
@@ -215,8 +217,10 @@ async def update_order_status(
 
 async def get_orders(
     org_id: str,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
     raw_text: str = None,
-    entity: str = None,
     filter_type: str = "active",
     **kwargs
 ) -> dict:

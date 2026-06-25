@@ -1,8 +1,14 @@
 from app.db import fetch_one, fetch_all, execute
 
 
-async def check_stock(org_id: str, product_name: str) -> dict:
+async def check_stock(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, **kwargs) -> dict:
     """Fuzzy search product by name and return stock info."""
+    product_name = entity_raw
+    if not product_name:
+        return {
+            "found": False,
+            "message": "🤔 Which product? Try: *stock gold ring* or *stock bangle*"
+        }
     row = await fetch_one("""
         SELECT name, qty, location, reorder_level, unit_price, sku
         FROM inventory
@@ -40,8 +46,14 @@ async def check_stock(org_id: str, product_name: str) -> dict:
     }
 
 
-async def check_stock_availability(org_id: str, item_name: str, qty: int) -> dict:
+async def check_stock_availability(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, qty: int = None, **kwargs) -> dict:
     """Check if required qty is available before creating invoice."""
+    item_name = entity_raw
+    if not item_name:
+        return {
+            "available": False,
+            "message": "🤔 Which product? Try: *stock gold ring*"
+        }
     row = await fetch_one("""
         SELECT name, qty, sku, unit_price
         FROM inventory
@@ -74,8 +86,10 @@ async def check_stock_availability(org_id: str, item_name: str, qty: int) -> dic
     }
 
 
-async def deduct_stock(org_id: str, sku: str, qty: int) -> dict:
-    """Deduct qty from inventory after invoice is created."""
+async def deduct_stock(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, sku: str = None, qty: int = None, **kwargs) -> dict:
+   """Deduct qty from inventory after invoice is created."""
+    if not sku or not qty:
+        return {"success": False, "message": "❌ SKU and quantity required"}
     await execute("""
         UPDATE inventory
         SET qty = qty - $1, updated_at = NOW()

@@ -2,11 +2,17 @@ from app.db import fetch_one, fetch_all
 from datetime import datetime, timezone
 
 
-async def get_credit_limit(org_id: str, customer_name: str) -> dict:
+async def get_credit_limit(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, **kwargs) -> dict:
     """
     Fetch the credit limit for a customer.
     Returns multiple matches if found for disambiguation.
     """
+    customer_name = entity_raw
+    if not customer_name:
+        return {
+            "found": False,
+            "message": "🤔 Which customer? Try: *credit limit Mehta*"
+        }
     customers = await fetch_all("""
         SELECT id, name, city, credit_limit
         FROM customers
@@ -54,11 +60,17 @@ async def get_credit_limit(org_id: str, customer_name: str) -> dict:
     }
 
 
-async def get_outstanding(org_id: str, customer_name: str) -> dict:
+async def get_outstanding(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, **kwargs) -> dict:
     """
     Fuzzy search customer and return all overdue invoices with totals.
     Returns multiple matches if found for disambiguation.
     """
+    customer_name = entity_raw
+    if not customer_name:
+        return {
+            "found": False,
+            "message": "🤔 Which customer? Try: *dues Mehta*"
+        }
     customers = await fetch_all("""
         SELECT id, name, city, credit_limit
         FROM customers
@@ -103,9 +115,14 @@ async def get_outstanding(org_id: str, customer_name: str) -> dict:
 
         lines = []
         for inv in invoices:
-            days = (now.date() - inv["due_date"]).days if inv["due_date"] else 0
-            status_icon = "🔴" if inv["status"] == "overdue" else "🟡"
-            days_str = f"{days}d overdue" if days > 0 else "due soon"
+            if inv["due_date"]:
+                days = (now.date() - inv["due_date"]).days
+                status_icon = "🔴" if inv["status"] == "overdue" else "🟡"
+                days_str = f"{days}d overdue" if days > 0 else "due soon"
+            else:
+                days = 0
+                status_icon = "🟡"
+                days_str = "no due date"
             lines.append(f"{status_icon} {inv['invoice_number']} — ₹{inv['amount']:,.0f} ({days_str})")
 
         return {
@@ -133,8 +150,14 @@ async def get_outstanding(org_id: str, customer_name: str) -> dict:
     }
 
 
-async def get_all_overdue(org_id: str, limit: int = None) -> dict:
+async def get_all_overdue(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, limit: int = None, **kwargs) -> dict:
     """Used for weekly dues report — all overdue invoices across all customers."""
+    # Extract limit from raw_text if not passed
+    if not limit and raw_text:
+        import re
+        lm = re.search(r'top\s+(\d+)', raw_text.lower())
+        if lm:
+            limit = int(lm.group(1))
     rows = await fetch_all("""
         SELECT c.name as customer_name, c.city,
                SUM(i.amount) as total_overdue,

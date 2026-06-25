@@ -21,22 +21,23 @@ async def get_metal_rates(org_id: str) -> dict:
 
 async def create_quotation(
     org_id: str,
-    user_id: str,
-    phone: str,
-    raw_text: str,
-    entity: str = None,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
     customer_name: str = None,
     metal_type: str = None,
     weight_grams: float = None,
     design_code: str = None,
-    valid_days: int = 3
+    valid_days: int = 3,
+    **kwargs
 ) -> dict:
     """Generate and send quotation PDF."""
 
     # Parse from raw_text if not provided
     if not customer_name or not metal_type or not weight_grams:
         details = parse_quotation_command(raw_text)
-        customer_name = details.get("customer") or entity
+        customer_name = details.get("customer") or entity_raw
         metal_type = details.get("metal")
         weight_grams = details.get("weight")
         design_code = details.get("design_code") or design_code
@@ -179,8 +180,10 @@ async def create_quotation(
 
 async def set_metal_rate(
     org_id: str,
-    user_id: str,
-    raw_text: str,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
     metal_type: str = None,
     rate_per_gram: float = None,
     making_charge_pct: float = None,

@@ -12,7 +12,7 @@ load_dotenv()
 
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 SENDER_EMAIL  = "sales@aitamate.com"
-SENDER_NAME   = "OrchestrAI | ShreeJewels"
+SENDER_NAME   = "OrchestrAI | Baanganga Gold"
 OTP_EXPIRY_MINUTES = 3
 MAX_ATTEMPTS = 3
 

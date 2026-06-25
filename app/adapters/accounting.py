@@ -8,18 +8,33 @@ from app.adapters.inventory import check_stock_availability, deduct_stock
 
 async def create_invoice(
     org_id: str,
-    user_id: str,
-    customer_name: str,
-    amount: float,
-    phone: str,
+    user_id: str = None,
+    phone: str = None,
+    entity_raw: str = None,
+    raw_text: str = None,
+    customer_name: str = None,
+    amount: float = None,
     item_name: str = None,
     qty: int = None,
-    items: list = None
+    items: list = None,
+    **kwargs
 ) -> dict:
     """
     Creates invoice, generates PDF, sends via WhatsApp.
     If item_name + qty provided: verifies stock and deducts after creation.
     """
+    # Parse details from raw_text if not provided
+    if not customer_name or not amount:
+        details = parse_invoice_details(raw_text or "")
+        customer_name = customer_name or details.get("customer") or entity_raw
+        amount = amount or details.get("amount")
+        item_name = item_name or details.get("item")
+        qty = qty or details.get("qty")
+
+    if not customer_name:
+        return {"success": False, "message": "🤔 Which customer? Try: *invoice Mehta 25000*"}
+    if not amount:
+        return {"success": False, "message": "🤔 What amount? Try: *invoice Mehta 25000*"}
     # Find customer
     customer = await fetch_one("""
         SELECT id, name, credit_limit, gst_number, city
