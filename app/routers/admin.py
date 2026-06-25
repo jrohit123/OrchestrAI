@@ -278,7 +278,7 @@ async def save_generated_workflow(request: Request):
         body.get("intent_key"),
         body.get("description"),
         json.dumps(body.get("trigger_patterns", [])),  # Save actual patterns from AI
-        json.dumps(body.get("steps", [])),  # Save steps from AI as jsonb array
+        body.get("steps", []),  # Pass as Python list for jsonb[] type
         adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),
