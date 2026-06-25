@@ -451,6 +451,15 @@ input:checked+.slider:before{{transform:translateX(18px)}}
         <span style="font-size:12px;color:#888">%</span>
         <button class="save-btn" onclick="saveGST()">Save GST</button>
       </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:13px;color:#555">Add New Metal Type:</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <input class="threshold-input" type="text" id="new_metal_type" placeholder="e.g., 22kt" style="width:80px;text-transform:lowercase">
+          <input class="threshold-input" type="number" id="new_rate" placeholder="Rate/g" style="width:100px">
+          <input class="threshold-input" type="number" id="new_making" placeholder="Making %" style="width:80px" step="0.5">
+          <button class="save-btn" onclick="addNewMetal()">Add</button>
+        </div>
+      </div>
       <table id="ratesTable">
         <thead>
           <tr>
@@ -606,6 +615,30 @@ async function saveGST() {{
     body: JSON.stringify({{gst_rate: gst}})
   }});
   alert(`✅ GST rate updated to ${{gst}}%`);
+}}
+
+async function addNewMetal() {{
+  const metalType = document.getElementById('new_metal_type').value.trim().toLowerCase();
+  const rate = parseFloat(document.getElementById('new_rate').value);
+  const making = parseFloat(document.getElementById('new_making').value);
+  
+  if (!metalType || isNaN(rate) || isNaN(making)) {{
+    alert('Please fill in all fields');
+    return;
+  }}
+  
+  await fetch(API('/metal-rates/' + metalType), {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{rate_per_gram: rate, making_charge_pct: making}})
+  }});
+  
+  document.getElementById('new_metal_type').value = '';
+  document.getElementById('new_rate').value = '';
+  document.getElementById('new_making').value = '';
+  
+  loadRates();
+  alert(`✅ ${{metalType.toUpperCase()}} added: Rs.${{rate.toLocaleString('en-IN')}}/g | Making: ${{making}}%`);
 }}
 
 async function generateWorkflow() {{
