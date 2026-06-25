@@ -725,12 +725,11 @@ async function loadData() {{
           </div>
         </td>
         <td>
-          ${{w.intent_key === 'create_invoice' ? `
           <div style="display:flex;gap:6px;align-items:center">
             <input class="threshold-input" type="number" id="apr_${{w.id}}"
               value="${{w.approval_threshold || 100000}}" step="1000">
             <button class="save-btn" onclick="saveApprovalThreshold('${{w.id}}')">Save</button>
-          </div>` : '—'}}
+          </div>
         </td>
         <td style="color:#888;font-size:12px">
           ${{w.last_run ? new Date(w.last_run).toLocaleDateString('en-IN') : '—'}}</td>
