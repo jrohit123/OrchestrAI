@@ -24,8 +24,7 @@ def tier1_exact(text: str):
 
 
 # ── TIER 2: KEYWORD CLASSIFIER ───────────────────────
-# NOTE: weekly_dues_report MUST come before check_outstanding
-# to avoid "dues report" matching the dues\s+(.+) pattern first
+# NOTE: Only system admin intents are hardcoded. Business intents are DB-driven.
 KEYWORD_RULES = [
     {
         "intent": "clear_sessions",
@@ -61,59 +60,6 @@ KEYWORD_RULES = [
             r"due\s+report\s +schedul",
         ],
         "entity": None
-    },
-    {
-        "intent": "weekly_dues_report",
-        "patterns": [
-            r"^dues\s+report$",
-            r"outstanding\s+report",
-            r"dues\s+summary",
-            r"all\s+overdue",
-            r"all\s+dues",
-            r"60\+\s*(days|overdue)",
-            r"overdue\s+report",
-            r"overdue\s+summary",
-            r"top\s+\d+\s+dues",
-            r"top\s+\d+\s+outstanding",
-            r"give\s+me\s+top",
-        ],
-        "entity": None
-    },
-    {
-        "intent": "check_outstanding",
-        "patterns": [
-            r"(.+)\s+ka\s+kitna",
-            r"(.+)\s+ka\s+bacha",
-            r"kitna\s+bacha\s+(.+)",
-            r"^dues?\s+([a-zA-Z][\w\s]{2,20})$",
-            r"outstanding\s+([a-zA-Z][\w\s]{2,20})",
-            r"balance\s+([a-zA-Z][\w\s]{2,20})",
-            r"(.+)\s+owes",
-            r"pending\s+(?:of\s+)?([a-zA-Z][\w\s]{2,20})$",
-            r"how\s+much\s+(?:is\s+)?(?:pending|due|owed)\s+(?:of\s+|for\s+)?(.+)",
-        ],
-        "entity": "customer"
-    },
-    {
-        "intent": "check_stock",
-        "patterns": [
-            r"stock\s+(.+)",
-            r"how many\s+(.+)",
-            r"(.+)\s+available",
-            r"(.+)\s+stock",
-            r"inventory\s+(.+)",
-            r"kitna\s+(.+)\s+hai",
-        ],
-        "entity": "product"
-    },
-    {
-        "intent": "create_invoice",
-        "patterns": [
-            r"invoice\s+(.+)\s+₹?([\d,]+)",
-            r"bill\s+(.+)\s+₹?([\d,]+)",
-            r"raise\s+invoice\s+(.+)",
-        ],
-        "entity": "customer+amount"
     },
 ]
 
@@ -240,15 +186,13 @@ _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 async def tier3_llm(text: str, org_name: str, db_rules: list = None) -> dict:
+    # Base system admin intents (always available)
     base_intents = [
-        ("check_stock",        "user wants to know stock/inventory/quantity of a product"),
-        ("check_outstanding",  "user wants to know pending dues/payments/balance owed by a customer"),
-        ("create_invoice",     "user wants to create a bill, invoice, or receipt"),
-        ("weekly_dues_report", "user wants a summary of all overdue/outstanding customers"),
         ("manage_schedule",    "user wants to schedule, reschedule, pause, or check a report schedule"),
         ("clear_sessions",     "user wants to clear all sessions, emergency lockout, kick everyone out"),
     ]
 
+    # Dynamic intents from DB workflows
     dynamic_intents = []
     if db_rules:
         for rule in db_rules:
