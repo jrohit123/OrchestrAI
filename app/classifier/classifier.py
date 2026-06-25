@@ -192,12 +192,13 @@ async def tier3_llm(text: str, org_name: str, db_rules: list = None) -> dict:
         ("clear_sessions",     "user wants to clear all sessions, emergency lockout, kick everyone out"),
     ]
 
-    # Dynamic intents from DB workflows
+    # Dynamic intents from DB workflows (with rich descriptions)
     dynamic_intents = []
     if db_rules:
         for rule in db_rules:
             desc = rule.get("description", "").strip()
             if desc:
+                # Rich description now contains examples, keywords, entity_type, context
                 dynamic_intents.append((rule["intent"], desc))
 
     all_intents = base_intents + dynamic_intents + [("unknown", "cannot determine intent")]
@@ -210,9 +211,11 @@ Identify the intent and entity from the user message.
 VALID INTENTS — return ONLY one of these exact intent keys:
 {intent_lines}
 
-RULES:
+CLASSIFICATION RULES:
 - You MUST return one of: {json.dumps(valid_keys)}
 - Do NOT invent or modify intent keys
+- Use the EXAMPLES and KEYWORDS in each intent description to match user queries
+- Match entity_type (product/customer/order) from description to extract entity correctly
 - Prefer specific custom intents over generic ones when both could match
 - Strip prepositions (of / for / ka / ki / ke) from the START of the entity only
 

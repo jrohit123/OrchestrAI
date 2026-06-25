@@ -168,18 +168,29 @@ User wants to add this workflow:
 Generate ONLY this JSON structure with no other text:
 {{
   "name": "2-4 word name",
-  "intent_key": "unique_snake_case_key",
-  "description": "Specific sentence describing what data this returns",
+  "intent_key": "exact_function_name_from_adapter_method",
+  "description": "Rich description with examples, keywords, entity_type, business context",
   "adapter_method": "module.function format",
-  "trigger_patterns": []
+  "trigger_patterns": ["pattern1", "pattern2", "pattern3", "pattern4"]
 }}
 
 Rules:
 - name: 2-4 words
-- intent_key: snake_case, unique, descriptive
-- description: data-oriented, specific
-- adapter_method: must be in "module.function" format (e.g., "crm.get_credit_limit", "inventory.check_stock", "quotation.create_quotation", "orders.create_order")
-- trigger_patterns: always empty array []
+- intent_key: MUST match the function name from adapter_method exactly (e.g., if adapter_method is "inventory.check_stock", intent_key MUST be "check_stock")
+- description: Rich text block containing:
+  * What the workflow does (1 sentence)
+  * 4 example user queries in quotes
+  * Keywords that signal this intent
+  * Entity type (product/customer/order/invoice/quotation)
+  * Business context (who uses it and when)
+  Example: "Check stock level of a specific product. Examples: 'stock gold ring', 'how many diamond bangles', 'inventory silver chain', 'what is the stock of platinum necklace'. Keywords: stock, inventory, quantity, how many, available. Entity type: product. Output: product name, quantity, location, reorder status. Used by sales/warehouse to check availability before promising to customers."
+- adapter_method: must be in "module.function" format (e.g., "crm.get_credit_limit", "inventory.check_stock", "quotation.create_quotation", "orders.create_order", "accounting.create_invoice")
+- trigger_patterns: 4-6 regex patterns users would type
+  * If entity_type is product/customer/order, include (.+) capture group: "stock (.+)", "dues (.+)"
+  * If no entity needed, no capture group: "show all inventory", "dues report"
+  * Use simple patterns: "stock (.+)", "how many (.+)", "(.+) available", "inventory (.+)"
+
+IMPORTANT: The intent_key MUST be the exact function name from adapter_method, not a new name.
 
 Return ONLY the JSON. No explanations, no markdown, no extra text."""
 
@@ -228,13 +239,13 @@ async def save_generated_workflow(request: Request):
         INSERT INTO workflows (
             org_id, name, intent_key, description, trigger_patterns, adapter_method,
             otp_required, otp_threshold, approval_threshold, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, true)
     """, 
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
-        json.dumps([]),  # Empty patterns - using LLM classification
+        json.dumps(body.get("trigger_patterns", [])),  # Save actual patterns from AI
         adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),

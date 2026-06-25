@@ -87,7 +87,7 @@ async def check_stock_availability(org_id: str, entity_raw: str = None, user_id:
 
 
 async def deduct_stock(org_id: str, entity_raw: str = None, user_id: str = None, phone: str = None, raw_text: str = None, sku: str = None, qty: int = None, **kwargs) -> dict:
-   """Deduct qty from inventory after invoice is created."""
+    """Deduct qty from inventory after invoice is created."""
     if not sku or not qty:
         return {"success": False, "message": "❌ SKU and quantity required"}
     await execute("""
