@@ -184,7 +184,20 @@ Rules:
   * Entity type (product/customer/order/invoice/quotation)
   * Business context (who uses it and when)
   Example: "Check stock level of a specific product. Examples: 'stock gold ring', 'how many diamond bangles', 'inventory silver chain', 'what is the stock of platinum necklace'. Keywords: stock, inventory, quantity, how many, available. Entity type: product. Output: product name, quantity, location, reorder status. Used by sales/warehouse to check availability before promising to customers."
-- adapter_method: must be in "module.function" format (e.g., "crm.get_credit_limit", "inventory.check_stock", "quotation.create_quotation", "orders.create_order", "accounting.create_invoice")
+- adapter_method: MUST be one of these EXACT values:
+  * "inventory.check_stock" - check product inventory
+  * "inventory.check_stock_availability" - check if product has enough stock
+  * "inventory.deduct_stock" - deduct stock after sale
+  * "crm.get_credit_limit" - check customer credit limit
+  * "crm.get_outstanding" - check customer outstanding dues
+  * "crm.get_all_overdue" - get all overdue customers report
+  * "accounting.create_invoice" - create sales invoice
+  * "quotation.create_quotation" - create price quotation
+  * "quotation.set_metal_rate" - update metal rates
+  * "orders.create_order" - create production order
+  * "orders.update_order_status" - update order status
+  * "orders.get_orders" - view orders
+  DO NOT invent or use any other adapter methods.
 - trigger_patterns: 4-6 regex patterns users would type
   * If entity_type is product/customer/order, include (.+) capture group: "stock (.+)", "dues (.+)"
   * If no entity needed, no capture group: "show all inventory", "dues report"
