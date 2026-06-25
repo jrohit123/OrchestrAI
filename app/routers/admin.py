@@ -271,14 +271,14 @@ async def save_generated_workflow(request: Request):
         INSERT INTO workflows (
             org_id, name, intent_key, description, trigger_patterns, steps, adapter_method,
             otp_required, otp_threshold, approval_threshold, is_active
-        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb[], $7, $8, $9, $10, true)
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, true)
     """, 
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
         json.dumps(body.get("trigger_patterns", [])),  # Save actual patterns from AI
-        body.get("steps", []),  # Pass as Python list for jsonb[] type
+        json.dumps(body.get("steps", [])),  # Save steps as JSON string
         adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),
