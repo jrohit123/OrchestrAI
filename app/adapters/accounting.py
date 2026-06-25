@@ -290,6 +290,9 @@ async def send_dues_statement(
     if not customer_name:
         return {"success": False, "message": "🤔 Which customer? Try: *dues statement Mehta*"}
     
+    # Remove common words that might be included in entity extraction
+    customer_name = customer_name.upper().replace("STATEMENT", "").replace("DUES", "").replace("OUTSTANDING", "").replace("SEND", "").strip()
+    
     # Find customer
     customer = await fetch_one("""
         SELECT id, name, city, gst_number, credit_limit
