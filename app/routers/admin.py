@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from app.db import fetch_all, fetch_one, execute
+from app.classifier.classifier import invalidate_patterns_cache
 from openai import AsyncOpenAI
 
 router = APIRouter()
@@ -77,7 +78,7 @@ async def admin_data(request: Request):
 async def toggle_otp(workflow_id: str, request: Request):
     _check_token(request)
     row = await fetch_one(
-        "SELECT otp_required FROM workflows WHERE id = $1", workflow_id
+        "SELECT otp_required, org_id FROM workflows WHERE id = $1", workflow_id
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -86,6 +87,8 @@ async def toggle_otp(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
         new_val, workflow_id
     )
+    # Invalidate classifier cache
+    invalidate_patterns_cache(row["org_id"])
     return {"otp_required": new_val}
 
 
@@ -291,6 +294,9 @@ async def save_generated_workflow(request: Request):
         body.get("otp_threshold"),
         body.get("approval_threshold")
     )
+    
+    # Invalidate classifier cache so new patterns are loaded immediately
+    invalidate_patterns_cache(org_id)
     
     # Add permission to selected roles
     intent_key = body.get("intent_key")
