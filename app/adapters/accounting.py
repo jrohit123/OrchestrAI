@@ -205,12 +205,19 @@ async def send_invoice_pdf(
     if not invoice_number:
         return {"success": False, "message": "🤔 Which invoice? Try: *send invoice INV-001*"}
     
-    # Extract invoice number from text
+    # Extract invoice number from text - handle various formats
     invoice_number = invoice_number.upper()
-    if "INV-" not in invoice_number:
-        # Try to extract from text
+    
+    # Remove common words that might be included in entity extraction
+    invoice_number = invoice_number.replace("INVOICE", "").replace("SEND", "").replace("PDF", "").strip()
+    
+    # If it already starts with INV-, use it directly
+    if invoice_number.startswith("INV-"):
+        pass
+    else:
+        # Try to extract INV-XXX pattern from text (be specific to avoid matching "invoice" word)
         import re
-        match = re.search(r'INV[-\s]?(\d+)', invoice_number, re.IGNORECASE)
+        match = re.search(r'INV-(\d+)', invoice_number, re.IGNORECASE)
         if match:
             invoice_number = f"INV-{match.group(1)}"
         else:
