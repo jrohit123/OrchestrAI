@@ -76,7 +76,8 @@ def generate_invoice_pdf(
     org_name: str = 'Baanganga Gold And Diamond (I) Ltd.',
     customer_gstin: str = '',
     customer_city: str = '',
-    gst_rate: float = 3.0
+    gst_rate: float = 3.0,
+    due_date = None
 ) -> bytes:
     pdf = InvoicePDF()
     pdf.add_page()
@@ -88,7 +89,14 @@ def generate_invoice_pdf(
 
     from datetime import datetime, timedelta
     today = datetime.now()
-    due   = today + timedelta(days=30)
+    # Use provided due_date or default to 30 days from today
+    if due_date:
+        if hasattr(due_date, 'strftime'):
+            due = due_date
+        else:
+            due = today + timedelta(days=30)
+    else:
+        due = today + timedelta(days=30)
 
     # ── HEADER ───────────────────────────────────────────
     y = 14
