@@ -197,7 +197,6 @@ async def set_metal_rate(
         
         if parsed["type"] == "gst":
             # GST is handled separately via orgs table
-            from app.db import execute
             await execute(
                 "UPDATE orgs SET gst_rate = $1 WHERE id = $2",
                 parsed["value"], org_id
