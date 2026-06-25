@@ -1,6 +1,5 @@
 import json
 import re
-from app.adapters import inventory, crm, accounting
 from app.services.otp_service import generate_and_send_otp
 from app.services.whatsapp import send_text, send_buttons
 from app.redis_client import set_session, clear_all_sessions
@@ -11,19 +10,11 @@ from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job
 async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None) -> str:
     """
     Generic dispatcher for DB-registered workflows that have no hardcoded handler.
-    Dynamically calls the adapter method specified in the workflow config.
+    Dynamically imports and calls the adapter function specified in the workflow config.
     Handles disambiguation when multiple customer matches are found.
     """
     if not entity and adapter_method not in ["get_all_overdue"]:
         return "🤔 Which customer or product? Please specify."
-
-    # Map adapter methods to actual adapter functions
-    adapter_map = {
-        "get_credit_limit": crm.get_credit_limit,
-        "get_outstanding": crm.get_outstanding,
-        "check_stock": inventory.check_stock,
-        "get_all_overdue": crm.get_all_overdue,
-    }
 
     if adapter_method == "generic":
         return (
@@ -31,11 +22,16 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
             f"but has no adapter method configured. Contact your admin."
         )
 
-    if adapter_method not in adapter_map:
-        return f"⚙️ Unknown adapter method: {adapter_method}. Contact admin."
-
     try:
-        adapter_func = adapter_map[adapter_method]
+        # Dynamic import: adapter_method format is "module.function" e.g., "crm.get_credit_limit"
+        if "." not in adapter_method:
+            return f"⚙️ Invalid adapter method format: {adapter_method}. Expected 'module.function'"
+        
+        module_name, func_name = adapter_method.split(".", 1)
+        
+        # Import the adapter module dynamically
+        module = __import__(f"app.adapters.{module_name}", fromlist=[func_name])
+        adapter_func = getattr(module, func_name)
         
         # Call the adapter with appropriate arguments
         if adapter_method == "get_all_overdue":
@@ -66,6 +62,10 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
                 return f"🔍 {result['message']}\n\nReply with number:\n{options}"
         
         return result["message"]
+    except ImportError:
+        return f"⚙️ Adapter module not found: app.adapters.{module_name}. Contact admin."
+    except AttributeError:
+        return f"⚙️ Function {func_name} not found in {module_name}. Contact admin."
     except Exception as e:
         return f"⚙️ Error executing {adapter_method}: {str(e)}"
 

@@ -170,7 +170,7 @@ Generate ONLY this JSON structure with no other text:
   "name": "2-4 word name",
   "intent_key": "unique_snake_case_key",
   "description": "Specific sentence describing what data this returns",
-  "adapter_method": "choose based on what the workflow does",
+  "adapter_method": "module.function format",
   "trigger_patterns": []
 }}
 
@@ -178,7 +178,7 @@ Rules:
 - name: 2-4 words
 - intent_key: snake_case, unique, descriptive
 - description: data-oriented, specific
-- adapter_method: infer from the workflow purpose (credit-related= get_credit_limit, dues/balance= get_outstanding, stock/inventory= check_stock, overdue report= get_all_overdue, anything else= generic)
+- adapter_method: must be in "module.function" format (e.g., "crm.get_credit_limit", "inventory.check_stock", "quotation.create_quotation", "orders.create_order")
 - trigger_patterns: always empty array []
 
 Return ONLY the JSON. No explanations, no markdown, no extra text."""
@@ -256,6 +256,51 @@ async def save_generated_workflow(request: Request):
     invalidate_patterns_cache(org_id)
     
     return {"success": True, "message": f"Workflow saved and permission added to {len(selected_roles)} role(s)"}
+
+
+@router.get("/admin/api/metal-rates")
+async def get_metal_rates(request: Request):
+    _check_token(request)
+    org = await fetch_one("SELECT id, gst_rate FROM orgs WHERE is_active = true LIMIT 1")
+    rates = await fetch_all(
+        "SELECT metal_type, rate_per_gram, making_charge_pct, updated_at "
+        "FROM metal_rates WHERE org_id = $1 ORDER BY metal_type",
+        str(org["id"])
+    )
+    return {
+        "gst_rate": float(org["gst_rate"]) if org["gst_rate"] else 3.0,
+        "rates": [dict(r) for r in rates]
+    }
+
+
+@router.post("/admin/api/metal-rates/{metal_type}")
+async def update_metal_rate(metal_type: str, request: Request):
+    _check_token(request)
+    body = await request.json()
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    org_id = str(org["id"])
+
+    rate = float(body.get("rate_per_gram", 0))
+    making = float(body.get("making_charge_pct", 15))
+
+    await execute("""
+        INSERT INTO metal_rates (org_id, metal_type, rate_per_gram, making_charge_pct)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (org_id, metal_type) DO UPDATE
+        SET rate_per_gram = $3, making_charge_pct = $4, updated_at = NOW()
+    """, org_id, metal_type, rate, making)
+    return {"success": True}
+
+
+@router.post("/admin/api/gst-rate")
+async def update_gst_rate(request: Request):
+    _check_token(request)
+    body = await request.json()
+    gst = float(body.get("gst_rate", 3.0))
+    await execute(
+        "UPDATE orgs SET gst_rate = $1 WHERE is_active = true", gst
+    )
+    return {"gst_rate": gst}
 
 
 def _build_html(token: str) -> str:
@@ -397,6 +442,29 @@ input:checked+.slider:before{{transform:translateX(18px)}}
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-title">💰 Metal Rates & Making Charges</div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+        <div style="font-size:13px;color:#555">GST Rate:</div>
+        <input class="threshold-input" type="number" id="gst_rate_input"
+          value="3" step="0.5" style="width:60px">
+        <span style="font-size:12px;color:#888">%</span>
+        <button class="save-btn" onclick="saveGST()">Save GST</button>
+      </div>
+      <table id="ratesTable">
+        <thead>
+          <tr>
+            <th>Metal</th>
+            <th>Rate per gram (Rs.)</th>
+            <th>Making Charges (%)</th>
+            <th>Last Updated</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ratesBody"></tbody>
+      </table>
+    </div>
+
     <div class="card" style="border-left:4px solid #dc2626;margin-bottom:20px">
       <div class="card-title" style="color:#dc2626">🔒 Security — Session Management</div>
       <div style="display:flex;align-items:flex-start;gap:32px;flex-wrap:wrap">
@@ -489,6 +557,55 @@ async function clearSessions() {{
   const resp = await fetch(API('/sessions/clear'), {{method: 'POST'}});
   const data = await resp.json();
   alert('🔒 All sessions cleared. Every user must re-authenticate.');
+}}
+
+async function loadRates() {{
+  try {{
+    const data = await fetch(API('/metal-rates')).then(r => r.json());
+    document.getElementById('gst_rate_input').value = data.gst_rate || 3;
+    const html = data.rates.map(r => `
+      <tr>
+        <td><strong>${{r.metal_type.toUpperCase()}}</strong></td>
+        <td>
+          <input class="threshold-input" type="number"
+            id="rate_${{r.metal_type}}" value="${{r.rate_per_gram}}" step="50">
+        </td>
+        <td>
+          <input class="threshold-input" type="number"
+            id="making_${{r.metal_type}}" value="${{r.making_charge_pct}}" step="0.5"
+            style="width:70px">
+          <span style="font-size:11px;color:#888">%</span>
+        </td>
+        <td style="font-size:11px;color:#888">
+          ${{r.updated_at ? new Date(r.updated_at).toLocaleDateString('en-IN') : '—'}}
+        </td>
+        <td>
+          <button class="save-btn" onclick="saveRate('${{r.metal_type}}')">Save</button>
+        </td>
+      </tr>`).join('');
+    document.getElementById('ratesBody').innerHTML = html;
+  }} catch(e) {{}}
+}}
+
+async function saveRate(metalType) {{
+  const rate = parseFloat(document.getElementById('rate_' + metalType).value);
+  const making = parseFloat(document.getElementById('making_' + metalType).value);
+  await fetch(API('/metal-rates/' + metalType), {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{rate_per_gram: rate, making_charge_pct: making}})
+  }});
+  alert(`✅ ${{metalType.toUpperCase()}} rate updated: Rs.${{rate.toLocaleString('en-IN')}}/g | Making: ${{making}}%`);
+}}
+
+async function saveGST() {{
+  const gst = parseFloat(document.getElementById('gst_rate_input').value);
+  await fetch(API('/gst-rate'), {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{gst_rate: gst}})
+  }});
+  alert(`✅ GST rate updated to ${{gst}}%`);
 }}
 
 async function generateWorkflow() {{
@@ -607,6 +724,8 @@ async function loadData() {{
         document.getElementById('ttl_unit').value = 'minutes';
       }}
     }} catch(e) {{}}
+
+    loadRates();
 
     // Stats
     const s = data.stats;
