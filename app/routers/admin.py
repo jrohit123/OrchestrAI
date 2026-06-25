@@ -309,7 +309,6 @@ async def save_generated_workflow(request: Request):
         """, intent_key, role_name)
     
     # Invalidate classifier cache so new patterns are active immediately
-    from app.classifier.classifier import invalidate_patterns_cache
     invalidate_patterns_cache(org_id)
     
     return {"success": True, "message": f"Workflow saved and permission added to {len(selected_roles)} role(s)"}
