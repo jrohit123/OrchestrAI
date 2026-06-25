@@ -7,15 +7,12 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
-async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None) -> str:
+async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None, user_id: str = None, phone: str = None) -> str:
     """
     Generic dispatcher for DB-registered workflows that have no hardcoded handler.
     Dynamically imports and calls the adapter function specified in the workflow config.
     Handles disambiguation when multiple customer matches are found.
     """
-    if not entity and adapter_method not in ["get_all_overdue"]:
-        return "🤔 Which customer or product? Please specify."
-
     if adapter_method == "generic":
         return (
             f"⚙️ Workflow *{intent.replace('_', ' ').title()}* was recognised "
@@ -33,11 +30,22 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
         module = __import__(f"app.adapters.{module_name}", fromlist=[func_name])
         adapter_func = getattr(module, func_name)
         
+        # Build context dict for adapters that need more than org_id + entity
+        context = {
+            "org_id": org_id,
+            "user_id": user_id,
+            "phone": phone,
+            "raw_text": raw_text,
+            "entity": entity
+        }
+        
         # Call the adapter with appropriate arguments
-        if adapter_method == "get_all_overdue":
-            result = await adapter_func(org_id)
-        else:
-            result = await adapter_func(org_id, entity)
+        # Try calling with context dict first (for complex adapters like quotation)
+        try:
+            result = await adapter_func(**context)
+        except TypeError:
+            # Fallback to simple (org_id, entity) signature for backward compatibility
+            result = await adapter_func(org_id, entity if entity else None)
         
         # Check if multiple matches found (disambiguation needed)
         if result.get("found") and not result.get("single_match", True):
@@ -377,7 +385,7 @@ async def execute_intent(
 
     if db_workflow:
         adapter_method = db_workflow.get("adapter_method", "generic")
-        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method, session_id)
+        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method, session_id, user_id, phone)
         await _log(org_id, user_id, intent, raw_text, "success")
         return result_msg
 

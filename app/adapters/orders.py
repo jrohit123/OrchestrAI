@@ -38,12 +38,52 @@ ACTIVE_STATUSES = ["confirmed", "in_production", "quality_check", "ready"]
 async def create_order(
     org_id: str,
     user_id: str,
-    customer_name: str,
-    description: str,
+    phone: str,
+    raw_text: str,
+    entity: str = None,
+    customer_name: str = None,
+    description: str = None,
     metal_type: str = None,
     estimated_amount: float = None,
     quotation_id: str = None
 ) -> dict:
+    """Create a new production order."""
+    
+    # Parse from raw_text if not provided
+    if not customer_name or not description:
+        parsed = parse_order_command(raw_text)
+        
+        if parsed["action"] == "accept_quote":
+            # This is handled by a separate function
+            return await accept_quotation(org_id, user_id, parsed["quotation_number"], phone)
+        
+        if not customer_name:
+            customer_name = entity
+        if not description:
+            # Try to extract from raw_text
+            t = raw_text.lower()
+            t = re.sub(r'^(new order|create order|place order|book order)\s+', '', t)
+            m = re.match(r'^([\w\s]+?)\s+(.+)$', t.strip())
+            if m:
+                customer_name = m.group(1).strip().title()
+                description = m.group(2).strip()
+            else:
+                return {
+                    "success": False,
+                    "message": (
+                        "🤔 Format: *new order [customer] [description]*\n\n"
+                        "Examples:\n"
+                        "• *new order Mehta 22kt gold ring*\n"
+                        "• *new order Kapoor diamond bangle*"
+                    )
+                }
+    
+    # Detect metal type in description
+    if not metal_type and description:
+        for mt in ["22kt", "18kt", "14kt", "silver", "platinum"]:
+            if mt in description.lower():
+                metal_type = mt
+                break
     # Find customer
     customer = await fetch_one("""
         SELECT id, name FROM customers
@@ -99,9 +139,26 @@ async def create_order(
 async def update_order_status(
     org_id: str,
     user_id: str,
-    order_number_or_text: str,
-    new_status_text: str
+    raw_text: str,
+    entity: str = None,
+    order_number_or_text: str = None,
+    new_status_text: str = None,
+    **kwargs
 ) -> dict:
+    """Update order status."""
+    
+    # Parse from raw_text if not provided
+    if not order_number_or_text or not new_status_text:
+        parsed = parse_order_command(raw_text)
+        
+        if parsed["action"] == "update":
+            order_number_or_text = parsed["order_number"]
+            new_status_text = parsed["status"]
+        else:
+            return {
+                "success": False,
+                "message": "🤔 Format: *update ORD-001 ready*\nStatuses: confirmed, in production, quality check, ready, delivered"
+            }
     # Normalize order number
     order_num = order_number_or_text.upper()
     if not order_num.startswith("ORD-"):
@@ -156,10 +213,21 @@ async def update_order_status(
     return {"success": True, "message": msg}
 
 
-async def get_orders(org_id: str, filter_type: str = "active") -> dict:
+async def get_orders(
+    org_id: str,
+    raw_text: str = None,
+    entity: str = None,
+    filter_type: str = "active",
+    **kwargs
+) -> dict:
     """
     filter_type: 'active', 'ready', 'all', 'delivered', or order_number
     """
+    
+    # Parse from raw_text if not provided
+    if raw_text and filter_type == "active":
+        parsed = parse_order_command(raw_text)
+        filter_type = parsed.get("filter", "active")
     if filter_type.upper().startswith("ORD-") or filter_type.isdigit():
         order_num = filter_type.upper()
         if not order_num.startswith("ORD-"):
@@ -232,7 +300,7 @@ async def get_orders(org_id: str, filter_type: str = "active") -> dict:
     }
 
 
-async def accept_quotation(org_id: str, user_id: str, quotation_number: str) -> dict:
+async def accept_quotation(org_id: str, user_id: str, quotation_number: str, phone: str = None) -> dict:
     """Convert accepted quotation to an order."""
     qt = await fetch_one("""
         SELECT * FROM quotations
@@ -246,7 +314,8 @@ async def accept_quotation(org_id: str, user_id: str, quotation_number: str) -> 
         return {"success": False, "message": f"❌ Quotation *{quotation_number}* already converted to order."}
 
     result = await create_order(
-        org_id=org_id, user_id=user_id,
+        org_id=org_id, user_id=user_id, phone=phone or "",
+        raw_text="", entity=None,
         customer_name=qt["customer_name"],
         description=f"{qt['metal_type'].upper()} {qt['weight_grams']}g jewellery",
         metal_type=qt["metal_type"],

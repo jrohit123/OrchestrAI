@@ -22,14 +22,42 @@ async def get_metal_rates(org_id: str) -> dict:
 async def create_quotation(
     org_id: str,
     user_id: str,
-    customer_name: str,
-    metal_type: str,
-    weight_grams: float,
     phone: str,
+    raw_text: str,
+    entity: str = None,
+    customer_name: str = None,
+    metal_type: str = None,
+    weight_grams: float = None,
     design_code: str = None,
     valid_days: int = 3
 ) -> dict:
     """Generate and send quotation PDF."""
+
+    # Parse from raw_text if not provided
+    if not customer_name or not metal_type or not weight_grams:
+        details = parse_quotation_command(raw_text)
+        customer_name = details.get("customer") or entity
+        metal_type = details.get("metal")
+        weight_grams = details.get("weight")
+        design_code = details.get("design_code") or design_code
+
+    if not customer_name:
+        return {
+            "success": False,
+            "message": (
+                "🤔 Format: *quote [customer] [metal] [weight]g*\n\n"
+                "Examples:\n"
+                "• *quote Mehta 22kt 15.5g*\n"
+                "• *quote Kapoor 18kt 8g DC-001*\n\n"
+                "Available metals: 22kt, 18kt, 14kt, silver, platinum"
+            )
+        }
+
+    if not metal_type:
+        return {"success": False, "message": "🤔 Specify metal type: 22kt, 18kt, 14kt, silver, or platinum"}
+
+    if not weight_grams:
+        return {"success": False, "message": "🤔 Specify weight in grams. Example: *15.5g*"}
 
     # Fetch customer
     customer = await fetch_one("""
@@ -152,11 +180,46 @@ async def create_quotation(
 async def set_metal_rate(
     org_id: str,
     user_id: str,
-    metal_type: str,
+    raw_text: str,
+    metal_type: str = None,
     rate_per_gram: float = None,
-    making_charge_pct: float = None
+    making_charge_pct: float = None,
+    **kwargs
 ) -> dict:
     """Update metal rate and/or making charges."""
+    
+    # Parse from raw_text if not provided
+    if not metal_type or (rate_per_gram is None and making_charge_pct is None):
+        parsed = parse_rate_command(raw_text)
+        
+        if parsed["type"] == "gst":
+            # GST is handled separately via orgs table
+            from app.db import execute
+            await execute(
+                "UPDATE orgs SET gst_rate = $1 WHERE id = $2",
+                parsed["value"], org_id
+            )
+            return {
+                "success": True,
+                "message": f"✅ GST rate updated to *{parsed['value']:.1f}%*"
+            }
+        
+        if parsed["type"] == "making":
+            metal_type = parsed["metal"]
+            making_charge_pct = parsed["value"]
+        elif parsed["type"] == "rate":
+            metal_type = parsed["metal"]
+            rate_per_gram = parsed["value"]
+        else:
+            return {
+                "success": False,
+                "message": (
+                    "🤔 Format:\n"
+                    "• *set rate 22kt 6200* — update gold rate\n"
+                    "• *set making 22kt 15* — update making charges %\n"
+                    "• *set gst 3* — update GST rate"
+                )
+            }
     existing = await fetch_one(
         "SELECT * FROM metal_rates WHERE org_id = $1 AND metal_type = $2",
         org_id, metal_type.lower()
