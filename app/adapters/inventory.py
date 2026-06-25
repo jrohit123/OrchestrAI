@@ -9,13 +9,37 @@ async def check_stock(org_id: str, entity_raw: str = None, user_id: str = None, 
             "found": False,
             "message": "🤔 Which product? Try: *stock gold ring* or *stock bangle*"
         }
+    
+    # First try exact match or high similarity (>0.4)
     row = await fetch_one("""
         SELECT name, qty, location, reorder_level, unit_price, sku
         FROM inventory
-        WHERE org_id = $1 AND similarity(name, $2) > 0.1
+        WHERE org_id = $1 AND similarity(name, $2) > 0.4
         ORDER BY similarity(name, $2) DESC
         LIMIT 1
     """, org_id, product_name)
+
+    # If no high similarity match, try word-based matching
+    if not row:
+        # Extract key words from query and search for products containing those words
+        words = [w for w in product_name.lower().split() if len(w) > 2]
+        
+        if words:
+            # Build parameterized query with word matching
+            placeholders = []
+            params = [org_id]
+            for word in words:
+                placeholders.append(f"LOWER(name) LIKE ${len(params) + 1}")
+                params.append(f"%{word}%")
+            
+            word_query = " OR ".join(placeholders)
+            row = await fetch_one(f"""
+                SELECT name, qty, location, reorder_level, unit_price, sku
+                FROM inventory
+                WHERE org_id = $1 AND ({word_query})
+                ORDER BY similarity(name, $2) DESC
+                LIMIT 1
+            """, *params, product_name)
 
     if not row:
         return {
