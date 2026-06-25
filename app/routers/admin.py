@@ -192,6 +192,8 @@ Rules:
   * "crm.get_outstanding" - check customer outstanding dues
   * "crm.get_all_overdue" - get all overdue customers report
   * "accounting.create_invoice" - create sales invoice
+  * "accounting.send_invoice_pdf" - send PDF for existing invoice
+  * "accounting.send_dues_statement" - send dues statement PDF
   * "quotation.create_quotation" - create price quotation
   * "quotation.set_metal_rate" - update metal rates
   * "orders.create_order" - create production order

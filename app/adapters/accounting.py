@@ -1,7 +1,8 @@
 import re
 import json
-from app.db import fetch_one, execute
-from app.services.pdf_service import generate_invoice_pdf
+from datetime import datetime, timedelta
+from app.db import fetch_one, fetch_all, execute
+from app.services.pdf_service import generate_invoice_pdf, generate_dues_statement_pdf
 from app.services.whatsapp import send_document
 from app.adapters.inventory import check_stock_availability, deduct_stock
 
@@ -186,3 +187,165 @@ def parse_invoice_details(raw_text: str) -> dict:
         }
 
     return {'customer': None, 'qty': None, 'item': None, 'amount': None}
+
+
+async def send_invoice_pdf(
+    org_id: str,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
+    **kwargs
+) -> dict:
+    """
+    Send PDF for an existing invoice.
+    Usage: "send invoice INV-001 to Mehta" or "invoice pdf INV-001"
+    """
+    invoice_number = entity_raw or raw_text
+    if not invoice_number:
+        return {"success": False, "message": "🤔 Which invoice? Try: *send invoice INV-001*"}
+    
+    # Extract invoice number from text
+    invoice_number = invoice_number.upper()
+    if "INV-" not in invoice_number:
+        # Try to extract from text
+        import re
+        match = re.search(r'INV[-\s]?(\d+)', invoice_number, re.IGNORECASE)
+        if match:
+            invoice_number = f"INV-{match.group(1)}"
+        else:
+            return {"success": False, "message": "🤔 Invalid invoice format. Try: *send invoice INV-001*"}
+    
+    # Fetch invoice with customer details
+    invoice = await fetch_one("""
+        SELECT i.invoice_number, i.amount, i.items, i.due_date, i.created_at, i.status,
+               c.name as customer_name, c.gst_number, c.city, c.id as customer_id
+        FROM invoices i
+        JOIN customers c ON i.customer_id = c.id
+        WHERE i.org_id = $1 AND i.invoice_number = $2
+    """, org_id, invoice_number)
+    
+    if not invoice:
+        return {"success": False, "message": f"❌ Invoice *{invoice_number}* not found."}
+    
+    # Fetch org name
+    org = await fetch_one("SELECT name FROM orgs WHERE id = $1", org_id)
+    org_name = org["name"] if org else "Organisation"
+    
+    # Parse items
+    items = invoice.get("items", [])
+    if isinstance(items, str):
+        items = json.loads(items)
+    
+    # Generate PDF
+    try:
+        pdf_bytes = generate_invoice_pdf(
+            invoice_number=invoice["invoice_number"],
+            customer_name=invoice["customer_name"],
+            amount=float(invoice["amount"]),
+            items=items,
+            org_name=org_name,
+            customer_gstin=invoice.get("gst_number", ""),
+            customer_city=invoice.get("city", ""),
+            due_date=invoice.get("due_date")
+        )
+        await send_document(
+            to=phone,
+            pdf_bytes=pdf_bytes,
+            filename=f"{invoice_number}.pdf",
+            caption=f"🧾 {invoice_number} — {invoice['customer_name']} — Rs.{invoice['amount']:,.0f}"
+        )
+        return {
+            "success": True,
+            "invoice_number": invoice_number,
+            "customer": invoice["customer_name"],
+            "amount": float(invoice["amount"]),
+            "message": f"✅ *Invoice PDF sent*\n\nInvoice #: *{invoice_number}*\nCustomer: {invoice['customer_name']}\nAmount: *Rs.{invoice['amount']:,.0f}*\nStatus: {invoice['status']}"
+        }
+    except Exception as e:
+        print(f"[PDF] Error: {e}")
+        return {"success": False, "message": f"⚠️ Error generating PDF: {str(e)}"}
+
+
+async def send_dues_statement(
+    org_id: str,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
+    **kwargs
+) -> dict:
+    """
+    Generate and send PDF statement of all outstanding invoices for a customer.
+    Usage: "dues statement Mehta" or "outstanding statement Sharma"
+    """
+    customer_name = entity_raw or raw_text
+    if not customer_name:
+        return {"success": False, "message": "🤔 Which customer? Try: *dues statement Mehta*"}
+    
+    # Find customer
+    customer = await fetch_one("""
+        SELECT id, name, city, gst_number, credit_limit
+        FROM customers
+        WHERE org_id = $1 AND name ILIKE $2
+        ORDER BY similarity(name, $3) DESC
+        LIMIT 1
+    """, org_id, f"%{customer_name}%", customer_name)
+    
+    if not customer:
+        return {"success": False, "message": f"❌ Customer *{customer_name}* not found."}
+    
+    # Fetch outstanding invoices
+    invoices = await fetch_all("""
+        SELECT invoice_number, amount, status, due_date, created_at
+        FROM invoices
+        WHERE org_id = $1
+          AND customer_id = $2
+          AND status IN ('pending', 'overdue')
+        ORDER BY due_date ASC
+    """, org_id, customer["id"])
+    
+    if not invoices:
+        return {
+            "success": True,
+            "customer": customer["name"],
+            "total_outstanding": 0,
+            "message": f"✅ *{customer['name']}* has no outstanding dues."
+        }
+    
+    # Calculate totals
+    total = sum(r["amount"] for r in invoices)
+    overdue_total = sum(r["amount"] for r in invoices if r["status"] == "overdue")
+    
+    # Fetch org name
+    org = await fetch_one("SELECT name FROM orgs WHERE id = $1", org_id)
+    org_name = org["name"] if org else "Organisation"
+    
+    # Generate PDF
+    try:
+        pdf_bytes = generate_dues_statement_pdf(
+            customer_name=customer["name"],
+            customer_city=customer.get("city", ""),
+            customer_gstin=customer.get("gst_number", ""),
+            invoices=invoices,
+            total_outstanding=float(total),
+            overdue_total=float(overdue_total),
+            org_name=org_name
+        )
+        await send_document(
+            to=phone,
+            pdf_bytes=pdf_bytes,
+            filename=f"dues_statement_{customer['name'].replace(' ', '_')}.pdf",
+            caption=f"📊 Dues Statement — {customer['name']} — Rs.{total:,.0f}"
+        )
+        return {
+            "success": True,
+            "customer": customer["name"],
+            "total_outstanding": float(total),
+            "overdue_total": float(overdue_total),
+            "invoice_count": len(invoices),
+            "message": f"✅ *Dues Statement sent*\n\nCustomer: {customer['name']}\nTotal Outstanding: *Rs.{total:,.0f}*\nOverdue: *Rs.{overdue_total:,.0f}*\nInvoices: {len(invoices)}"
+        }
+    except Exception as e:
+        print(f"[PDF] Error: {e}")
+        return {"success": False, "message": f"⚠️ Error generating PDF: {str(e)}"}
