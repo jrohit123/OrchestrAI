@@ -171,8 +171,7 @@ Generate ONLY this JSON structure with no other text:
   "intent_key": "exact_function_name_from_adapter_method",
   "description": "Rich description with examples, keywords, entity_type, business context",
   "adapter_method": "module.function format",
-  "trigger_patterns": ["pattern1", "pattern2", "pattern3", "pattern4"],
-  "steps": ["step1", "step2", "step3"]
+  "trigger_patterns": ["pattern1", "pattern2", "pattern3", "pattern4"]
 }}
 
 Rules:
@@ -190,12 +189,6 @@ Rules:
   * If entity_type is product/customer/order, include (.+) capture group: "stock (.+)", "dues (.+)"
   * If no entity needed, no capture group: "show all inventory", "dues report"
   * Use simple patterns: "stock (.+)", "how many (.+)", "(.+) available", "inventory (.+)"
-- steps: 3-5 step-by-step description of what the workflow does:
-  * Step 1: What input it needs (entity extraction)
-  * Step 2: What operation it performs (DB query, calculation)
-  * Step 3: What output it returns (formatted message, PDF, etc.)
-  * Step 4: Any special handling (OTP, approval, disambiguation)
-  Example: ["Extract product name from user query", "Query inventory database for product stock", "Return product details: name, quantity, location, reorder status", "Handle fuzzy matching if exact product not found"]
 
 IMPORTANT: The intent_key MUST be the exact function name from adapter_method, not a new name.
 
@@ -269,16 +262,15 @@ async def save_generated_workflow(request: Request):
     
     await execute("""
         INSERT INTO workflows (
-            org_id, name, intent_key, description, trigger_patterns, steps, adapter_method,
+            org_id, name, intent_key, description, trigger_patterns, adapter_method,
             otp_required, otp_threshold, approval_threshold, is_active
-        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, true)
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, true)
     """, 
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
         json.dumps(body.get("trigger_patterns", [])),  # Save actual patterns from AI
-        json.dumps(body.get("steps", [])),  # Save steps as JSON string
         adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),
@@ -741,7 +733,6 @@ async function saveWorkflow() {{
     intent_key: document.getElementById('wfIntentKey').value.trim(),
     description: document.getElementById('wfDescription').value.trim(),
     trigger_patterns: (window.generatedConfig && window.generatedConfig.trigger_patterns) || [],
-    steps: (window.generatedConfig && window.generatedConfig.steps) || [],
     adapter_method: (window.generatedConfig && window.generatedConfig.adapter_method) || 'generic',
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,

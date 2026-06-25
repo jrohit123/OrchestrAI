@@ -106,18 +106,13 @@ async def load_patterns_from_db(org_id: str) -> list:
             if isinstance(patterns, str):
                 patterns = json.loads(patterns)
             
-            steps = row.get("steps", [])
-            if isinstance(steps, str):
-                steps = json.loads(steps)
-            
             # Only add if patterns exist (skip empty arrays for LLM-based workflows)
             if patterns:  
                 db_rules.append({
                     "intent": row["intent_key"],
                     "patterns": patterns,
                     "entity": None,
-                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}",
-                    "steps": steps
+                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}"
                 })
                 print(f"[CLASSIFIER] Loaded {len(patterns)} patterns for intent: {row['intent_key']}")
             else:
@@ -126,8 +121,7 @@ async def load_patterns_from_db(org_id: str) -> list:
                     "intent": row["intent_key"],
                     "patterns": [],  # Empty - will skip tier2
                     "entity": None,
-                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}",
-                    "steps": steps
+                    "description": (row.get("description") or "").strip() or f"Custom workflow: {row['intent_key'].replace('_', ' ')}"
                 })
                 print(f"[CLASSIFIER] Loaded LLM-only workflow: {row['intent_key']}")
         
@@ -198,17 +192,14 @@ async def tier3_llm(text: str, org_name: str, db_rules: list = None) -> dict:
         ("clear_sessions",     "user wants to clear all sessions, emergency lockout, kick everyone out"),
     ]
 
-    # Dynamic intents from DB workflows (with rich descriptions and steps)
+    # Dynamic intents from DB workflows (with rich descriptions)
     dynamic_intents = []
     if db_rules:
         for rule in db_rules:
             desc = rule.get("description", "").strip()
-            steps = rule.get("steps", [])
             if desc:
-                # Combine description with steps for richer context
-                steps_text = "\n".join(f"- {s}" for s in steps) if steps else ""
-                full_desc = f"{desc}\nWorkflow steps:\n{steps_text}" if steps_text else desc
-                dynamic_intents.append((rule["intent"], full_desc))
+                # Rich description contains examples, keywords, entity_type, context
+                dynamic_intents.append((rule["intent"], desc))
 
     all_intents = base_intents + dynamic_intents + [("unknown", "cannot determine intent")]
     valid_keys  = [k for k, _ in all_intents]
