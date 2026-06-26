@@ -285,7 +285,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # 9. Identity — who am I, my role, my permissions
     if route_type == "identity":
-        identity_type = parameters.get("identity_type", "role")
+        identity_type = result.get("parameters", {}).get("identity_type", "role")
         if identity_type == "permissions":
             perms = user.get("permissions", [])
             # Show meaningful permissions only
@@ -325,6 +325,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # 12. Permission check — general_read allowed for all roles
     # workflow routes use workflow_key as the permission
+    parameters = result.get("parameters", {})
     check_key = result.get("workflow_key") or route_type
     if not check_permission(user, check_key):
         await send_text(phone,
