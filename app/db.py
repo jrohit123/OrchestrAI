@@ -13,7 +13,8 @@ async def init_db():
         dsn=os.getenv("DATABASE_URL"),
         min_size=2,
         max_size=10,
-        init=_set_timezone
+        init=_set_timezone,
+        statement_cache_size=0  # Disable statement cache to avoid schema change issues
     )
     print("DB connected")
 
