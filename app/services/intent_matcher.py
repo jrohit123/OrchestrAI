@@ -119,6 +119,8 @@ def _extract_entities(message: str, entity_schema: dict, glossary: dict, workflo
             m = re.search(r'\b(\d+(?:\.\d+)?)\b', normalized)
             if m:
                 entities[field] = float(m.group(1))
+            elif spec.get("default") is not None:
+                entities[field] = float(spec["default"])
 
         elif field == "status":
             # Status extraction: use workflow's entity_schema if provided

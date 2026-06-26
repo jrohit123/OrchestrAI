@@ -189,7 +189,7 @@ INSERT INTO workflows (
 
 -- Grant permissions to owner role for all new workflows
 UPDATE roles
-SET permissions = array_cat(permissions, ARRAY['get_outstanding', 'check_stock', 'dues_report', 'check_metal_rates', 'view_orders_by_status', 'check_low_stock', 'check_permissions'])
+SET permissions = array_cat(permissions, ARRAY['get_outstanding', 'check_stock', 'dues_report', 'check_metal_rates', 'view_orders_by_status', 'check_low_stock', 'check_permissions', 'generate_quotation_with_rate'])
 WHERE name = 'owner' AND org_id = '11111111-0000-0000-0000-000000000001';
 
 -- Workflow 7: Check Permissions (Read - uses session context)
@@ -216,6 +216,37 @@ INSERT INTO workflows (
     'This workflow checks the current user''s role and permissions. Uses session context (user_id) not message-extracted parameters. Glossary: rights=permissions, access=permissions. Examples: "what permissions do i have", "my permissions", "show my permissions". No entity parameters needed - uses current user from session.',
     '[]'::jsonb,
     NULL,
+    false,
+    NULL,
+    NULL,
+    true,
+    ARRAY[]::jsonb[]
+) ON CONFLICT (org_id, intent_key) DO NOTHING;
+
+-- Workflow 8: Generate Quotation with Rate Update (Action)
+INSERT INTO workflows (
+    org_id, name, intent_key, description,
+    workflow_type, training_phrases, entity_schema,
+    sql_template, sql_params_order, response_format,
+    business_glossary, llm_system_prompt,
+    trigger_patterns, adapter_method,
+    otp_required, otp_threshold, approval_threshold,
+    is_active, steps
+) VALUES (
+    '11111111-0000-0000-0000-000000000001',
+    'Generate Quotation with Rate Update',
+    'generate_quotation_with_rate',
+    'Update metal rate and generate quotation PDF in one step.',
+    'action',
+    '["quote for {metal_type} {weight}g {rate} per g making charges {making}%", "{metal_type} {weight}g {rate} per g making {making}%", "generate quotation {metal_type} {weight}g rate {rate} making {making}%", "price quotation {metal_type} {weight} grams {rate} per gram making {making} percent", "quotation {metal_type} {weight}g at {rate}/g making {making}%"]'::jsonb,
+    '{"metal_type": {"required": true, "type": "string"}, "weight": {"required": true, "type": "float"}, "rate_per_gram": {"required": true, "type": "float"}, "making_charge_pct": {"required": true, "type": "float"}}'::jsonb,
+    NULL,
+    '[]'::jsonb,
+    'quotation',
+    '{"per g": "per gram", "/g": "per gram"}'::jsonb,
+    'This workflow updates metal_rates table with new rate and making charge, then generates a quotation PDF. Input format: "22kt gold ring, 15g, 6000 per g, making charges 15%". Extracts metal_type, weight, rate_per_gram, making_charge_pct. Updates metal_rates table, calculates quotation, generates PDF. Glossary: per g=per gram. Examples: "22kt gold ring 15g 6000 per g making charges 15%", "18kt 10g 5000 per g making 12%". All 4 parameters required.',
+    '[]'::jsonb,
+    'quotation.generate_quotation_with_rate_update',
     false,
     NULL,
     NULL,

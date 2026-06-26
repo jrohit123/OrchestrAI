@@ -311,3 +311,192 @@ def parse_rate_command(raw_text: str) -> dict:
         return {"type": "rate", "metal": m.group(1), "value": rate}
 
     return {"type": None}
+
+
+def parse_quotation_with_rate(raw_text: str) -> dict:
+    """
+    Parse: '22kt gold ring, 15g, 6000 per g, making charges 15%'
+    Returns: {metal_type, weight, rate_per_gram, making_charge_pct}
+    """
+    t = raw_text.lower().strip()
+
+    # Extract metal type
+    metal_type = None
+    for metal in ["22kt", "18kt", "14kt", "24kt", "silver", "platinum", "gold"]:
+        if metal in t:
+            metal_type = metal if metal != "gold" else "22kt"  # default gold to 22kt
+            break
+
+    # Extract weight (grams)
+    weight = None
+    m = re.search(r'([\d.]+)\s*(?:g|gram|grams)', t)
+    if m:
+        weight = float(m.group(1))
+
+    # Extract rate per gram
+    rate = None
+    m = re.search(r'([\d,]+)\s*(?:per\s+g|\/g|per\s*gram)', t)
+    if m:
+        rate = float(m.group(1).replace(",", ""))
+
+    # Extract making charge percentage
+    making = None
+    m = re.search(r'making\s*(?:charge|charges?)\s*[:\-]?\s*([\d.]+)\s*%?', t)
+    if m:
+        making = float(m.group(1))
+
+    return {
+        "metal_type": metal_type,
+        "weight": weight,
+        "rate_per_gram": rate,
+        "making_charge_pct": making
+    }
+
+
+async def generate_quotation_with_rate_update(
+    org_id: str,
+    entity_raw: str = None,
+    user_id: str = None,
+    phone: str = None,
+    raw_text: str = None,
+    metal_type: str = None,
+    weight_grams: float = None,
+    rate_per_gram: float = None,
+    making_charge_pct: float = None,
+    **kwargs
+) -> dict:
+    """
+    Update metal rate and generate quotation PDF in one workflow.
+    Input: '22kt gold ring, 15g, 6000 per g, making charges 15%'
+    """
+    # Parse from raw_text if not provided
+    if not metal_type or not weight_grams or not rate_per_gram or not making_charge_pct:
+        parsed = parse_quotation_with_rate(raw_text)
+        metal_type = metal_type or parsed["metal_type"]
+        weight_grams = weight_grams or parsed["weight"]
+        rate_per_gram = rate_per_gram or parsed["rate_per_gram"]
+        making_charge_pct = making_charge_pct or parsed["making_charge_pct"]
+
+    # Validate all required fields
+    if not metal_type:
+        return {
+            "success": False,
+            "message": "🤔 Please specify metal type (e.g., 22kt, 18kt, silver)"
+        }
+    if not weight_grams:
+        return {
+            "success": False,
+            "message": "🤔 Please specify weight in grams (e.g., 15g)"
+        }
+    if not rate_per_gram:
+        return {
+            "success": False,
+            "message": "🤔 Please specify rate per gram (e.g., 6000 per g)"
+        }
+    if not making_charge_pct:
+        return {
+            "success": False,
+            "message": "🤔 Please specify making charge percentage (e.g., making charges 15%)"
+        }
+
+    # Update metal_rates table
+    existing = await fetch_one(
+        "SELECT * FROM metal_rates WHERE org_id = $1 AND metal_type = $2",
+        org_id, metal_type.lower()
+    )
+
+    if not existing:
+        await execute("""
+            INSERT INTO metal_rates (org_id, metal_type, rate_per_gram, making_charge_pct, updated_by)
+            VALUES ($1, $2, $3, $4, $5)
+        """, org_id, metal_type.lower(), rate_per_gram, making_charge_pct, user_id)
+    else:
+        await execute("""
+            UPDATE metal_rates SET rate_per_gram = $1, making_charge_pct = $2,
+            updated_by = $3, updated_at = NOW()
+            WHERE org_id = $4 AND metal_type = $5
+        """, rate_per_gram, making_charge_pct, user_id, org_id, metal_type.lower())
+
+    # Fetch org settings
+    org = await fetch_one(
+        "SELECT name, gst_rate FROM orgs WHERE id = $1", org_id
+    )
+    org_name = org["name"] if org else "Organisation"
+    gst_pct = float(org["gst_rate"]) if org and org["gst_rate"] else 3.0
+
+    # Calculate quotation
+    metal_cost = weight_grams * rate_per_gram
+    making_charges = round(metal_cost * making_charge_pct / 100, 2)
+    subtotal = round(metal_cost + making_charges, 2)
+    gst_amount = round(subtotal * gst_pct / 100, 2)
+    total_amount = round(subtotal + gst_amount, 2)
+
+    # Auto quotation number
+    count_row = await fetch_one(
+        "SELECT COUNT(*) as cnt FROM quotations WHERE org_id = $1", org_id
+    )
+    quotation_number = f"QUO-{1001 + int(count_row['cnt'])}"
+
+    # Save quotation (without customer - this is a rate-based quotation)
+    await execute("""
+        INSERT INTO quotations (
+            org_id, quotation_number, customer_id, customer_name,
+            metal_type, weight_grams, design_code, rate_per_gram,
+            making_charge_pct, making_charges, subtotal,
+            gst_pct, gst_amount, total_amount, status,
+            valid_until, created_by
+        ) VALUES ($1,$2,NULL,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12,'sent',$13,$14)
+    """, org_id, quotation_number, "Rate-Based Quotation",
+        metal_type.lower(), weight_grams, rate_per_gram, making_charge_pct,
+        making_charges, subtotal, gst_pct, gst_amount, total_amount,
+        datetime.now().date() + timedelta(days=3), user_id)
+
+    # Generate PDF
+    try:
+        from app.services.quotation_pdf import generate_quotation_pdf
+        pdf_bytes = generate_quotation_pdf(
+            quotation_number=quotation_number,
+            customer_name="Rate-Based Quotation",
+            metal_type=metal_type,
+            weight_grams=weight_grams,
+            design_code=None,
+            rate_per_gram=rate_per_gram,
+            making_charge_pct=making_charge_pct,
+            making_charges=making_charges,
+            subtotal=subtotal,
+            gst_pct=gst_pct,
+            gst_amount=gst_amount,
+            total_amount=total_amount,
+            org_name=org_name,
+            customer_city="",
+            valid_days=3
+        )
+        await send_document(
+            to=phone,
+            pdf_bytes=pdf_bytes,
+            filename=f"{quotation_number}.pdf",
+            caption=f"📋 {quotation_number} — Rs.{total_amount:,.0f}"
+        )
+        pdf_sent = True
+    except Exception as e:
+        print(f"[QUOTATION PDF] Error: {e}")
+        pdf_sent = False
+
+    return {
+        "success": True,
+        "quotation_number": quotation_number,
+        "message": (
+            f"✅ *Rate Updated & Quotation Generated*\n\n"
+            f"Metal: {metal_type.upper()}\n"
+            f"Rate: Rs.{rate_per_gram:,.0f}/g (updated)\n"
+            f"Making: {making_charge_pct:.1f}% (updated)\n\n"
+            f"📋 *Quotation #{quotation_number}*\n"
+            f"Weight: {weight_grams:.3f}g\n"
+            f"Metal Value: Rs.{metal_cost:,.0f}\n"
+            f"Making Charges: Rs.{making_charges:,.0f}\n"
+            f"Subtotal: Rs.{subtotal:,.0f}\n"
+            f"GST ({gst_pct:.0f}%): Rs.{gst_amount:,.0f}\n"
+            f"*Total: Rs.{total_amount:,.0f}*\n\n"
+            f"{'📄 PDF sent above ↑' if pdf_sent else '⚠️ PDF unavailable.'}"
+        )
+    }
