@@ -290,6 +290,7 @@ async def save_generated_workflow(request: Request):
         body.get("otp_threshold"),
         body.get("approval_threshold"),
         json.dumps(body.get("steps", []))
+    )
     
     # Add permission to selected roles
     intent_key = body.get("intent_key")
