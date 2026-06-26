@@ -285,13 +285,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # 10b. Identity queries (who am I, my permissions) - handled by Intent Analyzer
     if route_type == "identity":
-        role_name = user.get("role_name", "Unknown")
+        role_name = user.get("role", "Unknown")
         permissions = user.get("permissions", [])
+        identity_type = result.get("parameters", {}).get("identity_type", "role")
         
-        # Determine what they're asking based on intent
-        intent_text = result.get("intent", "").lower()
-        
-        if any(word in intent_text for word in ["permission", "access", "can i do"]):
+        if identity_type == "permissions":
             if isinstance(permissions, list):
                 perms_str = ", ".join(permissions)
                 await send_text(phone, f"🔑 Your permissions:\n{perms_str}")

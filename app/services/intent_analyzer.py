@@ -40,12 +40,12 @@ GENERAL READ examples (route_type = general_read, action = Read):
 - "show all users" → read users table
 
 IDENTITY examples (route_type = identity, action = Read):
-- "who am I" → get current user's role
-- "my role" → get current user's role
-- "what is my role" → get current user's role
-- "my permissions" → get current user's permissions
-- "what can I do" → get current user's permissions
-- "my access" → get current user's permissions
+- "who am I" → get current user's role, parameters: {"identity_type": "role"}
+- "my role" → get current user's role, parameters: {"identity_type": "role"}
+- "what is my role" → get current user's role, parameters: {"identity_type": "role"}
+- "my permissions" → get current user's permissions, parameters: {"identity_type": "permissions"}
+- "what can I do" → get current user's permissions, parameters: {"identity_type": "permissions"}
+- "my access" → get current user's permissions, parameters: {"identity_type": "permissions"}
 
 WORKFLOW examples (route_type = workflow):
 - "create invoice for Mehta 45000" → workflow_key: create_invoice
