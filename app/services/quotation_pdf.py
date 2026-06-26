@@ -87,26 +87,19 @@ def generate_quotation_pdf(
     valid_until = today + timedelta(days=valid_days)
 
     # ── HEADER ────────────────────────────────────────
-    # Company name
+    # Company name (full width)
     pdf.set_xy(L, 14)
-    pdf.set_font('Helvetica', 'B', 20)
+    pdf.set_font('Helvetica', 'B', 18)
     pdf.set_text_color(*BLUE)
-    pdf.cell(100, 10, org_name, align='L')
-
-    # QUOTATION badge (green for quotes, blue for invoices)
-    pdf.set_fill_color(*GREEN)
-    pdf.set_xy(142, 14)
-    pdf.set_font('Helvetica', 'B', 12)
-    pdf.set_text_color(*WHITE)
-    pdf.cell(54, 10, 'QUOTATION', fill=True, align='C')
+    pdf.cell(W, 10, org_name, align='L')
 
     # Tagline
     pdf.set_xy(L, 25)
     pdf.set_font('Helvetica', 'I', 8)
     pdf.set_text_color(*MUTED)
-    pdf.cell(100, 4.5, 'Powered by OrchestrAI   |   Automate With AI', align='L')
+    pdf.cell(W, 4.5, 'Powered by OrchestrAI   |   Automate With AI', align='L')
 
-    # Quote meta
+    # Quote meta (right aligned)
     meta = [
         ('Quote No:', quotation_number),
         ('Date:', today.strftime('%d %b %Y')),
@@ -114,7 +107,7 @@ def generate_quotation_pdf(
     ]
     my = 25
     for label, value in meta:
-        pdf.set_xy(142, my)
+        pdf.set_xy(140, my)
         pdf.set_font('Helvetica', '', 8.5)
         pdf.set_text_color(*MUTED)
         pdf.cell(28, 5, label, align='L')
@@ -283,5 +276,13 @@ def generate_quotation_pdf(
     pdf.set_font('Helvetica', '', 7.5)
     pdf.set_text_color(*MUTED)
     pdf.cell(56, 4, 'Authorised Signatory', align='C')
+
+    # ── QUOTATION BADGE (above footer) ───────────────────
+    by = pdf.get_y() + 10
+    pdf.set_fill_color(*GREEN)
+    pdf.set_xy(L, by)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_text_color(*WHITE)
+    pdf.cell(W, 10, 'QUOTATION', fill=True, align='C')
 
     return bytes(pdf.output())

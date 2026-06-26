@@ -337,9 +337,9 @@ def parse_quotation_with_rate(raw_text: str) -> dict:
     if m:
         rate = float(m.group(1).replace(",", ""))
 
-    # Extract making charge percentage
+    # Extract making charge percentage - more specific pattern to avoid matching rate
     making = None
-    m = re.search(r'making\s*(?:charge|charges?)\s*[:\-]?\s*([\d.]+)\s*%?', t)
+    m = re.search(r'making\s*(?:charge|charges?)\s*[:\-]?\s*([\d.]+)\s*%?\s*(?:$|,|\s)', t)
     if m:
         making = float(m.group(1))
 

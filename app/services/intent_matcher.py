@@ -116,11 +116,19 @@ def _extract_entities(message: str, entity_schema: dict, glossary: dict, workflo
                 entities[field] = spec["default"]
 
         elif entity_type == "float":
-            m = re.search(r'\b(\d+(?:\.\d+)?)\b', normalized)
-            if m:
-                entities[field] = float(m.group(1))
-            elif spec.get("default") is not None:
-                entities[field] = float(spec["default"])
+            # Special handling for making_charge_pct - look for percentage context
+            if field == "making_charge_pct":
+                m = re.search(r'making\s*(?:charge|charges?)\s*[:\-]?\s*([\d.]+)\s*%?', normalized)
+                if m:
+                    entities[field] = float(m.group(1))
+                elif spec.get("default") is not None:
+                    entities[field] = float(spec["default"])
+            else:
+                m = re.search(r'\b(\d+(?:\.\d+)?)\b', normalized)
+                if m:
+                    entities[field] = float(m.group(1))
+                elif spec.get("default") is not None:
+                    entities[field] = float(spec["default"])
 
         elif field == "status":
             # Status extraction: use workflow's entity_schema if provided
