@@ -11,35 +11,36 @@ async def send_weekly_dues_report():
     print("[SCHEDULER] Running dues report...")
     from app.adapters.crm import get_all_overdue
 
-    workflows = await fetch_all("""
-        SELECT org_id, scheduled_by
-        FROM workflows
-        WHERE intent_key = 'weekly_dues_report' AND is_scheduled = true
+    # Get all active orgs with scheduled reports
+    orgs = await fetch_all("""
+        SELECT o.id as org_id, o.name as org_name, u.id as scheduled_by, u.phone, u.name as user_name
+        FROM orgs o
+        LEFT JOIN users u ON u.org_id = o.id AND u.role_id = (
+            SELECT id FROM roles WHERE name = 'owner' AND org_id = o.id LIMIT 1
+        )
+        WHERE o.is_active = true
+          AND EXISTS (
+              SELECT 1 FROM workflows 
+              WHERE org_id = o.id AND intent_key = 'weekly_dues_report' AND is_scheduled = true
+          )
     """)
 
-    for wf in workflows:
+    for org in orgs:
         try:
-            user = await fetch_one("""
-                SELECT u.phone, u.name, o.name as org_name
-                FROM users u
-                JOIN orgs o ON o.id = u.org_id
-                WHERE u.id = $1 AND u.is_active = true AND u.phone IS NOT NULL
-            """, wf["scheduled_by"])
-
-            if not user:
-                print(f"[SCHEDULER] User {wf['scheduled_by']} not found or inactive")
+            if not org["phone"]:
+                print(f"[SCHEDULER] No phone for owner of {org['org_name']}")
                 continue
 
-            report = await get_all_overdue(str(wf["org_id"]))
+            report = await get_all_overdue(str(org["org_id"]))
             message = (
-                f"📊 *Scheduled Dues Report — {user['org_name']}*\n\n"
+                f"📊 *Scheduled Dues Report — {org['org_name']}*\n\n"
                 + (report["message"] if report["count"] > 0
                    else "✅ No overdue invoices. All clear!")
             )
-            await send_text(user["phone"], message)
-            print(f"[SCHEDULER] Sent to {user['name']} ({user['org_name']})")
+            await send_text(org["phone"], message)
+            print(f"[SCHEDULER] Sent to {org['user_name']} ({org['org_name']})")
         except Exception as e:
-            print(f"[SCHEDULER] Error for workflow: {e}")
+            print(f"[SCHEDULER] Error for {org['org_name']}: {e}")
 
 
 def reschedule_dues_report(day_of_week: str, hour: int, minute: int = 0):

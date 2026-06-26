@@ -163,18 +163,18 @@ async def generate_workflow_config(request: Request):
     if not description:
         raise HTTPException(status_code=400, detail="Description is required")
     
-    prompt = f"""You are a workflow configuration generator for a WhatsApp business automation system.
+    prompt = f"""You are a Workflow Creator for a WhatsApp jewellery ERP.
 
-User wants to add this workflow:
+User wants this workflow:
 "{description}"
 
-Generate ONLY this JSON structure with no other text:
+Generate ONLY this JSON (no markdown, no extra text):
 {{
   "name": "2-4 word name",
   "intent_key": "exact_function_name_from_adapter_method",
   "description": "Rich description with examples, keywords, entity_type, business context",
   "adapter_method": "module.function format",
-  "trigger_patterns": ["pattern1", "pattern2", "pattern3", "pattern4"]
+  "steps": ["step1", "step2", "step3"]
 }}
 
 Rules:
@@ -203,12 +203,12 @@ Rules:
   * "orders.update_order_status" - update order status
   * "orders.get_orders" - view orders
   DO NOT invent or use any other adapter methods.
-- trigger_patterns: 4-6 regex patterns users would type
-  * If entity_type is product/customer/order, include (.+) capture group: "stock (.+)", "dues (.+)"
-  * If no entity needed, no capture group: "show all inventory", "dues report"
-  * Use simple patterns: "stock (.+)", "how many (.+)", "(.+) available", "inventory (.+)"
+- steps: Array of 3-5 step descriptions in plain English
+  * Each step should be a short action description
+  * Example: ["Validate customer exists", "Check credit limit", "Create invoice record", "Send confirmation"]
 
 IMPORTANT: The intent_key MUST be the exact function name from adapter_method, not a new name.
+NO trigger_patterns — Intent+Action routing uses LLM, not regex.
 
 Return ONLY the JSON. No explanations, no markdown, no extra text."""
 
@@ -222,24 +222,19 @@ Return ONLY the JSON. No explanations, no markdown, no extra text."""
     
     # Clean up if AI adds markdown code blocks or extra text
     if "```json" in content:
-        # Extract content between ```json and ```
         start = content.find("```json") + 7
         end = content.find("```", start)
         if end != -1:
             content = content[start:end].strip()
     elif "```" in content:
-        # Extract content between first ``` and next ```
         start = content.find("```") + 3
         end = content.find("```", start)
         if end != -1:
             content = content[start:end].strip()
     
-    # Try to find JSON object boundaries
     if content.startswith("{") and content.endswith("}"):
-        # Already looks like JSON
         pass
     else:
-        # Try to extract JSON from mixed content
         start_idx = content.find("{")
         end_idx = content.rfind("}") + 1
         if start_idx != -1 and end_idx > start_idx:
@@ -247,9 +242,10 @@ Return ONLY the JSON. No explanations, no markdown, no extra text."""
     
     try:
         config = json.loads(content)
+        # Ensure trigger_patterns is always empty for Intent+Action routing
+        config["trigger_patterns"] = []
         return config
     except json.JSONDecodeError as e:
-        # Return the raw content for debugging
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to parse AI response. Error: {str(e)}. Raw response: {content[:500]}"
@@ -281,22 +277,19 @@ async def save_generated_workflow(request: Request):
     await execute("""
         INSERT INTO workflows (
             org_id, name, intent_key, description, trigger_patterns, adapter_method,
-            otp_required, otp_threshold, approval_threshold, is_active
-        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, true)
+            otp_required, otp_threshold, approval_threshold, is_active, steps
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, true, $10::jsonb)
     """, 
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
-        json.dumps(body.get("trigger_patterns", [])),  # Save actual patterns from AI
+        json.dumps([]),  # Always empty for Intent+Action routing
         adapter_method,
         body.get("otp_required", False),
         body.get("otp_threshold"),
-        body.get("approval_threshold")
-    )
-    
-    # Invalidate classifier cache so new patterns are loaded immediately
-    invalidate_patterns_cache(org_id)
+        body.get("approval_threshold"),
+        json.dumps(body.get("steps", []))
     
     # Add permission to selected roles
     intent_key = body.get("intent_key")
@@ -308,10 +301,9 @@ async def save_generated_workflow(request: Request):
             WHERE name = $2 AND NOT $1 = ANY(permissions)
         """, intent_key, role_name)
     
-    # Invalidate classifier cache so new patterns are active immediately
-    invalidate_patterns_cache(org_id)
+    # No cache invalidation needed for Intent+Action routing
     
-    return {"success": True, "message": f"Workflow saved and permission added to {len(selected_roles)} role(s)"}
+    return {"success": True, "message": "Workflow created successfully"}
 
 
 @router.post("/admin/api/gst-rate")
@@ -613,8 +605,9 @@ async function saveWorkflow() {{
     name: document.getElementById('wfName').value.trim(),
     intent_key: document.getElementById('wfIntentKey').value.trim(),
     description: document.getElementById('wfDescription').value.trim(),
-    trigger_patterns: (window.generatedConfig && window.generatedConfig.trigger_patterns) || [],
+    trigger_patterns: [],  // Always empty for Intent+Action routing
     adapter_method: (window.generatedConfig && window.generatedConfig.adapter_method) || 'generic',
+    steps: (window.generatedConfig && window.generatedConfig.steps) || [],
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
     approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null,

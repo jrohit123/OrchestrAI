@@ -7,7 +7,7 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
-async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None, user_id: str = None, phone: str = None) -> str:
+async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None, user_id: str = None, phone: str = None, parameters: dict = None, **ignored) -> str:
     """
     Generic dispatcher for DB-registered workflows that have no hardcoded handler.
     Dynamically imports and calls the adapter function specified in the workflow config.
@@ -31,12 +31,14 @@ async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str,
         adapter_func = getattr(module, func_name)
         
         # Build context dict for adapters that need more than org_id + entity
+        parameters = parameters or {}
         context = {
             "org_id": org_id,
             "user_id": user_id,
             "phone": phone,
             "raw_text": raw_text,
-            "entity_raw": entity
+            "entity_raw": entity,
+            **parameters,  # LLM-extracted fields override
         }
         
         # Call the adapter with appropriate arguments
@@ -195,11 +197,13 @@ async def execute_intent(
     user: dict,
     session_id: str,
     session: dict,
-    raw_text: str
+    raw_text: str,
+    parameters: dict = None
 ) -> str:
     org_id  = user["org_id"]
     user_id = user["user_id"]
     phone   = user["phone"]
+    parameters = parameters or {}
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
@@ -224,6 +228,22 @@ async def execute_intent(
             return "⏸ Dues report schedule *paused*.\nSend *schedule dues report every Monday 9 AM* to restart."
 
         if parsed["action"] == "set":
+            # Auto-create workflow if it doesn't exist
+            existing = await fetch_one(
+                "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = 'weekly_dues_report'",
+                org_id
+            )
+            if not existing:
+                await execute("""
+                    INSERT INTO workflows (
+                        org_id, intent_key, name, description, steps,
+                        adapter_method, trigger_patterns, is_active, is_scheduled
+                    ) VALUES ($1, 'weekly_dues_report', 'Scheduled Dues Report',
+                    'System workflow for cron-scheduled overdue summary. Not used for ad-hoc user queries.',
+                    ARRAY['["Send aggregated overdue report to scheduled user via WhatsApp"]'::jsonb],
+                    'crm.get_all_overdue', '[]'::jsonb, true, false)
+                """, org_id)
+            
             reschedule_dues_report(parsed["day"], parsed["hour"], parsed.get("minute", 0))
             await execute("""
                 UPDATE workflows
@@ -259,7 +279,11 @@ async def execute_intent(
 
     if db_workflow:
         adapter_method = db_workflow.get("adapter_method", "generic")
-        result_msg = await _dispatch_dynamic_intent(intent, entity_raw, org_id, raw_text, adapter_method, session_id, user_id, phone)
+        result_msg = await _dispatch_dynamic_intent(
+            intent, entity_raw, org_id, raw_text, adapter_method,
+            session_id, user_id, phone,
+            parameters=parameters,  # NEW
+        )
         await _log(org_id, user_id, intent, raw_text, "success")
         return result_msg
 

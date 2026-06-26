@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, Request, Response
 from dotenv import load_dotenv
 
-from app.services.identity import resolve_identity, check_permission
+from app.services.identity import resolve_identity, check_permission, check_route_permission
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
 from app.classifier.classifier import classify_message
@@ -223,21 +223,32 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         return
 
     # 8. Classify
-    result = await classify_message(text, org_name=user["org_name"], org_id=user["org_id"])
-    intent = result["intent"]
-    tier   = result["tier"]
-    print(f"[CLASSIFIER] Intent: {intent} | Tier: {tier}")
+    result = await classify_message(
+        text,
+        org_name=user["org_name"],
+        org_id=user["org_id"],
+        user_role=user["role"],
+    )
+    route_type = result.get("route_type", "unknown")
+    print(f"[CLASSIFIER] route={route_type} | action={result.get('action')} | tier={result.get('tier')}")
 
     # 9. Permission gate
-    if not check_permission(user, intent):
+    allowed, denied = check_route_permission(user, result)
+    if not allowed:
         await send_text(phone,
-            f"❌ You don't have permission for: *{intent}*\n"
+            f"❌ You don't have permission for: *{denied}*\n"
             f"Your role: *{user['role']}*"
         )
         return
 
-    # 10. Static intents
-    if intent == "action:greet":
+    # 10a. Clarification
+    if route_type == "clarify":
+        q = result.get("clarification_question") or "Could you provide more details?"
+        await send_text(phone, f"🤔 {q}")
+        return
+
+    # 10b. Static action intents (unchanged)
+    if result.get("intent") == "action:greet":
         hours   = ttl_minutes // 60
         mins    = ttl_minutes % 60
         ttl_str = f"{hours}h" if not mins else f"{hours}h {mins}m"
@@ -255,7 +266,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    if intent == "action:menu":
+    if result.get("intent") == "action:menu":
         await send_text(phone,
             f"📋 *What can I help with?*\n\n"
             f"📦 *Stock* — stock gold ring\n"
@@ -267,27 +278,44 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    if intent == "action:retry_otp":
+    if result.get("intent") == "action:retry_otp":
         await set_session(session_id, {})
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return
 
-    if intent == "unknown":
-        await send_text(phone,
-            "🤔 Didn't understand that.\n"
-            "Try: *stock rings* | *dues Mehta* | *help*"
+    # 10c. General Read
+    if route_type == "general_read":
+        from app.services.query_engine import execute_read
+        reply = await execute_read(
+            org_id=user["org_id"],
+            intent=result.get("intent", text),
+            parameters=result.get("parameters") or {},
         )
+        await send_text(phone, reply)
         return
 
-    await set_session(session_id, {**session, "last_intent": intent})
+    # 10d. Unknown
+    if route_type == "unknown" or result.get("intent") == "unknown":
+        await send_text(phone, "🤔 Didn't understand that.\nTry: *dues Mehta* | *top 3 dues* | *help*")
+        return
+
+    # 10e. Workflow execution
+    intent = result.get("workflow_key") or result.get("intent")
+    entity_raw = (
+        result.get("parameters", {}).get("customer_name")
+        or result.get("parameters", {}).get("product_name")
+        or result.get("entity_raw")
+    )
+    await set_session(session_id, {**session, "last_intent": intent, "last_parameters": result.get("parameters", {})})
 
     reply = await execute_intent(
         intent=intent,
-        entity_raw=result.get("entity_raw"),
+        entity_raw=entity_raw,
         user=user,
         session_id=session_id,
         session=session,
-        raw_text=text
+        raw_text=text,
+        parameters=result.get("parameters") or {},  # NEW kwarg
     )
     await send_text(phone, reply)
 

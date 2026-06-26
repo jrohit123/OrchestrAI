@@ -54,3 +54,55 @@ def check_permission(user: dict, intent: str) -> bool:
     if intent == "unknown":
         return True
     return intent in user.get("permissions", [])
+
+
+# Tables allowed per role for general_read (extend as needed)
+ROLE_READ_ACCESS = {
+    "owner":      {"customers", "invoices", "inventory", "orders", "metal_rates", "quotations"},
+    "accountant": {"customers", "invoices", "inventory", "orders"},
+    "sales":      {"customers", "inventory", "orders", "quotations", "metal_rates"},
+    "warehouse":  {"inventory"},
+}
+
+WORKFLOW_ACTIONS = {
+    "create_invoice":       "Create",
+    "create_quotation":     "Create",
+    "create_order":         "Create",
+    "send_invoice_pdf":     "Execute",
+    "send_dues_statement":  "Execute",
+    "set_metal_rate":       "Update",
+    "update_order_status":  "Update",
+}
+
+
+def check_route_permission(user: dict, analysis: dict) -> tuple[bool, str]:
+    """
+    Returns (allowed, reason).
+    analysis = output from Intent Analyzer
+    """
+    route = analysis.get("route_type")
+    role = user.get("role", "")
+
+    if route == "clarify":
+        return True, ""
+
+    if route == "general_read":
+        if "general_read" in user.get("permissions", []):
+            return True, ""
+        # Fallback: owner always allowed
+        if role == "owner":
+            return True, ""
+        return False, "general_read"
+
+    if route == "workflow":
+        wk = analysis.get("workflow_key")
+        if not wk:
+            return False, "unknown workflow"
+        if wk not in user.get("permissions", []):
+            return False, wk
+        return True, ""
+
+    if route == "system":
+        return check_permission(user, analysis.get("intent", "")), analysis.get("intent", "")
+
+    return False, "unknown route"
