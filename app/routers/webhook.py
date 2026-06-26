@@ -230,6 +230,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         user_role=user["role"],
     )
     route_type = result.get("route_type", "unknown")
+    intent = result.get("intent", "")
+    parameters = result.get("parameters", {})
     print(f"[CLASSIFIER] route={route_type} | action={result.get('action')} | tier={result.get('tier')}")
 
     # 9. Permission gate
@@ -309,13 +311,18 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, reply)
         return
 
-    # 10. Clarification needed
-    if route_type == "clarify":
-        question = result.get("clarification_question") or "Could you please clarify your request?"
-        await send_text(phone, f"🤔 {question}")
+    # 10c. General Read
+    if route_type == "general_read":
+        from app.services.query_engine import execute_read
+        reply = await execute_read(
+            org_id=user["org_id"],
+            intent=intent,
+            parameters=parameters,
+        )
+        await send_text(phone, reply)
         return
 
-    # 11. Unknown
+    # 10d. Unknown
     if route_type == "unknown":
         await send_text(phone,
             "🤔 Didn't understand that.\n"
@@ -323,22 +330,24 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         )
         return
 
-    # 12. Permission check — general_read allowed for all roles
-    # workflow routes use workflow_key as the permission
-    parameters = result.get("parameters", {})
-    check_key = result.get("workflow_key") or route_type
-    if not check_permission(user, check_key):
-        await send_text(phone,
-            f"❌ You don't have permission for this action.\n"
-            f"Your role: *{user['role']}*"
+    # 10e. Workflow execution
+    # If LLM classified as workflow but no workflow_key, fall back to general_read
+    workflow_key = result.get("workflow_key")
+    if route_type == "workflow" and not workflow_key:
+        # Fallback to general_read for queries that look like reads
+        from app.services.query_engine import execute_read
+        reply = await execute_read(
+            org_id=user["org_id"],
+            intent=intent,
+            parameters=parameters,
         )
+        await send_text(phone, reply)
         return
-
+    
     await set_session(session_id, {**session, "last_intent": intent})
 
-    # 13. Route to executor
     reply = await execute_intent(
-        intent=result.get("workflow_key") or route_type,
+        intent=workflow_key or route_type,
         entity_raw=parameters.get("customer_name") or parameters.get("product_name"),
         user=user,
         session_id=session_id,
