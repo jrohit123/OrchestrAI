@@ -204,6 +204,8 @@ def _fmt(rows: list, response_format: str = "generic") -> str:
         return _fmt_orders(clean)
     if response_format == "customers" or ("city" in clean[0] and "name" in clean[0] and "qty" not in clean[0]):
         return _fmt_customers(clean)
+    if response_format == "roles" or ("role" in clean[0] and "permissions" in clean[0]):
+        return _fmt_roles(clean)
     if response_format == "metal_rates" or ("metal_type" in clean[0] and "rate_per_gram" in clean[0]):
         return _fmt_metal_rates(clean)
     if response_format == "invoices" or "invoice_number" in clean[0]:
@@ -268,6 +270,23 @@ def _fmt_metal_rates(clean):
         making = r.get("making_charge_pct","—")
         upd    = str(r.get("updated_at",""))[:10]
         lines.append(f"• *{r['metal_type']}*: ₹{rate:,.0f}/g | Making: {making}% | {upd}")
+    return "\n".join(lines)
+
+def _fmt_roles(clean):
+    lines = ["👤 *Your Role & Permissions*"]
+    for r in clean:
+        role = r.get("role", "?")
+        perms = r.get("permissions", [])
+        if isinstance(perms, list):
+            # Show first 8 permissions, then count
+            shown = perms[:8]
+            remaining = len(perms) - 8
+            perm_lines = "\n".join(f"  • {p}" for p in shown)
+            if remaining > 0:
+                perm_lines += f"\n  _...and {remaining} more_"
+        else:
+            perm_lines = f"  {str(perms)[:100]}"
+        lines.append(f"• *Role*: {role}\n{perm_lines}")
     return "\n".join(lines)
 
 def _fmt_invoices(clean):
