@@ -10,10 +10,10 @@ from app.services.whatsapp import send_document
 
 
 async def get_metal_rates(org_id: str) -> dict:
-    """Fetch all current metal rates for org."""
+    """Fetch all current metal rates for org from pricing table."""
     rows = await fetch_all(
         "SELECT metal_type, rate_per_gram, making_charge_pct "
-        "FROM metal_rates WHERE org_id = $1 ORDER BY metal_type",
+        "FROM pricing WHERE org_id = $1 AND quotation_number IS NULL ORDER BY metal_type",
         org_id
     )
     return {r["metal_type"]: dict(r) for r in rows}
@@ -73,10 +73,10 @@ async def create_quotation(
             "message": f"❌ Customer *{customer_name}* not found."
         }
 
-    # Fetch metal rate
+    # Fetch metal rate from pricing table
     rate_row = await fetch_one(
-        "SELECT rate_per_gram, making_charge_pct FROM metal_rates "
-        "WHERE org_id = $1 AND metal_type = $2",
+        "SELECT rate_per_gram, making_charge_pct FROM pricing "
+        "WHERE org_id = $1 AND metal_type = $2 AND quotation_number IS NULL",
         org_id, metal_type.lower()
     )
 
@@ -110,21 +110,18 @@ async def create_quotation(
 
     # Auto quotation number
     count_row = await fetch_one(
-        "SELECT COUNT(*) as cnt FROM quotations WHERE org_id = $1", org_id
+        "SELECT COUNT(*) as cnt FROM pricing WHERE org_id = $1 AND quotation_number IS NOT NULL", org_id
     )
     quotation_number = f"QUO-{1001 + int(count_row['cnt'])}"
 
-    # Save to DB
+    # Save to pricing table (quotation entry)
     await execute("""
-        INSERT INTO quotations (
-            org_id, quotation_number, customer_id, customer_name,
-            metal_type, weight_grams, design_code, rate_per_gram,
-            making_charge_pct, making_charges, subtotal,
-            gst_pct, gst_amount, total_amount, status,
-            valid_until, created_by
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'sent',$15,$16)
-    """, org_id, quotation_number, customer["id"], customer["name"],
-        metal_type.lower(), weight_grams, design_code,
+        INSERT INTO pricing (
+            org_id, quotation_number, metal_type, weight_grams,
+            rate_per_gram, making_charge_pct, making_charges, subtotal,
+            gst_pct, gst_amount, total_amount, status, valid_until, created_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'sent',$12,$13)
+    """, org_id, quotation_number, metal_type.lower(), weight_grams,
         rate_per_gram, making_pct, making_charges, subtotal,
         gst_pct, gst_amount, total_amount,
         datetime.now().date() + timedelta(days=valid_days), user_id)
@@ -189,12 +186,12 @@ async def set_metal_rate(
     making_charge_pct: float = None,
     **kwargs
 ) -> dict:
-    """Update metal rate and/or making charges."""
-    
+    """Update metal rate and/or making charges in pricing table."""
+
     # Parse from raw_text if not provided
     if not metal_type or (rate_per_gram is None and making_charge_pct is None):
         parsed = parse_rate_command(raw_text)
-        
+
         if parsed["type"] == "gst":
             # GST is handled separately via orgs table
             await execute(
@@ -205,7 +202,7 @@ async def set_metal_rate(
                 "success": True,
                 "message": f"✅ GST rate updated to *{parsed['value']:.1f}%*"
             }
-        
+
         if parsed["type"] == "making":
             metal_type = parsed["metal"]
             making_charge_pct = parsed["value"]
@@ -222,8 +219,9 @@ async def set_metal_rate(
                     "• *set gst 3* — update GST rate"
                 )
             }
+
     existing = await fetch_one(
-        "SELECT * FROM metal_rates WHERE org_id = $1 AND metal_type = $2",
+        "SELECT * FROM pricing WHERE org_id = $1 AND metal_type = $2 AND quotation_number IS NULL",
         org_id, metal_type.lower()
     )
 
@@ -231,17 +229,17 @@ async def set_metal_rate(
         if rate_per_gram is None:
             return {"success": False, "message": f"❌ No rate found for {metal_type}. Provide rate to create one."}
         await execute("""
-            INSERT INTO metal_rates (org_id, metal_type, rate_per_gram, making_charge_pct, updated_by)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO pricing (org_id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
         """, org_id, metal_type.lower(),
             rate_per_gram, making_charge_pct or 15.0, user_id)
     else:
         new_rate = rate_per_gram if rate_per_gram is not None else float(existing["rate_per_gram"])
         new_making = making_charge_pct if making_charge_pct is not None else float(existing["making_charge_pct"])
         await execute("""
-            UPDATE metal_rates SET rate_per_gram = $1, making_charge_pct = $2,
+            UPDATE pricing SET rate_per_gram = $1, making_charge_pct = $2,
             updated_by = $3, updated_at = NOW()
-            WHERE org_id = $4 AND metal_type = $5
+            WHERE org_id = $4 AND metal_type = $5 AND quotation_number IS NULL
         """, new_rate, new_making, user_id, org_id, metal_type.lower())
 
     parts = []
@@ -399,22 +397,22 @@ async def generate_quotation_with_rate_update(
             "message": "🤔 Please specify making charge percentage (e.g., making charges 15%)"
         }
 
-    # Update metal_rates table
+    # Update pricing table (rate entry)
     existing = await fetch_one(
-        "SELECT * FROM metal_rates WHERE org_id = $1 AND metal_type = $2",
+        "SELECT * FROM pricing WHERE org_id = $1 AND metal_type = $2 AND quotation_number IS NULL",
         org_id, metal_type.lower()
     )
 
     if not existing:
         await execute("""
-            INSERT INTO metal_rates (org_id, metal_type, rate_per_gram, making_charge_pct, updated_by)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO pricing (org_id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
         """, org_id, metal_type.lower(), rate_per_gram, making_charge_pct, user_id)
     else:
         await execute("""
-            UPDATE metal_rates SET rate_per_gram = $1, making_charge_pct = $2,
+            UPDATE pricing SET rate_per_gram = $1, making_charge_pct = $2,
             updated_by = $3, updated_at = NOW()
-            WHERE org_id = $4 AND metal_type = $5
+            WHERE org_id = $4 AND metal_type = $5 AND quotation_number IS NULL
         """, rate_per_gram, making_charge_pct, user_id, org_id, metal_type.lower())
 
     # Fetch org settings
@@ -433,22 +431,20 @@ async def generate_quotation_with_rate_update(
 
     # Auto quotation number
     count_row = await fetch_one(
-        "SELECT COUNT(*) as cnt FROM quotations WHERE org_id = $1", org_id
+        "SELECT COUNT(*) as cnt FROM pricing WHERE org_id = $1 AND quotation_number IS NOT NULL", org_id
     )
     quotation_number = f"QUO-{1001 + int(count_row['cnt'])}"
 
-    # Save quotation (without customer - this is a rate-based quotation)
+    # Save to pricing table (quotation entry)
     await execute("""
-        INSERT INTO quotations (
-            org_id, quotation_number, customer_id, customer_name,
-            metal_type, weight_grams, design_code, rate_per_gram,
-            making_charge_pct, making_charges, subtotal,
-            gst_pct, gst_amount, total_amount, status,
-            valid_until, created_by
-        ) VALUES ($1,$2,NULL,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12,'sent',$13,$14)
-    """, org_id, quotation_number, "Rate-Based Quotation",
-        metal_type.lower(), weight_grams, rate_per_gram, making_charge_pct,
-        making_charges, subtotal, gst_pct, gst_amount, total_amount,
+        INSERT INTO pricing (
+            org_id, quotation_number, metal_type, weight_grams,
+            rate_per_gram, making_charge_pct, making_charges, subtotal,
+            gst_pct, gst_amount, total_amount, status, valid_until, created_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'sent',$12,$13)
+    """, org_id, quotation_number, metal_type.lower(), weight_grams,
+        rate_per_gram, making_charge_pct, making_charges, subtotal,
+        gst_pct, gst_amount, total_amount,
         datetime.now().date() + timedelta(days=3), user_id)
 
     # Generate PDF

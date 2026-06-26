@@ -60,9 +60,9 @@ def check_permission(user: dict, intent: str) -> bool:
 
 # Tables allowed per role for general_read (extend as needed)
 ROLE_READ_ACCESS = {
-    "owner":      {"customers", "invoices", "inventory", "orders", "metal_rates", "quotations"},
+    "owner":      {"customers", "invoices", "inventory", "orders", "pricing"},
     "accountant": {"customers", "invoices", "inventory", "orders"},
-    "sales":      {"customers", "inventory", "orders", "quotations", "metal_rates"},
+    "sales":      {"customers", "inventory", "orders", "pricing"},
     "warehouse":  {"inventory"},
 }
 

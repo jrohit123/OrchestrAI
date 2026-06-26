@@ -24,8 +24,7 @@ Tables (always filter by org_id):
     status: draft | pending | overdue | paid | approved
   orders: order_number, customer_name, description, metal_type, status
     status: confirmed | in_production | quality_check | ready | delivered
-  metal_rates: metal_type, rate_per_gram, making_charge_pct
-  quotations: quotation_number, customer_name, total_amount, status
+  pricing: metal_type, rate_per_gram, making_charge_pct (rates) or quotation_number, weight_grams, total_amount (quotations)
   users: name, phone, email, role_id, is_active
   roles: name, permissions[]
 """

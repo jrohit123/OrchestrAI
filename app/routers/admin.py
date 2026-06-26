@@ -169,7 +169,7 @@ async def generate_workflow_config(request: Request):
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name IN ('customers','inventory','invoices','orders',
-                              'metal_rates','quotations','users','roles')
+                              'pricing','users','roles')
         ORDER BY table_name, ordinal_position
     """)
 
@@ -255,9 +255,8 @@ RULE 6 — response_format:
   "inventory" — product name + qty + location
   "orders" — order_number + customer + status
   "customers" — customer name + city + credit_limit
-  "metal_rates" — metal type + rate + making charge
+  "pricing" — metal type + rate + making charge (rates) or quotation_number + weight + total (quotations)
   "invoices" — invoice_number + amount + status + due_date
-  "quotations" — quotation_number + customer + total
   "users" — user name + role
   "generic" — use for anything else
   null — for action workflows
