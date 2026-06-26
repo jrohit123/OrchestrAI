@@ -181,22 +181,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await handle_approval_response(phone, text, user)
         return
 
-    # 6. Read query — customer disambiguation (pick Mehta Jewellers vs Enterprises)
-    if session.get("read_pending"):
-        from app.services.read_agent import handle_read_disambiguation_reply
-        result = await handle_read_disambiguation_reply(user, text, session["read_pending"])
-        if result["status"] == "disambiguation":
-            await set_session(session_id, {
-                **session,
-                "read_pending": result.get("pending", session["read_pending"]),
-            })
-            await send_text(phone, result["message"])
-            return
-        await set_session(session_id, {k: v for k, v in session.items() if k != "read_pending"})
-        await send_text(phone, result["message"])
-        return
-
-    # 6b. Legacy workflow disambiguation (customer selection for writes)
+    # 6. Disambiguation state (customer selection)
     if session.get("disambiguation"):
         # Check if user replied with a number
         if text.strip().isdigit():
@@ -264,99 +249,101 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, f"🤔 {q}")
         return
 
-    # 10b. Interactive system (OTP retry from classifier)
-    if result.get("intent") == "action:retry_otp":
-        await set_session(session_id, {})
-        await send_text(phone, "🔄 Session cleared. Please resend your original request.")
-        return
-
-    # 10c. Capabilities / greeting — LLM + live schema
-    if route_type == "capabilities":
-        from app.services.onboarding import generate_greeting
+    # 10b. Static action intents (unchanged)
+    if result.get("intent") == "action:greet":
         hours   = ttl_minutes // 60
         mins    = ttl_minutes % 60
         ttl_str = f"{hours}h" if not mins else f"{hours}h {mins}m"
         if ttl_minutes < 60:
             ttl_str = f"{ttl_minutes}m"
-        reply = await generate_greeting(user, user["org_name"], ttl_str)
-        await send_text(phone, reply)
+        await send_text(phone,
+            f"👋 Hi *{user['user_name']}*! I'm OrchestrAI.\n\n"
+            f"You can ask:\n"
+            f"• *stock [item]* — check inventory\n"
+            f"• *dues [customer]* — check outstanding\n"
+            f"• *invoice [customer] [qty] [item] [amount]* — create invoice\n"
+            f"• *dues report* — all overdue summary\n"
+            f"• *help* — show this menu\n\n"
+            f"_Session valid for {ttl_str}_"
+        )
         return
 
-    # 10d. Identity
+    if result.get("intent") == "action:menu":
+        await send_text(phone,
+            f"📋 *What can I help with?*\n\n"
+            f"📦 *Stock* — stock gold ring\n"
+            f"💰 *Dues* — dues Mehta\n"
+            f"🧾 *Invoice* — invoice Mehta 25000\n"
+            f"🧾 *Invoice with items* — invoice Mehta 15 gold rings 120000\n"
+            f"📊 *Report* — dues report\n"
+            f"📅 *Schedule* — schedule dues report every Monday 9 AM"
+        )
+        return
+
+    if result.get("intent") == "action:retry_otp":
+        await set_session(session_id, {})
+        await send_text(phone, "🔄 Session cleared. Please resend your original request.")
+        return
+
+    # 9. Identity — who am I, my role, my permissions
     if route_type == "identity":
-        from app.services.read_agent import handle_identity
-        reply = await handle_identity(user, ask_permissions=False)
+        identity_type = result.get("parameters", {}).get("identity_type", "role")
+        if identity_type == "permissions":
+            perms = user.get("permissions", [])
+            # Show meaningful permissions only
+            clean = [p for p in perms if not p.startswith("check_") or "stock" in p or "outstanding" in p]
+            clean = list(dict.fromkeys(perms))[:20]
+            perm_lines = "\n".join(f"• {p}" for p in clean)
+            reply = (
+                f"🔑 *Your Permissions*\n\n"
+                f"Name: {user['user_name']}\n"
+                f"Role: *{user['role']}*\n\n"
+                f"{perm_lines}"
+            )
+        else:
+            reply = (
+                f"👤 *Your Identity*\n\n"
+                f"Name: *{user['user_name']}*\n"
+                f"Role: *{user['role']}*\n"
+                f"Organisation: {user['org_name']}\n"
+                f"Channel: WhatsApp"
+            )
         await send_text(phone, reply)
         return
 
-    # 10e. General Read
+    # 10c. General Read
     if route_type == "general_read":
-        from app.services.read_agent import handle_read
-        read_result = await handle_read(
-            user=user,
-            raw_text=text,
+        from app.services.query_engine import execute_read
+        reply = await execute_read(
+            org_id=user["org_id"],
             intent=intent,
             parameters=parameters,
-        )
-        if read_result["status"] == "disambiguation":
-            await set_session(session_id, {
-                **session,
-                "read_pending": read_result["pending"],
-            })
-        await send_text(phone, read_result["message"])
-        return
-
-    # 10f. Unknown — offer capabilities
-    if route_type == "unknown":
-        from app.services.onboarding import generate_greeting
-        reply = await generate_greeting(user, user["org_name"])
-        await send_text(phone, f"🤔 I didn't quite get that.\n\n{reply}")
-        return
-
-    # 10g. System admin (schedule, lockdown) — from LLM router
-    if route_type == "system":
-        await set_session(session_id, {**session, "last_intent": intent})
-        reply = await execute_intent(
-            intent=intent,
-            entity_raw=None,
-            user=user,
-            session_id=session_id,
-            session=session,
-            raw_text=text,
-            route_type="system",
-            parameters=parameters,
-            analyzer_intent=intent,
-            workflow=None,
         )
         await send_text(phone, reply)
         return
 
-    # 10h. Workflow execution (actions / writes only)
-    workflow_key = result.get("workflow_key")
-    workflow = result.get("workflow") or {}
+    # 10d. Unknown
+    if route_type == "unknown":
+        await send_text(phone,
+            "🤔 Didn't understand that.\n"
+            "Try: *dues Mehta* | *stock gold ring* | *top 3 dues* | *help*"
+        )
+        return
 
-    # Safety: legacy read workflows in DB → read agent
-    if route_type == "workflow" and workflow.get("workflow_type") == "read":
-        from app.services.read_agent import handle_read
-        read_result = await handle_read(
-            user=user,
-            raw_text=text,
-            intent=intent or workflow.get("description", text),
+    # 10e. Workflow execution
+    # If LLM classified as workflow but no workflow_key, fall back to general_read
+    workflow_key = result.get("workflow_key")
+    if route_type == "workflow" and not workflow_key:
+        # Fallback to general_read for queries that look like reads
+        from app.services.query_engine import execute_read
+        reply = await execute_read(
+            org_id=user["org_id"],
+            intent=intent,
             parameters=parameters,
         )
-        if read_result["status"] == "disambiguation":
-            await set_session(session_id, {**session, "read_pending": read_result["pending"]})
-        await send_text(phone, read_result["message"])
+        await send_text(phone, reply)
         return
-
-    if route_type == "workflow" and not workflow_key:
-        from app.services.read_agent import handle_read
-        read_result = await handle_read(user=user, raw_text=text, intent=intent, parameters=parameters)
-        if read_result["status"] == "disambiguation":
-            await set_session(session_id, {**session, "read_pending": read_result["pending"]})
-        await send_text(phone, read_result["message"])
-        return
-
+    
     await set_session(session_id, {**session, "last_intent": intent})
 
     reply = await execute_intent(

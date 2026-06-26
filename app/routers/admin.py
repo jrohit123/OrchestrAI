@@ -396,10 +396,8 @@ async def save_generated_workflow(request: Request):
         """, intent_key, role_name)
 
     # Invalidate workflow cache
-    from app.services.message_router import invalidate_router_cache
-    from app.services.schema_service import invalidate_schema_cache
-    invalidate_router_cache(org_id)
-    invalidate_schema_cache()
+    from app.services.intent_matcher import invalidate_workflow_cache
+    invalidate_workflow_cache(org_id)
 
     return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
