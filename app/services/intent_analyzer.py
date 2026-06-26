@@ -36,6 +36,16 @@ GENERAL READ examples (route_type = general_read, action = Read):
 - "which items are low on stock" → inventory where qty <= reorder_level
 - "list active orders" → orders where status NOT IN ('delivered')
 - "Sharma credit limit" → customers.credit_limit for Sharma
+- "what all roles do we have" → read roles table
+- "show all users" → read users table
+
+IDENTITY examples (route_type = identity, action = Read):
+- "who am I" → get current user's role
+- "my role" → get current user's role
+- "what is my role" → get current user's role
+- "my permissions" → get current user's permissions
+- "what can I do" → get current user's permissions
+- "my access" → get current user's permissions
 
 WORKFLOW examples (route_type = workflow):
 - "create invoice for Mehta 45000" → workflow_key: create_invoice
@@ -105,16 +115,17 @@ RULES:
 1. Separate Intent (what user wants) from Action (what system does).
 2. action must be one of: Read, Create, Update, Delete, Execute
 3. If the query can be answered by reading database tables → route_type = "general_read"
-4. If the query needs PDF generation, invoice creation, order mutation, rate update → route_type = "workflow"
-5. NEVER route aggregate/report/top-N/dues-summary queries to a single-customer workflow
-6. Hindi/Hinglish queries: understand meaning, respond with same routing logic
-7. If critical info is missing AND query cannot proceed → route_type = "clarify" with clarification_question
-8. workflow_key must be null for general_read; must be one of {json.dumps(valid_workflow_keys)} for workflow
-9. parameters: extract all entities (customer_name, product_name, invoice_number, amount, qty, order_number, status, metal_type, weight_grams, design_code, limit)
+4. If the query asks about the current user (who am I, my role, my permissions) → route_type = "identity"
+5. If the query needs PDF generation, invoice creation, order mutation, rate update → route_type = "workflow"
+6. NEVER route aggregate/report/top-N/dues-summary queries to a single-customer workflow
+7. Hindi/Hinglish queries: understand meaning, respond with same routing logic
+8. If critical info is missing AND query cannot proceed → route_type = "clarify" with clarification_question
+9. workflow_key must be null for general_read/identity; must be one of {json.dumps(valid_workflow_keys)} for workflow
+10. parameters: extract all entities (customer_name, product_name, invoice_number, amount, qty, order_number, status, metal_type, weight_grams, design_code, limit)
 
 Return ONLY valid JSON:
 {{
-  "route_type": "general_read" | "workflow" | "clarify" | "unknown",
+  "route_type": "general_read" | "workflow" | "identity" | "clarify" | "unknown",
   "action": "Read" | "Create" | "Update" | "Delete" | "Execute",
   "intent": "Plain English description of what to fetch or do",
   "workflow_key": null or "intent_key_string",

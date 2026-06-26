@@ -232,19 +232,94 @@ def _format_results(rows: list, sql: str) -> str:
     if not rows:
         return "✅ No results found."
     
-    # Try to infer format based on columns
-    cols = list(rows[0].keys())
+    # Filter out sensitive columns
+    sensitive_columns = {'id', 'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id', 
+                         'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
+                         'decided_by', 'requester_id', 'approver_role', 'workflow_id'}
     
-    # Simple table format
-    header = " | ".join(cols[:4])  # Limit to 4 columns
+    # Also filter UUID-like values
+    def is_uuid_like(val):
+        if not isinstance(val, str):
+            return False
+        # Check if it looks like a UUID (contains hyphens and is long)
+        if '-' in val and len(val) > 20:
+            return True
+        return False
+    
+    # Filter columns and values
+    filtered_rows = []
+    for r in rows:
+        filtered = {}
+        for col, val in r.items():
+            if col.lower() in sensitive_columns:
+                continue
+            if is_uuid_like(val):
+                continue
+            filtered[col] = val
+        filtered_rows.append(filtered)
+    
+    if not filtered_rows or not filtered_rows[0]:
+        return "✅ No displayable results."
+    
+    # Try to infer format based on columns
+    cols = list(filtered_rows[0].keys())
+    
+    # Smart formatting based on column names
+    lines = []
+    
+    # Special formatting for roles/permissions
+    if 'name' in cols and 'permissions' in cols:
+        lines.append("👥 *Roles & Permissions*")
+        for r in filtered_rows:
+            role = r.get('name', 'Unknown')
+            perms = r.get('permissions', [])
+            if isinstance(perms, list):
+                perms_str = ', '.join(perms[:5])  # Limit to 5 permissions
+                if len(perms) > 5:
+                    perms_str += f" +{len(perms)-5} more"
+            else:
+                perms_str = str(perms)[:50]
+            lines.append(f"\n• *{role}*: {perms_str}")
+        return "\n".join(lines)
+    
+    # Special formatting for customers
+    if 'name' in cols and 'city' in cols:
+        lines.append("👤 *Customers*")
+        for r in filtered_rows[:10]:
+            name = r.get('name', 'N/A')
+            city = r.get('city', 'N/A')
+            credit = r.get('credit_limit', '')
+            if credit:
+                lines.append(f"• {name} ({city}) — ₹{credit:,.0f}")
+            else:
+                lines.append(f"• {name} ({city})")
+        if len(filtered_rows) > 10:
+            lines.append(f"\n... and {len(filtered_rows) - 10} more")
+        return "\n".join(lines)
+    
+    # Special formatting for inventory
+    if 'name' in cols and 'qty' in cols:
+        lines.append("📦 *Inventory*")
+        for r in filtered_rows[:10]:
+            name = r.get('name', 'N/A')
+            qty = r.get('qty', 0)
+            location = r.get('location', 'N/A')
+            lines.append(f"• {name}: {qty} pcs ({location})")
+        if len(filtered_rows) > 10:
+            lines.append(f"\n... and {len(filtered_rows) - 10} more")
+        return "\n".join(lines)
+    
+    # Default table format (limited columns)
+    display_cols = cols[:4]  # Limit to 4 columns
+    header = " | ".join(display_cols)
     lines = [f"📊 *Results*\n\n{header}"]
     
-    for r in rows[:10]:  # Limit to 10 rows
-        vals = " | ".join(str(r[c])[:20] for c in cols[:4])
+    for r in filtered_rows[:10]:
+        vals = " | ".join(str(r.get(c, ''))[:20] for c in display_cols)
         lines.append(vals)
     
-    if len(rows) > 10:
-        lines.append(f"\n... and {len(rows) - 10} more")
+    if len(filtered_rows) > 10:
+        lines.append(f"\n... and {len(filtered_rows) - 10} more")
     
     return "\n".join(lines)
 

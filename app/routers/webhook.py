@@ -283,6 +283,25 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return
 
+    # 10b. Identity queries (who am I, my permissions) - handled by Intent Analyzer
+    if route_type == "identity":
+        role_name = user.get("role_name", "Unknown")
+        permissions = user.get("permissions", [])
+        
+        # Determine what they're asking based on intent
+        intent_text = result.get("intent", "").lower()
+        
+        if any(word in intent_text for word in ["permission", "access", "can i do"]):
+            if isinstance(permissions, list):
+                perms_str = ", ".join(permissions)
+                await send_text(phone, f"🔑 Your permissions:\n{perms_str}")
+            else:
+                await send_text(phone, "🔑 No specific permissions set.")
+        else:
+            # Default to showing role
+            await send_text(phone, f"👤 You are: *{role_name}*")
+        return
+
     # 10c. General Read
     if route_type == "general_read":
         from app.services.query_engine import execute_read
