@@ -158,153 +158,249 @@ async def admin_clear_sessions(request: Request):
 async def generate_workflow_config(request: Request):
     _check_token(request)
     body = await request.json()
-    description = body.get("description", "")
-    
+    description = body.get("description", "").strip()
+
     if not description:
         raise HTTPException(status_code=400, detail="Description is required")
-    
-    prompt = f"""You are a Workflow Creator for a WhatsApp jewellery ERP.
 
-User wants this workflow:
+    # Load schema for context
+    schema_rows = await fetch_all("""
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name IN ('customers','inventory','invoices','orders',
+                              'metal_rates','quotations','users','roles')
+        ORDER BY table_name, ordinal_position
+    """)
+
+    # Build compact schema
+    table_cols: dict = {}
+    for r in schema_rows:
+        table_cols.setdefault(r["table_name"], []).append(r["column_name"])
+    schema_text = "\n".join(
+        f"  {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())
+    )
+
+    # Detect if this is read or action
+    action_keywords = ["create", "update", "send", "generate", "delete", "set",
+                       "change", "make", "add", "produce", "dispatch", "mark"]
+    is_likely_action = any(kw in description.lower() for kw in action_keywords)
+
+    prompt = f"""You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
+
+The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
+
+ADMIN DESCRIPTION:
 "{description}"
 
-Generate ONLY this JSON (no markdown, no extra text):
+DATABASE SCHEMA (available tables):
+{schema_text}
+
+WORKFLOW TYPES:
+- "read": Query the DB and return data. Use when the intent is to VIEW/CHECK/GET/SHOW/LIST/REPORT information.
+- "action": Call a business function. Use when the intent is to CREATE/UPDATE/SEND/GENERATE/DELETE/SET something.
+
+YOUR TASK: Generate a complete workflow record as JSON. Follow these rules exactly.
+
+══════════════════════════ RULES ══════════════════════════════════
+
+RULE 1 — workflow_type:
+  Detect from the description: read or action.
+  When uncertain, prefer "read".
+
+RULE 2 — training_phrases (CRITICAL — this is how users will trigger this workflow):
+  Generate 8-12 realistic user phrases in WhatsApp style.
+  Include English, Hinglish, and abbreviated forms.
+  Use {{slot_name}} for entity placeholders.
+  Example for "check customer dues": [
+    "{{customer_name}} ka baaki", "dues {{customer_name}}",
+    "{{customer_name}} outstanding", "{{customer_name}} ka udhaar",
+    "{{customer_name}} pending amount", "check dues {{customer_name}}",
+    "{{customer_name}} ka kitna baaki hai", "balance {{customer_name}}",
+    "{{customer_name}} owes how much"
+  ]
+  Be realistic — think about how non-technical WhatsApp users actually type.
+  Include common abbreviations and short forms.
+
+RULE 3 — entity_schema:
+  Only include entities ACTUALLY needed to answer the query.
+  For each entity:
+    "table": which DB table it comes from (or null for computed values)
+    "column": which column to match against
+    "match": "ILIKE" for text search, "exact" for status/codes
+    "required": true/false
+    "format": "wildcard" for ILIKE (adds % wrapping), "exact" for = comparisons
+    "type": "string" (default) | "integer" | "float"
+    "default": optional default value if not provided
+  Example: {{"customer_name": {{"table": "customers", "column": "name", "match": "ILIKE", "required": true, "format": "wildcard"}}}}
+
+RULE 4 — sql_template (ONLY for workflow_type = "read"):
+  Write a complete, parameterized PostgreSQL SELECT query.
+  ALWAYS use $1 for org_id.
+  Use $2, $3, ... for entity params in the order listed in sql_params_order.
+  For ILIKE, DO NOT add % in the SQL — the executor adds wildcards based on entity_schema.format.
+  Include appropriate JOINs, WHERE clauses, GROUP BY, ORDER BY, and LIMIT.
+  NEVER use subqueries unless absolutely necessary — prefer JOINs.
+  Default LIMIT = 20 unless the query is inherently aggregate.
+  Example: "SELECT c.name, SUM(i.amount) AS total_outstanding FROM invoices i JOIN customers c ON c.id=i.customer_id WHERE i.org_id=$1 AND c.name ILIKE $2 AND i.status IN ('pending','overdue') GROUP BY c.id, c.name ORDER BY total_outstanding DESC"
+
+RULE 5 — sql_params_order:
+  List entity_schema keys in the order they appear as $2, $3, etc. in sql_template.
+  Example: ["customer_name"] or ["limit", "status"]
+  Must be empty [] for action workflows.
+
+RULE 6 — response_format:
+  Choose the most appropriate formatter:
+  "outstanding_summary" — customer + outstanding amounts (from invoices aggregation)
+  "inventory" — product name + qty + location
+  "orders" — order_number + customer + status
+  "customers" — customer name + city + credit_limit
+  "metal_rates" — metal type + rate + making charge
+  "invoices" — invoice_number + amount + status + due_date
+  "quotations" — quotation_number + customer + total
+  "users" — user name + role
+  "generic" — use for anything else
+  null — for action workflows
+
+RULE 7 — business_glossary:
+  Map common user terms FOR THIS SPECIFIC WORKFLOW to what they mean.
+  Include the 3-6 most likely alternative phrasings users might type.
+  Example for dues workflow: {{"baaki": "outstanding", "udhaar": "unpaid dues", "pending": "pending/overdue invoices", "payment baki": "outstanding balance"}}
+
+RULE 8 — llm_system_prompt:
+  Write a focused system prompt that an LLM would use ONLY for this workflow when keyword matching is ambiguous.
+  Include:
+  a) One sentence: what this workflow does
+  b) The DB tables and JOIN pattern involved
+  c) Business glossary for this workflow
+  d) 3 concrete example inputs and what entity to extract
+  e) One disambiguation rule (what this workflow is NOT)
+  Keep under 300 words.
+
+RULE 9 — adapter_method (ONLY for workflow_type = "action"):
+  Format: "module.function"
+  Derive it from the admin's description. Use sensible module names.
+  Examples: "accounting.create_invoice", "inventory.check_stock", "orders.create_order"
+  For read workflows: null.
+
+RULE 10 — intent_key:
+  Must be unique, snake_case, descriptive.
+  For reads: describe the data (get_outstanding, check_stock, list_orders_by_status)
+  For actions: describe the action (create_invoice, update_order_status, send_dues_pdf)
+
+══════════════════ OUTPUT FORMAT ══════════════════════════════════
+
+Return ONLY this JSON, no markdown, no explanation:
 {{
-  "name": "2-4 word name",
-  "intent_key": "exact_function_name_from_adapter_method",
-  "description": "Rich description with examples, keywords, entity_type, business context",
-  "adapter_method": "module.function format",
-  "steps": ["step1", "step2", "step3"]
-}}
-
-Rules:
-- name: 2-4 words
-- intent_key: MUST match the function name from adapter_method exactly (e.g., if adapter_method is "inventory.check_stock", intent_key MUST be "check_stock")
-- description: Rich text block containing:
-  * What the workflow does (1 sentence)
-  * 4 example user queries in quotes
-  * Keywords that signal this intent
-  * Entity type (product/customer/order/invoice/quotation)
-  * Business context (who uses it and when)
-  Example: "Check stock level of a specific product. Examples: 'stock gold ring', 'how many diamond bangles', 'inventory silver chain', 'what is the stock of platinum necklace'. Keywords: stock, inventory, quantity, how many, available. Entity type: product. Output: product name, quantity, location, reorder status. Used by sales/warehouse to check availability before promising to customers."
-- adapter_method: MUST be one of these EXACT values:
-  * "inventory.check_stock" - check product inventory
-  * "inventory.check_stock_availability" - check if product has enough stock
-  * "inventory.deduct_stock" - deduct stock after sale
-  * "crm.get_credit_limit" - check customer credit limit
-  * "crm.get_outstanding" - check customer outstanding dues
-  * "crm.get_all_overdue" - get all overdue customers report
-  * "accounting.create_invoice" - create sales invoice
-  * "accounting.send_invoice_pdf" - send PDF for existing invoice
-  * "accounting.send_dues_statement" - send dues statement PDF
-  * "quotation.create_quotation" - create price quotation
-  * "quotation.set_metal_rate" - update metal rates
-  * "orders.create_order" - create production order
-  * "orders.update_order_status" - update order status
-  * "orders.get_orders" - view orders
-  DO NOT invent or use any other adapter methods.
-- steps: Array of 3-5 step descriptions in plain English
-  * Each step should be a short action description
-  * Example: ["Validate customer exists", "Check credit limit", "Create invoice record", "Send confirmation"]
-
-IMPORTANT: The intent_key MUST be the exact function name from adapter_method, not a new name.
-NO trigger_patterns — Intent+Action routing uses LLM, not regex.
-
-Return ONLY the JSON. No explanations, no markdown, no extra text."""
+  "name": "2-4 word display name",
+  "intent_key": "snake_case_unique_key",
+  "workflow_type": "read|action",
+  "description": "One clear sentence: what does this workflow do and for whom.",
+  "training_phrases": ["phrase1", "phrase2", "...8-12 phrases total"],
+  "entity_schema": {{}},
+  "sql_template": "SELECT ... (null for action workflows)",
+  "sql_params_order": [],
+  "response_format": "format_name or null",
+  "business_glossary": {{}},
+  "llm_system_prompt": "...",
+  "adapter_method": "module.function or null",
+  "steps": ["Step 1", "Step 2", "Step 3"],
+  "otp_required": false,
+  "otp_threshold": null,
+  "approval_threshold": null
+}}"""
 
     response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=1000,
+        model="gpt-4o",               # Use GPT-4o here — quality matters at compile time
+        max_tokens=2000,
+        temperature=0.1,
         messages=[{"role": "user", "content": prompt}]
     )
-    
+
     content = response.choices[0].message.content.strip()
-    
-    # Clean up if AI adds markdown code blocks or extra text
-    if "```json" in content:
-        start = content.find("```json") + 7
-        end = content.find("```", start)
-        if end != -1:
-            content = content[start:end].strip()
-    elif "```" in content:
-        start = content.find("```") + 3
-        end = content.find("```", start)
-        if end != -1:
-            content = content[start:end].strip()
-    
-    if content.startswith("{") and content.endswith("}"):
-        pass
-    else:
-        start_idx = content.find("{")
-        end_idx = content.rfind("}") + 1
-        if start_idx != -1 and end_idx > start_idx:
-            content = content[start_idx:end_idx]
-    
+    if "```" in content:
+        start = content.find("{")
+        end   = content.rfind("}") + 1
+        content = content[start:end]
+
     try:
         config = json.loads(content)
-        # Ensure trigger_patterns is always empty for Intent+Action routing
+        # Ensure trigger_patterns is always empty (deprecated)
         config["trigger_patterns"] = []
         return config
     except json.JSONDecodeError as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to parse AI response. Error: {str(e)}. Raw response: {content[:500]}"
-        )
+        raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {e}")
 
 
 @router.post("/admin/api/workflow/save")
 async def save_generated_workflow(request: Request):
     _check_token(request)
     body = await request.json()
-    
-    # Use AI-generated adapter_method
-    adapter_method = body.get("adapter_method", "generic")
-    
+
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
-    
     org_id = str(org["id"])
-    
-    # Check if intent_key already exists
+
     existing = await fetch_one(
         "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = $2",
         org_id, body.get("intent_key")
     )
     if existing:
         raise HTTPException(status_code=400, detail="Intent key already exists")
-    
+
     await execute("""
         INSERT INTO workflows (
-            org_id, name, intent_key, description, trigger_patterns, adapter_method,
-            otp_required, otp_threshold, approval_threshold, is_active, steps
-        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, true, $10::jsonb)
-    """, 
+            org_id, name, intent_key, description,
+            workflow_type, training_phrases, entity_schema,
+            sql_template, sql_params_order, response_format,
+            business_glossary, llm_system_prompt,
+            trigger_patterns, adapter_method,
+            otp_required, otp_threshold, approval_threshold,
+            is_active, steps
+        ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6::jsonb, $7::jsonb,
+            $8, $9::jsonb, $10,
+            $11::jsonb, $12,
+            '[]'::jsonb, $13,
+            $14, $15, $16,
+            true, $17::jsonb[]
+        )
+    """,
         org_id,
         body.get("name"),
         body.get("intent_key"),
         body.get("description"),
-        json.dumps([]),  # Always empty for Intent+Action routing
-        adapter_method,
+        body.get("workflow_type", "action"),
+        json.dumps(body.get("training_phrases", [])),
+        json.dumps(body.get("entity_schema", {})),
+        body.get("sql_template"),                    # null OK for action workflows
+        json.dumps(body.get("sql_params_order", [])),
+        body.get("response_format"),
+        json.dumps(body.get("business_glossary", {})),
+        body.get("llm_system_prompt"),
+        body.get("adapter_method"),                  # null OK for read workflows
         body.get("otp_required", False),
         body.get("otp_threshold"),
         body.get("approval_threshold"),
-        json.dumps(body.get("steps", []))
+        body.get("steps", [])                        # array for jsonb[] column
     )
-    
-    # Add permission to selected roles
+
+    # Grant permissions to selected roles
     intent_key = body.get("intent_key")
-    selected_roles = body.get("roles", ["owner"])  # Default to owner if none selected
-    for role_name in selected_roles:
+    for role_name in body.get("roles", ["owner"]):
         await execute("""
-            UPDATE roles 
+            UPDATE roles
             SET permissions = array_append(permissions, $1)
             WHERE name = $2 AND NOT $1 = ANY(permissions)
         """, intent_key, role_name)
-    
-    # No cache invalidation needed for Intent+Action routing
-    
-    return {"success": True, "message": "Workflow created successfully"}
+
+    # Invalidate workflow cache
+    from app.services.intent_matcher import invalidate_workflow_cache
+    invalidate_workflow_cache(org_id)
+
+    return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
 
 @router.post("/admin/api/gst-rate")

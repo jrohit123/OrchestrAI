@@ -1,6 +1,7 @@
 """
 Dynamic SQL Query Engine.
-LLM generates SQL from intent + schema. Validates safety. Executes read-only.
+Mode A: Template execution — uses workflow's sql_template directly (fast, deterministic)
+Mode B: Unconstrained generation — LLM generates SQL for fallback queries
 """
 import os
 import re
@@ -12,10 +13,6 @@ from app.db import fetch_all
 load_dotenv()
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-_DB_SCHEMA: str | None = None
-_VALID_COLUMNS: dict | None = None
-
-# Patterns that must never appear in generated SQL
 _DANGEROUS = [
     r'\bDROP\b', r'\bDELETE\b', r'\bTRUNCATE\b', r'\bALTER\b',
     r'\bCREATE\b', r'\bINSERT\b', r'\bUPDATE\b', r'\bGRANT\b',
@@ -30,33 +27,28 @@ SENSITIVE_COLS = {
     'otp_hash', 'config',
 }
 
+_DB_SCHEMA: str | None = None
+_VALID_COLUMNS: dict | None = None
+
 
 async def _load_schema():
     global _DB_SCHEMA, _VALID_COLUMNS
     if _DB_SCHEMA:
         return
-
     cols = await fetch_all("""
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
         ORDER BY table_name, ordinal_position
     """)
-
     _VALID_COLUMNS = {}
     table_cols: dict[str, list] = {}
-
     for c in cols:
         t = c['table_name']
         _VALID_COLUMNS.setdefault(t, set()).add(c['column_name'])
         table_cols.setdefault(t, []).append(f"{c['column_name']} ({c['data_type']})")
-
-    lines = []
-    for t, cs in sorted(table_cols.items()):
-        lines.append(f"- {t}: {', '.join(cs)}")
-
+    lines = [f"- {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())]
     _DB_SCHEMA = "TABLES:\n" + "\n".join(lines)
-    print(f"[QUERY_ENGINE] Schema loaded: {len(_VALID_COLUMNS)} tables")
 
 
 def _safe(sql: str) -> tuple[bool, str]:
@@ -71,36 +63,50 @@ def _safe(sql: str) -> tuple[bool, str]:
     return True, "ok"
 
 
-async def _gen_sql(intent: str, parameters: dict) -> dict:
+def _build_template_params(org_id: str, entities: dict, params_order: list,
+                            entity_schema: dict) -> list:
+    """
+    Build positional params for sql_template execution.
+    $1 = org_id, $2..$N = entities in params_order sequence.
+    """
+    params = [org_id]
+    for field in params_order:
+        val = entities.get(field)
+        if val is None:
+            # Use default from entity_schema if present
+            schema = entity_schema.get(field, {})
+            val = schema.get("default")
+            if val is None:
+                val = 20 if schema.get("type") == "integer" else ""
+        params.append(val)
+    return params
+
+
+async def _gen_sql_unconstrained(intent: str, parameters: dict) -> dict:
+    """
+    Fallback: LLM generates SQL for queries that didn't match any workflow.
+    No domain examples — fully generic.
+    """
     await _load_schema()
 
-    prompt = f"""You are a PostgreSQL expert. Generate a safe SELECT query.
+    prompt = f"""Generate a safe PostgreSQL SELECT query.
 
 REQUEST: {intent}
-EXTRACTED PARAMETERS: {json.dumps(parameters)}
+PARAMETERS: {json.dumps(parameters)}
 
 SCHEMA:
 {_DB_SCHEMA}
 
 RULES:
-- SELECT only — no INSERT/UPDATE/DELETE
-- Always WHERE org_id = $1 (parameterized, never literal)
-- Use $1, $2... placeholders — NEVER embed values in SQL
-- ILIKE with %wildcards% for text search
-- LIMIT 20 unless user specified a different limit
-- JOIN tables as needed
-- Return ONLY JSON: {{"sql": "...", "params": {{}}}}
-
-PARAM MAPPING:
-- customer_name → use ILIKE: '%name%'
-- product_name  → use ILIKE on inventory.name
-- limit         → LIMIT clause
-- status        → exact match
-- invoice_number, order_number → exact match
-
-Examples:
-{{"sql": "SELECT c.name, SUM(i.amount) as total FROM invoices i JOIN customers c ON c.id=i.customer_id WHERE i.org_id=$1 AND i.status IN ('pending','overdue') GROUP BY c.id,c.name ORDER BY total DESC LIMIT 3", "params": {{"limit":3}}}}
-{{"sql": "SELECT name, qty, location FROM inventory WHERE org_id=$1 AND name ILIKE $2 LIMIT 5", "params": {{"product_name":"gold ring"}}}}"""
+- SELECT only
+- WHERE org_id = $1 always first
+- Use $2, $3... for additional values
+- ILIKE with wildcards for text
+- LIMIT 20 default
+- Return ONLY JSON: {{"sql": "...", "params_ordered": []}}
+  params_ordered = values for $2, $3... in order (NOT $1)
+  For ILIKE: include % in value: "%Mehta%"
+  For LIMIT: integer value"""
 
     resp = await _client.chat.completions.create(
         model="gpt-4o-mini",
@@ -114,36 +120,67 @@ Examples:
     return json.loads(content)
 
 
-def _build_params(sql: str, llm_params: dict, org_id: str) -> list:
-    """Build positional params list matching $1..$N in SQL."""
-    holes = re.findall(r'\$(\d+)', sql)
-    n = max(int(h) for h in holes) if holes else 0
+async def execute_template(
+    org_id: str,
+    sql_template: str,
+    entities: dict,
+    params_order: list,
+    entity_schema: dict,
+    response_format: str = "generic"
+) -> str:
+    """
+    Mode A: Execute a workflow's stored sql_template.
+    Fast and deterministic — no LLM call needed.
+    """
+    try:
+        ok, reason = _safe(sql_template)
+        if not ok:
+            return f"🤔 Query configuration error. Contact admin. ({reason})"
 
-    out = [org_id]  # $1 always org_id
-    ordered = []
+        params = _build_template_params(org_id, entities, params_order, entity_schema)
+        rows   = [dict(r) for r in await fetch_all(sql_template, *params)]
+        return _fmt(rows, response_format)
 
-    for k, v in llm_params.items():
-        if k == 'limit':
-            ordered.append(int(v))
-        elif k in ('customer_name', 'product_name'):
-            s = str(v)
-            ordered.append(s if s.startswith('%') else f'%{s}%')
-        else:
-            ordered.append(v)
-
-    for i in range(min(len(ordered), n - 1)):
-        out.append(ordered[i])
-
-    return out
+    except Exception as e:
+        print(f"[QUERY_ENGINE] Template execution error: {e}")
+        return "🤔 Something went wrong running that query."
 
 
-def _fmt(rows: list) -> str:
-    """Format rows for WhatsApp — filters sensitive columns."""
+async def execute_read(
+    org_id: str,
+    intent: str,
+    parameters: dict,
+    response_format: str = "generic"
+) -> str:
+    """
+    Mode B: Unconstrained LLM-generated SQL for fallback queries.
+    Only reached when no workflow matches.
+    """
+    try:
+        result        = await _gen_sql_unconstrained(intent, parameters)
+        sql           = result["sql"]
+        params_ordered = result.get("params_ordered", [])
+
+        ok, reason = _safe(sql)
+        if not ok:
+            return "🤔 Couldn't process that query safely. Please rephrase."
+
+        params = [org_id] + list(params_ordered)
+        rows   = [dict(r) for r in await fetch_all(sql, *params)]
+        return _fmt(rows, response_format)
+
+    except Exception as e:
+        print(f"[QUERY_ENGINE] Unconstrained error: {e}")
+        return "🤔 Something went wrong. Try rephrasing your query."
+
+
+def _fmt(rows: list, response_format: str = "generic") -> str:
+    """Format rows for WhatsApp using the workflow's response_format hint."""
     if not rows:
         return "✅ No results found."
 
     def is_uuid(v):
-        return isinstance(v, str) and '-' in v and len(v) > 30
+        return isinstance(v, str) and len(v) > 30 and "-" in v
 
     clean = []
     for r in rows:
@@ -151,90 +188,100 @@ def _fmt(rows: list) -> str:
                if k.lower() not in SENSITIVE_COLS and not is_uuid(v)}
         if row:
             clean.append(row)
-
     if not clean:
         return "✅ No displayable results."
 
-    cols = list(clean[0].keys())
+    # Dispatch by response_format hint from workflow
+    if response_format == "outstanding_summary" or "total_outstanding" in clean[0] or "total" in clean[0]:
+        return _fmt_outstanding(clean)
+    if response_format == "inventory" or ("qty" in clean[0] and "name" in clean[0]):
+        return _fmt_inventory(clean)
+    if response_format == "orders" or "order_number" in clean[0]:
+        return _fmt_orders(clean)
+    if response_format == "customers" or ("city" in clean[0] and "name" in clean[0] and "qty" not in clean[0]):
+        return _fmt_customers(clean)
+    if response_format == "metal_rates" or ("metal_type" in clean[0] and "rate_per_gram" in clean[0]):
+        return _fmt_metal_rates(clean)
+    if response_format == "invoices" or "invoice_number" in clean[0]:
+        return _fmt_invoices(clean)
+    return _fmt_generic(clean)
 
-    # Roles/permissions
-    if 'name' in cols and 'permissions' in cols:
-        lines = ["👥 *Roles & Permissions*"]
-        for r in clean:
-            p = r.get('permissions', [])
-            s = ', '.join(p[:5]) + (f' +{len(p)-5} more' if len(p) > 5 else '')
-            lines.append(f"\n• *{r['name']}*\n  {s}")
-        return "\n".join(lines)
 
-    # Customers
-    if 'name' in cols and 'city' in cols and 'credit_limit' not in cols:
-        lines = ["👤 *Customers*"]
-        for r in clean[:15]:
-            lines.append(f"• {r.get('name')} ({r.get('city','-')})")
-        return "\n".join(lines)
+def _fmt_outstanding(clean):
+    tkey = next((k for k in ("total_outstanding","total_overdue","total") if k in clean[0]), None)
+    lines = ["💰 *Outstanding Summary*"]
+    for r in clean[:15]:
+        name  = r.get("name") or r.get("customer_name","?")
+        total = float(r.get(tkey, 0) or 0) if tkey else 0
+        city  = f" ({r['city']})" if r.get("city") else ""
+        oldest = f" | Due: {r['oldest_due_date']}" if r.get("oldest_due_date") else ""
+        count  = f" [{r['invoice_count']} inv]" if r.get("invoice_count") else ""
+        lines.append(f"• *{name}*{city}: ₹{total:,.0f}{count}{oldest}")
+    if len(clean) > 15:
+        lines.append(f"_...and {len(clean)-15} more_")
+    return "\n".join(lines)
 
-    # Inventory
-    if 'name' in cols and 'qty' in cols:
-        lines = ["📦 *Inventory*"]
-        for r in clean[:15]:
-            warn = " ⚠️" if r.get('qty', 999) <= r.get('reorder_level', 0) else ""
-            lines.append(f"• *{r['name']}*: {r.get('qty')} pcs @ {r.get('location','-')}{warn}")
-        return "\n".join(lines)
+def _fmt_inventory(clean):
+    lines = ["📦 *Stock / Inventory*"]
+    for r in clean[:15]:
+        qty      = r.get("qty", 0)
+        reorder  = r.get("reorder_level", 0)
+        warn     = " ⚠️ LOW" if reorder and qty <= reorder else ""
+        loc      = f" @ {r['location']}" if r.get("location") else ""
+        price    = f" ₹{float(r['unit_price']):,.0f}" if r.get("unit_price") else ""
+        lines.append(f"• *{r.get('name','?')}*: {qty} pcs{loc}{price}{warn}")
+    if len(clean) > 15:
+        lines.append(f"_...and {len(clean)-15} more_")
+    return "\n".join(lines)
 
-    # Invoice/dues summary
-    if 'total' in cols or 'total_outstanding' in cols or 'total_overdue' in cols:
-        lines = ["� *Outstanding Summary*"]
-        for r in clean[:10]:
-            name = r.get('name') or r.get('customer_name', '?')
-            total = r.get('total') or r.get('total_outstanding') or r.get('total_overdue', 0)
-            lines.append(f"• *{name}*: ₹{float(total):,.0f}")
-        return "\n".join(lines)
-
-    # Metal rates
-    if 'metal_type' in cols and 'rate_per_gram' in cols:
-        lines = ["💎 *Metal Rates*"]
-        for r in clean:
-            lines.append(f"• *{r['metal_type']}*: ₹{float(r['rate_per_gram']):,.0f}/g — Making: {r.get('making_charge_pct')}%")
-        return "\n".join(lines)
-
-    # Orders
-    if 'order_number' in cols or 'status' in cols:
-        from app.adapters.orders import STATUS_LABELS
-        lines = ["� *Orders*"]
-        for r in clean[:10]:
-            label = STATUS_LABELS.get(r.get('status', ''), r.get('status', ''))
-            cust  = r.get('customer_name', r.get('name', '?'))
-            desc  = r.get('description', '')[:35]
-            lines.append(f"• *{r.get('order_number','?')}* — {cust}\n  {desc} | {label}")
-        return "\n".join(lines)
-
-    # Generic table
-    show = cols[:4]
-    lines = [f"📊 *Results* ({len(clean)} rows)"]
+def _fmt_orders(clean):
+    STATUS_EMOJI = {"confirmed":"🟡","in_production":"🔨","quality_check":"🔍","ready":"✅","delivered":"📦"}
+    lines = ["📋 *Orders*"]
     for r in clean[:10]:
-        parts = [f"{k}: {str(r.get(k,''))[:25]}" for k in show]
-        lines.append("• " + " | ".join(parts))
+        emoji = STATUS_EMOJI.get(r.get("status",""), "❓")
+        cust  = r.get("customer_name") or r.get("name","?")
+        desc  = str(r.get("description",""))[:35]
+        dlv   = f" | {r['expected_delivery']}" if r.get("expected_delivery") else ""
+        lines.append(f"• {emoji} *{r.get('order_number','?')}* — {cust}\n  {desc}{dlv}")
     if len(clean) > 10:
         lines.append(f"_...and {len(clean)-10} more_")
     return "\n".join(lines)
 
+def _fmt_customers(clean):
+    lines = ["� *Customers*"]
+    for r in clean[:15]:
+        city   = f" ({r['city']})" if r.get("city") else ""
+        credit = f" | Limit: ₹{float(r['credit_limit']):,.0f}" if r.get("credit_limit") else ""
+        lines.append(f"• *{r.get('name','?')}*{city}{credit}")
+    if len(clean) > 15:
+        lines.append(f"_...and {len(clean)-15} more_")
+    return "\n".join(lines)
 
-async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
-    """Execute a read request — LLM generates SQL, we validate and run."""
-    try:
-        result   = await _gen_sql(intent, parameters)
-        sql      = result["sql"]
-        lp       = result.get("params", {})
+def _fmt_metal_rates(clean):
+    lines = ["💎 *Metal Rates*"]
+    for r in clean:
+        rate   = float(r.get("rate_per_gram",0))
+        making = r.get("making_charge_pct","—")
+        upd    = str(r.get("updated_at",""))[:10]
+        lines.append(f"• *{r['metal_type']}*: ₹{rate:,.0f}/g | Making: {making}% | {upd}")
+    return "\n".join(lines)
 
-        ok, reason = _safe(sql)
-        if not ok:
-            print(f"[QUERY_ENGINE] Blocked: {reason}\nSQL: {sql}")
-            return "🤔 Couldn't process that query. Please rephrase."
+def _fmt_invoices(clean):
+    lines = ["🧾 *Invoices*"]
+    for r in clean[:10]:
+        amt  = float(r.get("amount",0))
+        due  = f" | Due: {r['due_date']}" if r.get("due_date") else ""
+        lines.append(f"• *{r.get('invoice_number','?')}*: ₹{amt:,.0f} | {r.get('status','—').upper()}{due}")
+    if len(clean) > 10:
+        lines.append(f"_...and {len(clean)-10} more_")
+    return "\n".join(lines)
 
-        params = _build_params(sql, lp, org_id)
-        rows   = [dict(r) for r in await fetch_all(sql, *params)]
-        return _fmt(rows)
-
-    except Exception as e:
-        print(f"[QUERY_ENGINE] Error: {e}")
-        return "🤔 Something went wrong. Try rephrasing your query."
+def _fmt_generic(clean):
+    cols  = list(clean[0].keys())[:4]
+    lines = [f"📊 *Results* ({len(clean)} rows)"]
+    for r in clean[:10]:
+        parts = [f"{k}: {str(r.get(k,''))[:30]}" for k in cols if r.get(k) is not None]
+        lines.append("• " + " | ".join(parts))
+    if len(clean) > 10:
+        lines.append(f"_...and {len(clean)-10} more_")
+    return "\n".join(lines)

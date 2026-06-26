@@ -355,7 +355,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         raw_text=text,
         route_type=route_type,
         parameters=parameters,
-        analyzer_intent=intent
+        analyzer_intent=intent,
+        workflow=result.get("workflow")
     )
     await send_text(phone, reply)
 

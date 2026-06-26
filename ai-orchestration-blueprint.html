@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Orchestration Layer — Full Technical Blueprint</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080b0f;
+  --surface: #0e1117;
+  --surface2: #141820;
+  --surface3: #1a1f2a;
+  --border: rgba(255,255,255,0.06);
+  --border2: rgba(255,255,255,0.10);
+  --c1: #00e5c0;   /* teal — channels */
+  --c2: #fbbf24;   /* amber — auth */
+  --c3: #38bdf8;   /* sky — config */
+  --c4: #a78bfa;   /* violet — AI */
+  --c5: #f87171;   /* red — adapters */
+  --c6: #fb923c;   /* orange — apps */
+  --cdb: #86efac;  /* green — DB */
+  --cdep: #e879f9; /* pink — deploy */
+  --text: #e2e8f0;
+  --muted: #64748b;
+  --muted2: #94a3b8;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ── NAV ── */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0;
+  background: rgba(8,11,15,0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 52px;
+  overflow-x: auto;
+}
+.nav-brand {
+  font-family: 'Syne', sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  margin-right: 32px;
+  letter-spacing: -0.01em;
+}
+.nav-brand span { color: var(--c1); }
+.nav-link {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 14px;
+  height: 52px;
+  display: flex; align-items: center;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color 0.2s, border-color 0.2s;
+  text-decoration: none;
+}
+.nav-link:hover { color: var(--text); }
+.nav-link.active { color: var(--text); border-bottom-color: var(--c4); }
+
+/* ── LAYOUT ── */
+.page { max-width: 1200px; margin: 0 auto; padding: 80px 24px 100px; }
+
+/* ── SECTION ── */
+.section { margin-bottom: 80px; scroll-margin-top: 70px; }
+.section-eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: clamp(22px, 3vw, 34px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-bottom: 8px;
+  line-height: 1.1;
+}
+.section-sub {
+  font-size: 13px;
+  color: var(--muted2);
+  max-width: 680px;
+  line-height: 1.7;
+  margin-bottom: 36px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 300;
+}
+
+/* ── HERO ── */
+.hero {
+  text-align: center;
+  padding: 60px 0 72px;
+  position: relative;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 50%; transform: translateX(-50%);
+  width: 700px; height: 400px;
+  background: radial-gradient(ellipse, rgba(167,139,250,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+.hero-label {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--c1);
+  border: 1px solid rgba(0,229,192,0.2);
+  padding: 5px 14px;
+  border-radius: 20px;
+  margin-bottom: 24px;
+}
+.hero-title {
+  font-family: 'Syne', sans-serif;
+  font-size: clamp(32px, 5vw, 62px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.0;
+  margin-bottom: 20px;
+}
+.hero-title .g1 { color: var(--c1); }
+.hero-title .g2 { color: var(--text); }
+.hero-title .g3 {
+  background: linear-gradient(90deg, var(--c4), var(--c3));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.hero-desc {
+  font-size: 14px;
+  color: var(--muted2);
+  max-width: 600px;
+  margin: 0 auto 32px;
+  line-height: 1.75;
+  font-weight: 300;
+}
+.hero-meta {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.hero-tag {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--muted2);
+}
+
+/* ── LAYER CARDS (full arch) ── */
+.layer-stack { display: flex; flex-direction: column; gap: 2px; }
+
+.layer-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 4px 0;
+}
+@media(max-width:600px){ .layer-row { grid-template-columns: 1fr; } }
+
+.layer-label {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-top: 18px;
+  gap: 6px;
+}
+.layer-num {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.layer-name {
+  font-family: 'Syne', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+.layer-pill {
+  display: inline-block;
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+  width: fit-content;
+}
+
+.layer-body {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+}
+.layer-body::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: 14px 14px 0 0;
+}
+
+/* Layer accent colors */
+.l1 .layer-name, .l1 .layer-pill { color: var(--c1); }
+.l1 .layer-pill { background: rgba(0,229,192,0.08); border: 1px solid rgba(0,229,192,0.15); }
+.l1 .layer-body::after { background: linear-gradient(90deg, var(--c1), transparent 60%); }
+
+.l2 .layer-name, .l2 .layer-pill { color: var(--c2); }
+.l2 .layer-pill { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.15); }
+.l2 .layer-body::after { background: linear-gradient(90deg, var(--c2), transparent 60%); }
+
+.l3 .layer-name, .l3 .layer-pill { color: var(--c3); }
+.l3 .layer-pill { background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.15); }
+.l3 .layer-body::after { background: linear-gradient(90deg, var(--c3), transparent 60%); }
+.l3 .layer-body { background: linear-gradient(135deg, #0d1520, #0a1118); border-color: rgba(56,189,248,0.12); }
+
+.l4 .layer-name, .l4 .layer-pill { color: var(--c4); }
+.l4 .layer-pill { background: rgba(167,139,250,0.08); border: 1px solid rgba(167,139,250,0.15); }
+.l4 .layer-body::after { background: linear-gradient(90deg, var(--c4), transparent 60%); }
+.l4 .layer-body { background: linear-gradient(135deg, #0f0e1a, #0c1018); border-color: rgba(167,139,250,0.12); }
+
+.l5 .layer-name, .l5 .layer-pill { color: var(--c5); }
+.l5 .layer-pill { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.15); }
+.l5 .layer-body::after { background: linear-gradient(90deg, var(--c5), transparent 60%); }
+
+.l6 .layer-name, .l6 .layer-pill { color: var(--c6); }
+.l6 .layer-pill { background: rgba(251,146,60,0.08); border: 1px solid rgba(251,146,60,0.15); }
+.l6 .layer-body::after { background: linear-gradient(90deg, var(--c6), transparent 60%); }
+
+.layer-body-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.new-tag {
+  font-size: 9px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.2);
+  color: var(--c3); letter-spacing: 0.08em;
+}
+
+.comp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.comp {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 11px 13px;
+  transition: border-color 0.15s, transform 0.15s;
+  cursor: default;
+}
+.comp:hover { border-color: var(--border2); transform: translateY(-1px); }
+.comp-icon { font-size: 16px; margin-bottom: 5px; }
+.comp-name { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+.comp-desc { font-size: 10px; color: var(--muted); line-height: 1.45; }
+.comp-tech { margin-top: 6px; font-size: 9px; color: var(--c4); letter-spacing: 0.06em; }
+
+/* Connector */
+.conn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0 6px 152px;
+}
+.conn-line { width: 2px; height: 20px; background: linear-gradient(to bottom, rgba(167,139,250,0.4), rgba(167,139,250,0.1)); }
+.conn-arrow { width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid rgba(167,139,250,0.4); }
+.conn-label { font-size: 9px; color: var(--muted); letter-spacing: 0.1em; }
+.conn-inner { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+@media(max-width:600px){ .conn { padding-left: 0; justify-content: center; } }
+
+/* ── DB SCHEMA ── */
+.schema-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.table-card {
+  background: var(--surface);
+  border: 1px solid rgba(134,239,172,0.12);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.table-header {
+  padding: 10px 14px;
+  background: rgba(134,239,172,0.05);
+  border-bottom: 1px solid rgba(134,239,172,0.1);
+  display: flex; align-items: center; gap: 8px;
+}
+.table-icon { font-size: 14px; }
+.table-name { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: #bbf7d0; }
+.table-purpose { font-size: 10px; color: var(--muted); }
+.table-fields { padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+.field {
+  display: grid;
+  grid-template-columns: 1fr 70px 28px;
+  gap: 6px;
+  align-items: center;
+  font-size: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.field:last-child { border-bottom: none; }
+.field-name { color: var(--text); }
+.field-type { color: var(--muted); text-align: right; font-size: 9px; }
+.field-pk { font-size: 9px; color: var(--c2); text-align: center; }
+.field-fk { font-size: 9px; color: var(--c3); text-align: center; }
+.field-idx { font-size: 9px; color: var(--c1); text-align: center; }
+
+/* ── WORKFLOW SCHEMA ── */
+.wf-example {
+  background: var(--surface2);
+  border: 1px solid rgba(56,189,248,0.15);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.wf-example-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(56,189,248,0.1);
+  font-family: 'Syne', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c3);
+  display: flex; align-items: center; gap: 8px;
+}
+.code-block {
+  padding: 16px 20px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #cbd5e1;
+  background: #0a0d12;
+}
+.code-block .k { color: var(--c4); }
+.code-block .s { color: var(--c1); }
+.code-block .n { color: var(--c2); }
+.code-block .c { color: var(--muted); }
+.code-block .b { color: var(--c3); }
+
+/* ── API ENDPOINTS ── */
+.endpoint-group { margin-bottom: 24px; }
+.endpoint-group-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted2);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.endpoint {
+  display: grid;
+  grid-template-columns: 70px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  transition: border-color 0.15s;
+}
+.endpoint:hover { border-color: var(--border2); }
+.method {
+  font-size: 10px; font-weight: 700; padding: 3px 6px;
+  border-radius: 4px; text-align: center; letter-spacing: 0.06em;
+}
+.GET    { background: rgba(134,239,172,0.12); color: #86efac; border: 1px solid rgba(134,239,172,0.2); }
+.POST   { background: rgba(96,165,250,0.12);  color: #93c5fd; border: 1px solid rgba(96,165,250,0.2); }
+.PUT    { background: rgba(251,191,36,0.12);  color: #fcd34d; border: 1px solid rgba(251,191,36,0.2); }
+.DELETE { background: rgba(248,113,113,0.12); color: #fca5a5; border: 1px solid rgba(248,113,113,0.2); }
+.endpoint-path { font-size: 11px; color: var(--text); }
+.endpoint-desc { font-size: 10px; color: var(--muted); margin-top: 3px; }
+.endpoint-auth { font-size: 9px; color: var(--muted); padding-top: 3px; white-space: nowrap; }
+
+/* ── SECURITY ── */
+.sec-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.sec-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  transition: border-color 0.15s;
+}
+.sec-card:hover { border-color: var(--border2); }
+.sec-icon { font-size: 20px; margin-bottom: 8px; }
+.sec-title { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; margin-bottom: 5px; }
+.sec-desc { font-size: 10px; color: var(--muted); line-height: 1.55; }
+.sec-impl { margin-top: 8px; font-size: 9px; color: var(--c4); letter-spacing: 0.06em; }
+
+/* ── DEPLOYMENT ── */
+.dep-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+.dep-card {
+  background: var(--surface);
+  border: 1px solid rgba(232,121,249,0.12);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.dep-service { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: #f0abfc; margin-bottom: 4px; }
+.dep-role { font-size: 10px; color: var(--muted); margin-bottom: 6px; line-height: 1.4; }
+.dep-tech { font-size: 9px; color: var(--c3); letter-spacing: 0.06em; }
+
+/* ── TECH STACK TABLE ── */
+.stack-table { width: 100%; border-collapse: collapse; }
+.stack-table th {
+  text-align: left; padding: 8px 12px;
+  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); border-bottom: 1px solid var(--border);
+}
+.stack-table td {
+  padding: 10px 12px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.stack-table tr:last-child td { border-bottom: none; }
+.stack-table tr:hover td { background: rgba(255,255,255,0.015); }
+.tech-name { font-family: 'Syne', sans-serif; font-weight: 700; color: var(--text); }
+.tech-why { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.tech-alt { font-size: 9px; color: var(--muted); margin-top: 2px; }
+
+/* ── MULTI-TENANT DIAGRAM ── */
+.tenant-diagram {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+}
+.tenant-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.tenant-box {
+  flex: 1; min-width: 150px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.tenant-label { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.tenant-name { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+.tenant-items { display: flex; flex-direction: column; gap: 3px; }
+.tenant-item { font-size: 10px; color: var(--muted2); display: flex; align-items: center; gap: 5px; }
+.tenant-item::before { content: '·'; color: var(--muted); }
+.shared-label {
+  text-align: center; font-size: 10px; color: var(--muted);
+  padding: 8px 0; letter-spacing: 0.1em;
+  display: flex; align-items: center; gap: 12px;
+}
+.shared-label::before, .shared-label::after {
+  content: ''; flex: 1; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border), transparent);
+}
+.shared-engine {
+  background: linear-gradient(135deg, #0f0e1a, #0c1018);
+  border: 1px solid rgba(167,139,250,0.2);
+  border-radius: 10px;
+  padding: 14px 18px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 16px; flex-wrap: wrap;
+}
+.engine-part { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; color: var(--c4); display: flex; align-items: center; gap: 5px; }
+
+/* ── FLOW DIAGRAM (request lifecycle) ── */
+.flow-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.flow-step-full {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 14px;
+  align-items: start;
+  position: relative;
+}
+.flow-step-full:not(:last-child) .flow-step-line {
+  position: absolute;
+  left: 17px;
+  top: 36px;
+  bottom: -16px;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--border2), var(--border));
+}
+.flow-step-circle {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  position: relative; z-index: 1;
+}
+.flow-step-body {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.flow-step-title { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+.flow-step-detail { font-size: 10px; color: var(--muted); line-height: 1.5; }
+.flow-step-code { margin-top: 8px; background: #090c10; border-radius: 6px; padding: 8px 10px; font-size: 10px; color: #94a3b8; }
+
+/* ── TABS ── */
+.tabs { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
+.tab {
+  font-size: 10px; letter-spacing: 0.08em; padding: 7px 14px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--muted);
+  cursor: pointer; transition: all 0.15s;
+}
+.tab:hover { color: var(--text); border-color: var(--border2); }
+.tab.active { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.3); color: var(--c4); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ── BADGE ── */
+.badge {
+  display: inline-block; font-size: 9px; padding: 2px 7px;
+  border-radius: 4px; letter-spacing: 0.06em; vertical-align: middle; margin-left: 6px;
+}
+.badge-new { background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.2); color: var(--c3); }
+.badge-core { background: rgba(167,139,250,0.1); border: 1px solid rgba(167,139,250,0.2); color: var(--c4); }
+.badge-proto { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); color: var(--c2); }
+
+/* ── DIVIDER ── */
+.divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border2) 30%, var(--border2) 70%, transparent);
+  margin: 64px 0;
+}
+
+/* ANIMATIONS */
+@keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+.section { animation: fadeUp 0.5s ease both; }
+
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius:3px; }
+
+@media(max-width:700px) {
+  .endpoint { grid-template-columns: 60px 1fr; }
+  .endpoint-auth { display:none; }
+  .nav-brand { font-size:11px; }
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-brand">Orche<span>strai</span></div>
+  <a class="nav-link active" href="#architecture">Architecture</a>
+  <a class="nav-link" href="#database">Database</a>
+  <a class="nav-link" href="#workflow-config">Workflow Config</a>
+  <a class="nav-link" href="#request-lifecycle">Request Lifecycle</a>
+  <a class="nav-link" href="#api">API Design</a>
+  <a class="nav-link" href="#security">Security</a>
+  <a class="nav-link" href="#multitenancy">Multi-Tenancy</a>
+  <a class="nav-link" href="#deployment">Deployment</a>
+  <a class="nav-link" href="#techstack">Tech Stack</a>
+</nav>
+
+<div class="page">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-label">Full Technical Blueprint — v1.0</div>
+    <h1 class="hero-title">
+      <span class="g1">Orchestrai</span><br>
+      <span class="g2">AI Middleware</span><br>
+      <span class="g3">System Architecture</span>
+    </h1>
+    <p class="hero-desc">A universal AI orchestration layer that sits between employees and business applications — accessible via WhatsApp, Telegram, or Web. Multi-tenant. Config-driven. Plug-and-play.</p>
+    <div class="hero-meta">
+      <span class="hero-tag">6 Architecture Layers</span>
+      <span class="hero-tag">PostgreSQL + JSONB</span>
+      <span class="hero-tag">Multi-Tenant Isolation</span>
+      <span class="hero-tag">n8n + LangChain + FastAPI</span>
+      <span class="hero-tag">WhatsApp / Telegram / Web</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 1 — FULL ARCHITECTURE
+  ══════════════════════════════════════ -->
+  <div class="section" id="architecture">
+    <div class="section-eyebrow">Section 01</div>
+    <h2 class="section-title">Full System Architecture</h2>
+    <p class="section-sub">Six layers from user input to business application. Each layer is independently deployable and replaceable. The Config Engine (Layer 3) is what makes this product — it's where each organisation's process logic lives.</p>
+
+    <div class="layer-stack">
+
+      <!-- L1 -->
+      <div class="layer-row l1">
+        <div class="layer-label">
+          <div class="layer-num">Layer 01</div>
+          <div class="layer-name">Channels</div>
+          <div class="layer-pill">Entry Points</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">User Access Channels — how humans talk to the system</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">💬</div><div class="comp-name">WhatsApp Bot</div><div class="comp-desc">Natural language via WhatsApp Business API. Best for India market.</div><div class="comp-tech">360Dialog / Twilio</div></div>
+            <div class="comp"><div class="comp-icon">✈️</div><div class="comp-name">Telegram Bot</div><div class="comp-desc">Button menus, inline keyboards, file sharing. Free API.</div><div class="comp-tech">Telegram Bot API</div></div>
+            <div class="comp"><div class="comp-icon">🌐</div><div class="comp-name">Web Interface</div><div class="comp-desc">React portal for power users, file uploads, dashboards.</div><div class="comp-tech">React + Vite</div></div>
+            <div class="comp"><div class="comp-icon">📧</div><div class="comp-name">Email / SMS</div><div class="comp-desc">Approval requests and notifications fallback channel.</div><div class="comp-tech">Brevo / Fast2SMS</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="conn-inner"><div class="conn-line"></div><div class="conn-arrow"></div></div><div class="conn-label">Raw message + channel identity (phone/email)</div></div>
+
+      <!-- L2 -->
+      <div class="layer-row l2">
+        <div class="layer-label">
+          <div class="layer-num">Layer 02</div>
+          <div class="layer-name">Identity &amp; Auth</div>
+          <div class="layer-pill">Trust Gate</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">Identity &amp; Access Control — who is this person, what can they do?</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">🪪</div><div class="comp-name">Identity Resolver</div><div class="comp-desc">Phone/email → user record → org → department. Handles unknown users gracefully.</div><div class="comp-tech">PostgreSQL lookup</div></div>
+            <div class="comp"><div class="comp-icon">🔐</div><div class="comp-name">Role Engine</div><div class="comp-desc">Fetches the user's role and permission set for their org. Role hierarchy supported.</div><div class="comp-tech">RBAC in PostgreSQL</div></div>
+            <div class="comp"><div class="comp-icon">🛡️</div><div class="comp-name">Permission Gate</div><div class="comp-desc">Checks if the requested action is in user's allowed set. Hard-stops out-of-scope requests before AI.</div><div class="comp-tech">FastAPI middleware</div></div>
+            <div class="comp"><div class="comp-icon">📋</div><div class="comp-name">Audit Logger</div><div class="comp-desc">Immutable log of every request, user, timestamp, and outcome. Compliance-ready.</div><div class="comp-tech">PostgreSQL append-only</div></div>
+            <div class="comp"><div class="comp-icon">🔑</div><div class="comp-name">Session Manager</div><div class="comp-desc">Short-lived JWT tokens. Stateless for API calls. Conversation state stored in Redis.</div><div class="comp-tech">JWT + Redis</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="conn-inner"><div class="conn-line"></div><div class="conn-arrow"></div></div><div class="conn-label">Verified user context: {user_id, org_id, role, permissions[]}</div></div>
+
+      <!-- L3 -->
+      <div class="layer-row l3">
+        <div class="layer-label">
+          <div class="layer-num">Layer 03</div>
+          <div class="layer-name">Config Engine</div>
+          <div class="layer-pill">The Product ✦</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">Organisation Config Engine <span class="badge badge-new">Core Differentiator</span> — admin-defined process logic</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">🖥️</div><div class="comp-name">Admin Console</div><div class="comp-desc">Web UI for org admins. Toggle-based for simple flows. React Flow visual builder for complex conditional workflows.</div><div class="comp-tech">React + React Flow</div></div>
+            <div class="comp"><div class="comp-icon">📋</div><div class="comp-name">Workflow Store</div><div class="comp-desc">Admin-built rules persisted as JSONB in PostgreSQL. Versioned. Rollback supported. Loaded at request time.</div><div class="comp-tech">PostgreSQL JSONB</div></div>
+            <div class="comp"><div class="comp-icon">⚙️</div><div class="comp-name">Action Catalogue</div><div class="comp-desc">All available actions from connected adapters. Admin picks from this menu. Auto-updates when new adapter added.</div><div class="comp-tech">DB-driven registry</div></div>
+            <div class="comp"><div class="comp-icon">🔀</div><div class="comp-name">Condition Builder</div><div class="comp-desc">IF/THEN rules per step. Supports: field comparisons, threshold checks, team calendar conflicts, approval routing.</div><div class="comp-tech">Rule tree → JSONB</div></div>
+            <div class="comp"><div class="comp-icon">🔔</div><div class="comp-name">Notification Rules</div><div class="comp-desc">Admin defines who gets notified at what step, on which channel, under what condition.</div><div class="comp-tech">Config-driven</div></div>
+            <div class="comp"><div class="comp-icon">⏸️</div><div class="comp-name">Approval Gates</div><div class="comp-desc">Workflow pauses at defined steps, sends approval request to a named role/person, resumes on response.</div><div class="comp-tech">Async + webhook</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="conn-inner"><div class="conn-line"></div><div class="conn-arrow"></div></div><div class="conn-label">Workflow playbook loaded: {steps[], conditions[], approvals[]}</div></div>
+
+      <!-- L4 -->
+      <div class="layer-row l4">
+        <div class="layer-label">
+          <div class="layer-num">Layer 04</div>
+          <div class="layer-name">AI Engine</div>
+          <div class="layer-pill">The Brain</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">AI Orchestration Engine — understands, plans, executes, responds</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">🧠</div><div class="comp-name">Intent Parser</div><div class="comp-desc">NLP model converts raw user message into structured intent object: {action, entities, confidence}.</div><div class="comp-tech">LangChain + Claude</div></div>
+            <div class="comp"><div class="comp-icon">🗺️</div><div class="comp-name">Playbook Executor</div><div class="comp-desc">Reads org's workflow config and executes steps in defined sequence. Checks conditions at each step.</div><div class="comp-tech">LangChain Agent</div></div>
+            <div class="comp"><div class="comp-icon">🔗</div><div class="comp-name">Tool Caller</div><div class="comp-desc">Invokes the correct adapter(s) with structured parameters. Handles retries and partial failure gracefully.</div><div class="comp-tech">LangChain Tools</div></div>
+            <div class="comp"><div class="comp-icon">💾</div><div class="comp-name">Context Manager</div><div class="comp-desc">Maintains conversation state across multi-turn flows. "Which invoice did you mean?" disambiguation.</div><div class="comp-tech">Redis + LangChain Memory</div></div>
+            <div class="comp"><div class="comp-icon">💬</div><div class="comp-name">Response Composer</div><div class="comp-desc">Converts structured result back to natural language. Adapts verbosity to channel (WhatsApp = brief).</div><div class="comp-tech">LLM prompt template</div></div>
+            <div class="comp"><div class="comp-icon">🚨</div><div class="comp-name">Fallback Handler</div><div class="comp-desc">When intent confidence is low or action fails, routes to human support or asks clarifying question.</div><div class="comp-tech">Rule-based + LLM</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="conn-inner"><div class="conn-line"></div><div class="conn-arrow"></div></div><div class="conn-label">Structured API calls: {adapter_id, action, params}</div></div>
+
+      <!-- L5 -->
+      <div class="layer-row l5">
+        <div class="layer-label">
+          <div class="layer-num">Layer 05</div>
+          <div class="layer-name">Adapters</div>
+          <div class="layer-pill">Connectors</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">Tool Adapter Registry — standardised connectors to every business app</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">🔌</div><div class="comp-name">Adapter Interface</div><div class="comp-desc">Every adapter implements the same contract: {connect, execute(action, params), disconnect}.</div><div class="comp-tech">Python abstract class</div></div>
+            <div class="comp"><div class="comp-icon">🗂️</div><div class="comp-name">Action Schemas</div><div class="comp-desc">JSON Schema definition of inputs/outputs per action. Used for validation and admin catalogue UI.</div><div class="comp-tech">Pydantic models</div></div>
+            <div class="comp"><div class="comp-icon">🔒</div><div class="comp-name">Credential Vault</div><div class="comp-desc">Per-org encrypted API keys stored in DB. Decrypted in-memory at execution time only.</div><div class="comp-tech">AES-256 + env keys</div></div>
+            <div class="comp"><div class="comp-icon">⚡</div><div class="comp-name">Webhook Receiver</div><div class="comp-desc">Listens for async callbacks from apps (e.g. invoice PDF ready, leave approved in HRMS).</div><div class="comp-tech">FastAPI endpoints</div></div>
+            <div class="comp"><div class="comp-icon">🧩</div><div class="comp-name">Adapter SDK</div><div class="comp-desc">Template + docs to build a new adapter in &lt;4 hours. Registers automatically in Action Catalogue.</div><div class="comp-tech">Python template</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="conn-inner"><div class="conn-line"></div><div class="conn-arrow"></div></div><div class="conn-label">Native API calls (REST/GraphQL/SOAP) to each app</div></div>
+
+      <!-- L6 -->
+      <div class="layer-row l6">
+        <div class="layer-label">
+          <div class="layer-num">Layer 06</div>
+          <div class="layer-name">Business Apps</div>
+          <div class="layer-pill">Untouched</div>
+        </div>
+        <div class="layer-body">
+          <div class="layer-body-title">Business Application Ecosystem — existing systems, zero modification</div>
+          <div class="comp-grid">
+            <div class="comp"><div class="comp-icon">👥</div><div class="comp-name">HRMS</div><div class="comp-desc">Leave, attendance, payroll, employee master</div></div>
+            <div class="comp"><div class="comp-icon">🤝</div><div class="comp-name">CRM</div><div class="comp-desc">Customers, contacts, deals, communication history</div></div>
+            <div class="comp"><div class="comp-icon">💰</div><div class="comp-name">Accounting</div><div class="comp-desc">Invoices, payments, P&L, reconciliation</div></div>
+            <div class="comp"><div class="comp-icon">📦</div><div class="comp-name">Inventory / WMS</div><div class="comp-desc">Stock levels, SKUs, warehouse movements</div></div>
+            <div class="comp"><div class="comp-icon">🏠</div><div class="comp-name">MyGate / Society</div><div class="comp-desc">Visitors, complaints, amenity booking, maintenance</div></div>
+            <div class="comp"><div class="comp-icon">🎫</div><div class="comp-name">Ticketing System</div><div class="comp-desc">Issue tracking, assignments, SLA management</div></div>
+            <div class="comp"><div class="comp-icon">🗄️</div><div class="comp-name">ERP</div><div class="comp-desc">Cross-functional master data and workflows</div></div>
+            <div class="comp"><div class="comp-icon">➕</div><div class="comp-name">Any App</div><div class="comp-desc">Add via Adapter SDK. One adapter = infinite use.</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /layer-stack -->
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 2 — DATABASE SCHEMA
+  ══════════════════════════════════════ -->
+  <div class="section" id="database">
+    <div class="section-eyebrow">Section 02</div>
+    <h2 class="section-title">Database Schema</h2>
+    <p class="section-sub">PostgreSQL. Fully relational for access control and audit. JSONB columns for flexible workflow step definitions. One schema, all tenants — isolated by org_id on every table.</p>
+
+    <div class="schema-grid">
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">🏢</span><div><div class="table-name">organisations</div><div class="table-purpose">One row per client company</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">id</span><span class="field-type">uuid</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">name</span><span class="field-type">text</span><span class=""></span></div>
+          <div class="field"><span class="field-name">slug</span><span class="field-type">text</span><span class="field-idx">UQ</span></div>
+          <div class="field"><span class="field-name">plan</span><span class="field-type">enum</span><span class=""></span></div>
+          <div class="field"><span class="field-name">settings</span><span class="field-type">jsonb</span><span class=""></span></div>
+          <div class="field"><span class="field-name">created_at</span><span class="field-type">timestamptz</span><span class=""></span></div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">👤</span><div><div class="table-name">users</div><div class="table-purpose">All users across all orgs</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">id</span><span class="field-type">uuid</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">org_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">phone</span><span class="field-type">text</span><span class="field-idx">IX</span></div>
+          <div class="field"><span class="field-name">email</span><span class="field-type">text</span><span class="field-idx">IX</span></div>
+          <div class="field"><span class="field-name">role_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">department</span><span class="field-type">text</span><span class=""></span></div>
+          <div class="field"><span class="field-name">is_active</span><span class="field-type">bool</span><span class=""></span></div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">🔐</span><div><div class="table-name">roles + permissions</div><div class="table-purpose">RBAC per org</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">roles.id</span><span class="field-type">uuid</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">roles.org_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">roles.name</span><span class="field-type">text</span><span class=""></span></div>
+          <div class="field"><span class="field-name">permissions.role_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">permissions.action</span><span class="field-type">text</span><span class="field-idx">IX</span></div>
+          <div class="field"><span class="field-name">permissions.adapter</span><span class="field-type">text</span><span class=""></span></div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">⚙️</span><div><div class="table-name">workflows</div><div class="table-purpose">Admin-defined process rules</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">id</span><span class="field-type">uuid</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">org_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">intent_key</span><span class="field-type">text</span><span class="field-idx">IX</span></div>
+          <div class="field"><span class="field-name">steps</span><span class="field-type">jsonb[]</span><span class=""></span></div>
+          <div class="field"><span class="field-name">conditions</span><span class="field-type">jsonb</span><span class=""></span></div>
+          <div class="field"><span class="field-name">version</span><span class="field-type">int</span><span class=""></span></div>
+          <div class="field"><span class="field-name">is_active</span><span class="field-type">bool</span><span class=""></span></div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">🔌</span><div><div class="table-name">adapters + credentials</div><div class="table-purpose">App connections per org</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">adapters.id</span><span class="field-type">uuid</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">adapters.key</span><span class="field-type">text</span><span class="field-idx">UQ</span></div>
+          <div class="field"><span class="field-name">adapters.actions</span><span class="field-type">jsonb</span><span class=""></span></div>
+          <div class="field"><span class="field-name">credentials.org_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">credentials.adapter_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">credentials.secrets</span><span class="field-type">bytea</span><span class=""></span></div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header"><span class="table-icon">📋</span><div><div class="table-name">audit_log</div><div class="table-purpose">Immutable action history</div></div></div>
+        <div class="table-fields">
+          <div class="field"><span class="field-name">id</span><span class="field-type">bigserial</span><span class="field-pk">PK</span></div>
+          <div class="field"><span class="field-name">org_id</span><span class="field-type">uuid</span><span class="field-idx">IX</span></div>
+          <div class="field"><span class="field-name">user_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">intent</span><span class="field-type">text</span><span class=""></span></div>
+          <div class="field"><span class="field-name">workflow_id</span><span class="field-type">uuid</span><span class="field-fk">FK</span></div>
+          <div class="field"><span class="field-name">steps_taken</span><span class="field-type">jsonb</span><span class=""></span></div>
+          <div class="field"><span class="field-name">outcome</span><span class="field-type">enum</span><span class=""></span></div>
+          <div class="field"><span class="field-name">created_at</span><span class="field-type">timestamptz</span><span class="field-idx">IX</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 3 — WORKFLOW CONFIG STRUCTURE
+  ══════════════════════════════════════ -->
+  <div class="section" id="workflow-config">
+    <div class="section-eyebrow">Section 03</div>
+    <h2 class="section-title">Workflow Config Structure</h2>
+    <p class="section-sub">How admin-defined rules are stored in PostgreSQL as JSONB and consumed by the AI Engine at runtime. The same JSON structure powers both simple toggle-based flows and complex visual builder flows.</p>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('wf', 'invoice')">Invoice Generation</div>
+      <div class="tab" onclick="switchTab('wf', 'leave')">Leave Application</div>
+      <div class="tab" onclick="switchTab('wf', 'complaint')">Society Complaint</div>
+    </div>
+
+    <div id="wf-invoice" class="tab-content active">
+      <div class="wf-example">
+        <div class="wf-example-head">⚙️ workflows.steps — Org A (Jewellery Manufacturer) — "create_invoice"</div>
+        <div class="code-block"><pre><span class="c">// Stored in workflows table, steps column (JSONB[])</span>
+{
+  <span class="k">"intent_key"</span>: <span class="s">"create_invoice"</span>,
+  <span class="k">"org_id"</span>: <span class="s">"org_jewellery_mumbai"</span>,
+  <span class="k">"version"</span>: <span class="n">3</span>,
+  <span class="k">"steps"</span>: [
+    {
+      <span class="k">"seq"</span>: <span class="n">1</span>,
+      <span class="k">"adapter"</span>: <span class="s">"inventory"</span>,
+      <span class="k">"action"</span>: <span class="s">"check_stock"</span>,
+      <span class="k">"params"</span>: { <span class="k">"sku"</span>: <span class="b">"{{intent.sku}}"</span>, <span class="k">"qty"</span>: <span class="b">"{{intent.quantity}}"</span> },
+      <span class="k">"condition"</span>: {
+        <span class="k">"if"</span>: <span class="s">"result.available_qty &lt; intent.quantity"</span>,
+        <span class="k">"then"</span>: <span class="s">"BLOCK"</span>,
+        <span class="k">"message"</span>: <span class="s">"Insufficient stock. Available: {{result.available_qty}}"</span>
+      }
+    },
+    {
+      <span class="k">"seq"</span>: <span class="n">2</span>,
+      <span class="k">"adapter"</span>: <span class="s">"crm"</span>,
+      <span class="k">"action"</span>: <span class="s">"get_customer"</span>,
+      <span class="k">"params"</span>: { <span class="k">"name"</span>: <span class="b">"{{intent.customer_name}}"</span> }
+    },
+    {
+      <span class="k">"seq"</span>: <span class="n">3</span>,
+      <span class="k">"adapter"</span>: <span class="s">"accounting"</span>,
+      <span class="k">"action"</span>: <span class="s">"create_invoice"</span>,
+      <span class="k">"params"</span>: {
+        <span class="k">"customer"</span>: <span class="b">"{{step2.result}}"</span>,
+        <span class="k">"amount"</span>: <span class="b">"{{intent.amount}}"</span>,
+        <span class="k">"items"</span>: <span class="b">"{{intent.items}}"</span>
+      },
+      <span class="k">"approval"</span>: {
+        <span class="k">"required_if"</span>: <span class="s">"intent.amount &gt; 100000"</span>,
+        <span class="k">"approver_role"</span>: <span class="s">"accounts_manager"</span>,
+        <span class="k">"channel"</span>: <span class="s">"whatsapp"</span>,
+        <span class="k">"timeout_hours"</span>: <span class="n">4</span>
+      }
+    },
+    {
+      <span class="k">"seq"</span>: <span class="n">4</span>,
+      <span class="k">"adapter"</span>: <span class="s">"inventory"</span>,
+      <span class="k">"action"</span>: <span class="s">"deduct_stock"</span>,
+      <span class="k">"params"</span>: { <span class="k">"sku"</span>: <span class="b">"{{intent.sku}}"</span>, <span class="k">"qty"</span>: <span class="b">"{{intent.quantity}}"</span> }
+    }
+  ],
+  <span class="k">"on_success"</span>: <span class="s">"Invoice #{{step3.invoice_id}} raised. Stock updated."</span>,
+  <span class="k">"on_failure"</span>: <span class="s">"Could not complete. Please contact accounts team."</span>
+}</pre></div>
+      </div>
+    </div>
+
+    <div id="wf-leave" class="tab-content">
+      <div class="wf-example">
+        <div class="wf-example-head">⚙️ workflows.steps — Any Org — "apply_leave"</div>
+        <div class="code-block"><pre>{
+  <span class="k">"intent_key"</span>: <span class="s">"apply_leave"</span>,
+  <span class="k">"steps"</span>: [
+    { <span class="k">"seq"</span>: <span class="n">1</span>, <span class="k">"adapter"</span>: <span class="s">"hrms"</span>, <span class="k">"action"</span>: <span class="s">"get_leave_balance"</span>,
+      <span class="k">"condition"</span>: { <span class="k">"if"</span>: <span class="s">"result.balance &lt; intent.days"</span>, <span class="k">"then"</span>: <span class="s">"BLOCK"</span>,
+        <span class="k">"message"</span>: <span class="s">"Only {{result.balance}} days left."</span> } },
+    { <span class="k">"seq"</span>: <span class="n">2</span>, <span class="k">"adapter"</span>: <span class="s">"hrms"</span>, <span class="k">"action"</span>: <span class="s">"check_team_leaves"</span>,
+      <span class="k">"condition"</span>: { <span class="k">"if"</span>: <span class="s">"result.overlapping_count &gt; 2"</span>, <span class="k">"then"</span>: <span class="s">"WARN"</span>,
+        <span class="k">"message"</span>: <span class="s">"{{result.overlapping_count}} teammates also on leave."</span> } },
+    { <span class="k">"seq"</span>: <span class="n">3</span>, <span class="k">"adapter"</span>: <span class="s">"hrms"</span>, <span class="k">"action"</span>: <span class="s">"submit_leave"</span>,
+      <span class="k">"approval"</span>: { <span class="k">"required_if"</span>: <span class="s">"always"</span>, <span class="k">"approver_role"</span>: <span class="s">"reporting_manager"</span>,
+        <span class="k">"channel"</span>: <span class="s">"whatsapp"</span>, <span class="k">"timeout_hours"</span>: <span class="n">24</span> } }
+  ]
+}</pre></div>
+      </div>
+    </div>
+
+    <div id="wf-complaint" class="tab-content">
+      <div class="wf-example">
+        <div class="wf-example-head">⚙️ workflows.steps — Housing Society — "raise_complaint"</div>
+        <div class="code-block"><pre>{
+  <span class="k">"intent_key"</span>: <span class="s">"raise_complaint"</span>,
+  <span class="k">"steps"</span>: [
+    { <span class="k">"seq"</span>: <span class="n">1</span>, <span class="k">"adapter"</span>: <span class="s">"ticketing"</span>, <span class="k">"action"</span>: <span class="s">"create_ticket"</span>,
+      <span class="k">"params"</span>: { <span class="k">"category"</span>: <span class="b">"{{intent.category}}"</span>,
+        <span class="k">"description"</span>: <span class="b">"{{intent.description}}"</span>, <span class="k">"flat"</span>: <span class="b">"{{user.flat_number}}"</span> } },
+    { <span class="k">"seq"</span>: <span class="n">2</span>, <span class="k">"adapter"</span>: <span class="s">"whatsapp"</span>, <span class="k">"action"</span>: <span class="s">"notify_user"</span>,
+      <span class="k">"params"</span>: { <span class="k">"message"</span>: <span class="s">"Ticket #{{step1.ticket_id}} raised. Expected resolution: 48 hrs."</span> } },
+    { <span class="k">"seq"</span>: <span class="n">3</span>, <span class="k">"adapter"</span>: <span class="s">"whatsapp"</span>, <span class="k">"action"</span>: <span class="s">"notify_role"</span>,
+      <span class="k">"params"</span>: { <span class="k">"role"</span>: <span class="s">"maintenance_team"</span>,
+        <span class="k">"message"</span>: <span class="s">"New {{intent.category}} complaint from Flat {{user.flat_number}}"</span> } }
+  ]
+}</pre></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 4 — REQUEST LIFECYCLE
+  ══════════════════════════════════════ -->
+  <div class="section" id="request-lifecycle">
+    <div class="section-eyebrow">Section 04</div>
+    <h2 class="section-title">Request Lifecycle</h2>
+    <p class="section-sub">What happens from the moment a user sends a WhatsApp message to the final reply. Every step is traceable, logged, and recoverable.</p>
+
+    <div class="flow-lifecycle">
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">💬</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">1. Message Received</div>
+          <div class="flow-step-detail">WhatsApp/Telegram webhook fires. Channel adapter normalises the message into a standard payload regardless of source.</div>
+          <div class="flow-step-code">POST /webhook/whatsapp → { channel: "whatsapp", from: "+919876543210", text: "Generate invoice for Rajan Corp ₹45000 10 units ring" }</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">🪪</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">2. Identity Resolution</div>
+          <div class="flow-step-detail">Phone number looked up in users table. Org, role, and permissions fetched. Unknown users get an onboarding prompt.</div>
+          <div class="flow-step-code">SELECT u.*, r.permissions FROM users u JOIN roles r ON r.id = u.role_id WHERE u.phone = '+919876543210'</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">🛡️</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">3. Permission Gate</div>
+          <div class="flow-step-detail">Pre-AI check: does this role have "create_invoice" in its permissions? If not, respond immediately without touching the AI engine — saves cost and latency.</div>
+          <div class="flow-step-code">if "create_invoice" not in user.permissions: return "You don't have access to this action."</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">🧠</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">4. Intent Parsing</div>
+          <div class="flow-step-detail">LLM extracts structured intent from natural language. Returns action key + entities. Low-confidence intents trigger a clarifying question back to the user.</div>
+          <div class="flow-step-code">{ action: "create_invoice", entities: { customer: "Rajan Corp", amount: 45000, sku: "ring", quantity: 10 }, confidence: 0.97 }</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">📋</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">5. Workflow Config Loaded</div>
+          <div class="flow-step-detail">Active workflow for this org + intent_key fetched from DB. Versioned — if admin updated config mid-day, new requests get new version instantly.</div>
+          <div class="flow-step-code">SELECT * FROM workflows WHERE org_id = $org AND intent_key = 'create_invoice' AND is_active = true</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">⚙️</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">6. Playbook Execution</div>
+          <div class="flow-step-detail">Steps executed in sequence. Each step: resolve params → call adapter → evaluate condition → proceed or branch. Step results passed as context to next step via {{step_n.result}} tokens.</div>
+          <div class="flow-step-code">step1: check_stock → OK (42 available) → step2: get_customer → {gst, address} → step3: create_invoice → invoice #1042 → step4: deduct_stock → 32 remaining</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-line"></div>
+        <div class="flow-step-circle">📝</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">7. Audit Log Written</div>
+          <div class="flow-step-detail">Every step outcome, adapter called, data touched, and final result written to audit_log. Immutable. Queryable by org admin.</div>
+        </div>
+      </div>
+
+      <div class="flow-step-full">
+        <div class="flow-step-circle">✅</div>
+        <div class="flow-step-body">
+          <div class="flow-step-title">8. Response Sent</div>
+          <div class="flow-step-detail">Composed natural language reply sent back to original channel. WhatsApp gets a concise message. Web gets a structured card with links.</div>
+          <div class="flow-step-code">"✅ Invoice #1042 raised for Rajan Corp — ₹45,000. Stock updated: 32 rings remaining. PDF: [link]"</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 5 — API DESIGN
+  ══════════════════════════════════════ -->
+  <div class="section" id="api">
+    <div class="section-eyebrow">Section 05</div>
+    <h2 class="section-title">Core API Design</h2>
+    <p class="section-sub">FastAPI backend. RESTful. All endpoints require a JWT bearer token except the inbound webhook receivers. Versioned under /api/v1/.</p>
+
+    <div class="endpoint-group">
+      <div class="endpoint-group-title">Inbound — Channel Webhooks</div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/webhook/whatsapp</div><div class="endpoint-desc">Receive inbound WhatsApp messages from 360Dialog</div></div><span class="endpoint-auth">HMAC signed</span></div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/webhook/telegram</div><div class="endpoint-desc">Receive inbound Telegram bot updates</div></div><span class="endpoint-auth">Bot token</span></div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/webhook/adapter/{adapter_id}</div><div class="endpoint-desc">Async callbacks from business apps (invoice ready, leave approved)</div></div><span class="endpoint-auth">Shared secret</span></div>
+    </div>
+
+    <div class="endpoint-group">
+      <div class="endpoint-group-title">Core Engine</div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/api/v1/message</div><div class="endpoint-desc">Process a normalised user message. Returns response + session_id.</div></div><span class="endpoint-auth">JWT</span></div>
+      <div class="endpoint"><span class="method GET">GET</span><div><div class="endpoint-path">/api/v1/session/{id}</div><div class="endpoint-desc">Fetch active conversation state for multi-turn context</div></div><span class="endpoint-auth">JWT</span></div>
+    </div>
+
+    <div class="endpoint-group">
+      <div class="endpoint-group-title">Admin Console — Workflow Management</div>
+      <div class="endpoint"><span class="method GET">GET</span><div><div class="endpoint-path">/api/v1/admin/workflows</div><div class="endpoint-desc">List all workflows for the org</div></div><span class="endpoint-auth">Admin JWT</span></div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/api/v1/admin/workflows</div><div class="endpoint-desc">Create a new workflow definition</div></div><span class="endpoint-auth">Admin JWT</span></div>
+      <div class="endpoint"><span class="method PUT">PUT</span><div><div class="endpoint-path">/api/v1/admin/workflows/{id}</div><div class="endpoint-desc">Update a workflow. Creates new version, preserves history.</div></div><span class="endpoint-auth">Admin JWT</span></div>
+      <div class="endpoint"><span class="method GET">GET</span><div><div class="endpoint-path">/api/v1/admin/catalogue</div><div class="endpoint-desc">List all available adapter actions for this org's connected apps</div></div><span class="endpoint-auth">Admin JWT</span></div>
+    </div>
+
+    <div class="endpoint-group">
+      <div class="endpoint-group-title">Admin Console — Users &amp; Roles</div>
+      <div class="endpoint"><span class="method GET">GET</span><div><div class="endpoint-path">/api/v1/admin/users</div><div class="endpoint-desc">List users in org with their roles</div></div><span class="endpoint-auth">Admin JWT</span></div>
+      <div class="endpoint"><span class="method POST">POST</span><div><div class="endpoint-path">/api/v1/admin/users</div><div class="endpoint-desc">Onboard a new user to the org</div></div><span class="endpoint-auth">Admin JWT</span></div>
+      <div class="endpoint"><span class="method GET">GET</span><div><div class="endpoint-path">/api/v1/admin/audit</div><div class="endpoint-desc">Query audit log with filters: user, date range, intent, outcome</div></div><span class="endpoint-auth">Admin JWT</span></div>
+    </div>
+
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 6 — SECURITY
+  ══════════════════════════════════════ -->
+  <div class="section" id="security">
+    <div class="section-eyebrow">Section 06</div>
+    <h2 class="section-title">Security Design</h2>
+    <p class="section-sub">Security is built into the architecture, not bolted on. Every layer has a distinct security responsibility. No single point of failure.</p>
+
+    <div class="sec-grid">
+      <div class="sec-card"><div class="sec-icon">🔐</div><div class="sec-title">Zero-Trust by Default</div><div class="sec-desc">Every request re-verified against live role permissions. No cached privilege escalation. Token expiry enforced.</div><div class="sec-impl">JWT (15min) + refresh tokens</div></div>
+      <div class="sec-card"><div class="sec-icon">🏢</div><div class="sec-title">Tenant Isolation</div><div class="sec-desc">Every DB query scoped by org_id. Row-level security enforced at PostgreSQL level as a second line of defence.</div><div class="sec-impl">PostgreSQL RLS policies</div></div>
+      <div class="sec-card"><div class="sec-icon">🔑</div><div class="sec-title">Credential Encryption</div><div class="sec-desc">Third-party API keys stored encrypted in DB using AES-256-GCM. Master key in environment variable, never in code.</div><div class="sec-impl">AES-256-GCM + env secret</div></div>
+      <div class="sec-card"><div class="sec-icon">📵</div><div class="sec-title">Pre-AI Permission Gate</div><div class="sec-desc">Out-of-scope requests rejected before the LLM sees them. Saves cost, prevents prompt injection via role bypass attempts.</div><div class="sec-impl">FastAPI dependency middleware</div></div>
+      <div class="sec-card"><div class="sec-icon">📋</div><div class="sec-title">Immutable Audit Trail</div><div class="sec-desc">audit_log rows are append-only. No UPDATE/DELETE allowed on this table. Admins can query but not edit.</div><div class="sec-impl">PostgreSQL trigger + grants</div></div>
+      <div class="sec-card"><div class="sec-icon">🌐</div><div class="sec-title">Webhook Verification</div><div class="sec-desc">All inbound webhooks verified via HMAC signature before processing. Replay attacks blocked by timestamp check.</div><div class="sec-impl">HMAC-SHA256 + nonce</div></div>
+      <div class="sec-card"><div class="sec-icon">🚦</div><div class="sec-title">Rate Limiting</div><div class="sec-desc">Per-user and per-org rate limits on message processing. Prevents abuse and runaway LLM cost.</div><div class="sec-impl">Redis sliding window</div></div>
+      <div class="sec-card"><div class="sec-icon">🧹</div><div class="sec-title">Data Minimisation</div><div class="sec-desc">LLM only receives the minimum context needed. PII stripped from AI prompts where not required for the action.</div><div class="sec-impl">Prompt template design</div></div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 7 — MULTI-TENANCY
+  ══════════════════════════════════════ -->
+  <div class="section" id="multitenancy">
+    <div class="section-eyebrow">Section 07</div>
+    <h2 class="section-title">Multi-Tenancy Design</h2>
+    <p class="section-sub">Single deployment serves unlimited clients. Each org has its own isolated config, users, workflows, credentials, and audit trail — sharing only the core engine.</p>
+
+    <div class="tenant-diagram">
+      <div class="tenant-row">
+        <div class="tenant-box">
+          <div class="tenant-label">Client 01</div>
+          <div class="tenant-name" style="color:var(--c2)">💎 Jewellery Co.</div>
+          <div class="tenant-items">
+            <div class="tenant-item">Roles: Sales, Accounts, Admin</div>
+            <div class="tenant-item">Apps: CRM, Tally, Inventory</div>
+            <div class="tenant-item">Flows: Invoice, Stock Check</div>
+            <div class="tenant-item">Channel: WhatsApp</div>
+          </div>
+        </div>
+        <div class="tenant-box">
+          <div class="tenant-label">Client 02</div>
+          <div class="tenant-name" style="color:var(--c1)">🏠 Housing Society</div>
+          <div class="tenant-items">
+            <div class="tenant-item">Roles: Resident, Guard, Admin</div>
+            <div class="tenant-item">Apps: MyGate, Ticketing, Parking</div>
+            <div class="tenant-item">Flows: Complaint, Visitor, Dues</div>
+            <div class="tenant-item">Channel: WhatsApp + Web</div>
+          </div>
+        </div>
+        <div class="tenant-box">
+          <div class="tenant-label">Client 03</div>
+          <div class="tenant-name" style="color:var(--c4)">🏥 Any Next Client</div>
+          <div class="tenant-items">
+            <div class="tenant-item">Roles: Defined by admin</div>
+            <div class="tenant-item">Apps: Plug in via SDK</div>
+            <div class="tenant-item">Flows: Built in Admin Console</div>
+            <div class="tenant-item">Channel: Any supported</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="shared-label">All clients share the same core engine — isolated by org_id</div>
+
+      <div class="shared-engine">
+        <span class="engine-part">🧠 AI Engine</span>
+        <span class="engine-part">⚙️ Config Loader</span>
+        <span class="engine-part">🛡️ Auth Layer</span>
+        <span class="engine-part">🔌 Adapter Registry</span>
+        <span class="engine-part">📋 Audit System</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 8 — DEPLOYMENT
+  ══════════════════════════════════════ -->
+  <div class="section" id="deployment">
+    <div class="section-eyebrow">Section 08</div>
+    <h2 class="section-title">Deployment Architecture</h2>
+    <p class="section-sub">Designed to start lean (single Railway project) and scale horizontally. Each service is independently deployable. Estimated monthly infra cost at prototype stage: ₹2,000–4,000.</p>
+
+    <div class="dep-grid">
+      <div class="dep-card"><div class="dep-service">API Backend</div><div class="dep-role">FastAPI app. Handles all inbound requests, auth, orchestration coordination.</div><div class="dep-tech">Railway — Python service</div></div>
+      <div class="dep-card"><div class="dep-service">AI Worker</div><div class="dep-role">LangChain agent processes intent and executes playbook. Can be same service initially.</div><div class="dep-tech">Railway — background worker</div></div>
+      <div class="dep-card"><div class="dep-service">n8n Engine</div><div class="dep-role">Visual workflow runner. Used for complex multi-system automations and scheduled tasks.</div><div class="dep-tech">Railway — n8n container</div></div>
+      <div class="dep-card"><div class="dep-service">Admin Console</div><div class="dep-role">React SPA for org admins. Static build served via CDN.</div><div class="dep-tech">Vercel / Netlify</div></div>
+      <div class="dep-card"><div class="dep-service">PostgreSQL DB</div><div class="dep-role">Primary data store. All orgs, users, workflows, audit logs.</div><div class="dep-tech">Neon.tech (serverless PG)</div></div>
+      <div class="dep-card"><div class="dep-service">Redis Cache</div><div class="dep-role">Conversation state, session store, rate limiting counters.</div><div class="dep-tech">Railway — Redis plugin</div></div>
+      <div class="dep-card"><div class="dep-service">File Storage</div><div class="dep-role">Invoice PDFs, attachments, exported reports.</div><div class="dep-tech">Cloudflare R2 (S3-compatible)</div></div>
+      <div class="dep-card"><div class="dep-service">Monitoring</div><div class="dep-role">Error tracking, LLM cost monitoring, uptime alerts.</div><div class="dep-tech">Sentry + Railway metrics</div></div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════════════════
+       SECTION 9 — TECH STACK
+  ══════════════════════════════════════ -->
+  <div class="section" id="techstack">
+    <div class="section-eyebrow">Section 09</div>
+    <h2 class="section-title">Full Tech Stack</h2>
+    <p class="section-sub">Every choice made for speed-to-prototype, low cost, and ability to scale. No vendor lock-in on any critical component.</p>
+
+    <div style="overflow-x:auto">
+    <table class="stack-table">
+      <thead>
+        <tr><th>Layer</th><th>Component</th><th>Technology</th><th>Why</th><th>Alt if needed</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Channel</td><td><div class="tech-name">WhatsApp</div></td><td>360Dialog API</td><td><div class="tech-why">Cheapest for India, WhatsApp Business API compliant</div></td><td>Twilio, AiSensy</td></tr>
+        <tr><td>Channel</td><td><div class="tech-name">Telegram</div></td><td>python-telegram-bot</td><td><div class="tech-why">Free API, excellent for button-based menus</div></td><td>—</td></tr>
+        <tr><td>Channel</td><td><div class="tech-name">Web UI</div></td><td>React + Vite + Tailwind</td><td><div class="tech-why">Fast build, your intern likely knows it</div></td><td>Next.js</td></tr>
+        <tr><td>Auth</td><td><div class="tech-name">JWT Auth</div></td><td>python-jose + bcrypt</td><td><div class="tech-why">Full control, no vendor dependency</div></td><td>Auth0 (if budget allows)</td></tr>
+        <tr><td>Config</td><td><div class="tech-name">Visual Builder</div></td><td>React Flow</td><td><div class="tech-why">Open source, exactly maps to workflow node graphs</div></td><td>—</td></tr>
+        <tr><td>AI Engine</td><td><div class="tech-name">Intent + Orchestration</div></td><td>LangChain (Python)</td><td><div class="tech-why">Best tool-calling and agent framework. Mature ecosystem.</div></td><td>LlamaIndex</td></tr>
+        <tr><td>AI Engine</td><td><div class="tech-name">LLM</div></td><td>Claude API (Sonnet)</td><td><div class="tech-why">Best instruction-following for structured JSON extraction</div></td><td>GPT-4o-mini (cheaper)</td></tr>
+        <tr><td>Workflow</td><td><div class="tech-name">Automation Engine</div></td><td>n8n (self-hosted)</td><td><div class="tech-why">You know it, visual, 400+ integrations pre-built</div></td><td>Temporal (for scale)</td></tr>
+        <tr><td>Backend</td><td><div class="tech-name">API Framework</div></td><td>FastAPI (Python)</td><td><div class="tech-why">Async, fast, Pydantic validation, auto docs</div></td><td>—</td></tr>
+        <tr><td>Database</td><td><div class="tech-name">Primary DB</div></td><td>PostgreSQL via Neon.tech</td><td><div class="tech-why">Relational + JSONB. Serverless, free tier, scales well.</div></td><td>Self-hosted PG on KloudBean</td></tr>
+        <tr><td>Cache</td><td><div class="tech-name">Session + State</div></td><td>Redis</td><td><div class="tech-why">Conversation context, rate limits, async job state</div></td><td>—</td></tr>
+        <tr><td>Storage</td><td><div class="tech-name">Files</div></td><td>Cloudflare R2</td><td><div class="tech-why">S3-compatible, free egress, cheap storage</div></td><td>AWS S3, Supabase Storage</td></tr>
+        <tr><td>Hosting</td><td><div class="tech-name">Backend + Workers</div></td><td>Railway</td><td><div class="tech-why">Simple deploy, GitHub CI, fair pricing, scales containers</div></td><td>Render, Fly.io</td></tr>
+        <tr><td>Hosting</td><td><div class="tech-name">Admin Console</div></td><td>Vercel</td><td><div class="tech-why">Free tier, instant deploy from GitHub</div></td><td>Netlify</td></tr>
+        <tr><td>Email</td><td><div class="tech-name">Transactional</div></td><td>Brevo</td><td><div class="tech-why">You already have it set up on aitamate.com</div></td><td>—</td></tr>
+        <tr><td>Monitoring</td><td><div class="tech-name">Errors + Cost</div></td><td>Sentry</td><td><div class="tech-why">Free tier catches all exceptions with stack traces</div></td><td>—</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+</div><!-- /page -->
+
+<script>
+// Nav active state on scroll
+const sections = document.querySelectorAll('.section[id]');
+const navLinks = document.querySelectorAll('.nav-link');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      navLinks.forEach(l => l.classList.remove('active'));
+      const active = document.querySelector(`.nav-link[href="#${e.target.id}"]`);
+      if (active) active.classList.add('active');
+    }
+  });
+}, { rootMargin: '-40% 0px -55% 0px' });
+sections.forEach(s => observer.observe(s));
+
+// Smooth scroll
+navLinks.forEach(l => {
+  l.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(l.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth' });
+  });
+});
+
+// Tab switching
+function switchTab(group, id) {
+  document.querySelectorAll(`[id^="${group}-"]`).forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`${group}-${id}`).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>

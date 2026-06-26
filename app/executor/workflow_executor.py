@@ -200,12 +200,13 @@ async def execute_intent(
     raw_text: str,
     route_type: str = "workflow",
     parameters: dict = None,
-    analyzer_intent: str = ""
+    analyzer_intent: str = "",
+    workflow: dict = None,
 ) -> str:
     """
     Unified executor.
-    route_type=general_read → query engine
-    route_type=workflow → adapter registry
+    route_type=workflow with workflow record → read (sql_template) or action (adapter)
+    route_type=general_read → query engine unconstrained
     system intents → hardcoded handlers
     """
     org_id  = user["org_id"]
@@ -213,13 +214,47 @@ async def execute_intent(
     phone   = user["phone"]
     params  = parameters or {}
 
-    # ── GENERAL READ — dynamic SQL ────────────────────
+    # ── WORKFLOW ROUTE (matched workflow) ──────────────────────────────────
+    if route_type == "workflow" and workflow:
+        workflow_type = workflow.get("workflow_type", "action")
+
+        if workflow_type == "read":
+            # Execute stored SQL template — zero LLM cost
+            from app.services.query_engine import execute_template
+            reply = await execute_template(
+                org_id        = org_id,
+                sql_template  = workflow["sql_template"],
+                entities      = params,
+                params_order  = workflow.get("sql_params_order", []),
+                entity_schema = workflow.get("entity_schema", {}),
+                response_format = workflow.get("response_format", "generic"),
+            )
+            await _log(org_id, user_id, workflow["intent_key"], raw_text, "success")
+            return reply
+
+        else:
+            # Action workflow: call adapter
+            adapter_method = workflow.get("adapter_method", "generic")
+            result_msg = await _dispatch_dynamic_intent(
+                intent         = workflow["intent_key"],
+                entity         = entity_raw,
+                org_id         = org_id,
+                raw_text       = raw_text,
+                adapter_method = adapter_method,
+                session_id     = session_id,
+                user_id        = user_id,
+                phone          = phone,
+                parameters     = params,
+            )
+            await _log(org_id, user_id, workflow["intent_key"], raw_text, "success")
+            return result_msg
+
+    # ── UNCONSTRAINED GENERAL READ (fallback — no workflow matched) ────────
     if route_type == "general_read":
         from app.services.query_engine import execute_read
-        intent_desc = analyzer_intent or intent
-        result = await execute_read(org_id, intent_desc, params)
+        reply = await execute_read(org_id, analyzer_intent or intent, params)
         await _log(org_id, user_id, "general_read", raw_text, "success")
-        return result
+        return reply
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
@@ -286,8 +321,7 @@ async def execute_intent(
             "_Action logged in audit trail._"
         )
 
-    # ── DYNAMIC DB WORKFLOW ───────────────────────────
-    # All business intents are now routed through DB
+    # ── LEGACY: DYNAMIC DB WORKFLOW (fallback for non-intent_matcher routes) ────
     db_workflow = await fetch_one("""
         SELECT name, adapter_method FROM workflows
         WHERE intent_key = $1 AND org_id = $2 AND is_active = true
