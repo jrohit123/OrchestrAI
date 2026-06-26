@@ -198,21 +198,31 @@ Now generate SQL for:
     return result
 
 
-def _extract_parameters(llm_params: dict, org_id: str) -> list:
-    """Build parameter list from LLM-extracted params."""
+def _extract_parameters(sql: str, llm_params: dict, org_id: str) -> list:
+    """Build parameter list from LLM-extracted params, matching SQL placeholder count."""
+    # Count actual parameter placeholders in SQL
+    import re
+    placeholders = re.findall(r'\$(\d+)', sql)
+    max_placeholder = max([int(p) for p in placeholders]) if placeholders else 0
+    
     params = [org_id]  # $1 is always org_id
     
-    # LLM provides explicit parameter mapping
+    # Build params from LLM output, but only up to the number of placeholders
+    param_values = []
     for key, value in llm_params.items():
         if key == 'limit':
-            params.append(int(value))
+            param_values.append(int(value))
         elif key in ['customer_name', 'product_name', 'invoice_number']:
             # Add wildcards for ILIKE
             if isinstance(value, str) and not value.startswith('%'):
                 value = f'%{value}%'
-            params.append(value)
+            param_values.append(value)
         else:
-            params.append(value)
+            param_values.append(value)
+    
+    # Only append as many params as there are placeholders (minus 1 for org_id)
+    for i in range(min(len(param_values), max_placeholder - 1)):
+        params.append(param_values[i])
     
     return params
 
@@ -260,7 +270,7 @@ async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
             return "🤔 I couldn't understand that query. Please try rephrasing it in a different way."
         
         # Build parameters from LLM-extracted values
-        params = _extract_parameters(llm_params, org_id)
+        params = _extract_parameters(sql, llm_params, org_id)
         
         # Execute
         rows = await fetch_all(sql, *params)
