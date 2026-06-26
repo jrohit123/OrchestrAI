@@ -11,33 +11,73 @@ from app.db import fetch_all
 load_dotenv()
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# DB Schema for LLM context
-DB_SCHEMA = """
-TABLES:
-- customers: id, name, phone, email, gst_number, city, credit_limit, created_at
-- invoices: id, invoice_number, customer_id, created_by, items (jsonb), amount, status (draft/pending/paid/overdue), due_date, paid_at, pdf_url, created_at
-- inventory: id, sku, name, qty, location, reorder_level, unit_price, updated_at (NOTE: inventory is NOT related to customers - it's independent stock data)
-- metal_rates: id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at
-- orders: id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status (confirmed/production/shipped/delivered/cancelled), expected_delivery, notes, created_by, created_at
-- quotations: id, quotation_number, customer_id, customer_name, metal_type, weight_grams, design_code, rate_per_gram, making_charge_pct, making_charges, subtotal, gst_pct, gst_amount, total_amount, status, valid_until, notes, created_by, created_at
+# Cached schema (loaded dynamically from DB)
+DB_SCHEMA = None
+VALID_COLUMNS = None
 
-RELATIONSHIPS:
-- invoices.customer_id → customers.id
-- orders.customer_id → customers.id
-- quotations.customer_id → customers.id
-- orders.quotation_id → quotations.id
-- inventory has NO customer relationship (it's independent stock data)
-"""
 
-# Valid columns for schema validation
-VALID_COLUMNS = {
-    'customers': {'id', 'name', 'phone', 'email', 'gst_number', 'city', 'credit_limit', 'created_at'},
-    'invoices': {'id', 'invoice_number', 'customer_id', 'created_by', 'items', 'amount', 'status', 'due_date', 'paid_at', 'pdf_url', 'created_at'},
-    'inventory': {'id', 'sku', 'name', 'qty', 'location', 'reorder_level', 'unit_price', 'updated_at'},
-    'metal_rates': {'id', 'metal_type', 'rate_per_gram', 'making_charge_pct', 'updated_by', 'updated_at'},
-    'orders': {'id', 'order_number', 'quotation_id', 'customer_id', 'customer_name', 'description', 'metal_type', 'weight_estimate', 'estimated_amount', 'advance_paid', 'status', 'expected_delivery', 'notes', 'created_by', 'created_at'},
-    'quotations': {'id', 'quotation_number', 'customer_id', 'customer_name', 'metal_type', 'weight_grams', 'design_code', 'rate_per_gram', 'making_charge_pct', 'making_charges', 'subtotal', 'gst_pct', 'gst_amount', 'total_amount', 'status', 'valid_until', 'notes', 'created_by', 'created_at'}
-}
+async def _load_schema_from_db():
+    """Fetch schema dynamically from PostgreSQL information_schema."""
+    global DB_SCHEMA, VALID_COLUMNS
+    
+    # Fetch columns
+    columns = await fetch_all("""
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, ordinal_position
+    """)
+    
+    # Fetch foreign key relationships
+    fks = await fetch_all("""
+        SELECT
+            tc.table_name,
+            kcu.column_name,
+            ccu.table_name AS foreign_table_name,
+            ccu.column_name AS foreign_column_name
+        FROM information_schema.table_constraints AS tc
+        JOIN information_schema.key_column_usage AS kcu
+            ON tc.constraint_name = kcu.constraint_name
+        JOIN information_schema.constraint_column_usage AS ccu
+            ON ccu.constraint_name = tc.constraint_name
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+    """)
+    
+    # Build VALID_COLUMNS dict
+    VALID_COLUMNS = {}
+    table_columns = {}
+    
+    for col in columns:
+        table = col['table_name']
+        column = col['column_name']
+        data_type = col['data_type']
+        
+        if table not in VALID_COLUMNS:
+            VALID_COLUMNS[table] = set()
+            table_columns[table] = []
+        
+        VALID_COLUMNS[table].add(column)
+        table_columns[table].append(f"{column} ({data_type})")
+    
+    # Build DB_SCHEMA string
+    tables_section = "TABLES:\n"
+    for table, cols in sorted(table_columns.items()):
+        cols_str = ", ".join(cols)
+        tables_section += f"- {table}: {cols_str}\n"
+    
+    # Build relationships section
+    relationships_section = "RELATIONSHIPS:\n"
+    for fk in fks:
+        relationships_section += f"- {fk['table_name']}.{fk['column_name']} → {fk['foreign_table_name']}.{fk['foreign_column_name']}\n"
+    
+    # Add special note for inventory (no customer relationship)
+    if 'inventory' in VALID_COLUMNS:
+        relationships_section += "- inventory has NO customer relationship (it's independent stock data)\n"
+    
+    DB_SCHEMA = tables_section + "\n" + relationships_section
+    
+    print(f"[QUERY_ENGINE] Schema loaded: {len(VALID_COLUMNS)} tables")
+    return DB_SCHEMA
 
 # Dangerous SQL patterns to block
 DANGEROUS_PATTERNS = [
@@ -70,6 +110,10 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
 
 def _validate_schema(sql: str) -> tuple[bool, str]:
     """Validate SQL uses only valid table/column combinations."""
+    # Ensure schema is loaded
+    if VALID_COLUMNS is None:
+        return True, "OK"  # Skip validation if schema not loaded yet
+    
     # Extract table.column patterns
     # Match patterns like table.column or table.column AS alias
     pattern = r'\b(\w+)\.(\w+)\b'
@@ -90,8 +134,18 @@ def _validate_schema(sql: str) -> tuple[bool, str]:
     return True, "OK"
 
 
-async def _generate_sql(intent: str, parameters: dict) -> str:
-    """LLM generates SQL based on intent and schema."""
+async def _ensure_schema_loaded():
+    """Ensure schema is loaded from DB (lazy load on first use)."""
+    global DB_SCHEMA, VALID_COLUMNS
+    if DB_SCHEMA is None or VALID_COLUMNS is None:
+        await _load_schema_from_db()
+
+
+async def _generate_sql(intent: str, parameters: dict) -> dict:
+    """LLM generates SQL based on intent and schema. Returns SQL and extracted parameters."""
+    # Ensure schema is loaded
+    await _ensure_schema_loaded()
+    
     prompt = f"""You are a SQL expert. Generate a PostgreSQL SELECT query for this request.
 
 REQUEST: {intent}
@@ -108,14 +162,14 @@ RULES:
 - For numeric comparisons use standard operators
 - LIMIT results to 10-50 rows unless specified
 - Use proper JOIN syntax for related tables
-- Return ONLY the SQL query, no explanation
+- Return ONLY JSON with "sql" and "params" keys, no explanation
 
 Example:
 INPUT: "show top 3 customers by credit limit"
-OUTPUT: SELECT name, city, credit_limit FROM customers WHERE org_id = $1 ORDER BY credit_limit DESC NULLS LAST LIMIT 3
+OUTPUT: {{"sql": "SELECT name, city, credit_limit FROM customers WHERE org_id = $1 ORDER BY credit_limit DESC NULLS LAST LIMIT 3", "params": {{"limit": 3}}}}
 
 INPUT: "dues for Mehta Jewellers"
-OUTPUT: SELECT c.name, i.invoice_number, i.amount, i.status, i.due_date FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.org_id = $1 AND c.org_id = $1 AND c.name ILIKE $2 AND i.status IN ('pending', 'overdue') ORDER BY i.due_date ASC
+OUTPUT: {{"sql": "SELECT c.name, i.invoice_number, i.amount, i.status, i.due_date FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.org_id = $1 AND c.org_id = $1 AND c.name ILIKE $2 AND i.status IN ('pending', 'overdue') ORDER BY i.due_date ASC", "params": {{"customer_name": "Mehta"}}}}
 
 Now generate SQL for:
 {intent}
@@ -128,36 +182,37 @@ Now generate SQL for:
         messages=[{"role": "user", "content": prompt}],
     )
     
-    sql = response.choices[0].message.content.strip()
+    content = response.choices[0].message.content.strip()
     
     # Clean up markdown if present
-    if sql.startswith('```'):
-        sql = sql.split('```')[1]
-        if sql.startswith('sql'):
-            sql = sql[3:]
-    sql = sql.strip()
+    if content.startswith('```'):
+        content = content.split('```')[1]
+        if content.startswith('sql'):
+            content = content[3:]
+    content = content.strip()
     
-    return sql
+    # Parse JSON
+    import json
+    result = json.loads(content)
+    
+    return result
 
 
-def _extract_parameters(sql: str, user_params: dict, org_id: str) -> list:
-    """Extract and build parameter list for SQL."""
-    # Count parameter placeholders
-    param_count = sql.count('$')
+def _extract_parameters(llm_params: dict, org_id: str) -> list:
+    """Build parameter list from LLM-extracted params."""
     params = [org_id]  # $1 is always org_id
     
-    # Fill remaining params from user_params
-    for i in range(1, param_count):
-        param_key = list(user_params.keys())[i-1] if i-1 < len(user_params) else None
-        if param_key:
-            val = user_params[param_key]
+    # LLM provides explicit parameter mapping
+    for key, value in llm_params.items():
+        if key == 'limit':
+            params.append(int(value))
+        elif key in ['customer_name', 'product_name', 'invoice_number']:
             # Add wildcards for ILIKE
-            if 'ILIKE' in sql.upper() and isinstance(val, str):
-                if not val.startswith('%'):
-                    val = f'%{val}%'
-            params.append(val)
+            if isinstance(value, str) and not value.startswith('%'):
+                value = f'%{value}%'
+            params.append(value)
         else:
-            params.append(None)
+            params.append(value)
     
     return params
 
@@ -187,8 +242,10 @@ def _format_results(rows: list, sql: str) -> str:
 async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
     """Execute a general_read request with dynamic SQL generation."""
     try:
-        # Generate SQL
-        sql = await _generate_sql(intent, parameters)
+        # Generate SQL (LLM returns both SQL and params)
+        result = await _generate_sql(intent, parameters)
+        sql = result["sql"]
+        llm_params = result.get("params", {})
         
         # Validate SQL safety
         is_safe, reason = _validate_sql(sql)
@@ -202,8 +259,8 @@ async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
             print(f"[QUERY_ENGINE] Schema validation failed: {schema_reason}")
             return "🤔 I couldn't understand that query. Please try rephrasing it in a different way."
         
-        # Build parameters
-        params = _extract_parameters(sql, parameters, org_id)
+        # Build parameters from LLM-extracted values
+        params = _extract_parameters(llm_params, org_id)
         
         # Execute
         rows = await fetch_all(sql, *params)
