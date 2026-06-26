@@ -198,12 +198,28 @@ async def execute_intent(
     session_id: str,
     session: dict,
     raw_text: str,
-    parameters: dict = None
+    route_type: str = "workflow",
+    parameters: dict = None,
+    analyzer_intent: str = ""
 ) -> str:
+    """
+    Unified executor.
+    route_type=general_read → query engine
+    route_type=workflow → adapter registry
+    system intents → hardcoded handlers
+    """
     org_id  = user["org_id"]
     user_id = user["user_id"]
     phone   = user["phone"]
-    parameters = parameters or {}
+    params  = parameters or {}
+
+    # ── GENERAL READ — dynamic SQL ────────────────────
+    if route_type == "general_read":
+        from app.services.query_engine import execute_read
+        intent_desc = analyzer_intent or intent
+        result = await execute_read(org_id, intent_desc, params)
+        await _log(org_id, user_id, "general_read", raw_text, "success")
+        return result
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
@@ -282,10 +298,17 @@ async def execute_intent(
         result_msg = await _dispatch_dynamic_intent(
             intent, entity_raw, org_id, raw_text, adapter_method,
             session_id, user_id, phone,
-            parameters=parameters,  # NEW
+            parameters=parameters,
         )
         await _log(org_id, user_id, intent, raw_text, "success")
         return result_msg
+
+    # Try general_read fallback for unknown intents
+    if analyzer_intent:
+        from app.services.query_engine import execute_read
+        result = await execute_read(org_id, analyzer_intent, params)
+        await _log(org_id, user_id, "general_read_fallback", raw_text, "success")
+        return result
 
     return "🤔 Didn't understand that. Type *help* for the menu."
 

@@ -1,9 +1,10 @@
 """
-Dynamic SQL Query Engine — LLM generates SQL directly.
-Includes schema in prompt, validates SQL for safety, executes read-only queries.
+Dynamic SQL Query Engine.
+LLM generates SQL from intent + schema. Validates safety. Executes read-only.
 """
 import os
 import re
+import json
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from app.db import fetch_all
@@ -11,349 +12,229 @@ from app.db import fetch_all
 load_dotenv()
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Cached schema (loaded dynamically from DB)
-DB_SCHEMA = None
-VALID_COLUMNS = None
+_DB_SCHEMA: str | None = None
+_VALID_COLUMNS: dict | None = None
+
+# Patterns that must never appear in generated SQL
+_DANGEROUS = [
+    r'\bDROP\b', r'\bDELETE\b', r'\bTRUNCATE\b', r'\bALTER\b',
+    r'\bCREATE\b', r'\bINSERT\b', r'\bUPDATE\b', r'\bGRANT\b',
+    r'\bEXEC(UTE)?\b', r';\s*--', r'\bpg_\w+',
+    r'\binformation_schema\b', r'\bpg_catalog\b'
+]
+
+SENSITIVE_COLS = {
+    'id', 'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id',
+    'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
+    'decided_by', 'requester_id', 'approver_role', 'workflow_id',
+    'otp_hash', 'config',
+}
 
 
-async def _load_schema_from_db():
-    """Fetch schema dynamically from PostgreSQL information_schema."""
-    global DB_SCHEMA, VALID_COLUMNS
-    
-    # Fetch columns
-    columns = await fetch_all("""
+async def _load_schema():
+    global _DB_SCHEMA, _VALID_COLUMNS
+    if _DB_SCHEMA:
+        return
+
+    cols = await fetch_all("""
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
         ORDER BY table_name, ordinal_position
     """)
-    
-    # Fetch foreign key relationships
-    fks = await fetch_all("""
-        SELECT
-            tc.table_name,
-            kcu.column_name,
-            ccu.table_name AS foreign_table_name,
-            ccu.column_name AS foreign_column_name
-        FROM information_schema.table_constraints AS tc
-        JOIN information_schema.key_column_usage AS kcu
-            ON tc.constraint_name = kcu.constraint_name
-        JOIN information_schema.constraint_column_usage AS ccu
-            ON ccu.constraint_name = tc.constraint_name
-        WHERE tc.constraint_type = 'FOREIGN KEY'
-    """)
-    
-    # Build VALID_COLUMNS dict
-    VALID_COLUMNS = {}
-    table_columns = {}
-    
-    for col in columns:
-        table = col['table_name']
-        column = col['column_name']
-        data_type = col['data_type']
-        
-        if table not in VALID_COLUMNS:
-            VALID_COLUMNS[table] = set()
-            table_columns[table] = []
-        
-        VALID_COLUMNS[table].add(column)
-        table_columns[table].append(f"{column} ({data_type})")
-    
-    # Build DB_SCHEMA string
-    tables_section = "TABLES:\n"
-    for table, cols in sorted(table_columns.items()):
-        cols_str = ", ".join(cols)
-        tables_section += f"- {table}: {cols_str}\n"
-    
-    # Build relationships section
-    relationships_section = "RELATIONSHIPS:\n"
-    for fk in fks:
-        relationships_section += f"- {fk['table_name']}.{fk['column_name']} → {fk['foreign_table_name']}.{fk['foreign_column_name']}\n"
-    
-    # Add special note for inventory (no customer relationship)
-    if 'inventory' in VALID_COLUMNS:
-        relationships_section += "- inventory has NO customer relationship (it's independent stock data)\n"
-    
-    DB_SCHEMA = tables_section + "\n" + relationships_section
-    
-    print(f"[QUERY_ENGINE] Schema loaded: {len(VALID_COLUMNS)} tables")
-    return DB_SCHEMA
 
-# Dangerous SQL patterns to block
-DANGEROUS_PATTERNS = [
-    r'\bDROP\b', r'\bDELETE\b', r'\bTRUNCATE\b', r'\bALTER\b', 
-    r'\bCREATE\b', r'\bINSERT\b', r'\bUPDATE\b', r'\bGRANT\b',
-    r'\bREVOKE\b', r'\bEXEC\b', r'\bEXECUTE\b', r';\s*--',
-    r'\bpg_\w+', r'\binformation_schema\b', r'\bpg_catalog\b'
-]
+    _VALID_COLUMNS = {}
+    table_cols: dict[str, list] = {}
+
+    for c in cols:
+        t = c['table_name']
+        _VALID_COLUMNS.setdefault(t, set()).add(c['column_name'])
+        table_cols.setdefault(t, []).append(f"{c['column_name']} ({c['data_type']})")
+
+    lines = []
+    for t, cs in sorted(table_cols.items()):
+        lines.append(f"- {t}: {', '.join(cs)}")
+
+    _DB_SCHEMA = "TABLES:\n" + "\n".join(lines)
+    print(f"[QUERY_ENGINE] Schema loaded: {len(_VALID_COLUMNS)} tables")
 
 
-def _validate_sql(sql: str) -> tuple[bool, str]:
-    """Validate SQL is safe (read-only, no dangerous operations)."""
-    sql_upper = sql.upper()
-    
-    # Block dangerous patterns
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, sql_upper, re.IGNORECASE):
-            return False, f"Blocked dangerous SQL pattern: {pattern}"
-    
-    # Ensure it's a SELECT query
-    if not sql_upper.strip().startswith('SELECT'):
-        return False, "Only SELECT queries allowed"
-    
-    # Block multiple statements
+def _safe(sql: str) -> tuple[bool, str]:
+    upper = sql.upper()
+    for p in _DANGEROUS:
+        if re.search(p, upper, re.IGNORECASE):
+            return False, f"Blocked: {p}"
+    if not upper.strip().startswith('SELECT'):
+        return False, "Only SELECT allowed"
     if ';' in sql.rstrip(';'):
-        return False, "Multiple statements not allowed"
-    
-    return True, "OK"
+        return False, "Multiple statements blocked"
+    return True, "ok"
 
 
-def _validate_schema(sql: str) -> tuple[bool, str]:
-    """Validate SQL uses only valid table/column combinations."""
-    # Ensure schema is loaded
-    if VALID_COLUMNS is None:
-        return True, "OK"  # Skip validation if schema not loaded yet
-    
-    # Extract table.column patterns
-    # Match patterns like table.column or table.column AS alias
-    pattern = r'\b(\w+)\.(\w+)\b'
-    matches = re.findall(pattern, sql, re.IGNORECASE)
-    
-    for table, column in matches:
-        table_lower = table.lower()
-        column_lower = column.lower()
-        
-        # Skip if table not in our schema (might be a subquery alias)
-        if table_lower not in VALID_COLUMNS:
-            continue
-            
-        # Check if column exists in table
-        if column_lower not in VALID_COLUMNS[table_lower]:
-            return False, f"Invalid column '{column}' in table '{table}'"
-    
-    return True, "OK"
+async def _gen_sql(intent: str, parameters: dict) -> dict:
+    await _load_schema()
 
-
-async def _ensure_schema_loaded():
-    """Ensure schema is loaded from DB (lazy load on first use)."""
-    global DB_SCHEMA, VALID_COLUMNS
-    if DB_SCHEMA is None or VALID_COLUMNS is None:
-        await _load_schema_from_db()
-
-
-async def _generate_sql(intent: str, parameters: dict) -> dict:
-    """LLM generates SQL based on intent and schema. Returns SQL and extracted parameters."""
-    # Ensure schema is loaded
-    await _ensure_schema_loaded()
-    
-    prompt = f"""You are a SQL expert. Generate a PostgreSQL SELECT query for this request.
+    prompt = f"""You are a PostgreSQL expert. Generate a safe SELECT query.
 
 REQUEST: {intent}
-PARAMETERS: {parameters}
+EXTRACTED PARAMETERS: {json.dumps(parameters)}
 
-DATABASE SCHEMA:
-{DB_SCHEMA}
+SCHEMA:
+{_DB_SCHEMA}
 
 RULES:
-- Generate ONLY a SELECT query (no INSERT/UPDATE/DELETE)
-- Always include WHERE org_id = $1 (parameterized)
-- Use parameterized queries ($1, $2, etc.) - NEVER embed values directly
-- For text search use ILIKE with % wildcards
-- For numeric comparisons use standard operators
-- LIMIT results to 10-50 rows unless specified
-- Use proper JOIN syntax for related tables
-- Return ONLY JSON with "sql" and "params" keys, no explanation
+- SELECT only — no INSERT/UPDATE/DELETE
+- Always WHERE org_id = $1 (parameterized, never literal)
+- Use $1, $2... placeholders — NEVER embed values in SQL
+- ILIKE with %wildcards% for text search
+- LIMIT 20 unless user specified a different limit
+- JOIN tables as needed
+- Return ONLY JSON: {{"sql": "...", "params": {{}}}}
 
-Example:
-INPUT: "show top 3 customers by credit limit"
-OUTPUT: {{"sql": "SELECT name, city, credit_limit FROM customers WHERE org_id = $1 ORDER BY credit_limit DESC NULLS LAST LIMIT 3", "params": {{"limit": 3}}}}
+PARAM MAPPING:
+- customer_name → use ILIKE: '%name%'
+- product_name  → use ILIKE on inventory.name
+- limit         → LIMIT clause
+- status        → exact match
+- invoice_number, order_number → exact match
 
-INPUT: "dues for Mehta Jewellers"
-OUTPUT: {{"sql": "SELECT c.name, i.invoice_number, i.amount, i.status, i.due_date FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.org_id = $1 AND c.org_id = $1 AND c.name ILIKE $2 AND i.status IN ('pending', 'overdue') ORDER BY i.due_date ASC", "params": {{"customer_name": "Mehta"}}}}
+Examples:
+{{"sql": "SELECT c.name, SUM(i.amount) as total FROM invoices i JOIN customers c ON c.id=i.customer_id WHERE i.org_id=$1 AND i.status IN ('pending','overdue') GROUP BY c.id,c.name ORDER BY total DESC LIMIT 3", "params": {{"limit":3}}}}
+{{"sql": "SELECT name, qty, location FROM inventory WHERE org_id=$1 AND name ILIKE $2 LIMIT 5", "params": {{"product_name":"gold ring"}}}}"""
 
-Now generate SQL for:
-{intent}
-"""
-
-    response = await _client.chat.completions.create(
+    resp = await _client.chat.completions.create(
         model="gpt-4o-mini",
         max_tokens=500,
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
     )
-    
-    content = response.choices[0].message.content.strip()
-    
-    # Clean up markdown if present
-    if content.startswith('```'):
-        content = content.split('```')[1]
-        if content.startswith('sql'):
-            content = content[3:]
-    content = content.strip()
-    
-    # Parse JSON
-    import json
-    result = json.loads(content)
-    
-    return result
+    content = resp.choices[0].message.content.strip()
+    if "```" in content:
+        content = content.replace("```json", "").replace("```", "").strip()
+    return json.loads(content)
 
 
-def _extract_parameters(sql: str, llm_params: dict, org_id: str) -> list:
-    """Build parameter list from LLM-extracted params, matching SQL placeholder count."""
-    # Count actual parameter placeholders in SQL
-    import re
-    placeholders = re.findall(r'\$(\d+)', sql)
-    max_placeholder = max([int(p) for p in placeholders]) if placeholders else 0
-    
-    params = [org_id]  # $1 is always org_id
-    
-    # Build params from LLM output, but only up to the number of placeholders
-    param_values = []
-    for key, value in llm_params.items():
-        if key == 'limit':
-            param_values.append(int(value))
-        elif key in ['customer_name', 'product_name', 'invoice_number']:
-            # Add wildcards for ILIKE
-            if isinstance(value, str) and not value.startswith('%'):
-                value = f'%{value}%'
-            param_values.append(value)
+def _build_params(sql: str, llm_params: dict, org_id: str) -> list:
+    """Build positional params list matching $1..$N in SQL."""
+    holes = re.findall(r'\$(\d+)', sql)
+    n = max(int(h) for h in holes) if holes else 0
+
+    out = [org_id]  # $1 always org_id
+    ordered = []
+
+    for k, v in llm_params.items():
+        if k == 'limit':
+            ordered.append(int(v))
+        elif k in ('customer_name', 'product_name'):
+            s = str(v)
+            ordered.append(s if s.startswith('%') else f'%{s}%')
         else:
-            param_values.append(value)
-    
-    # Only append as many params as there are placeholders (minus 1 for org_id)
-    for i in range(min(len(param_values), max_placeholder - 1)):
-        params.append(param_values[i])
-    
-    return params
+            ordered.append(v)
+
+    for i in range(min(len(ordered), n - 1)):
+        out.append(ordered[i])
+
+    return out
 
 
-def _format_results(rows: list, sql: str) -> str:
-    """Format query results for WhatsApp."""
+def _fmt(rows: list) -> str:
+    """Format rows for WhatsApp — filters sensitive columns."""
     if not rows:
         return "✅ No results found."
-    
-    # Filter out sensitive columns
-    sensitive_columns = {'id', 'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id', 
-                         'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
-                         'decided_by', 'requester_id', 'approver_role', 'workflow_id'}
-    
-    # Also filter UUID-like values
-    def is_uuid_like(val):
-        if not isinstance(val, str):
-            return False
-        # Check if it looks like a UUID (contains hyphens and is long)
-        if '-' in val and len(val) > 20:
-            return True
-        return False
-    
-    # Filter columns and values
-    filtered_rows = []
+
+    def is_uuid(v):
+        return isinstance(v, str) and '-' in v and len(v) > 30
+
+    clean = []
     for r in rows:
-        filtered = {}
-        for col, val in r.items():
-            if col.lower() in sensitive_columns:
-                continue
-            if is_uuid_like(val):
-                continue
-            filtered[col] = val
-        filtered_rows.append(filtered)
-    
-    if not filtered_rows or not filtered_rows[0]:
+        row = {k: v for k, v in r.items()
+               if k.lower() not in SENSITIVE_COLS and not is_uuid(v)}
+        if row:
+            clean.append(row)
+
+    if not clean:
         return "✅ No displayable results."
-    
-    # Try to infer format based on columns
-    cols = list(filtered_rows[0].keys())
-    
-    # Smart formatting based on column names
-    lines = []
-    
-    # Special formatting for roles/permissions
+
+    cols = list(clean[0].keys())
+
+    # Roles/permissions
     if 'name' in cols and 'permissions' in cols:
-        lines.append("👥 *Roles & Permissions*")
-        for r in filtered_rows:
-            role = r.get('name', 'Unknown')
-            perms = r.get('permissions', [])
-            if isinstance(perms, list):
-                perms_str = ', '.join(perms[:5])  # Limit to 5 permissions
-                if len(perms) > 5:
-                    perms_str += f" +{len(perms)-5} more"
-            else:
-                perms_str = str(perms)[:50]
-            lines.append(f"\n• *{role}*: {perms_str}")
+        lines = ["👥 *Roles & Permissions*"]
+        for r in clean:
+            p = r.get('permissions', [])
+            s = ', '.join(p[:5]) + (f' +{len(p)-5} more' if len(p) > 5 else '')
+            lines.append(f"\n• *{r['name']}*\n  {s}")
         return "\n".join(lines)
-    
-    # Special formatting for customers
-    if 'name' in cols and 'city' in cols:
-        lines.append("👤 *Customers*")
-        for r in filtered_rows[:10]:
-            name = r.get('name', 'N/A')
-            city = r.get('city', 'N/A')
-            credit = r.get('credit_limit', '')
-            if credit:
-                lines.append(f"• {name} ({city}) — ₹{credit:,.0f}")
-            else:
-                lines.append(f"• {name} ({city})")
-        if len(filtered_rows) > 10:
-            lines.append(f"\n... and {len(filtered_rows) - 10} more")
+
+    # Customers
+    if 'name' in cols and 'city' in cols and 'credit_limit' not in cols:
+        lines = ["👤 *Customers*"]
+        for r in clean[:15]:
+            lines.append(f"• {r.get('name')} ({r.get('city','-')})")
         return "\n".join(lines)
-    
-    # Special formatting for inventory
+
+    # Inventory
     if 'name' in cols and 'qty' in cols:
-        lines.append("📦 *Inventory*")
-        for r in filtered_rows[:10]:
-            name = r.get('name', 'N/A')
-            qty = r.get('qty', 0)
-            location = r.get('location', 'N/A')
-            lines.append(f"• {name}: {qty} pcs ({location})")
-        if len(filtered_rows) > 10:
-            lines.append(f"\n... and {len(filtered_rows) - 10} more")
+        lines = ["📦 *Inventory*"]
+        for r in clean[:15]:
+            warn = " ⚠️" if r.get('qty', 999) <= r.get('reorder_level', 0) else ""
+            lines.append(f"• *{r['name']}*: {r.get('qty')} pcs @ {r.get('location','-')}{warn}")
         return "\n".join(lines)
-    
-    # Default table format (limited columns)
-    display_cols = cols[:4]  # Limit to 4 columns
-    header = " | ".join(display_cols)
-    lines = [f"📊 *Results*\n\n{header}"]
-    
-    for r in filtered_rows[:10]:
-        vals = " | ".join(str(r.get(c, ''))[:20] for c in display_cols)
-        lines.append(vals)
-    
-    if len(filtered_rows) > 10:
-        lines.append(f"\n... and {len(filtered_rows) - 10} more")
-    
+
+    # Invoice/dues summary
+    if 'total' in cols or 'total_outstanding' in cols or 'total_overdue' in cols:
+        lines = ["� *Outstanding Summary*"]
+        for r in clean[:10]:
+            name = r.get('name') or r.get('customer_name', '?')
+            total = r.get('total') or r.get('total_outstanding') or r.get('total_overdue', 0)
+            lines.append(f"• *{name}*: ₹{float(total):,.0f}")
+        return "\n".join(lines)
+
+    # Metal rates
+    if 'metal_type' in cols and 'rate_per_gram' in cols:
+        lines = ["💎 *Metal Rates*"]
+        for r in clean:
+            lines.append(f"• *{r['metal_type']}*: ₹{float(r['rate_per_gram']):,.0f}/g — Making: {r.get('making_charge_pct')}%")
+        return "\n".join(lines)
+
+    # Orders
+    if 'order_number' in cols or 'status' in cols:
+        from app.adapters.orders import STATUS_LABELS
+        lines = ["� *Orders*"]
+        for r in clean[:10]:
+            label = STATUS_LABELS.get(r.get('status', ''), r.get('status', ''))
+            cust  = r.get('customer_name', r.get('name', '?'))
+            desc  = r.get('description', '')[:35]
+            lines.append(f"• *{r.get('order_number','?')}* — {cust}\n  {desc} | {label}")
+        return "\n".join(lines)
+
+    # Generic table
+    show = cols[:4]
+    lines = [f"📊 *Results* ({len(clean)} rows)"]
+    for r in clean[:10]:
+        parts = [f"{k}: {str(r.get(k,''))[:25]}" for k in show]
+        lines.append("• " + " | ".join(parts))
+    if len(clean) > 10:
+        lines.append(f"_...and {len(clean)-10} more_")
     return "\n".join(lines)
 
 
 async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
-    """Execute a general_read request with dynamic SQL generation."""
+    """Execute a read request — LLM generates SQL, we validate and run."""
     try:
-        # Generate SQL (LLM returns both SQL and params)
-        result = await _generate_sql(intent, parameters)
-        sql = result["sql"]
-        llm_params = result.get("params", {})
-        
-        # Validate SQL safety
-        is_safe, reason = _validate_sql(sql)
-        if not is_safe:
-            print(f"[QUERY_ENGINE] SQL blocked: {reason}")
-            return "🤔 I couldn't understand that query. Please try rephrasing it."
-        
-        # Validate schema (columns exist in tables)
-        is_valid, schema_reason = _validate_schema(sql)
-        if not is_valid:
-            print(f"[QUERY_ENGINE] Schema validation failed: {schema_reason}")
-            return "🤔 I couldn't understand that query. Please try rephrasing it in a different way."
-        
-        # Build parameters from LLM-extracted values
-        params = _extract_parameters(sql, llm_params, org_id)
-        
-        # Execute
-        rows = await fetch_all(sql, *params)
-        rows = [dict(r) for r in rows]
-        
-        # Format results
-        return _format_results(rows, sql)
-        
+        result   = await _gen_sql(intent, parameters)
+        sql      = result["sql"]
+        lp       = result.get("params", {})
+
+        ok, reason = _safe(sql)
+        if not ok:
+            print(f"[QUERY_ENGINE] Blocked: {reason}\nSQL: {sql}")
+            return "🤔 Couldn't process that query. Please rephrase."
+
+        params = _build_params(sql, lp, org_id)
+        rows   = [dict(r) for r in await fetch_all(sql, *params)]
+        return _fmt(rows)
+
     except Exception as e:
         print(f"[QUERY_ENGINE] Error: {e}")
-        return "🤔 Something went wrong. Please try rephrasing your query."
+        return "🤔 Something went wrong. Try rephrasing your query."

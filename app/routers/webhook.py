@@ -283,56 +283,69 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return
 
-    # 10b. Identity queries (who am I, my permissions) - handled by Intent Analyzer
+    # 9. Identity — who am I, my role, my permissions
     if route_type == "identity":
-        role_name = user.get("role", "Unknown")
-        permissions = user.get("permissions", [])
-        identity_type = result.get("parameters", {}).get("identity_type", "role")
-        
+        identity_type = parameters.get("identity_type", "role")
         if identity_type == "permissions":
-            if isinstance(permissions, list):
-                perms_str = ", ".join(permissions)
-                await send_text(phone, f"🔑 Your permissions:\n{perms_str}")
-            else:
-                await send_text(phone, "🔑 No specific permissions set.")
+            perms = user.get("permissions", [])
+            # Show meaningful permissions only
+            clean = [p for p in perms if not p.startswith("check_") or "stock" in p or "outstanding" in p]
+            clean = list(dict.fromkeys(perms))[:20]
+            perm_lines = "\n".join(f"• {p}" for p in clean)
+            reply = (
+                f"🔑 *Your Permissions*\n\n"
+                f"Name: {user['user_name']}\n"
+                f"Role: *{user['role']}*\n\n"
+                f"{perm_lines}"
+            )
         else:
-            # Default to showing role
-            await send_text(phone, f"👤 You are: *{role_name}*")
-        return
-
-    # 10c. General Read
-    if route_type == "general_read":
-        from app.services.query_engine import execute_read
-        reply = await execute_read(
-            org_id=user["org_id"],
-            intent=result.get("intent", text),
-            parameters=result.get("parameters") or {},
-        )
+            reply = (
+                f"👤 *Your Identity*\n\n"
+                f"Name: *{user['user_name']}*\n"
+                f"Role: *{user['role']}*\n"
+                f"Organisation: {user['org_name']}\n"
+                f"Channel: WhatsApp"
+            )
         await send_text(phone, reply)
         return
 
-    # 10d. Unknown
-    if route_type == "unknown" or result.get("intent") == "unknown":
-        await send_text(phone, "🤔 Didn't understand that.\nTry: *dues Mehta* | *top 3 dues* | *help*")
+    # 10. Clarification needed
+    if route_type == "clarify":
+        question = result.get("clarification_question") or "Could you please clarify your request?"
+        await send_text(phone, f"🤔 {question}")
         return
 
-    # 10e. Workflow execution
-    intent = result.get("workflow_key") or result.get("intent")
-    entity_raw = (
-        result.get("parameters", {}).get("customer_name")
-        or result.get("parameters", {}).get("product_name")
-        or result.get("entity_raw")
-    )
-    await set_session(session_id, {**session, "last_intent": intent, "last_parameters": result.get("parameters", {})})
+    # 11. Unknown
+    if route_type == "unknown":
+        await send_text(phone,
+            "🤔 Didn't understand that.\n"
+            "Try: *dues Mehta* | *stock gold ring* | *top 3 dues* | *help*"
+        )
+        return
 
+    # 12. Permission check — general_read allowed for all roles
+    # workflow routes use workflow_key as the permission
+    check_key = result.get("workflow_key") or route_type
+    if not check_permission(user, check_key):
+        await send_text(phone,
+            f"❌ You don't have permission for this action.\n"
+            f"Your role: *{user['role']}*"
+        )
+        return
+
+    await set_session(session_id, {**session, "last_intent": intent})
+
+    # 13. Route to executor
     reply = await execute_intent(
-        intent=intent,
-        entity_raw=entity_raw,
+        intent=result.get("workflow_key") or route_type,
+        entity_raw=parameters.get("customer_name") or parameters.get("product_name"),
         user=user,
         session_id=session_id,
         session=session,
         raw_text=text,
-        parameters=result.get("parameters") or {},  # NEW kwarg
+        route_type=route_type,
+        parameters=parameters,
+        analyzer_intent=intent
     )
     await send_text(phone, reply)
 

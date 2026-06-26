@@ -53,6 +53,8 @@ def check_permission(user: dict, intent: str) -> bool:
         return True
     if intent == "unknown":
         return True
+    if intent in ("general_read", "identity"):
+        return "general_read" in user.get("permissions", [])
     return intent in user.get("permissions", [])
 
 
