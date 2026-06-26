@@ -97,6 +97,10 @@ def _extract_entities(message: str, entity_schema: dict, glossary: dict, workflo
     Extract entity values from message using workflow's entity_schema.
     This is a best-effort extraction — the LLM fallback handles complex cases.
     """
+    # If workflow uses session context, no entity extraction needed
+    if entity_schema and entity_schema.get("session_context"):
+        return {}
+
     normalized = _normalize(message, glossary)
     entities = {}
 
