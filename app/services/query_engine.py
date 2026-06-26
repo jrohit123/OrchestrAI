@@ -64,12 +64,15 @@ def _safe(sql: str) -> tuple[bool, str]:
 
 
 def _build_template_params(org_id: str, entities: dict, params_order: list,
-                            entity_schema: dict) -> list:
+                            entity_schema: dict, user_id: str = None) -> list:
     """
     Build positional params for sql_template execution.
-    $1 = org_id, $2..$N = entities in params_order sequence.
+    $1 = org_id (or user_id if session_context=true), $2..$N = entities in params_order sequence.
     """
-    params = [org_id]
+    # Check if workflow uses session context (user_id instead of org_id)
+    session_context = entity_schema.get("session_context", False)
+    params = [user_id if session_context and user_id else org_id]
+
     for field in params_order:
         val = entities.get(field)
         if val is None:
@@ -126,7 +129,8 @@ async def execute_template(
     entities: dict,
     params_order: list,
     entity_schema: dict,
-    response_format: str = "generic"
+    response_format: str = "generic",
+    user_id: str = None
 ) -> str:
     """
     Mode A: Execute a workflow's stored sql_template.
@@ -137,7 +141,7 @@ async def execute_template(
         if not ok:
             return f"🤔 Query configuration error. Contact admin. ({reason})"
 
-        params = _build_template_params(org_id, entities, params_order, entity_schema)
+        params = _build_template_params(org_id, entities, params_order, entity_schema, user_id)
         rows   = [dict(r) for r in await fetch_all(sql_template, *params)]
         return _fmt(rows, response_format)
 

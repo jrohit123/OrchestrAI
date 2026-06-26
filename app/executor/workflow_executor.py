@@ -228,6 +228,7 @@ async def execute_intent(
                 params_order  = workflow.get("sql_params_order", []),
                 entity_schema = workflow.get("entity_schema", {}),
                 response_format = workflow.get("response_format", "generic"),
+                user_id       = user_id,
             )
             await _log(org_id, user_id, workflow["intent_key"], raw_text, "success")
             return reply

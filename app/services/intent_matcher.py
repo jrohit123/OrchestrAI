@@ -117,23 +117,40 @@ def _extract_entities(message: str, entity_schema: dict, glossary: dict, workflo
                 entities[field] = float(m.group(1))
 
         elif field == "status":
-            # Status extraction: look for known status words
-            known_statuses = {
-                "ready": "ready", "delivered": "delivered",
-                "production": "in_production", "in_production": "in_production",
-                "quality": "quality_check", "confirmed": "confirmed",
-                "pending": "pending", "overdue": "overdue", "paid": "paid"
-            }
-            for word, status in known_statuses.items():
-                if word in normalized:
-                    entities[field] = status
-                    break
+            # Status extraction: use workflow's entity_schema if provided
+            status_mapping = spec.get("values", {})
+            if status_mapping:
+                for word, status in status_mapping.items():
+                    if word in normalized:
+                        entities[field] = status
+                        break
+            else:
+                # Fallback: look for common status words
+                known_statuses = {
+                    "ready": "ready", "delivered": "delivered",
+                    "production": "in_production", "in_production": "in_production",
+                    "quality": "quality_check", "confirmed": "confirmed",
+                    "pending": "pending", "overdue": "overdue", "paid": "paid"
+                }
+                for word, status in known_statuses.items():
+                    if word in normalized:
+                        entities[field] = status
+                        break
 
         elif field == "metal_type":
-            for metal in ["22kt", "18kt", "24kt", "silver", "platinum", "gold"]:
-                if metal in normalized:
-                    entities[field] = metal
-                    break
+            # Metal type extraction: use workflow's entity_schema if provided
+            metal_list = spec.get("values", [])
+            if metal_list:
+                for metal in metal_list:
+                    if metal in normalized:
+                        entities[field] = metal
+                        break
+            else:
+                # Fallback: common metals
+                for metal in ["22kt", "18kt", "24kt", "silver", "platinum", "gold"]:
+                    if metal in normalized:
+                        entities[field] = metal
+                        break
 
         else:
             # Generic text entity — extract proper nouns from original message

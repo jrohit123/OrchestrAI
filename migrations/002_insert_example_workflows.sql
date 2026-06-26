@@ -110,7 +110,7 @@ INSERT INTO workflows (
     'Check current metal rates per gram and making charges.',
     'read',
     '["metal rates", "gold rate", "silver rate", "aaj ka bhav", "current gold rate", "today''s rate", "{metal_type} rate kya hai", "{metal_type} bhav", "making charge kya hai", "rate list", "sone ka bhav", "current metal prices"]'::jsonb,
-    '{"metal_type": {"table": "metal_rates", "column": "metal_type", "match": "ILIKE", "required": false, "format": "wildcard"}}'::jsonb,
+    '{"metal_type": {"table": "metal_rates", "column": "metal_type", "match": "ILIKE", "required": false, "format": "wildcard", "values": ["22kt", "18kt", "24kt", "silver", "platinum", "gold"]}}'::jsonb,
     'SELECT metal_type, rate_per_gram, making_charge_pct, updated_at FROM metal_rates WHERE org_id = $1 ORDER BY metal_type',
     '[]'::jsonb,
     'metal_rates',
@@ -141,7 +141,7 @@ INSERT INTO workflows (
     'View orders filtered by production status.',
     'read',
     '["ready orders", "orders in production", "production mein kya hai", "kya ready hai", "{status} orders", "show {status} orders", "orders ready hai", "kaam ready hai", "delivered orders", "confirmed orders", "active orders", "pending orders"]'::jsonb,
-    '{"status": {"required": false, "match": "exact", "default": "in_production"}}'::jsonb,
+    '{"status": {"required": false, "match": "exact", "default": "in_production", "values": {"ready": "ready", "delivered": "delivered", "production": "in_production", "in_production": "in_production", "quality": "quality_check", "confirmed": "confirmed", "pending": "pending", "overdue": "overdue", "paid": "paid"}}}'::jsonb,
     'SELECT order_number, customer_name, description, metal_type, status, expected_delivery FROM orders WHERE org_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 20',
     '["status"]'::jsonb,
     'orders',
@@ -188,6 +188,37 @@ INSERT INTO workflows (
 ) ON CONFLICT (org_id, intent_key) DO NOTHING;
 
 -- Grant permissions to owner role for all new workflows
-UPDATE roles 
-SET permissions = array_cat(permissions, ARRAY['get_outstanding', 'check_stock', 'dues_report', 'check_metal_rates', 'view_orders_by_status', 'check_low_stock'])
+UPDATE roles
+SET permissions = array_cat(permissions, ARRAY['get_outstanding', 'check_stock', 'dues_report', 'check_metal_rates', 'view_orders_by_status', 'check_low_stock', 'check_permissions'])
 WHERE name = 'owner' AND org_id = '11111111-0000-0000-0000-000000000001';
+
+-- Workflow 7: Check Permissions (Read - uses session context)
+INSERT INTO workflows (
+    org_id, name, intent_key, description,
+    workflow_type, training_phrases, entity_schema,
+    sql_template, sql_params_order, response_format,
+    business_glossary, llm_system_prompt,
+    trigger_patterns, adapter_method,
+    otp_required, otp_threshold, approval_threshold,
+    is_active, steps
+) VALUES (
+    '11111111-0000-0000-0000-000000000001',
+    'Check Permissions',
+    'check_permissions',
+    'View the current user''s role and permissions.',
+    'read',
+    '["what permissions do i have", "my permissions", "show my permissions", "what can i do", "my role permissions", "what are my rights", "permissions check", "access rights"]'::jsonb,
+    '{"session_context": true}'::jsonb,
+    'SELECT r.name AS role, r.permissions FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = $1',
+    '[]'::jsonb,
+    'roles',
+    '{"rights": "permissions", "access": "permissions"}'::jsonb,
+    'This workflow checks the current user''s role and permissions. Uses session context (user_id) not message-extracted parameters. Glossary: rights=permissions, access=permissions. Examples: "what permissions do i have", "my permissions", "show my permissions". No entity parameters needed - uses current user from session.',
+    '[]'::jsonb,
+    NULL,
+    false,
+    NULL,
+    NULL,
+    true,
+    ARRAY[]::jsonb[]
+) ON CONFLICT (org_id, intent_key) DO NOTHING;
