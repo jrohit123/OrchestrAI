@@ -16,7 +16,7 @@ DB_SCHEMA = """
 TABLES:
 - customers: id, name, phone, email, gst_number, city, credit_limit, created_at
 - invoices: id, invoice_number, customer_id, created_by, items (jsonb), amount, status (draft/pending/paid/overdue), due_date, paid_at, pdf_url, created_at
-- inventory: id, sku, name, qty, location, reorder_level, unit_price, updated_at
+- inventory: id, sku, name, qty, location, reorder_level, unit_price, updated_at (NOTE: inventory is NOT related to customers - it's independent stock data)
 - metal_rates: id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at
 - orders: id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status (confirmed/production/shipped/delivered/cancelled), expected_delivery, notes, created_by, created_at
 - quotations: id, quotation_number, customer_id, customer_name, metal_type, weight_grams, design_code, rate_per_gram, making_charge_pct, making_charges, subtotal, gst_pct, gst_amount, total_amount, status, valid_until, notes, created_by, created_at
@@ -25,7 +25,19 @@ RELATIONSHIPS:
 - invoices.customer_id → customers.id
 - orders.customer_id → customers.id
 - quotations.customer_id → customers.id
+- orders.quotation_id → quotations.id
+- inventory has NO customer relationship (it's independent stock data)
 """
+
+# Valid columns for schema validation
+VALID_COLUMNS = {
+    'customers': {'id', 'name', 'phone', 'email', 'gst_number', 'city', 'credit_limit', 'created_at'},
+    'invoices': {'id', 'invoice_number', 'customer_id', 'created_by', 'items', 'amount', 'status', 'due_date', 'paid_at', 'pdf_url', 'created_at'},
+    'inventory': {'id', 'sku', 'name', 'qty', 'location', 'reorder_level', 'unit_price', 'updated_at'},
+    'metal_rates': {'id', 'metal_type', 'rate_per_gram', 'making_charge_pct', 'updated_by', 'updated_at'},
+    'orders': {'id', 'order_number', 'quotation_id', 'customer_id', 'customer_name', 'description', 'metal_type', 'weight_estimate', 'estimated_amount', 'advance_paid', 'status', 'expected_delivery', 'notes', 'created_by', 'created_at'},
+    'quotations': {'id', 'quotation_number', 'customer_id', 'customer_name', 'metal_type', 'weight_grams', 'design_code', 'rate_per_gram', 'making_charge_pct', 'making_charges', 'subtotal', 'gst_pct', 'gst_amount', 'total_amount', 'status', 'valid_until', 'notes', 'created_by', 'created_at'}
+}
 
 # Dangerous SQL patterns to block
 DANGEROUS_PATTERNS = [
@@ -52,6 +64,28 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
     # Block multiple statements
     if ';' in sql.rstrip(';'):
         return False, "Multiple statements not allowed"
+    
+    return True, "OK"
+
+
+def _validate_schema(sql: str) -> tuple[bool, str]:
+    """Validate SQL uses only valid table/column combinations."""
+    # Extract table.column patterns
+    # Match patterns like table.column or table.column AS alias
+    pattern = r'\b(\w+)\.(\w+)\b'
+    matches = re.findall(pattern, sql, re.IGNORECASE)
+    
+    for table, column in matches:
+        table_lower = table.lower()
+        column_lower = column.lower()
+        
+        # Skip if table not in our schema (might be a subquery alias)
+        if table_lower not in VALID_COLUMNS:
+            continue
+            
+        # Check if column exists in table
+        if column_lower not in VALID_COLUMNS[table_lower]:
+            return False, f"Invalid column '{column}' in table '{table}'"
     
     return True, "OK"
 
@@ -156,11 +190,17 @@ async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
         # Generate SQL
         sql = await _generate_sql(intent, parameters)
         
-        # Validate SQL
+        # Validate SQL safety
         is_safe, reason = _validate_sql(sql)
         if not is_safe:
             print(f"[QUERY_ENGINE] SQL blocked: {reason}")
-            return f"⚠️ Query blocked for security: {reason}"
+            return "🤔 I couldn't understand that query. Please try rephrasing it."
+        
+        # Validate schema (columns exist in tables)
+        is_valid, schema_reason = _validate_schema(sql)
+        if not is_valid:
+            print(f"[QUERY_ENGINE] Schema validation failed: {schema_reason}")
+            return "🤔 I couldn't understand that query. Please try rephrasing it in a different way."
         
         # Build parameters
         params = _extract_parameters(sql, parameters, org_id)
@@ -174,4 +214,4 @@ async def execute_read(org_id: str, intent: str, parameters: dict) -> str:
         
     except Exception as e:
         print(f"[QUERY_ENGINE] Error: {e}")
-        return f"⚠️ Could not run query: {str(e)}"
+        return "🤔 Something went wrong. Please try rephrasing your query."
