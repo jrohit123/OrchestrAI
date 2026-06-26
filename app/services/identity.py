@@ -86,6 +86,10 @@ def check_route_permission(user: dict, analysis: dict) -> tuple[bool, str]:
     if route == "clarify":
         return True, ""
 
+    if route == "identity":
+        # Identity queries (who am I, my permissions) always allowed for authenticated users
+        return True, ""
+
     if route == "general_read":
         if "general_read" in user.get("permissions", []):
             return True, ""
