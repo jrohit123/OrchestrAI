@@ -78,7 +78,7 @@ INSERT INTO workflows (
     'dues_report',
     'Aggregate outstanding dues report across all customers, ranked by amount.',
     'read',
-    '["dues report", "outstanding report", "top {limit} dues", "top {limit} customers by dues", "overdue customers list", "baaki report", "sabse zyada baaki wale", "customer-wise dues", "all outstanding customers", "who owes the most", "dues summary", "udhaar report"]'::jsonb,
+    '["dues report", "outstanding report", "top {limit} dues", "top {limit} customers by dues", "top {limit} customers in dues", "overdue customers list", "baaki report", "sabse zyada baaki wale", "customer-wise dues", "all outstanding customers", "who owes the most", "dues summary", "udhaar report"]'::jsonb,
     '{"limit": {"required": false, "type": "integer", "default": 20}}'::jsonb,
     'SELECT c.name, c.city, SUM(i.amount) AS total_outstanding, COUNT(i.id) AS invoice_count, MIN(i.due_date) AS oldest_due_date FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.org_id = $1 AND i.status IN (''pending'', ''overdue'') GROUP BY c.id, c.name, c.city ORDER BY total_outstanding DESC LIMIT $2',
     '["limit"]'::jsonb,

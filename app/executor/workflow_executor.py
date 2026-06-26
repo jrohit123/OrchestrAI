@@ -252,10 +252,15 @@ async def execute_intent(
 
     # ── UNCONSTRAINED GENERAL READ (fallback — no workflow matched) ────────
     if route_type == "general_read":
-        from app.services.query_engine import execute_read
-        reply = await execute_read(org_id, analyzer_intent or intent, params)
+        from app.services.read_agent import handle_read
+        reply = await handle_read(
+            user=user,
+            raw_text=raw_text,
+            intent=analyzer_intent or intent,
+            parameters=params,
+        )
         await _log(org_id, user_id, "general_read", raw_text, "success")
-        return reply
+        return reply["message"]
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
@@ -340,10 +345,15 @@ async def execute_intent(
 
     # Try general_read fallback for unknown intents
     if analyzer_intent:
-        from app.services.query_engine import execute_read
-        result = await execute_read(org_id, analyzer_intent, params)
+        from app.services.read_agent import handle_read
+        result = await handle_read(
+            user=user,
+            raw_text=raw_text,
+            intent=analyzer_intent,
+            parameters=params,
+        )
         await _log(org_id, user_id, "general_read_fallback", raw_text, "success")
-        return result
+        return result["message"]
 
     return "🤔 Didn't understand that. Type *help* for the menu."
 
