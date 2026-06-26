@@ -32,8 +32,9 @@ users(id, org_id, name, phone, email, role_id, is_active)
 READ_EXAMPLES = """
 GENERAL READ examples (route_type = general_read, action = Read):
 - "top 3 customers by pending dues"
-- "Mehta ka kitna baaki hai" / "dues Mehta" → customer outstanding from invoices
-- "stock of gold ring" / "gold ring ka stock" → inventory lookup
+- "Mehta ka kitna baaki hai" / "dues Mehta" / "Mehta ka outstanding" → customer outstanding from invoices
+- "Kapoor ka kitna baaki hai" / "Kapoor ka pending" → customer dues (NOT identity)
+- "stock of gold ring" / "gold ring ka stock" / "gold ka stock" → inventory lookup
 - "show all metal rates" / "current gold rate" → read metal_rates
 - "which items are low on stock" → inventory where qty <= reorder_level
 - "list active orders" → orders where status != 'delivered'
@@ -43,8 +44,8 @@ GENERAL READ examples (route_type = general_read, action = Read):
 - "show all customers" / "list all products"
 
 IDENTITY examples (route_type = identity, action = Read):
-- "who am I" / "mera role kya hai" → parameters: {"identity_type": "role"}
-- "my role" / "what is my role"   → parameters: {"identity_type": "role"}
+- "who am I" / "mera role kya hai" / "main kaun hoon" → parameters: {"identity_type": "role"}
+- "my role" / "what is my role" → parameters: {"identity_type": "role"}
 - "my permissions" / "what can I do" / "mujhe kya karna hai"
                                    → parameters: {"identity_type": "permissions"}
 - "my access" / "what do I have access to"
