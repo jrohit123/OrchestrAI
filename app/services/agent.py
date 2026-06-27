@@ -536,5 +536,7 @@ def _serialize_history(messages: list) -> list:
                 }
                 for tc in m["tool_calls"]
             ]
+        if "tool_call_id" in m:
+            msg_copy["tool_call_id"] = m["tool_call_id"]
         serialized.append(msg_copy)
     return serialized
