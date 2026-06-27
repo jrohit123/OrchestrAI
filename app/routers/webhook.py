@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 from app.services.identity import resolve_identity, check_permission, check_route_permission
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
-from app.classifier.classifier import classify_message
+from app.services.agent import run_agent
 from app.executor.workflow_executor import (
-    execute_intent, resume_after_otp, handle_approval_response
+    resume_after_otp, handle_approval_response
 )
 from app.redis_client import (
     get_session, set_session, delete_session, get_redis,
@@ -222,143 +222,38 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
 
-    # 8. Classify
-    result = await classify_message(
-        text,
-        org_name=user["org_name"],
-        org_id=user["org_id"],
-        user_role=user["role"],
-    )
-    route_type = result.get("route_type", "unknown")
-    intent = result.get("intent", "")
-    parameters = result.get("parameters", {})
-    print(f"[CLASSIFIER] route={route_type} | action={result.get('action')} | tier={result.get('tier')}")
-
-    # 9. Permission gate
-    allowed, denied = check_route_permission(user, result)
-    if not allowed:
-        await send_text(phone,
-            f"❌ You don't have permission for: *{denied}*\n"
-            f"Your role: *{user['role']}*"
-        )
-        return
-
-    # 10a. Clarification
-    if route_type == "clarify":
-        q = result.get("clarification_question") or "Could you provide more details?"
-        await send_text(phone, f"🤔 {q}")
-        return
-
-    # 10b. Static action intents (unchanged)
-    if result.get("intent") == "action:greet":
-        hours   = ttl_minutes // 60
-        mins    = ttl_minutes % 60
-        ttl_str = f"{hours}h" if not mins else f"{hours}h {mins}m"
-        if ttl_minutes < 60:
-            ttl_str = f"{ttl_minutes}m"
-        await send_text(phone,
-            f"👋 Hi *{user['user_name']}*! I'm OrchestrAI.\n\n"
-            f"You can ask:\n"
-            f"• *stock [item]* — check inventory\n"
-            f"• *dues [customer]* — check outstanding\n"
-            f"• *invoice [customer] [qty] [item] [amount]* — create invoice\n"
-            f"• *dues report* — all overdue summary\n"
-            f"• *help* — show this menu\n\n"
-            f"_Session valid for {ttl_str}_"
-        )
-        return
-
-    if result.get("intent") == "action:menu":
-        await send_text(phone,
-            f"📋 *What can I help with?*\n\n"
-            f"📦 *Stock* — stock gold ring\n"
-            f"💰 *Dues* — dues Mehta\n"
-            f"🧾 *Invoice* — invoice Mehta 25000\n"
-            f"🧾 *Invoice with items* — invoice Mehta 15 gold rings 120000\n"
-            f"📊 *Report* — dues report\n"
-            f"📅 *Schedule* — schedule dues report every Monday 9 AM"
-        )
-        return
-
-    if result.get("intent") == "action:retry_otp":
-        await set_session(session_id, {})
-        await send_text(phone, "🔄 Session cleared. Please resend your original request.")
-        return
-
-    # 9. Identity — who am I, my role, my permissions
-    if route_type == "identity":
-        identity_type = result.get("parameters", {}).get("identity_type", "role")
-        if identity_type == "permissions":
-            perms = user.get("permissions", [])
-            # Show meaningful permissions only
-            clean = [p for p in perms if not p.startswith("check_") or "stock" in p or "outstanding" in p]
-            clean = list(dict.fromkeys(perms))[:20]
-            perm_lines = "\n".join(f"• {p}" for p in clean)
-            reply = (
-                f"🔑 *Your Permissions*\n\n"
-                f"Name: {user['user_name']}\n"
-                f"Role: *{user['role']}*\n\n"
-                f"{perm_lines}"
-            )
+    # 8. Pending confirmation check
+    if session.get("pending_confirm"):
+        pending = session.get("pending_confirm")
+        if text.strip().lower() in ("yes", "y", "haan", "ha", "ok", "confirm"):
+            await set_session(session_id, {})
+            original_msg = pending.get("original_message", "")
+            user_with_confirm = {**user, "confirmed": True}
+            reply = await run_agent(original_msg, user_with_confirm, phone)
+            await send_text(phone, reply)
         else:
-            reply = (
-                f"👤 *Your Identity*\n\n"
-                f"Name: *{user['user_name']}*\n"
-                f"Role: *{user['role']}*\n"
-                f"Organisation: {user['org_name']}\n"
-                f"Channel: WhatsApp"
-            )
-        await send_text(phone, reply)
+            await set_session(session_id, {})
+            await send_text(phone, "❌ Action cancelled.")
         return
 
-    # 10c. General Read
-    if route_type == "general_read":
-        from app.services.query_engine import execute_read
-        reply = await execute_read(
-            org_id=user["org_id"],
-            intent=intent,
-            parameters=parameters,
-        )
-        await send_text(phone, reply)
-        return
+    # 9. Run the agent — replaces classify + execute pipeline
+    await set_session(session_id, {**session, "last_message": text})
 
-    # 10d. Unknown
-    if route_type == "unknown":
+    try:
+        reply = await run_agent(text, user, phone)
+        await send_text(phone, reply)
+
+        # Log to audit_log
+        await execute("""
+            INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
+            VALUES ($1, $2, 'agent', $3, 'success')
+        """, user["org_id"], user["user_id"], text)
+
+    except Exception as e:
+        print(f"[AGENT] Error: {e}")
         await send_text(phone,
-            "🤔 Didn't understand that.\n"
-            "Try: *dues Mehta* | *stock gold ring* | *top 3 dues* | *help*"
+            "🤔 Something went wrong. Please try again."
         )
-        return
-
-    # 10e. Workflow execution
-    # If LLM classified as workflow but no workflow_key, fall back to general_read
-    workflow_key = result.get("workflow_key")
-    if route_type == "workflow" and not workflow_key:
-        # Fallback to general_read for queries that look like reads
-        from app.services.query_engine import execute_read
-        reply = await execute_read(
-            org_id=user["org_id"],
-            intent=intent,
-            parameters=parameters,
-        )
-        await send_text(phone, reply)
-        return
-    
-    await set_session(session_id, {**session, "last_intent": intent})
-
-    reply = await execute_intent(
-        intent=workflow_key or route_type,
-        entity_raw=parameters.get("customer_name") or parameters.get("product_name"),
-        user=user,
-        session_id=session_id,
-        session=session,
-        raw_text=text,
-        route_type=route_type,
-        parameters=parameters,
-        analyzer_intent=intent,
-        workflow=result.get("workflow")
-    )
-    await send_text(phone, reply)
 
 
 # ── OTP REPLY HANDLER (invoice high value) ────────────

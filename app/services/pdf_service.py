@@ -556,21 +556,6 @@ def generate_dues_statement_pdf(
         pdf.cell(100, 4.5, text, align='L')
         ty2 += 4.5
 
-    # Signature (right)
-    pdf.set_xy(140, fy + 5)
-    pdf.set_font('Helvetica', '', 7.5)
-    pdf.set_text_color(*MUTED)
-    pdf.cell(56, 4, f'For  {org_name}', align='C')
-
-    # Stamp box
-    pdf.set_draw_color(*BLUE)
-    pdf.set_line_width(0.5)
-    pdf.rect(148, fy + 10, 40, 13)
-    pdf.set_xy(148, fy + 13)
-    pdf.set_font('Helvetica', 'B', 7)
-    pdf.set_text_color(*BLUE)
-    pdf.cell(40, 4, org_name.upper(), align='C')
-
     # Signature line
     pdf.set_draw_color(*DARKTEXT)
     pdf.set_line_width(0.3)
@@ -579,5 +564,110 @@ def generate_dues_statement_pdf(
     pdf.set_font('Helvetica', '', 7.5)
     pdf.set_text_color(*MUTED)
     pdf.cell(56, 4, 'Authorised Signatory', align='C')
+
+    return bytes(pdf.output())
+
+
+def _generate_generic_pdf(
+    title: str,
+    rows: list,
+    org_name: str = "",
+    subtitle: str = ""
+) -> bytes:
+    """
+    Generic PDF for any query result.
+    Renders whatever columns came back — no hardcoding.
+    """
+    pdf = InvoicePDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.set_margins(14, 14, 14)
+
+    from datetime import datetime
+    today = datetime.now()
+    W = 182
+    L = 14
+
+    # Header
+    pdf.set_xy(L, 14)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.set_text_color(*BLUE)
+    pdf.cell(W, 9, org_name, align="L")
+
+    pdf.set_xy(L, 24)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*DARKTEXT)
+    pdf.cell(W, 8, title, align="L")
+
+    if subtitle:
+        pdf.set_xy(L, 33)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(*MUTED)
+        pdf.cell(W, 5, subtitle, align="L")
+
+    pdf.set_xy(L, 39)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(*MUTED)
+    pdf.cell(W, 5, f"Generated: {today.strftime('%d %b %Y %I:%M %p')}", align="R")
+
+    # Blue divider
+    pdf.set_draw_color(*BLUE)
+    pdf.set_line_width(0.8)
+    pdf.line(L, 46, L + W, 46)
+    pdf.set_line_width(0.2)
+
+    if not rows:
+        pdf.set_xy(L, 56)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(*MUTED)
+        pdf.cell(W, 8, "No data found.", align="C")
+        return bytes(pdf.output())
+
+    # Derive columns from first row — whatever came back
+    skip = {"id", "org_id", "created_by", "updated_by", "otp_hash"}
+    cols = [k for k in rows[0].keys() if k not in skip]
+    if not cols:
+        cols = list(rows[0].keys())
+
+    # Calculate column widths proportionally
+    col_w = W // len(cols)
+    leftover = W - col_w * len(cols)
+
+    y = 52
+    # Table header
+    pdf.set_xy(L, y)
+    pdf.set_fill_color(*BLUE)
+    pdf.set_text_color(*WHITE)
+    pdf.set_font("Helvetica", "B", 8)
+    for i, col in enumerate(cols):
+        w = col_w + (leftover if i == len(cols) - 1 else 0)
+        label = col.replace("_", " ").title()[:18]
+        pdf.cell(w, 8, label, fill=True, align="L", border=0)
+    pdf.ln(8)
+
+    # Rows
+    row_fill = False
+    for row in rows:
+        pdf.set_fill_color(*LIGHTBG) if row_fill else pdf.set_fill_color(*WHITE)
+        pdf.set_text_color(*DARKTEXT)
+        pdf.set_font("Helvetica", "", 8)
+        for i, col in enumerate(cols):
+            w = col_w + (leftover if i == len(cols) - 1 else 0)
+            val = str(row.get(col, "") or "")[:28]
+            # Format amounts nicely
+            try:
+                if any(x in col for x in ("amount", "total", "price", "limit", "rate")):
+                    val = f"₹{float(row[col]):,.0f}" if row.get(col) else "—"
+            except (ValueError, TypeError):
+                pass
+            pdf.cell(w, 7, val, fill=True, align="L", border=0)
+        pdf.ln(7)
+        row_fill = not row_fill
+
+    # Row count footer
+    pdf.set_xy(L, pdf.get_y() + 6)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(*MUTED)
+    pdf.cell(W, 5, f"Total records: {len(rows)}", align="R")
 
     return bytes(pdf.output())

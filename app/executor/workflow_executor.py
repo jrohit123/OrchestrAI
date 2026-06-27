@@ -7,79 +7,6 @@ from app.db import fetch_one, execute
 from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
 
 
-async def _dispatch_dynamic_intent(intent: str, entity: str | None, org_id: str, raw_text: str, adapter_method: str, session_id: str = None, user_id: str = None, phone: str = None, parameters: dict = None, **ignored) -> str:
-    """
-    Generic dispatcher for DB-registered workflows that have no hardcoded handler.
-    Dynamically imports and calls the adapter function specified in the workflow config.
-    Handles disambiguation when multiple customer matches are found.
-    """
-    if adapter_method == "generic":
-        return (
-            f"⚙️ Workflow *{intent.replace('_', ' ').title()}* was recognised "
-            f"but has no adapter method configured. Contact your admin."
-        )
-
-    try:
-        # Dynamic import: adapter_method format is "module.function" e.g., "crm.get_credit_limit"
-        if "." not in adapter_method:
-            return f"⚙️ Invalid adapter method format: {adapter_method}. Expected 'module.function'"
-        
-        module_name, func_name = adapter_method.split(".", 1)
-        
-        # Import the adapter module dynamically
-        module = __import__(f"app.adapters.{module_name}", fromlist=[func_name])
-        adapter_func = getattr(module, func_name)
-        
-        # Build context dict for adapters that need more than org_id + entity
-        parameters = parameters or {}
-        context = {
-            "org_id": org_id,
-            "user_id": user_id,
-            "phone": phone,
-            "raw_text": raw_text,
-            "entity_raw": entity,
-            **parameters,  # LLM-extracted fields override
-        }
-        
-        # Call the adapter with appropriate arguments
-        # Try calling with context dict first (for complex adapters like quotation)
-        try:
-            result = await adapter_func(**context)
-        except TypeError:
-            # Fallback to simple (org_id, entity) signature for backward compatibility
-            result = await adapter_func(org_id, entity if entity else None)
-        
-        # Check if multiple matches found (disambiguation needed)
-        if result.get("found") and not result.get("single_match", True):
-            matches = result.get("matches", [])
-            if matches and session_id:
-                # Convert UUID to string for JSON serialization
-                serializable_matches = [
-                    {"id": str(m["id"]), "name": m["name"], "city": m["city"]} 
-                    for m in matches
-                ]
-                # Store matches in session for selection
-                await set_session(session_id, {
-                    "disambiguation": True,
-                    "matches": serializable_matches,
-                    "intent": intent,
-                    "adapter_method": adapter_method,
-                    "entity": entity
-                })
-                
-                # Present numbered options
-                options = "\n".join([f"{i+1}. {m['name']} ({m['city']})" for i, m in enumerate(matches)])
-                return f"🔍 {result['message']}\n\nReply with number:\n{options}"
-        
-        return result["message"]
-    except ImportError:
-        return f"⚙️ Adapter module not found: app.adapters.{module_name}. Contact admin."
-    except AttributeError:
-        return f"⚙️ Function {func_name} not found in {module_name}. Contact admin."
-    except Exception as e:
-        return f"⚙️ Error executing {adapter_method}: {str(e)}"
-
-
 async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
     """Fetch OTP and approval thresholds from DB. Returns (otp_threshold, approval_threshold)."""
     row = await fetch_one("""
@@ -204,58 +131,11 @@ async def execute_intent(
     workflow: dict = None,
 ) -> str:
     """
-    Unified executor.
-    route_type=workflow with workflow record → read (sql_template) or action (adapter)
-    route_type=general_read → query engine unconstrained
-    system intents → hardcoded handlers
+    Simplified executor - only handles system intents now.
+    All read queries go through the agent (tool-calling).
     """
     org_id  = user["org_id"]
     user_id = user["user_id"]
-    phone   = user["phone"]
-    params  = parameters or {}
-
-    # ── WORKFLOW ROUTE (matched workflow) ──────────────────────────────────
-    if route_type == "workflow" and workflow:
-        workflow_type = workflow.get("workflow_type", "action")
-
-        if workflow_type == "read":
-            # Execute stored SQL template — zero LLM cost
-            from app.services.query_engine import execute_template
-            reply = await execute_template(
-                org_id        = org_id,
-                sql_template  = workflow["sql_template"],
-                entities      = params,
-                params_order  = workflow.get("sql_params_order", []),
-                entity_schema = workflow.get("entity_schema", {}),
-                response_format = workflow.get("response_format", "generic"),
-                user_id       = user_id,
-            )
-            await _log(org_id, user_id, workflow["intent_key"], raw_text, "success")
-            return reply
-
-        else:
-            # Action workflow: call adapter
-            adapter_method = workflow.get("adapter_method", "generic")
-            result_msg = await _dispatch_dynamic_intent(
-                intent         = workflow["intent_key"],
-                entity         = entity_raw,
-                org_id         = org_id,
-                raw_text       = raw_text,
-                adapter_method = adapter_method,
-                session_id     = session_id,
-                user_id        = user_id,
-                phone          = phone,
-                parameters     = params,
-            )
-            await _log(org_id, user_id, workflow["intent_key"], raw_text, "success")
-            return result_msg
-
-    # ── UNCONSTRAINED GENERAL READ (fallback — no workflow matched) ────────
-    if route_type == "general_read":
-        from app.services.query_engine import execute_read
-        reply = await execute_read(org_id, analyzer_intent or intent, params)
-        await _log(org_id, user_id, "general_read", raw_text, "success")
-        return reply
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
@@ -322,30 +202,7 @@ async def execute_intent(
             "_Action logged in audit trail._"
         )
 
-    # ── LEGACY: DYNAMIC DB WORKFLOW (fallback for non-intent_matcher routes) ────
-    db_workflow = await fetch_one("""
-        SELECT name, adapter_method FROM workflows
-        WHERE intent_key = $1 AND org_id = $2 AND is_active = true
-    """, intent, org_id)
-
-    if db_workflow:
-        adapter_method = db_workflow.get("adapter_method", "generic")
-        result_msg = await _dispatch_dynamic_intent(
-            intent, entity_raw, org_id, raw_text, adapter_method,
-            session_id, user_id, phone,
-            parameters=parameters,
-        )
-        await _log(org_id, user_id, intent, raw_text, "success")
-        return result_msg
-
-    # Try general_read fallback for unknown intents
-    if analyzer_intent:
-        from app.services.query_engine import execute_read
-        result = await execute_read(org_id, analyzer_intent, params)
-        await _log(org_id, user_id, "general_read_fallback", raw_text, "success")
-        return result
-
-    return "🤔 Didn't understand that. Type *help* for the menu."
+    return "🤔 Unhandled system intent."
 
 
 async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
