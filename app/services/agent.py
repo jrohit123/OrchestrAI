@@ -233,22 +233,43 @@ CRITICAL RULES:
 
 AVAILABLE TABLES (from schema above):
 - inventory (for stock/low stock queries)
+  - Columns: id, org_id, sku, name, qty, location, reorder_level, unit_price, updated_at
+  - Use: qty for quantity, reorder_level for low stock threshold
 - customers (for customer information)
+  - Columns: id, org_id, name, phone, email, gst_number, city, credit_limit, created_at
 - invoices (for invoice/dues queries)
+  - Columns: id, org_id, invoice_number, customer_id, created_by, items, amount, status, due_date, paid_at, pdf_url, created_at
+  - Use: status in ('pending', 'overdue') for dues
 - orders (for order status)
+  - Columns: id, org_id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status, status_history, expected_delivery, notes, created_by, status_updated_at, created_at
 - pricing (for metal rates and quotations)
+  - Columns: id, org_id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at, quotation_number, weight_grams, making_charges, subtotal, gst_pct, gst_amount, total_amount, status, valid_until, created_by
 - orgs (for organization info)
+  - Columns: id, name, slug, industry, plan, is_active, created_at, session_ttl_minutes, gst_rate
 - users (for user information)
+  - Columns: id, org_id, role_id, name, phone, email, channel, is_active, created_at
 - roles (for role/permission information)
+  - Columns: id, org_id, name, permissions, created_at
 - audit_log (for audit trail)
+  - Columns: id, org_id, user_id, intent_key, tier, input_text, outcome, otp_used, steps_taken, created_at, due_date, pdf_url
 - pending_approvals (for approval workflows)
+  - Columns: id, org_id, workflow_id, requester_id, approver_role, intent_key, context, status, decided_by, decided_at, created_at
 - otp_tokens (for OTP verification)
+  - Columns: id, user_id, otp_hash, action_context, expires_at, used, attempts, created_at
 - credentials (for adapter credentials)
+  - Columns: id, org_id, adapter_name, config, created_at
 - workflows (for workflow definitions)
+  - Columns: id, org_id, intent_key, name, steps, is_active, otp_required, otp_threshold, version, last_run, created_at, is_scheduled, schedule_cron, scheduled_by, approval_threshold, trigger_patterns, description, adapter_method, workflow_type, training_phrases, entity_schema, sql_template, sql_params_order, response_format, business_glossary, llm_system_prompt
+
+CRITICAL: Use EXACT column names as shown above. Do NOT guess column names.
+- inventory.qty (not quantity, stock_quantity, stock_level)
+- inventory.reorder_level (not threshold, min_stock)
+- invoices.status (not invoice_status)
+- customers.name (not customer_name)
 
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
-NEVER: guess table names - only use tables listed in the schema.
+NEVER: guess table names or column names - only use what's shown above.
 """
 
 
