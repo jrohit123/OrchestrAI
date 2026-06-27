@@ -279,6 +279,19 @@ async def _execute_tool(
         sql = tool_input.get("sql", "")
         params = tool_input.get("params", [])
 
+        # Validate SQL against forbidden tables/columns
+        forbidden_tables = ["products", "items", "inventory_items", "stock", "stock_items", "goods", "merchandise", "materials", "locations", "businesses", "companies", "organizations", "firms"]
+        forbidden_columns = ["quantity", "stock_quantity", "stock_level", "amount_on_hand", "threshold", "min_stock", "reorder_point", "invoice_status", "payment_status", "customer_name", "client_name", "metal", "gold_type"]
+
+        sql_lower = sql.lower()
+        for forbidden in forbidden_tables:
+            if f"from {forbidden}" in sql_lower or f"join {forbidden}" in sql_lower:
+                return f"ERROR: Table '{forbidden}' does not exist. Use 'inventory' instead."
+
+        for forbidden in forbidden_columns:
+            if forbidden in sql_lower:
+                return f"ERROR: Column '{forbidden}' does not exist. Check schema for correct column names."
+
         ok, reason = _safe(sql)
         if not ok:
             return f"ERROR: Query blocked — {reason}"
