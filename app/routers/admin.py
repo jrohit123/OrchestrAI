@@ -3,7 +3,6 @@ import json
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from app.db import fetch_all, fetch_one, execute
-from app.classifier.classifier import invalidate_patterns_cache
 from openai import AsyncOpenAI
 
 router = APIRouter()
@@ -87,8 +86,6 @@ async def toggle_otp(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
         new_val, workflow_id
     )
-    # Invalidate classifier cache
-    invalidate_patterns_cache(row["org_id"])
     return {"otp_required": new_val}
 
 
@@ -394,10 +391,6 @@ async def save_generated_workflow(request: Request):
             SET permissions = array_append(permissions, $1)
             WHERE name = $2 AND NOT $1 = ANY(permissions)
         """, intent_key, role_name)
-
-    # Invalidate workflow cache
-    from app.services.intent_matcher import invalidate_workflow_cache
-    invalidate_workflow_cache(org_id)
 
     return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
