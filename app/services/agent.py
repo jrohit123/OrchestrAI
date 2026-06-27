@@ -347,23 +347,40 @@ async def run_agent(
     Main entry point. Replaces classify_message + execute_intent entirely.
     Runs the tool-calling loop until the LLM produces a final text response.
     """
-    system_prompt = await _build_system_prompt(user)
+    print(f"[AGENT] Starting agent for: {message}")
+    try:
+        system_prompt = await _build_system_prompt(user)
+        print(f"[AGENT] System prompt built, length: {len(system_prompt)}")
+    except Exception as e:
+        print(f"[AGENT] Error building system prompt: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error building system prompt: {str(e)}"
 
     messages = [{"role": "user", "content": message}]
 
     for iteration in range(max_iterations):
-        response = await _client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=1024,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto"
-        )
+        print(f"[AGENT] Iteration {iteration + 1}/{max_iterations}")
+        try:
+            response = await _client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=1024,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto"
+            )
+            print(f"[AGENT] OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
+        except Exception as e:
+            print(f"[AGENT] OpenAI API error: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"OpenAI API error: {str(e)}"
 
         assistant_message = response.choices[0].message
 
         # LLM finished — return the text response
         if not assistant_message.tool_calls:
+            print(f"[AGENT] No tool calls, returning text response")
             return assistant_message.content.strip()
 
         # LLM wants to call tools
@@ -377,12 +394,14 @@ async def run_agent(
         # Execute each tool call
         tool_results = []
         for tool_call in assistant_message.tool_calls:
+            print(f"[AGENT] Executing tool: {tool_call.function.name}")
             result = await _execute_tool(
                 tool_name=tool_call.function.name,
                 tool_input=json.loads(tool_call.function.arguments),
                 user=user,
                 phone=phone
             )
+            print(f"[AGENT] Tool result: {result[:100]}...")
 
             tool_results.append({
                 "tool_call_id": tool_call.id,
