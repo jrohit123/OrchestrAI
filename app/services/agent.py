@@ -456,7 +456,7 @@ async def run_agent(
         # LLM finished — return the text response
         if not assistant_message.tool_calls:
             print(f"[AGENT] No tool calls, returning text response")
-            history_to_save = [m for m in messages if m.get("role") != "system"]
+            history_to_save = _serialize_history(messages)
             return assistant_message.content.strip(), history_to_save
 
         # LLM wants to call tools
@@ -493,9 +493,9 @@ async def run_agent(
                     opts = "\n".join(
                         f"{i+1}. {o}" for i, o in enumerate(options)
                     )
-                    history_to_save = [m for m in messages if m.get("role") != "system"]
+                    history_to_save = _serialize_history(messages)
                     return f"🤔 {clarify_question}\n\n{opts}", history_to_save
-                history_to_save = [m for m in messages if m.get("role") != "system"]
+                history_to_save = _serialize_history(messages)
                 return f"🤔 {clarify_question}", history_to_save
 
             # If confirm_action was called, pause and return the prompt
@@ -507,11 +507,34 @@ async def run_agent(
                     for k, v in details.items():
                         lines.append(f"  • {k}: {v}")
                 lines.append("\nReply *yes* to confirm or *no* to cancel.")
-                history_to_save = [m for m in messages if m.get("role") != "system"]
+                history_to_save = _serialize_history(messages)
                 return "\n".join(lines), history_to_save
 
         # Add tool results back into message history
         messages.extend(tool_results)
 
-    history_to_save = [m for m in messages if m.get("role") != "system"]
+    history_to_save = _serialize_history(messages)
     return "🤔 Something went wrong. Please try again.", history_to_save
+
+
+def _serialize_history(messages: list) -> list:
+    """Convert OpenAI message objects to JSON-serializable dicts."""
+    serialized = []
+    for m in messages:
+        if m.get("role") == "system":
+            continue
+        msg_copy = {"role": m["role"], "content": m.get("content", "")}
+        if "tool_calls" in m:
+            msg_copy["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in m["tool_calls"]
+            ]
+        serialized.append(msg_copy)
+    return serialized
