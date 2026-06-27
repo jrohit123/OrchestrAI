@@ -236,8 +236,15 @@ AVAILABLE TABLES (from schema above):
 - customers (for customer information)
 - invoices (for invoice/dues queries)
 - orders (for order status)
-- pricing (for metal rates)
+- pricing (for metal rates and quotations)
 - orgs (for organization info)
+- users (for user information)
+- roles (for role/permission information)
+- audit_log (for audit trail)
+- pending_approvals (for approval workflows)
+- otp_tokens (for OTP verification)
+- credentials (for adapter credentials)
+- workflows (for workflow definitions)
 
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
