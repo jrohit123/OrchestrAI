@@ -229,7 +229,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await set_session(session_id, {})
             original_msg = pending.get("original_message", "")
             user_with_confirm = {**user, "confirmed": True}
-            reply = await run_agent(original_msg, user_with_confirm, phone)
+            reply, _ = await run_agent(original_msg, user_with_confirm, phone)
             await send_text(phone, reply)
         else:
             await set_session(session_id, {})
@@ -237,10 +237,23 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         return
 
     # 9. Run the agent — replaces classify + execute pipeline
-    await set_session(session_id, {**session, "last_message": text})
+    # Load conversation history from session
+    conversation_history = session.get("conversation_history", [])
 
     try:
-        reply = await run_agent(text, user, phone)
+        reply, updated_history = await run_agent(
+            text, user, phone,
+            conversation_history=conversation_history
+        )
+        
+        # Save last 10 turns (to keep context without bloating)
+        updated_history = updated_history[-10:]
+        await set_session(session_id, {
+            **session,
+            "last_message": text,
+            "conversation_history": updated_history
+        })
+        
         await send_text(phone, reply)
 
         # Log to audit_log

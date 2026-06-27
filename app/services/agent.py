@@ -260,6 +260,28 @@ RULES:
 11. If a query returns empty — say so plainly, don't say "no results found".
 12. Add useful context and insight beyond just the raw data where relevant.
 
+HINGLISH BUSINESS GLOSSARY — NEVER ASK FOR CLARIFICATION ON THESE TERMS:
+- "baaki" / "udhaar" / "kitna baaki" / "dues" / "outstanding" 
+  → invoices.amount WHERE status IN ('pending', 'overdue')
+- "bhav" / "rate" / "sone ka bhav" / "aaj ka bhav"
+  → pricing.rate_per_gram (from the pricing table)
+- "maal" / "stock items" / "khatam ho raha"  
+  → inventory WHERE qty <= reorder_level
+- "production mein" / "kaam chal raha" / "in production"
+  → orders WHERE status = 'in_production'
+- "ready hai" / "ready orders"
+  → orders WHERE status = 'ready'
+- "pending invoice" / "baaki invoice"
+  → invoices WHERE status IN ('pending', 'overdue')
+- "low stock" / "stock kam hai" / "khatam hone wala"
+  → inventory WHERE qty <= reorder_level ORDER BY (reorder_level - qty) DESC
+
+RULE ON CLARIFY TOOL:
+- NEVER use clarify because you're unsure of intent — attempt the query first
+- ONLY use clarify when a database query returns MULTIPLE records 
+  (e.g., you searched customers WHERE name ILIKE '%Mehta%' and got 3 rows)
+- "Mehta ka baaki" means outstanding dues for customers named Mehta — query it directly
+
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 """
@@ -385,8 +407,9 @@ async def run_agent(
     message: str,
     user: dict,
     phone: str,
-    max_iterations: int = 6
-) -> str:
+    max_iterations: int = 6,
+    conversation_history: list = None,
+) -> tuple[str, list]:
     """
     Main entry point. Replaces classify_message + execute_intent entirely.
     Runs the tool-calling loop until the LLM produces a final text response.
@@ -399,15 +422,23 @@ async def run_agent(
         print(f"[AGENT] Error building system prompt: {e}")
         import traceback
         traceback.print_exc()
-        return f"Error building system prompt: {str(e)}"
+        return f"Error building system prompt: {str(e)}", []
 
-    messages = [{"role": "user", "content": message}]
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ]
+    
+    # Inject prior conversation (last N turns)
+    if conversation_history:
+        messages.extend(conversation_history)
+    
+    messages.append({"role": "user", "content": message})
 
     for iteration in range(max_iterations):
         print(f"[AGENT] Iteration {iteration + 1}/{max_iterations}")
         try:
             response = await _client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 max_tokens=1024,
                 messages=messages,
                 tools=TOOLS,
@@ -418,14 +449,15 @@ async def run_agent(
             print(f"[AGENT] OpenAI API error: {e}")
             import traceback
             traceback.print_exc()
-            return f"OpenAI API error: {str(e)}"
+            return f"OpenAI API error: {str(e)}", []
 
         assistant_message = response.choices[0].message
 
         # LLM finished — return the text response
         if not assistant_message.tool_calls:
             print(f"[AGENT] No tool calls, returning text response")
-            return assistant_message.content.strip()
+            history_to_save = [m for m in messages if m.get("role") != "system"]
+            return assistant_message.content.strip(), history_to_save
 
         # LLM wants to call tools
         # Add assistant's response to message history
@@ -461,8 +493,10 @@ async def run_agent(
                     opts = "\n".join(
                         f"{i+1}. {o}" for i, o in enumerate(options)
                     )
-                    return f"🤔 {clarify_question}\n\n{opts}"
-                return f"🤔 {clarify_question}"
+                    history_to_save = [m for m in messages if m.get("role") != "system"]
+                    return f"🤔 {clarify_question}\n\n{opts}", history_to_save
+                history_to_save = [m for m in messages if m.get("role") != "system"]
+                return f"🤔 {clarify_question}", history_to_save
 
             # If confirm_action was called, pause and return the prompt
             if tool_call.function.name == "confirm_action":
@@ -473,9 +507,11 @@ async def run_agent(
                     for k, v in details.items():
                         lines.append(f"  • {k}: {v}")
                 lines.append("\nReply *yes* to confirm or *no* to cancel.")
-                return "\n".join(lines)
+                history_to_save = [m for m in messages if m.get("role") != "system"]
+                return "\n".join(lines), history_to_save
 
         # Add tool results back into message history
         messages.extend(tool_results)
 
-    return "🤔 Something went wrong. Please try again."
+    history_to_save = [m for m in messages if m.get("role") != "system"]
+    return "🤔 Something went wrong. Please try again.", history_to_save
