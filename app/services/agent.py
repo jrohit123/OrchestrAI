@@ -525,17 +525,22 @@ def _serialize_history(messages: list) -> list:
             continue
         msg_copy = {"role": m["role"], "content": m.get("content", "")}
         if "tool_calls" in m:
-            msg_copy["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
-                    }
-                }
-                for tc in m["tool_calls"]
-            ]
+            # Handle both OpenAI objects and already-serialized dicts
+            msg_copy["tool_calls"] = []
+            for tc in m["tool_calls"]:
+                if isinstance(tc, dict):
+                    # Already serialized
+                    msg_copy["tool_calls"].append(tc)
+                else:
+                    # OpenAI object, need to serialize
+                    msg_copy["tool_calls"].append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    })
         if "tool_call_id" in m:
             msg_copy["tool_call_id"] = m["tool_call_id"]
         serialized.append(msg_copy)
