@@ -246,8 +246,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             conversation_history=conversation_history
         )
         
-        # Save last 10 turns (to keep context without bloating)
-        updated_history = updated_history[-10:]
+        # Save last 4 messages (2 turns) to limit context contamination
+        updated_history = updated_history[-4:]
         await set_session(session_id, {
             **session,
             "last_message": text,

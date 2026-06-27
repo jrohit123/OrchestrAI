@@ -252,13 +252,15 @@ RULES:
 4. If a table doesn't exist in the schema, the query will fail. Only use tables shown above.
 5. Never expose id, org_id, or uuid columns in your response.
 6. If a name matches multiple rows — use clarify tool, show the options.
-7. For PDF requests — ONLY use generate_pdf when the user EXPLICITLY asks for a PDF, document, or file (e.g., "send as pdf", "give me a pdf", "download as file"). Otherwise, return results as text.
+7. STRICT PDF RULE: Call generate_pdf ONLY if the user's current message contains the words "pdf", "download", "document", or "statement". "Show me", "give me summary", "what is", "how much", "can you provide" are TEXT responses — NEVER call generate_pdf for these. One request = at most one PDF.
 8. For write operations — always call confirm_action first, never write directly.
 9. Format all responses for WhatsApp: use *bold* for key numbers, bullet points
    for lists, emojis for context, keep responses concise.
 10. Speak naturally. You understand English and Hinglish equally.
 11. If a query returns empty — say so plainly, don't say "no results found".
 12. Add useful context and insight beyond just the raw data where relevant.
+13. FOCUS RULE: Each message is independent. Address ONLY what the user is CURRENTLY asking. Never re-query or regenerate outputs from earlier in the conversation.
+14. NUMERIC FILTER RULE: When the user says "qty above X" or "qty below X" with a specific number, use that EXACT number in SQL (e.g., WHERE qty > 50, WHERE qty < 50). Never substitute reorder_level for a user-specified number.
 
 HINGLISH BUSINESS GLOSSARY — NEVER ASK FOR CLARIFICATION ON THESE TERMS:
 - "baaki" / "udhaar" / "kitna baaki" / "dues" / "outstanding" 
@@ -442,7 +444,8 @@ async def run_agent(
                 max_tokens=1024,
                 messages=messages,
                 tools=TOOLS,
-                tool_choice="auto"
+                tool_choice="auto",
+                parallel_tool_calls=False
             )
             print(f"[AGENT] OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
         except Exception as e:
