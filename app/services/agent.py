@@ -518,10 +518,15 @@ async def run_agent(
 
 
 def _serialize_history(messages: list) -> list:
-    """Convert OpenAI message objects to JSON-serializable dicts."""
+    """Convert OpenAI message objects to JSON-serializable dicts.
+    Only saves user and assistant messages - tool messages are intermediate results
+    and don't need to persist across conversations."""
     serialized = []
     for m in messages:
         if m.get("role") == "system":
+            continue
+        if m.get("role") == "tool":
+            # Skip tool messages - they're intermediate results
             continue
         msg_copy = {"role": m["role"], "content": m.get("content", "")}
         if "tool_calls" in m:
@@ -541,7 +546,5 @@ def _serialize_history(messages: list) -> list:
                             "arguments": tc.function.arguments
                         }
                     })
-        if "tool_call_id" in m:
-            msg_copy["tool_call_id"] = m["tool_call_id"]
         serialized.append(msg_copy)
     return serialized
