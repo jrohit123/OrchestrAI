@@ -528,23 +528,11 @@ def _serialize_history(messages: list) -> list:
         if m.get("role") == "tool":
             # Skip tool messages - they're intermediate results
             continue
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            # Skip tool-call assistant messages too — saving one side
+            # of a tool_call/tool_result pair without the other causes
+            # OpenAI to reject the history on the next request
+            continue
         msg_copy = {"role": m["role"], "content": m.get("content", "")}
-        if "tool_calls" in m:
-            # Handle both OpenAI objects and already-serialized dicts
-            msg_copy["tool_calls"] = []
-            for tc in m["tool_calls"]:
-                if isinstance(tc, dict):
-                    # Already serialized
-                    msg_copy["tool_calls"].append(tc)
-                else:
-                    # OpenAI object, need to serialize
-                    msg_copy["tool_calls"].append({
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    })
         serialized.append(msg_copy)
     return serialized
