@@ -657,7 +657,7 @@ def _generate_generic_pdf(
             # Format amounts nicely
             try:
                 if any(x in col for x in ("amount", "total", "price", "limit", "rate")):
-                    val = f"₹{float(row[col]):,.0f}" if row.get(col) else "—"
+                    val = f"INR {float(row[col]):,.0f}" if row.get(col) else "—"
             except (ValueError, TypeError):
                 pass
             pdf.cell(w, 7, val, fill=True, align="L", border=0)
