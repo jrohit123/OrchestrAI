@@ -251,8 +251,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     except Exception as e:
         print(f"[AGENT] Error: {e}")
+        import traceback
+        traceback.print_exc()
         await send_text(phone,
-            "🤔 Something went wrong. Please try again."
+            f"🤔 Error: {str(e)}"
         )
 
 
