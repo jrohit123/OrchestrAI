@@ -6,4 +6,4 @@ openai
 python-dotenv
 httpx
 apscheduler
-xhtml2pdf==0.2.17
+weasyprint

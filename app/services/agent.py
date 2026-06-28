@@ -422,6 +422,7 @@ async def _execute_tool(
     elif tool_name == "generate_pdf":
         from app.services.pdf_engine import generate_pdf as _gen_pdf
         from app.services.whatsapp import send_document
+        from app.services.pdf_preprocessor import preprocess_rows
 
         rows          = tool_input.get("rows", [])
         title         = tool_input.get("title", "Report")
@@ -452,17 +453,23 @@ async def _execute_tool(
                 # Everything else — invoice lists, customer lists, inventory, etc. — is "report"
                 doc_type = "report"
 
+        # ── Pre-process rows for aging analysis, risk buckets, etc. ──────
+        enriched_rows, analysis_summary = preprocess_rows(rows, doc_type)
+        # Merge pre-computed analysis into extra_context (analysis wins on collision)
+        merged_context = {**extra_context, **analysis_summary}
+        # ──────────────────────────────────────────────────────────────────────
+
         try:
             org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"])
             org_name = org_row["name"] if org_row else user["org_name"]
 
             pdf_bytes = await _gen_pdf(
-                rows=rows,
+                rows=enriched_rows,            # ← use enriched rows
                 title=title,
                 org_name=org_name,
                 subtitle=subtitle,
                 doc_type=doc_type,
-                extra_context=extra_context,
+                extra_context=merged_context,  # ← use merged context with analysis
             )
             safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".pdf"
 
@@ -559,13 +566,22 @@ async def run_agent(
         try:
             response = await _client.chat.completions.create(
                 model="gpt-4o",
-                max_tokens=1024,
+                max_tokens=4096,
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
                 parallel_tool_calls=False
             )
             print(f"[AGENT] OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
+
+            if response.choices[0].finish_reason == "length":
+                print(f"[AGENT] Response truncated (stop_reason=length) — aborting tool call")
+                history_to_save = _serialize_history(messages)
+                return (
+                    "⚠️ That request returned too much data to process in one go. "
+                    "Try narrowing it down — e.g. ask for a specific customer or date range.",
+                    history_to_save
+                )
         except Exception as e:
             print(f"[AGENT] OpenAI API error: {e}")
             import traceback

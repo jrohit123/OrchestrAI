@@ -1,20 +1,8 @@
 """
-pdf_engine.py — Universal LLM-powered PDF generator.
+pdf_engine.py — LLM-powered PDF generator using WeasyPrint.
 
-Completely domain-agnostic. Replaces:
-  - generate_invoice_pdf()
-  - generate_dues_statement_pdf()
-  - generate_quotation_pdf()
-  - _generate_generic_pdf()
-
-How it works:
-  1. Caller passes: data rows + document title + doc_type hint + extra computed context
-  2. LLM generates professional A4 HTML for the document
-  3. xhtml2pdf converts HTML → PDF bytes
-  4. Bytes returned to caller for WhatsApp delivery
-
-Works for jewellery, pharma, IT, hospitals — no code changes per client.
-The LLM knows what each document type should look like from its training.
+Replaces xhtml2pdf. Uses WeasyPrint for full CSS3 support and correct ₹ rendering.
+Domain-agnostic. Works for any industry via doc_type hints + pre-processed rows.
 """
 import json
 import os
@@ -24,12 +12,18 @@ from openai import AsyncOpenAI
 
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+BRAND_BLUE   = "#185FA5"
+BRAND_LIGHT  = "#EEF4FB"
+BRAND_DARK   = "#1A1A2E"
+BRAND_MUTED  = "#6B7280"
 
-# ── Brand colours (used in the prompt so LLM includes them in HTML) ──────────
-BRAND_BLUE  = "#185FA5"
-BRAND_LIGHT = "#EEF4FB"
-BRAND_DARK  = "#1A1A2E"
-BRAND_MUTED = "#6B7280"
+# Risk colours (used in prompts and potentially in generated HTML)
+RISK_COLORS = {
+    "HIGH":     {"bg": "#B71C1C", "row": "#FFEBEE", "text": "#FFFFFF"},
+    "MEDIUM":   {"bg": "#E65100", "row": "#FFF3E0", "text": "#FFFFFF"},
+    "LOW":      {"bg": "#2E7D32", "row": "#F1F8E9", "text": "#FFFFFF"},
+    "UPCOMING": {"bg": "#1565C0", "row": "#E3F2FD", "text": "#FFFFFF"},
+}
 
 
 async def generate_pdf(
@@ -40,32 +34,7 @@ async def generate_pdf(
     doc_type: str = "report",
     extra_context: dict = None,
 ) -> bytes:
-    """
-    Generate a professional PDF from any data.
-
-    Parameters
-    ----------
-    rows         : list of dicts — the data to show in the document.
-                   Can be empty if all data is in extra_context (e.g. quotations).
-    title        : str — shown at the top of the PDF (e.g. "Tax Invoice INV-001")
-    org_name     : str — company name in the header
-    subtitle     : str — optional secondary title or date range
-    doc_type     : str — hint for the LLM. One of:
-                   "report"     → general data table with summary row
-                   "invoice"    → tax invoice with GST breakdown, BILL TO section
-                   "quotation"  → price quotation with item details, price breakdown
-                   "statement"  → dues/account statement with aging analysis
-                   "orders"     → production order list with status indicators
-    extra_context: dict — pre-computed values the LLM needs but are not in rows.
-                   For invoices: invoice_number, customer details, due_date, gst_rate
-                   For quotations: full calculation breakdown (metal_cost, making, gst, total)
-                   For statements: total_outstanding, overdue_total, customer details
-                   For reports: optional summary totals
-
-    Returns
-    -------
-    bytes — PDF file contents. Raise on error.
-    """
+    """Generate a professional A4 PDF. Returns bytes. Raises on error."""
     html = await _build_html(
         rows=rows,
         title=title,
@@ -77,133 +46,198 @@ async def generate_pdf(
     return _html_to_pdf(html)
 
 
-async def _build_html(
-    rows: list,
-    title: str,
-    org_name: str,
-    subtitle: str,
-    doc_type: str,
-    extra_context: dict,
-) -> str:
-    """Call the LLM to generate professional A4 HTML for this document."""
-    today = datetime.now().strftime("%d %b %Y")
+async def _build_html(rows, title, org_name, subtitle, doc_type, extra_context) -> str:
+    today      = datetime.now().strftime("%d %b %Y")
+    today_long = datetime.now().strftime("%d %B %Y")
 
-    # Limit rows to 100 for the prompt (large datasets would overflow token limit)
     data_for_prompt = rows[:100]
     truncated = len(rows) > 100
     data_json = json.dumps(data_for_prompt, default=str, indent=2)
-    context_json = json.dumps(extra_context, default=str, indent=2)
-
-    truncation_note = (
-        f"\n(Note: data truncated to first 100 of {len(rows)} rows for brevity)"
+    ctx_json  = json.dumps(extra_context,   default=str, indent=2)
+    trunc_note = (
+        f"\n(Note: showing first 100 of {len(rows)} rows)"
         if truncated else ""
     )
 
-    prompt = f"""You are generating a professional PDF document for a business.
+    # Detect if this is an aging report — enables colour-bucketed rendering
+    has_risk_buckets = any("risk_bucket" in r for r in data_for_prompt)
+    has_days_overdue = any("days_overdue" in r for r in data_for_prompt)
+    risk_mode = has_risk_buckets or has_days_overdue
+
+    prompt = f"""You are generating a professional PDF document for a business using WeasyPrint.
+WeasyPrint supports full CSS3 including flexbox, CSS variables, border-radius, and proper Unicode.
 
 ===== DOCUMENT DETAILS =====
-Organization: {org_name}
-Document Type: {doc_type}
-Title: {title}
-Subtitle: {subtitle or "(none)"}
-Date: {today}
-Total Rows: {len(rows)}{truncation_note}
+Organization  : {org_name}
+Document Type : {doc_type}
+Title         : {title}
+Subtitle      : {subtitle or "(none)"}
+Date          : {today_long}
+Total Rows    : {len(rows)}{trunc_note}
+Has Risk Buckets : {risk_mode}
 
 ===== DATA =====
 {data_json}
 
 ===== PRE-COMPUTED CONTEXT =====
-(Use these values directly — do not recalculate from the data above)
-{context_json}
+(Use these values directly. Do NOT recalculate from the rows above.)
+{ctx_json}
 
-===== WHAT TO GENERATE =====
-Write a complete, professional A4 HTML document for PDF conversion using xhtml2pdf.
+===== FONTS AND COLORS =====
+Use this CSS at the top of <head>:
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  /* Fallback stack that includes Noto Sans for ₹ symbol: */
+  body {{ font-family: 'Inter', 'Noto Sans', 'DejaVu Sans', Arial, sans-serif; font-size: 11pt; color: {BRAND_DARK}; }}
+  @page {{ size: A4; margin: 12mm 15mm 15mm 15mm; }}
+</style>
 
-DESIGN:
-- Primary blue: {BRAND_BLUE}
-- Light blue bg: {BRAND_LIGHT}
-- Dark text: {BRAND_DARK}
-- Muted text: {BRAND_MUTED}
-- Font: Arial, Helvetica, sans-serif
-- Page: A4 (210mm × 297mm), margins 15mm
+Primary blue  : {BRAND_BLUE}
+Light blue bg : {BRAND_LIGHT}
+Dark text     : {BRAND_DARK}
+Muted text    : {BRAND_MUTED}
 
-STRUCTURE (always include):
-1. Header: org name (large, blue) | document title (medium) | date (right-aligned)
-   — Blue divider line beneath header
-2. Document body: appropriate for doc_type (see rules below)
-3. Footer: "Generated by OrchestrAI on {today}" in muted small text
+CRITICAL — Use ONLY "Rs." for currency, NOT the ₹ symbol.
+Write: Rs.1,45,000  NOT: ₹1,45,000
+The Rupee symbol breaks in some rendering environments. "Rs." is universal.
 
-DOC_TYPE RULES:
+===== ALWAYS INCLUDE (every doc type) =====
+1. HEADER BLOCK (table-based, full width):
+   Left cell:  org name in bold {BRAND_BLUE} 18pt | document type label 11pt muted
+   Right cell: date right-aligned | subtitle if provided
 
-report:
-  - Data in a clean table with blue header row (white text), alternating light-blue rows
-  - Column headers derived from dict keys (convert underscores to spaces, Title Case)
-  - Summary row at bottom: count of rows + SUM of any numeric "amount"/"total" columns
-  - Add KEY INSIGHTS section below table if data shows notable patterns
-    (e.g., "3 items below reorder level — urgent restocking needed")
+2. Thin horizontal rule (<hr style="border:2px solid {BRAND_BLUE}; margin:8px 0">) below header
 
-invoice:
-  - "TAX INVOICE" badge in header (right side, blue fill, white text)
-  - "BILL TO" section with customer name, city, GSTIN from extra_context
-  - Invoice #, Date, Due Date in upper right (from extra_context)
-  - Items table: Description | Qty | Unit Price | GST% | Total
-  - Totals block (right-aligned): Subtotal, GST amount, TOTAL (blue highlight)
-  - Amount in words (Indian system: Rupees X Lakh Y Thousand Only)
-  - Terms: "Payment due within 30 days. Late payment: 2% per month."
+3. FOOTER (bottom of page, small, muted):
+   "Generated by OrchestrAI on {today}"
 
-quotation:
-  - "QUOTATION" badge in header
-  - "PREPARED FOR" section with customer name and city from extra_context
-  - Item Details box (light-blue bg): Metal Type | Weight | Rate per gram | Making%
-  - Price Breakdown table:
-      Metal Cost = weight × rate_per_gram
-      Making Charges = metal_cost × making_charge_pct / 100
-      Subtotal
-      GST = subtotal × gst_pct / 100
-      TOTAL (blue highlight row)
-  - All values from extra_context — use them directly, do not recalculate
-  - "Quotation valid for 3 days from date of issue" note
-  - Terms: Gold rates subject to market fluctuation. Advance required to confirm.
+===== DOC-TYPE SPECIFIC INSTRUCTIONS =====
 
-statement:
-  - "ACCOUNT STATEMENT" heading
-  - Customer details from extra_context (name, city, GSTIN)
-  - Outstanding summary box:
-      Total Outstanding: ₹X (from extra_context.total_outstanding)
-      Overdue Amount: ₹X (from extra_context.overdue_total)
-  - Invoice table: Invoice # | Date | Due Date | Amount | Status | Days Overdue
-    Colour-code status: overdue rows → light red (#FFF0F0), pending → light yellow (#FFFBE6)
-  - Aging analysis if dates available:
-      0–30 days: ₹X
-      31–90 days: ₹X
-      >90 days: ₹X (HIGH RISK)
-  - Terms: "Please clear outstanding at the earliest. Late interest: 2% per month."
+{"" if not risk_mode else f"""
+── AGING REPORT (risk_bucket data detected) ──
 
-orders:
-  - Orders table with: Order # | Customer | Description | Metal | Status | Est. Amount
-  - Status column with emoji indicators:
-      confirmed → ✅ Confirmed
-      in_production → 🔨 In Production
-      quality_check → 🔍 Quality Check
-      ready → 📦 Ready for Delivery
-      delivered → ✅ Delivered
-  - Summary: count by status at the bottom
+The rows already have `risk_bucket` (HIGH / MEDIUM / LOW / UPCOMING) and
+`days_overdue` pre-computed. Use this to render THREE colour-coded sections.
 
-MONETARY FORMATTING:
-  - Always format with ₹ and Indian commas: ₹1,07,000 (not $107,000)
-  - Round to nearest rupee for display
+STRUCTURE:
+1. EXECUTIVE SUMMARY BOX (light blue bg, rounded corners, 8px padding):
+   Show grand_total, high_risk_total, medium_risk_total from extra_context.
+   If top_debtors in extra_context, list them here.
+   Format: "Total Outstanding: Rs.X | High Risk: Rs.X | Medium Risk: Rs.X"
 
-XHTML2PDF COMPATIBILITY (critical — follow these or the PDF will break):
-  - Use only inline CSS or <style> inside <head> — no external stylesheets
-  - Tables: always set width="100%" and explicit column widths via style="width:X%"
-  - Use table-based layouts for multi-column sections (no flexbox, no grid, no float)
-  - Use <br/> not <br>
-  - Do not use CSS variables (--var-name) — use literal hex values
-  - Do not use: position:fixed, position:absolute, transform, animation
-  - Font sizes in pt preferred (e.g., 10pt, 12pt, 14pt)
-  - Page break hints: use style="page-break-before:always" on elements
+2. THREE SECTION BLOCKS (render only non-empty buckets):
 
-Return ONLY the complete HTML. Start with <!DOCTYPE html>. No markdown, no code fences, no explanation."""
+   HIGH RISK — Over 90 Days
+   Header row bg: #B71C1C, white text, bold
+   Data rows bg: #FFEBEE (light red)
+   Show: Invoice # | Customer | Amount | Days Overdue | Status
+
+   MEDIUM RISK — 31 to 90 Days
+   Header row bg: #E65100, white text, bold
+   Data rows bg: #FFF3E0 (light orange)
+
+   LOW RISK — Up to 30 Days
+   Header row bg: #2E7D32, white text, bold
+   Data rows bg: #F1F8E9 (light green)
+
+   UPCOMING — Not Yet Due
+   Header row bg: {BRAND_BLUE}, white text, bold
+   Data rows bg: {BRAND_LIGHT}
+
+   Each section heading ABOVE the table (full-width div):
+   <div style="background:#B71C1C;color:#fff;padding:6px 10px;font-weight:700;margin-top:12px;font-size:11pt">
+     🔴 HIGH RISK — Over 90 Days ({"{"}count{"}"} invoices, Rs.{"{"}total{"}"})
+   </div>
+   Followed immediately by the table for that bucket.
+
+3. KEY ACTIONS SECTION (below all tables):
+   Heading: "Key Actions" in {BRAND_BLUE} bold
+   Bullet list of 3-5 specific, actionable items based on the data.
+   Examples: "Singh Bullion Mart: Rs.X overdue 120+ days — immediate follow-up needed"
+   Make these SPECIFIC to the actual data, not generic placeholders.
+   Use the top_debtors from extra_context if available.
+"""}
+
+{"" if risk_mode else {
+"report": """
+── REPORT (multi-row table) ──
+- Blue header row (#185FA5, white text), alternating row stripes (white / #EEF4FB)
+- All numeric amount/total columns: right-align, Indian comma formatting (Rs.X,XX,XXX)
+- Summary row at bottom (bold, light blue bg): row count + SUM of any amount/total column
+- KEY INSIGHTS section: 2-4 bullet points synthesising notable patterns in the data
+  e.g. "4 items below reorder level" / "3 customers account for 70% of outstanding"
+""",
+"invoice": """
+── TAX INVOICE ──
+- TOP RIGHT badge: <div style="background:{BRAND_BLUE};color:#fff;padding:4px 12px;font-weight:700;display:inline-block">TAX INVOICE</div>
+- BILL TO section (left): customer_name, city, GSTIN from extra_context
+- Invoice meta (right): Invoice #, Date, Due Date from extra_context
+- Items table: Description | Qty | Unit Price (ex-GST) | GST % | Total
+- Totals block (right-align, 40% width): Subtotal | GST | TOTAL (bold, blue bg)
+- TOTAL in words (Indian number system): "Rupees One Lakh Forty-Five Thousand Only"
+- Payment terms: "Payment due within 30 days. Late payment: 2% per month."
+""",
+"quotation": """
+── PRICE QUOTATION ──
+- TOP RIGHT badge: QUOTATION
+- PREPARED FOR: customer_name, city from extra_context
+- ITEM DETAILS box (light blue bg, border): Metal Type | Weight | Rate/g | Making %
+- PRICE BREAKDOWN table (right-aligned totals box):
+    Metal Cost     = weight × rate_per_gram        (from extra_context)
+    Making Charges = metal_cost × making_pct / 100 (from extra_context)
+    Subtotal                                        (from extra_context)
+    GST X%                                          (from extra_context)
+    ─────────────────────────────────────────────
+    TOTAL (bold, {BRAND_BLUE} bg, white text)       (from extra_context)
+  ALL values must come from extra_context, NOT recalculated.
+- "Valid for 3 days from date of issue."
+- Terms: "Gold rates subject to market fluctuation. Advance required to confirm order."
+""",
+"statement": """
+── DUES / ACCOUNT STATEMENT ──
+- Heading: ACCOUNT STATEMENT (bold, large)
+- Customer block: name, city, GSTIN, total_outstanding from extra_context
+- Outstanding summary: Total Outstanding | Overdue Amount | Invoice Count
+- Invoices table with colour-coded rows:
+    overdue  → light red  (#FFEBEE)
+    pending  → light yellow (#FFFBE6)
+  Columns: Invoice # | Date | Due Date | Amount | Status | Days Overdue
+- AGING ANALYSIS box (if dates available):
+    0–30 days : Rs.X
+    31–90 days: Rs.X
+    >90 days  : Rs.X  ← flag as HIGH RISK
+- Terms: "Please clear outstanding at the earliest. Late interest: 2% per month."
+""",
+"orders": """
+── PRODUCTION ORDERS ──
+- Orders table: Order # | Customer | Description | Metal | Status | Est. Amount
+- STATUS column coloured cells:
+    confirmed     → #E3F2FD (light blue)
+    in_production → #FFF8E1 (light amber)
+    quality_check → #F3E5F5 (light purple)
+    ready         → #E8F5E9 (light green) ← HIGHLIGHT BOLDLY
+    delivered     → #F5F5F5 (grey)
+- Status emoji legend in footer
+- Summary row: total orders, count by status
+"""
+}.get(doc_type, """
+── GENERIC REPORT ──
+Clean table with blue header, alternating stripes, summary row.
+""")}
+
+===== WEASYPRINT COMPATIBILITY (follow exactly) =====
+- Use table-based layouts for multi-column sections — NO CSS float
+- Set width="100%" on all tables + explicit column widths with style="width:X%"
+- Do NOT use: position:fixed, position:absolute, transform, animation, CSS variables (--name)
+- DO use: flexbox is OK in WeasyPrint, border-radius, box-shadow, CSS calc()
+- Use <br/> not <br>
+- Font sizes: prefer pt units (10pt, 11pt, 12pt, 14pt)
+- Page break: style="page-break-before:always" on elements
+
+===== OUTPUT FORMAT =====
+Return ONLY the complete HTML starting with <!DOCTYPE html>.
+No markdown fences. No explanation. No preamble.
+"""
 
     response = await _client.chat.completions.create(
         model="gpt-4o",
@@ -213,32 +247,22 @@ Return ONLY the complete HTML. Start with <!DOCTYPE html>. No markdown, no code 
     )
 
     html = response.choices[0].message.content.strip()
-
-    # Strip any markdown fences if LLM accidentally adds them
+    # Strip any accidental markdown fences
     if html.startswith("```"):
         lines = html.split("\n")
         start = 1 if lines[0].startswith("```") else 0
-        end = len(lines) - 1 if lines[-1] == "```" else len(lines)
-        html = "\n".join(lines[start:end])
-    html = html.strip()
+        end   = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+        html  = "\n".join(lines[start:end]).strip()
 
     return html
 
 
 def _html_to_pdf(html: str) -> bytes:
-    """
-    Convert HTML string → PDF bytes using xhtml2pdf.
-    Raises ValueError if conversion fails.
-    """
-    from xhtml2pdf import pisa
-
-    buf = BytesIO()
-    status = pisa.CreatePDF(html, dest=buf, encoding="utf-8")
-
-    if status.err:
-        raise ValueError(
-            f"xhtml2pdf conversion failed with {status.err} error(s). "
-            f"Check HTML output for malformed tags."
-        )
-
-    return buf.getvalue()
+    """WeasyPrint: HTML string → PDF bytes. Raises ValueError on failure."""
+    from weasyprint import HTML
+    try:
+        buf = BytesIO()
+        HTML(string=html).write_pdf(buf)
+        return buf.getvalue()
+    except Exception as e:
+        raise ValueError(f"WeasyPrint conversion failed: {e}")
