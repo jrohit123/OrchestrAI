@@ -332,6 +332,16 @@ PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
 NEVER use "invoice" doc_type for "all invoices", "overdue invoices list", "invoice summary".
 Those are ALWAYS "report".
 
+PDF QUERY RULE: When generating a PDF that involves invoices and customers,
+always JOIN the customers table to include customer name in results:
+SELECT i.invoice_number, c.name as customer_name, c.city, i.amount, i.status, i.due_date
+FROM invoices i JOIN customers c ON c.id = i.customer_id
+WHERE i.org_id = $1 AND ...
+This ensures customer names appear in the PDF instead of blank columns.
+
+AMOUNT DISPLAY: Always display monetary values in Indian format with Rs. prefix.
+Rs.1,45,000 not Rs.145000. Use commas at Indian positions.
+
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 """
