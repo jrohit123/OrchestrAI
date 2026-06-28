@@ -371,6 +371,21 @@ async def save_generated_workflow(request: Request):
     if existing:
         raise HTTPException(status_code=400, detail="Intent key already exists")
 
+    # Validate mandatory fields are not empty
+    training_phrases = body.get("training_phrases", [])
+    entity_schema = body.get("entity_schema", {})
+    business_glossary = body.get("business_glossary", {})
+    llm_system_prompt = body.get("llm_system_prompt")
+
+    if not training_phrases or len(training_phrases) < 5:
+        raise HTTPException(status_code=400, detail="training_phrases must have at least 5 phrases")
+    if not entity_schema:
+        raise HTTPException(status_code=400, detail="entity_schema cannot be empty")
+    if not business_glossary:
+        raise HTTPException(status_code=400, detail="business_glossary cannot be empty")
+    if not llm_system_prompt:
+        raise HTTPException(status_code=400, detail="llm_system_prompt cannot be empty")
+
     try:
         await execute("""
             INSERT INTO workflows (
