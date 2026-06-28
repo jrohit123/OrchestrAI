@@ -316,42 +316,61 @@ Return ONLY this JSON, no markdown, no explanation:
   "approval_threshold": null
 }}"""
 
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o",               # Use GPT-4o here — quality matters at compile time
-        max_tokens=2000,
-        temperature=0.1,
-        messages=[{"role": "user", "content": prompt}]
+    last_error = "Unknown error"
+    for attempt in range(3):
+        try:
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=2000,
+                temperature=0.1 + (attempt * 0.1),   # slight temp bump on retry
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            content = response.choices[0].message.content.strip()
+            if "```" in content:
+                start = content.find("{")
+                end   = content.rfind("}") + 1
+                content = content[start:end]
+
+            config = json.loads(content)
+            config["trigger_patterns"] = []
+
+            raw_steps = config.get("steps", [])
+            if isinstance(raw_steps, str):
+                raw_steps = json.loads(raw_steps)
+            config["steps"] = [s if isinstance(s, str) else json.dumps(s) for s in raw_steps]
+
+            # Validate — if any field is missing, retry instead of crashing
+            phrases = config.get("training_phrases", [])
+            if not phrases or len(phrases) < 5:
+                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need ≥5)"
+                print(f"[GENERATE] {last_error} — retrying")
+                continue
+            if not config.get("entity_schema"):
+                last_error = f"Attempt {attempt+1}: empty entity_schema"
+                print(f"[GENERATE] {last_error} — retrying")
+                continue
+            if not config.get("business_glossary"):
+                last_error = f"Attempt {attempt+1}: empty business_glossary"
+                print(f"[GENERATE] {last_error} — retrying")
+                continue
+            if not config.get("llm_system_prompt"):
+                last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
+                print(f"[GENERATE] {last_error} — retrying")
+                continue
+
+            print(f"[GENERATE] ✅ Succeeded on attempt {attempt+1}")
+            return config
+
+        except json.JSONDecodeError as e:
+            last_error = f"Attempt {attempt+1}: invalid JSON — {e}"
+            print(f"[GENERATE] {last_error} — retrying")
+            continue
+
+    raise HTTPException(
+        status_code=500,
+        detail=f"Failed after 3 attempts. Last error: {last_error}"
     )
-
-    content = response.choices[0].message.content.strip()
-    if "```" in content:
-        start = content.find("{")
-        end   = content.rfind("}") + 1
-        content = content[start:end]
-
-    try:
-        config = json.loads(content)
-        # Ensure trigger_patterns is always empty (deprecated)
-        config["trigger_patterns"] = []
-        # Ensure steps is always a list of strings (LLM might return string or non-string elements)
-        raw_steps = config.get("steps", [])
-        if isinstance(raw_steps, str):
-            raw_steps = json.loads(raw_steps)
-        config["steps"] = [s if isinstance(s, str) else json.dumps(s) for s in raw_steps]
-        
-        # Validate mandatory fields are not empty
-        if not config.get("training_phrases") or len(config["training_phrases"]) < 5:
-            raise HTTPException(status_code=500, detail="LLM returned insufficient training_phrases. Please try regenerating.")
-        if not config.get("entity_schema"):
-            raise HTTPException(status_code=500, detail="LLM returned empty entity_schema. Please try regenerating.")
-        if not config.get("business_glossary"):
-            raise HTTPException(status_code=500, detail="LLM returned empty business_glossary. Please try regenerating.")
-        if not config.get("llm_system_prompt"):
-            raise HTTPException(status_code=500, detail="LLM returned empty llm_system_prompt. Please try regenerating.")
-        
-        return config
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {e}")
 
 
 @router.post("/admin/api/workflow/save")
@@ -734,17 +753,24 @@ async function generateWorkflow() {{
 }}
 
 async function saveWorkflow() {{
+  if (!window.generatedConfig) {{
+    alert('Please generate a workflow config first.');
+    return;
+  }}
+
+  const generated = window.generatedConfig;
   const config = {{
+    // Spread ALL AI-generated fields first:
+    ...generated,
+    // UI-editable fields override generated values (in case admin tweaked them)
     name: document.getElementById('wfName').value.trim(),
     intent_key: document.getElementById('wfIntentKey').value.trim(),
     description: document.getElementById('wfDescription').value.trim(),
-    trigger_patterns: [],  // Always empty for Intent+Action routing
-    adapter_method: (window.generatedConfig && window.generatedConfig.adapter_method) || 'generic',
-    steps: (window.generatedConfig && window.generatedConfig.steps) || [],
     otp_required: document.getElementById('wfOtpRequired').checked,
     otp_threshold: parseFloat(document.getElementById('wfOtpThreshold').value) || null,
     approval_threshold: parseFloat(document.getElementById('wfApprovalThreshold').value) || null,
-    roles: Array.from(document.querySelectorAll('#roleCheckboxes input:checked')).map(cb => cb.value)
+    roles: Array.from(document.querySelectorAll('#roleCheckboxes input:checked')).map(cb => cb.value),
+    trigger_patterns: [],
   }};
   
   if (!config.name || !config.intent_key || !config.description) {{
