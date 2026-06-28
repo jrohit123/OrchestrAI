@@ -355,38 +355,53 @@ async def _execute_tool(
 
     elif tool_name == "generate_pdf":
         # Import here to avoid circular deps
-        from app.services.pdf_service import _generate_generic_pdf
+        from app.services.pdf_engine import generate_pdf as _gen_pdf
         from app.services.whatsapp import send_document
 
-        rows = tool_input.get("rows", [])
-        title = tool_input.get("title", "Report")
+        rows     = tool_input.get("rows", [])
+        title    = tool_input.get("title", "Report")
         subtitle = tool_input.get("subtitle", "")
 
         if not rows:
             return "ERROR: No data to generate PDF from"
 
         try:
-            # Build a generic PDF — title + table of whatever rows came in
-            org_row = await fetch_one(
-                "SELECT name FROM orgs WHERE id = $1", user["org_id"]
-            )
+            org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"])
             org_name = org_row["name"] if org_row else user["org_name"]
 
-            pdf_bytes = _generate_generic_pdf(
-                title=title,
-                subtitle=subtitle,
+            # Infer doc_type from the title so the LLM formats it appropriately.
+            # The agent does not need to pass doc_type explicitly — the title is enough.
+            title_lower = title.lower()
+            if "invoice" in title_lower:
+                doc_type = "invoice"
+            elif "quotation" in title_lower or "quote" in title_lower:
+                doc_type = "quotation"
+            elif "statement" in title_lower or "dues" in title_lower:
+                doc_type = "statement"
+            elif "order" in title_lower:
+                doc_type = "orders"
+            else:
+                doc_type = "report"
+
+            pdf_bytes = await _gen_pdf(
                 rows=rows,
-                org_name=org_name
+                title=title,
+                org_name=org_name,
+                subtitle=subtitle,
+                doc_type=doc_type,
             )
+            safe_filename = title.replace(" ", "_").replace("/", "-")[:50] + ".pdf"
             await send_document(
                 to=phone,
                 pdf_bytes=pdf_bytes,
-                filename=f"{title.replace(' ', '_')}.pdf",
+                filename=safe_filename,
                 caption=f"📄 {title}"
             )
             return f"PDF_SENT: {title} ({len(rows)} rows)"
 
         except Exception as e:
+            print(f"[PDF_ENGINE] Error: {e}")
+            import traceback; traceback.print_exc()
             return f"ERROR generating PDF: {str(e)}"
 
     elif tool_name == "confirm_action":

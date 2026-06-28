@@ -6,4 +6,4 @@ openai
 python-dotenv
 httpx
 apscheduler
-fpdf2
+xhtml2pdf==0.2.17

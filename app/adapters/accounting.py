@@ -2,7 +2,7 @@ import re
 import json
 from datetime import datetime, timedelta
 from app.db import fetch_one, fetch_all, execute
-from app.services.pdf_service import generate_invoice_pdf, generate_dues_statement_pdf
+from app.services.pdf_engine import generate_pdf
 from app.services.whatsapp import send_document
 from app.adapters.inventory import check_stock_availability, deduct_stock
 
@@ -118,14 +118,20 @@ async def create_invoice(
 
     # Generate + send PDF
     try:
-        pdf_bytes = generate_invoice_pdf(
-            invoice_number=invoice_number,
-            customer_name=customer["name"],
-            amount=amount,
-            items=items_data,
+        pdf_bytes = await generate_pdf(
+            rows=items_data,
+            title=f"Tax Invoice — {invoice_number}",
             org_name=org_name,
-            customer_gstin=customer.get("gst_number", ""),
-            customer_city=customer.get("city", "")
+            doc_type="invoice",
+            extra_context={
+                "invoice_number": invoice_number,
+                "customer_name": customer["name"],
+                "customer_city": customer.get("city", ""),
+                "customer_gstin": customer.get("gst_number", ""),
+                "amount": amount,
+                "gst_rate": 3.0,
+                "due_date": (datetime.now() + timedelta(days=30)).strftime("%d %b %Y"),
+            }
         )
         await send_document(
             to=phone,
@@ -246,15 +252,20 @@ async def send_invoice_pdf(
     
     # Generate PDF
     try:
-        pdf_bytes = generate_invoice_pdf(
-            invoice_number=invoice["invoice_number"],
-            customer_name=invoice["customer_name"],
-            amount=float(invoice["amount"]),
-            items=items,
+        pdf_bytes = await generate_pdf(
+            rows=items,
+            title=f"Tax Invoice — {invoice['invoice_number']}",
             org_name=org_name,
-            customer_gstin=invoice.get("gst_number", ""),
-            customer_city=invoice.get("city", ""),
-            due_date=invoice.get("due_date")
+            doc_type="invoice",
+            extra_context={
+                "invoice_number": invoice["invoice_number"],
+                "customer_name": invoice["customer_name"],
+                "customer_city": invoice.get("city", ""),
+                "customer_gstin": invoice.get("gst_number", ""),
+                "amount": float(invoice["amount"]),
+                "gst_rate": 3.0,
+                "due_date": invoice.get("due_date"),
+            }
         )
         await send_document(
             to=phone,
@@ -333,14 +344,20 @@ async def send_dues_statement(
     
     # Generate PDF
     try:
-        pdf_bytes = generate_dues_statement_pdf(
-            customer_name=customer["name"],
-            customer_city=customer.get("city", ""),
-            customer_gstin=customer.get("gst_number", ""),
-            invoices=invoices,
-            total_outstanding=float(total),
-            overdue_total=float(overdue_total),
-            org_name=org_name
+        pdf_bytes = await generate_pdf(
+            rows=[dict(inv) for inv in invoices],
+            title=f"Dues Statement — {customer['name']}",
+            org_name=org_name,
+            subtitle=f"As of {datetime.now().strftime('%d %b %Y')}",
+            doc_type="statement",
+            extra_context={
+                "customer_name": customer["name"],
+                "customer_city": customer.get("city", ""),
+                "customer_gstin": customer.get("gst_number", ""),
+                "total_outstanding": float(total),
+                "overdue_total": float(overdue_total),
+                "invoice_count": len(invoices),
+            }
         )
         await send_document(
             to=phone,

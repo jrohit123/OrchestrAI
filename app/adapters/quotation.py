@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from app.db import fetch_one, fetch_all, execute
-from app.services.quotation_pdf import generate_quotation_pdf
+from app.services.pdf_engine import generate_pdf
 from app.services.whatsapp import send_document
 
 
@@ -128,22 +128,29 @@ async def create_quotation(
 
     # Generate PDF
     try:
-        pdf_bytes = generate_quotation_pdf(
-            quotation_number=quotation_number,
-            customer_name=customer["name"],
-            metal_type=metal_type,
-            weight_grams=weight_grams,
-            design_code=design_code,
-            rate_per_gram=rate_per_gram,
-            making_charge_pct=making_pct,
-            making_charges=making_charges,
-            subtotal=subtotal,
-            gst_pct=gst_pct,
-            gst_amount=gst_amount,
-            total_amount=total_amount,
+        pdf_bytes = await generate_pdf(
+            rows=[],
+            title=f"Price Quotation — {quotation_number}",
             org_name=org_name,
-            customer_city=customer.get("city", ""),
-            valid_days=valid_days
+            doc_type="quotation",
+            extra_context={
+                "quotation_number": quotation_number,
+                "customer_name": customer["name"],
+                "customer_city": customer.get("city", ""),
+                "metal_type": metal_type.upper(),
+                "weight_grams": weight_grams,
+                "design_code": design_code or "Standard",
+                "rate_per_gram": rate_per_gram,
+                "making_charge_pct": making_pct,
+                "metal_cost": round(weight_grams * rate_per_gram, 0),
+                "making_charges": making_charges,
+                "subtotal": subtotal,
+                "gst_pct": gst_pct,
+                "gst_amount": gst_amount,
+                "total_amount": total_amount,
+                "valid_days": valid_days,
+                "valid_until": (datetime.now().date() + timedelta(days=valid_days)).strftime("%d %b %Y"),
+            }
         )
         await send_document(
             to=phone,
@@ -449,23 +456,29 @@ async def generate_quotation_with_rate_update(
 
     # Generate PDF
     try:
-        from app.services.quotation_pdf import generate_quotation_pdf
-        pdf_bytes = generate_quotation_pdf(
-            quotation_number=quotation_number,
-            customer_name="Rate-Based Quotation",
-            metal_type=metal_type,
-            weight_grams=weight_grams,
-            design_code=None,
-            rate_per_gram=rate_per_gram,
-            making_charge_pct=making_charge_pct,
-            making_charges=making_charges,
-            subtotal=subtotal,
-            gst_pct=gst_pct,
-            gst_amount=gst_amount,
-            total_amount=total_amount,
+        pdf_bytes = await generate_pdf(
+            rows=[],
+            title=f"Price Quotation — {quotation_number}",
             org_name=org_name,
-            customer_city="",
-            valid_days=3
+            doc_type="quotation",
+            extra_context={
+                "quotation_number": quotation_number,
+                "customer_name": "Rate-Based Quotation",
+                "customer_city": "",
+                "metal_type": metal_type.upper(),
+                "weight_grams": weight_grams,
+                "design_code": "Standard",
+                "rate_per_gram": rate_per_gram,
+                "making_charge_pct": making_charge_pct,
+                "metal_cost": round(weight_grams * rate_per_gram, 0),
+                "making_charges": making_charges,
+                "subtotal": subtotal,
+                "gst_pct": gst_pct,
+                "gst_amount": gst_amount,
+                "total_amount": total_amount,
+                "valid_days": 3,
+                "valid_until": (datetime.now().date() + timedelta(days=3)).strftime("%d %b %Y"),
+            }
         )
         await send_document(
             to=phone,
