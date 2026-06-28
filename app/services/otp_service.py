@@ -159,3 +159,56 @@ async def _send_brevo_email(
             headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"}
         )
         return resp.status_code == 201
+
+
+async def send_email_with_pdf(
+    to_email: str,
+    to_name: str,
+    subject: str,
+    body: str,
+    pdf_bytes: bytes,
+    filename: str,
+    org_name: str,
+) -> bool:
+    """
+    Send an email with a PDF attachment via Brevo.
+    Used by the agent's generate_pdf tool when delivery = 'email' or 'both'.
+    """
+    import base64
+
+    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+    html_body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+      <h2 style="color:#185FA5;">📄 {subject}</h2>
+      <p>Hi {to_name},</p>
+      <p>{body}</p>
+      <p>Please find the PDF attached to this email.</p>
+      <hr style="margin:20px 0;border:none;border-top:1px solid #eee;">
+      <p style="color:#888;font-size:12px;">— OrchestrAI · {org_name}</p>
+    </div>
+    """
+
+    payload = {
+        "sender":      {"name": SENDER_NAME, "email": SENDER_EMAIL},
+        "to":          [{"email": to_email, "name": to_name}],
+        "subject":     subject,
+        "htmlContent": html_body,
+        "attachment":  [{"name": filename, "content": pdf_b64}],
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.brevo.com/v3/smtp/email",
+                json=payload,
+                headers={
+                    "api-key": BREVO_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                timeout=15.0
+            )
+            return resp.status_code == 201
+    except Exception as e:
+        print(f"[EMAIL] Failed to send PDF email: {e}")
+        return False

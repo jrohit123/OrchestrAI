@@ -146,23 +146,49 @@ TOOLS = [
             "name": "generate_pdf",
             "description": (
                 "Generate a PDF from query results and send it to the user. "
-                "Use ONLY when the user explicitly asks for a PDF, report, or statement. "
-                "Call query_database first to get the data, then call this."
+                "Call ONLY when user explicitly says 'pdf', 'download', 'document', or 'statement'. "
+                "Always call query_database FIRST to get data, then call this. "
+                "\n\nDOC_TYPE SELECTION — THIS IS CRITICAL:"
+                "\n'report'    → Use for ANY list of multiple records: overdue invoices list, "
+                "invoice summary, customer list, inventory report, order list. "
+                "DEFAULT CHOICE when showing many rows."
+                "\n'invoice'   → Use ONLY for a SINGLE specific formal Tax Invoice "
+                "(e.g. user says 'send me INV-301 as pdf'). When using invoice type, "
+                "ALWAYS JOIN customers table to include customer_name, city, gst_number in rows."
+                "\n'statement' → Use for dues/outstanding account statements for one customer."
+                "\n'orders'    → Use for production orders list."
+                "\n'quotation' → Use for price quotations."
+                "\n\nNEVER use 'invoice' type for 'all invoices', 'overdue invoices', "
+                "'invoice summary' — those are ALWAYS 'report'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "rows": {
                         "type": "array",
-                        "description": "The data rows to include in the PDF"
+                        "description": "The data rows from query_database"
                     },
                     "title": {
                         "type": "string",
-                        "description": "PDF title shown at the top"
+                        "description": "PDF title"
                     },
                     "subtitle": {
                         "type": "string",
                         "description": "Optional subtitle or date range"
+                    },
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["report", "invoice", "quotation", "statement", "orders"],
+                        "description": "Document type. Default 'report' for any multi-record list."
+                    },
+                    "extra_context": {
+                        "type": "object",
+                        "description": "Additional metadata (customer details, totals) for invoice/statement types"
+                    },
+                    "send_via": {
+                        "type": "string",
+                        "enum": ["whatsapp", "email", "both"],
+                        "description": "Delivery method. Default 'whatsapp'. Use 'email' or 'both' when user asks to email the PDF."
                     }
                 },
                 "required": ["rows", "title"]
@@ -262,12 +288,12 @@ RULES:
 13. FOCUS RULE: Each message is independent. Address ONLY what the user is CURRENTLY asking. Never re-query or regenerate outputs from earlier in the conversation.
 14. NUMERIC FILTER RULE: When the user says "qty above X" or "qty below X" with a specific number, use that EXACT number in SQL (e.g., WHERE qty > 50, WHERE qty < 50). Never substitute reorder_level for a user-specified number.
 
-HINGLISH BUSINESS GLOSSARY — NEVER ASK FOR CLARIFICATION ON THESE TERMS:
-- "baaki" / "udhaar" / "kitna baaki" / "dues" / "outstanding" 
+HINGLISH BUSINESS GLOSSARY:
+- "baaki" / "udhaar" / "kitna baaki" / "dues" / "outstanding"
   → invoices.amount WHERE status IN ('pending', 'overdue')
 - "bhav" / "rate" / "sone ka bhav" / "aaj ka bhav"
-  → pricing.rate_per_gram (from the pricing table)
-- "maal" / "stock items" / "khatam ho raha"  
+  → pricing.rate_per_gram
+- "maal" / "stock items" / "khatam ho raha"
   → inventory WHERE qty <= reorder_level
 - "production mein" / "kaam chal raha" / "in production"
   → orders WHERE status = 'in_production'
@@ -279,10 +305,32 @@ HINGLISH BUSINESS GLOSSARY — NEVER ASK FOR CLARIFICATION ON THESE TERMS:
   → inventory WHERE qty <= reorder_level ORDER BY (reorder_level - qty) DESC
 
 RULE ON CLARIFY TOOL:
-- NEVER use clarify because you're unsure of intent — attempt the query first
-- ONLY use clarify when a database query returns MULTIPLE records 
-  (e.g., you searched customers WHERE name ILIKE '%Mehta%' and got 3 rows)
-- "Mehta ka baaki" means outstanding dues for customers named Mehta — query it directly
+STEP 1 — For any query involving a customer name (baaki, dues, orders, invoices, statement):
+  ALWAYS first run: SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE $2
+  If result has 1 row → proceed to the actual query using that customer's id.
+  If result has 2+ rows → call clarify tool with all customer names as options. STOP.
+
+STEP 2 — Only use clarify for genuine ambiguity (multiple customer matches).
+  Do NOT use clarify for term ambiguity — attempt the query.
+  Do NOT say "which Mehta?" without first running the customer lookup query.
+
+EXAMPLE — "Mehta ka baaki":
+  Wrong: Jump to querying invoices with name ILIKE '%Mehta%'
+  Right: 1) SELECT id,name,city FROM customers WHERE name ILIKE '%Mehta%'
+         2) Got 3 rows → clarify: "Found 3 Mehta customers, which one?"
+         3) User picks → query invoices WHERE customer_id = <specific id>
+
+PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
+- "report"    → ANY list of multiple records (overdue invoices, invoice summary,
+                 customer list, inventory, ready orders). THIS IS THE DEFAULT.
+- "invoice"   → ONLY a single specific Tax Invoice (user says "send INV-301 as pdf").
+                 When using "invoice" type, JOIN customers in your query to get
+                 customer_name, city, gst_number.
+- "statement" → Dues/account statement for ONE specific customer.
+- "orders"    → Production orders list.
+- "quotation" → Price quotation.
+NEVER use "invoice" doc_type for "all invoices", "overdue invoices list", "invoice summary".
+Those are ALWAYS "report".
 
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
@@ -305,7 +353,15 @@ async def _execute_tool(
 
         # Validate SQL against forbidden tables/columns
         forbidden_tables = ["products", "items", "inventory_items", "stock", "stock_items", "goods", "merchandise", "materials", "locations", "businesses", "companies", "organizations", "firms"]
-        forbidden_columns = ["quantity", "stock_quantity", "stock_level", "amount_on_hand", "threshold", "min_stock", "reorder_point", "invoice_status", "payment_status", "customer_name", "client_name", "metal", "gold_type"]
+        # customer_name IS a valid column in orders table — do NOT block it
+        # metal IS a substring of metal_type — blocking it breaks every orders/pricing query
+        # These two were causing ORD-1006 to fail. Only block truly non-existent names.
+        forbidden_columns = [
+            "quantity", "stock_quantity", "stock_level", "amount_on_hand",
+            "threshold", "min_stock", "reorder_point",
+            "invoice_status", "payment_status",
+            "client_name", "gold_type"
+        ]
 
         sql_lower = sql.lower()
         for forbidden in forbidden_tables:
@@ -354,34 +410,41 @@ async def _execute_tool(
         return f"CLARIFY_SENT: {question}"
 
     elif tool_name == "generate_pdf":
-        # Import here to avoid circular deps
         from app.services.pdf_engine import generate_pdf as _gen_pdf
         from app.services.whatsapp import send_document
 
-        rows     = tool_input.get("rows", [])
-        title    = tool_input.get("title", "Report")
-        subtitle = tool_input.get("subtitle", "")
+        rows          = tool_input.get("rows", [])
+        title         = tool_input.get("title", "Report")
+        subtitle      = tool_input.get("subtitle", "")
+        extra_context = tool_input.get("extra_context", {})
+        send_via      = tool_input.get("send_via", "whatsapp")
 
         if not rows:
             return "ERROR: No data to generate PDF from"
 
+        # Use explicit doc_type if agent passed it; otherwise infer carefully.
+        # NEVER infer "invoice" just because the word appears in the title —
+        # "Overdue Invoices" is a report, not a single Tax Invoice.
+        if "doc_type" in tool_input:
+            doc_type = tool_input["doc_type"]
+        else:
+            title_lower = title.lower()
+            # Single specific tax invoice: must mention exact INV-number or "Tax Invoice"
+            if re.search(r'\btax invoice\b|inv-\d+', title_lower):
+                doc_type = "invoice"
+            elif "quotation" in title_lower or re.search(r'\bquote\b', title_lower):
+                doc_type = "quotation"
+            elif "dues statement" in title_lower or "account statement" in title_lower:
+                doc_type = "statement"
+            elif re.search(r'\borders? report\b|\borders? list\b|\bproduction orders?\b', title_lower):
+                doc_type = "orders"
+            else:
+                # Everything else — invoice lists, customer lists, inventory, etc. — is "report"
+                doc_type = "report"
+
         try:
             org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"])
             org_name = org_row["name"] if org_row else user["org_name"]
-
-            # Infer doc_type from the title so the LLM formats it appropriately.
-            # The agent does not need to pass doc_type explicitly — the title is enough.
-            title_lower = title.lower()
-            if "invoice" in title_lower:
-                doc_type = "invoice"
-            elif "quotation" in title_lower or "quote" in title_lower:
-                doc_type = "quotation"
-            elif "statement" in title_lower or "dues" in title_lower:
-                doc_type = "statement"
-            elif "order" in title_lower:
-                doc_type = "orders"
-            else:
-                doc_type = "report"
 
             pdf_bytes = await _gen_pdf(
                 rows=rows,
@@ -389,15 +452,45 @@ async def _execute_tool(
                 org_name=org_name,
                 subtitle=subtitle,
                 doc_type=doc_type,
+                extra_context=extra_context,
             )
-            safe_filename = title.replace(" ", "_").replace("/", "-")[:50] + ".pdf"
-            await send_document(
-                to=phone,
-                pdf_bytes=pdf_bytes,
-                filename=safe_filename,
-                caption=f"📄 {title}"
-            )
-            return f"PDF_SENT: {title} ({len(rows)} rows)"
+            safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".pdf"
+
+            results = []
+
+            # WhatsApp delivery
+            if send_via in ("whatsapp", "both"):
+                await send_document(
+                    to=phone,
+                    pdf_bytes=pdf_bytes,
+                    filename=safe_filename,
+                    caption=f"📄 {title}"
+                )
+                results.append("WhatsApp")
+
+            # Email delivery
+            if send_via in ("email", "both"):
+                user_email = user.get("email")
+                if user_email:
+                    from app.services.otp_service import send_email_with_pdf
+                    email_sent = await send_email_with_pdf(
+                        to_email=user_email,
+                        to_name=user.get("user_name", "User"),
+                        subject=f"📄 {title} — {org_name}",
+                        body=f"Please find attached: <b>{title}</b>",
+                        pdf_bytes=pdf_bytes,
+                        filename=safe_filename,
+                        org_name=org_name
+                    )
+                    if email_sent:
+                        results.append(f"Email ({user_email})")
+                    else:
+                        results.append("Email (failed to send)")
+                else:
+                    results.append("Email (no email on file)")
+
+            delivery_str = " + ".join(results) if results else "no delivery"
+            return f"PDF_SENT: {title} ({len(rows)} rows) via {delivery_str}"
 
         except Exception as e:
             print(f"[PDF_ENGINE] Error: {e}")
