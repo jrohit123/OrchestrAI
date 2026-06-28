@@ -350,43 +350,46 @@ async def save_generated_workflow(request: Request):
     if existing:
         raise HTTPException(status_code=400, detail="Intent key already exists")
 
-    await execute("""
-        INSERT INTO workflows (
-            org_id, name, intent_key, description,
-            workflow_type, training_phrases, entity_schema,
-            sql_template, sql_params_order, response_format,
-            business_glossary, llm_system_prompt,
-            trigger_patterns, adapter_method,
-            otp_required, otp_threshold, approval_threshold,
-            is_active, steps
-        ) VALUES (
-            $1, $2, $3, $4,
-            $5, $6::jsonb, $7::jsonb,
-            $8, $9::jsonb, $10,
-            $11::jsonb, $12,
-            '[]'::jsonb, $13,
-            $14, $15, $16,
-            true, $17::jsonb[]
+    try:
+        await execute("""
+            INSERT INTO workflows (
+                org_id, name, intent_key, description,
+                workflow_type, training_phrases, entity_schema,
+                sql_template, sql_params_order, response_format,
+                business_glossary, llm_system_prompt,
+                trigger_patterns, adapter_method,
+                otp_required, otp_threshold, approval_threshold,
+                is_active, steps
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6::jsonb, $7::jsonb,
+                $8, $9::jsonb, $10,
+                $11::jsonb, $12,
+                '[]'::jsonb, $13,
+                $14, $15, $16,
+                true, ARRAY(SELECT value FROM jsonb_array_elements($17::jsonb))
+            )
+        """,
+            org_id,
+            body.get("name"),
+            body.get("intent_key"),
+            body.get("description"),
+            body.get("workflow_type", "action"),
+            json.dumps(body.get("training_phrases", [])),
+            json.dumps(body.get("entity_schema", {})),
+            body.get("sql_template"),
+            json.dumps(body.get("sql_params_order", [])),
+            body.get("response_format") or "generic",          # NOT NULL safe fallback
+            json.dumps(body.get("business_glossary", {})),
+            body.get("llm_system_prompt"),
+            body.get("adapter_method"),
+            body.get("otp_required", False),
+            body.get("otp_threshold"),
+            body.get("approval_threshold"),
+            json.dumps(body.get("steps", []))                  # JSON string for SQL conversion
         )
-    """,
-        org_id,
-        body.get("name"),
-        body.get("intent_key"),
-        body.get("description"),
-        body.get("workflow_type", "action"),
-        json.dumps(body.get("training_phrases", [])),
-        json.dumps(body.get("entity_schema", {})),
-        body.get("sql_template"),                    # null OK for action workflows
-        json.dumps(body.get("sql_params_order", [])),
-        body.get("response_format"),
-        json.dumps(body.get("business_glossary", {})),
-        body.get("llm_system_prompt"),
-        body.get("adapter_method"),                  # null OK for read workflows
-        body.get("otp_required", False),
-        body.get("otp_threshold"),
-        body.get("approval_threshold"),
-        [json.dumps(step) for step in body.get("steps", [])]   # jsonb[] requires each element JSON-serialized
-    )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
 
     # Grant permissions to selected roles
     intent_key = body.get("intent_key")
@@ -731,7 +734,7 @@ async function saveWorkflow() {{
       cancelWorkflow();
       loadData();
     }} else {{
-      alert('Failed to save: ' + (result.message || 'Unknown error'));
+      alert('Failed to save: ' + (result.detail || result.message || 'Unknown error'));
     }}
   }} catch(e) {{
     alert('Failed to save workflow: ' + e.message);
