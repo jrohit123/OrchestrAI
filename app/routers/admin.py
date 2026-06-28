@@ -380,7 +380,7 @@ async def save_generated_workflow(request: Request):
         body.get("otp_required", False),
         body.get("otp_threshold"),
         body.get("approval_threshold"),
-        body.get("steps", [])                        # array for jsonb[] column
+        json.dumps(body.get("steps", []))            # array for jsonb[] column
     )
 
     # Grant permissions to selected roles
