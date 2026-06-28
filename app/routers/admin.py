@@ -284,6 +284,16 @@ RULE 10 — intent_key:
   For reads: describe the data (get_outstanding, check_stock, list_orders_by_status)
   For actions: describe the action (create_invoice, update_order_status, send_dues_pdf)
 
+══════════════════ MANDATORY FIELDS — NEVER EMPTY ══════════════════════════════════
+
+CRITICAL: The following fields MUST ALWAYS be populated with valid content. Never return empty arrays or null for these:
+- training_phrases: MUST have 8-12 phrases. Never empty [].
+- entity_schema: MUST include all entities mentioned in training_phrases. Never empty {}.
+- business_glossary: MUST have 3-6 term mappings. Never empty {}.
+- llm_system_prompt: MUST be a focused prompt under 300 words. Never null or empty string.
+
+If you cannot determine appropriate values for these fields from the description, make reasonable assumptions based on the workflow type and database schema.
+
 ══════════════════ OUTPUT FORMAT ══════════════════════════════════
 
 Return ONLY this JSON, no markdown, no explanation:
@@ -328,6 +338,17 @@ Return ONLY this JSON, no markdown, no explanation:
         if isinstance(raw_steps, str):
             raw_steps = json.loads(raw_steps)
         config["steps"] = [s if isinstance(s, str) else json.dumps(s) for s in raw_steps]
+        
+        # Validate mandatory fields are not empty
+        if not config.get("training_phrases") or len(config["training_phrases"]) < 5:
+            raise HTTPException(status_code=500, detail="LLM returned insufficient training_phrases. Please try regenerating.")
+        if not config.get("entity_schema"):
+            raise HTTPException(status_code=500, detail="LLM returned empty entity_schema. Please try regenerating.")
+        if not config.get("business_glossary"):
+            raise HTTPException(status_code=500, detail="LLM returned empty business_glossary. Please try regenerating.")
+        if not config.get("llm_system_prompt"):
+            raise HTTPException(status_code=500, detail="LLM returned empty llm_system_prompt. Please try regenerating.")
+        
         return config
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {e}")
