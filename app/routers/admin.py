@@ -288,8 +288,8 @@ RULE 10 — intent_key:
 
 CRITICAL: The following fields MUST ALWAYS be populated with valid content. Never return empty arrays or null for these:
 - training_phrases: MUST have 8-12 phrases. Never empty [].
-- entity_schema: MUST include all entities mentioned in training_phrases. Never empty {}.
-- business_glossary: MUST have 3-6 term mappings. Never empty {}.
+- entity_schema: MUST include all entities mentioned in training_phrases. Never empty {{}}.
+- business_glossary: MUST have 3-6 term mappings. Never empty {{}}.
 - llm_system_prompt: MUST be a focused prompt under 300 words. Never null or empty string.
 
 If you cannot determine appropriate values for these fields from the description, make reasonable assumptions based on the workflow type and database schema.
