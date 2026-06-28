@@ -323,6 +323,9 @@ Return ONLY this JSON, no markdown, no explanation:
         config = json.loads(content)
         # Ensure trigger_patterns is always empty (deprecated)
         config["trigger_patterns"] = []
+        # Ensure steps is always a list (LLM might return string)
+        if isinstance(config.get("steps"), str):
+            config["steps"] = json.loads(config["steps"])
         return config
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {e}")
@@ -380,7 +383,7 @@ async def save_generated_workflow(request: Request):
         body.get("otp_required", False),
         body.get("otp_threshold"),
         body.get("approval_threshold"),
-        json.dumps(body.get("steps", []))            # array for jsonb[] column
+        body.get("steps", [])                        # Python list for jsonb[] column
     )
 
     # Grant permissions to selected roles
