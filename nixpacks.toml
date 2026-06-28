@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["pango", "cairo", "harfbuzz", "noto-fonts", "gobject-introspection"]
+nixPkgs = ["pango", "cairo", "harfbuzz", "glib", "fontconfig", "noto-fonts"]
 
 [phases.build]
 cmds = ["pip install -r requirements.txt"]
