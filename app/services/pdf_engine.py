@@ -62,7 +62,9 @@ async def _build_html(rows, title, org_name, subtitle, doc_type, extra_context) 
     # Detect if this is an aging report — enables colour-bucketed rendering
     has_risk_buckets = any("risk_bucket" in r for r in data_for_prompt)
     has_days_overdue = any("days_overdue" in r for r in data_for_prompt)
-    risk_mode = has_risk_buckets or has_days_overdue
+    # doc_type="invoice" and "quotation" are NEVER rendered as aging reports,
+    # even if the preprocessor somehow tagged their rows.
+    risk_mode = (has_risk_buckets or has_days_overdue) and doc_type not in ("invoice", "quotation")
 
     prompt = f"""You are generating a professional PDF document for a business using WeasyPrint.
 WeasyPrint supports full CSS3 including flexbox, CSS variables, border-radius, and proper Unicode.
@@ -146,7 +148,7 @@ STRUCTURE:
 
    Each section heading ABOVE the table (full-width div):
    <div style="background:#B71C1C;color:#fff;padding:6px 10px;font-weight:700;margin-top:12px;font-size:11pt">
-     🔴 HIGH RISK — Over 90 Days ({"{"}count{"}"} invoices, Rs.{"{"}total{"}"})
+     HIGH RISK — Over 90 Days ({"{"}count{"}"} invoices, Rs.{"{"}total{"}"})
    </div>
    Followed immediately by the table for that bucket.
 

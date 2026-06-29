@@ -25,6 +25,13 @@ def preprocess_rows(rows: list[dict], doc_type: str | None = None) -> tuple[list
             if isinstance(v, datetime):
                 row[k] = v.date()
 
+    # CRITICAL: Tax Invoices and Quotations must never receive aging enrichment.
+    # The risk_bucket/days_overdue fields they'd gain cause risk_mode=True in
+    # pdf_engine, which completely overwrites the invoice/quotation formatting
+    # with the aging report template regardless of doc_type.
+    if doc_type in ("invoice", "quotation"):
+        return rows, {}
+
     # ── Aging / risk analysis (invoices + due_date) ───────────────────────
     has_due_date = any("due_date" in r and r["due_date"] for r in rows)
     has_amount   = any("amount" in r for r in rows)
@@ -64,10 +71,10 @@ def preprocess_rows(rows: list[dict], doc_type: str | None = None) -> tuple[list
 
             row["risk_bucket"] = bucket
             row["risk_label"]  = {
-                "HIGH":     "🔴 HIGH RISK",
-                "MEDIUM":   "🟡 MEDIUM RISK",
-                "LOW":      "🟢 LOW RISK",
-                "UPCOMING": "⚪ UPCOMING",
+                "HIGH":     "HIGH RISK",
+                "MEDIUM":   "MEDIUM RISK",
+                "LOW":      "LOW RISK",
+                "UPCOMING": "UPCOMING",
             }[bucket]
             buckets[bucket].append(row)
 

@@ -330,9 +330,20 @@ Distinguish CREATE from VIEW by context:
 PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
 - "report"    → ANY list of multiple records (overdue invoices, invoice summary,
                  customer list, inventory, ready orders). THIS IS THE DEFAULT.
-- "invoice"   → ONLY a single specific Tax Invoice (user says "send INV-301 as pdf").
-                 When using "invoice" type, JOIN customers in your query to get
-                 customer_name, city, gst_number.
+- "invoice"   → ONLY a single specific Tax Invoice (user says "send INV-301 as pdf"
+                 or "Mehta Enterprises 92000 invoice pdf" referencing one invoice).
+                 Title MUST be exactly: "Tax Invoice — INV-XXX"
+                 Query MUST JOIN customers for customer_name, city, gst_number, AND include i.items.
+                 ALWAYS populate extra_context with values from the query result:
+                 {{
+                   "invoice_number": "<from row>",
+                   "customer_name":  "<from row>",
+                   "customer_city":  "<from row.city>",
+                   "customer_gstin": "<from row.gst_number>",
+                   "amount":         <from row>,
+                   "gst_rate":       3.0,
+                   "due_date":       "<from row>"
+                 }}
 - "statement" → Dues/account statement for ONE specific customer.
 - "orders"    → Production orders list.
 - "quotation" → Price quotation.
@@ -341,10 +352,11 @@ Those are ALWAYS "report".
 
 PDF QUERY RULE: When generating a PDF that involves invoices and customers,
 always JOIN the customers table to include customer name in results:
-SELECT i.invoice_number, c.name as customer_name, c.city, i.amount, i.status, i.due_date
+SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
+       i.amount, i.status, i.due_date, i.items
 FROM invoices i JOIN customers c ON c.id = i.customer_id
 WHERE i.org_id = $1 AND ...
-This ensures customer names appear in the PDF instead of blank columns.
+Include i.items so the Tax Invoice can show line-item breakdown.
 
 AMOUNT DISPLAY: Always display monetary values in Indian format with Rs. prefix.
 Rs.1,45,000 not Rs.145000. Use commas at Indian positions.
