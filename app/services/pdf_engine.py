@@ -206,38 +206,38 @@ BADGE (top right, PROMINENT):
 DOCUMENT META (two-column table after badge, full width):
   Left col (40%):   "PREPARED FOR:" heading, then customer_name (bold 13pt),
                     city, GSTIN (muted 10pt)
-  Right col (60%):  Quote # from extra_context.quotation_number (bold)
+  Right col (60%):  Quote # from extra_context['quotation_number'] (bold)
                     Date: {today_long}
-                    Valid Until: extra_context.valid_until (in RED bold if within 2 days)
-                    "Valid for {extra_context.valid_days or 3} days only"
+                    Valid Until: extra_context.get('valid_until') (in RED bold if within 2 days)
+                    "Valid for {extra_context.get('valid_days', 3)} days only"
 
 DESIGN DETAILS CARD:
   Full-width box, background #FFFBEB, border 2px solid #C9A84C, border-radius 8px, padding 12px:
   Heading "DESIGN DETAILS" in #B8860B bold 11pt.
   Two-column table INSIDE the box:
-    Left:  Design Code : extra_context.design_code (monospace, bold)
-           Design Name : extra_context.design_name (bold)
-    Right: Metal Type  : extra_context.metal_type
-           Weight      : extra_context.weight_grams g
+    Left:  Design Code : extra_context['design_code'] (monospace, bold)
+           Design Name : extra_context['design_name'] (bold)
+    Right: Metal Type  : extra_context['metal_type']
+           Weight      : extra_context['weight_grams'] g
 
 PRICING BREAKDOWN TABLE (right-aligned, width 55%, margin-left auto):
   Border: 1px solid #C9A84C. No zebra stripes. Clean lines.
 
-  Row 1: "Metal Cost"      | "Rs.X,XX,XXX"   (extra_context.metal_cost)
-  Row 2: "Making Charges"  | "Rs.X,XX,XXX"   (extra_context.making_charges)
-         sub-note: "(extra_context.making_charge_pct% of metal cost)" in muted 9pt
+  Row 1: "Metal Cost"      | "Rs.X,XX,XXX"   (extra_context['metal_cost'])
+  Row 2: "Making Charges"  | "Rs.X,XX,XXX"   (extra_context['making_charges'])
+         sub-note: "(extra_context['making_charge_pct']% of metal cost)" in muted 9pt
   Divider: thin line
-  Row 3: "Subtotal"        | "Rs.X,XX,XXX"   (extra_context.subtotal)
-  Row 4: "GST (X%)"        | "Rs.X,XX,XXX"   (extra_context.gst_pct + extra_context.gst_amount)
+  Row 3: "Subtotal"        | "Rs.X,XX,XXX"   (extra_context['subtotal'])
+  Row 4: "GST (X%)"        | "Rs.X,XX,XXX"   (extra_context['gst_pct'] + extra_context['gst_amount'])
   TOTAL ROW (bold, background:#B8860B, color:#fff, font-size:13pt):
-           "TOTAL AMOUNT"   | "Rs.X,XX,XXX"  (extra_context.total_amount)
+           "TOTAL AMOUNT"   | "Rs.X,XX,XXX"  (extra_context['total_amount'])
 
   ALL values come from extra_context. Do NOT recalculate.
   Use Indian comma formatting for ALL amounts: Rs.1,45,000 not Rs.145000.
 
 VALIDITY BOX:
   Full-width div, background:#FFF3CD (amber warning bg), border-left: 4px solid #B8860B:
-  "⚠️  This quotation is valid for {extra_context.valid_days or 3} days from date of issue.
+  "⚠️  This quotation is valid for {extra_context.get('valid_days', 3)} days from date of issue.
    Gold rates are subject to market fluctuation. Quoted price may vary on actual date of delivery."
 
 TERMS & CONDITIONS (10pt muted):
