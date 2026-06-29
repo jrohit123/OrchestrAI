@@ -478,20 +478,30 @@ RULE 2 — TWO-PASS CUSTOMER LOOKUP:
 Pass 1: Search with the FULL extracted name:
   SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FULL_NAME}}%'
   - If 1 result → proceed immediately. NO clarification needed.
-  - If 2+ results → call clarify tool.
+  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
   - If 0 results → go to Pass 2.
 
 Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
   SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FIRST_WORD}}%'
   - If 1 result → proceed.
-  - If 2+ results → call clarify tool.
+  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
   - If 0 results → tell user customer not found.
 
-RULE 3 — NEVER ASK WHICH MEHTA WHEN USER SAID "MEHTA ENTERPRISES":
+RULE 3 — WILDCARD QUERIES ("all customers", "all Mehta", etc.):
+If the user says "all", "all customers", "all [name fragment]", or "summary of all":
+  - Do NOT try to resolve a specific customer
+  - Query for ALL matching records: WHERE name ILIKE '%{{fragment}}%' OR no filter at all
+  - Return a summary with totals
+  - Example: "all Mehta customers" → WHERE name ILIKE '%Mehta%'
+  - Example: "all customers" → no name filter, return all
+
+RULE 4 — NEVER ASK WHICH MEHTA WHEN USER SAID "MEHTA ENTERPRISES":
+If the user provided a FULL multi-word name that matches exactly 1 customer,
+proceed immediately. Only clarify when the name is genuinely ambiguous.
 "Mehta Enterprises" ILIKE '%Mehta Enterprises%' → returns ONLY "Mehta Enterprises (Pune)"
 → Proceed directly. Do NOT ask "which Mehta?"
 
-RULE 4 — CONFIRM BEFORE CREATE:
+RULE 5 — CONFIRM BEFORE CREATE:
 "Mehta Enterprises 92000 invoice" → ACTION (create invoice)
   Steps: 1) Resolve customer (Pass 1: "Mehta Enterprises" → 1 match)
          2) call confirm_action → user confirms → check OTP threshold → create
@@ -842,6 +852,25 @@ async def run_agent(
         history_to_save = [{"role": "user", "content": message},
                            {"role": "assistant", "content": help_text}]
         return help_text, history_to_save
+    
+    # ── Fast-path: clarify selection handling ────────────────────────────────
+    # If user sent a number and previous message was a clarify, extract the selection
+    if conversation_history and len(conversation_history) >= 2:
+        last_assistant = conversation_history[-1].get("content", "")
+        if "🤔" in last_assistant:
+            # User is responding to a clarify menu
+            if msg_stripped.lower() in ("all", "all of them", "summary", "all customers", "sab"):
+                # User wants all options - append this context
+                message = f"Show results for all options (summary)"
+            elif msg_stripped.isdigit():
+                # User is selecting a specific option
+                lines = last_assistant.split("\n")
+                for line in lines:
+                    if line.strip().startswith(msg_stripped + "."):
+                        selected_option = line.strip()[len(msg_stripped)+1:].strip()
+                        # Append the selection to the message for context
+                        message = f"{selected_option} (selected from menu)"
+                        break
     # ─────────────────────────────────────────────────────────────────────────
     
     try:
