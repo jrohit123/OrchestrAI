@@ -446,6 +446,7 @@ async def _execute_tool(
         rows          = tool_input.get("rows", [])
         title         = tool_input.get("title", "Report")
         subtitle      = tool_input.get("subtitle", "")
+        doc_type      = tool_input.get("doc_type", "report")
         extra_context = tool_input.get("extra_context", {})
         send_via      = tool_input.get("send_via", "whatsapp")
 
