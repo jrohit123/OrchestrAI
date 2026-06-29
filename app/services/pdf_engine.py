@@ -175,25 +175,86 @@ STRUCTURE:
 - BILL TO section (left): customer_name, city, GSTIN from extra_context
 - Invoice meta (right): Invoice #, Date, Due Date from extra_context
 - Items table: Description | Qty | Unit Price (ex-GST) | GST % | Total
-- Totals block (right-align, 40% width): Subtotal | GST | TOTAL (bold, blue bg)
+- Totals block (right-align, 40% width):
+    Subtotal  : use subtotal from extra_context if present; else = amount / 1.03 rounded
+    GST (X%)  : use gst_amount from extra_context if present; else = amount - subtotal
+    TOTAL     : use total_amount from extra_context if present; else = amount (as-is)
+    CRITICAL: NEVER add GST on top of `amount`. `amount` is the GST-INCLUSIVE total.
+              If extra_context has subtotal + gst_amount + total_amount, use those directly.
+              The "Total in words" must match TOTAL, not Subtotal.
 - TOTAL in words (Indian number system): "Rupees One Lakh Forty-Five Thousand Only"
 - Payment terms: "Payment due within 30 days. Late payment: 2% per month."
 """,
-"quotation": """
-── PRICE QUOTATION ──
-- TOP RIGHT badge: QUOTATION
-- PREPARED FOR: customer_name, city from extra_context
-- ITEM DETAILS box (light blue bg, border): Metal Type | Weight | Rate/g | Making %
-- PRICE BREAKDOWN table (right-aligned totals box):
-    Metal Cost     = weight × rate_per_gram        (from extra_context)
-    Making Charges = metal_cost × making_pct / 100 (from extra_context)
-    Subtotal                                        (from extra_context)
-    GST X%                                          (from extra_context)
-    ─────────────────────────────────────────────
-    TOTAL (bold, {BRAND_BLUE} bg, white text)       (from extra_context)
-  ALL values must come from extra_context, NOT recalculated.
-- "Valid for 3 days from date of issue."
-- Terms: "Gold rates subject to market fluctuation. Advance required to confirm order."
+"quotation": f"""
+── PRICE QUOTATION — DISTINCT FORMAT (NOT an invoice, use GOLD/AMBER colour scheme) ──
+
+COLOUR SCHEME FOR THIS DOCUMENT ONLY:
+  Primary:    #B8860B  (dark gold)
+  Light bg:   #FFFBEB  (warm cream)
+  Accent:     #C9A84C  (medium gold)
+  Text dark:  #3B2800  (dark brown)
+
+HEADER OVERRIDE: Change the header rule colour to #B8860B (not the usual blue).
+Change org name colour to #B8860B. Sub-label: "Price Quotation"
+
+BADGE (top right, PROMINENT):
+  <div style="background:#B8860B;color:#fff;padding:6px 20px;font-weight:700;
+              font-size:13pt;letter-spacing:1px;display:inline-block">
+    PRICE QUOTATION
+  </div>
+
+DOCUMENT META (two-column table after badge, full width):
+  Left col (40%):   "PREPARED FOR:" heading, then customer_name (bold 13pt),
+                    city, GSTIN (muted 10pt)
+  Right col (60%):  Quote # from extra_context.quotation_number (bold)
+                    Date: {today_long}
+                    Valid Until: extra_context.valid_until (in RED bold if within 2 days)
+                    "Valid for {extra_context.valid_days or 3} days only"
+
+DESIGN DETAILS CARD:
+  Full-width box, background #FFFBEB, border 2px solid #C9A84C, border-radius 8px, padding 12px:
+  Heading "DESIGN DETAILS" in #B8860B bold 11pt.
+  Two-column table INSIDE the box:
+    Left:  Design Code : extra_context.design_code (monospace, bold)
+           Design Name : extra_context.design_name (bold)
+    Right: Metal Type  : extra_context.metal_type
+           Weight      : extra_context.weight_grams g
+
+PRICING BREAKDOWN TABLE (right-aligned, width 55%, margin-left auto):
+  Border: 1px solid #C9A84C. No zebra stripes. Clean lines.
+
+  Row 1: "Metal Cost"      | "Rs.X,XX,XXX"   (extra_context.metal_cost)
+  Row 2: "Making Charges"  | "Rs.X,XX,XXX"   (extra_context.making_charges)
+         sub-note: "(extra_context.making_charge_pct% of metal cost)" in muted 9pt
+  Divider: thin line
+  Row 3: "Subtotal"        | "Rs.X,XX,XXX"   (extra_context.subtotal)
+  Row 4: "GST (X%)"        | "Rs.X,XX,XXX"   (extra_context.gst_pct + extra_context.gst_amount)
+  TOTAL ROW (bold, background:#B8860B, color:#fff, font-size:13pt):
+           "TOTAL AMOUNT"   | "Rs.X,XX,XXX"  (extra_context.total_amount)
+
+  ALL values come from extra_context. Do NOT recalculate.
+  Use Indian comma formatting for ALL amounts: Rs.1,45,000 not Rs.145000.
+
+VALIDITY BOX:
+  Full-width div, background:#FFF3CD (amber warning bg), border-left: 4px solid #B8860B:
+  "⚠️  This quotation is valid for {extra_context.valid_days or 3} days from date of issue.
+   Gold rates are subject to market fluctuation. Quoted price may vary on actual date of delivery."
+
+TERMS & CONDITIONS (10pt muted):
+  • Advance payment required to confirm order.
+  • Final weight may vary ±5% from estimate.
+  • Making charges are fixed at time of confirmation.
+  • GST as per prevailing government rates.
+
+ACCEPTANCE SECTION:
+  Two-column table at bottom:
+    Left:  "Customer Signature: _____________________"
+           "Date: _____________________"
+    Right: "For {org_name}"
+           "Authorised Signatory: _____________________"
+
+FOOTER NOTE (red, small):
+  "This is a QUOTATION, not a Tax Invoice. No tax credit can be claimed against this document."
 """,
 "statement": """
 ── DUES / ACCOUNT STATEMENT ──

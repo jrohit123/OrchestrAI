@@ -449,8 +449,32 @@ async def _execute_tool(
         extra_context = tool_input.get("extra_context", {})
         send_via      = tool_input.get("send_via", "whatsapp")
 
+        # For quotations: rows are always empty — all data is in extra_context. Allow it.
+        # For invoices: if items array is empty, construct a synthetic line item from amount.
+        # For reports: empty rows is a genuine error.
         if not rows:
-            return "ERROR: No data to generate PDF from"
+            if doc_type in ("quotation",):
+                pass  # Quotation data lives entirely in extra_context — fine to proceed.
+            elif doc_type == "invoice":
+                # Synthetic fallback: seeded/legacy invoices may have empty items array.
+                # Build one line item treating `amount` as the GST-inclusive total.
+                raw_amount = float(extra_context.get("amount", 0))
+                gst_rate   = float(extra_context.get("gst_rate", 3.0))
+                subtotal   = round(raw_amount / (1 + gst_rate / 100), 2)
+                gst_val    = round(raw_amount - subtotal, 2)
+                rows = [{
+                    "description": "Jewellery — As Per Order",
+                    "qty": 1,
+                    "unit_price": subtotal,    # ex-GST unit price
+                    "gst": gst_val,
+                    "total": raw_amount        # GST-inclusive line total
+                }]
+                # Also inject pre-computed amounts so LLM doesn't recalculate
+                extra_context["subtotal"]   = subtotal
+                extra_context["gst_amount"] = gst_val
+                extra_context["total_amount"] = raw_amount
+            else:
+                return "ERROR: No data to generate PDF from"
 
         # Use explicit doc_type if agent passed it; otherwise infer carefully.
         # NEVER infer "invoice" just because the word appears in the title —
@@ -471,6 +495,51 @@ async def _execute_tool(
             else:
                 # Everything else — invoice lists, customer lists, inventory, etc. — is "report"
                 doc_type = "report"
+
+        # ── QUOTATION: generate number and persist to pricing table ──────────
+        if doc_type == "quotation" and extra_context.get("metal_type"):
+            try:
+                from app.db import execute as _execute, fetch_one as _fetch_one
+                from datetime import timedelta
+
+                count_row = await _fetch_one(
+                    "SELECT COUNT(*) as cnt FROM pricing "
+                    "WHERE org_id = $1 AND quotation_number IS NOT NULL",
+                    user["org_id"]
+                )
+                q_number = f"QUO-{1001 + int(count_row['cnt'])}"
+                valid_until = (__import__("datetime").date.today()
+                               + timedelta(days=3)).strftime("%Y-%m-%d")
+
+                ctx = extra_context
+                await _execute("""
+                    INSERT INTO pricing (
+                        org_id, quotation_number, metal_type, weight_grams,
+                        rate_per_gram, making_charge_pct, making_charges, subtotal,
+                        gst_pct, gst_amount, total_amount, status, valid_until, created_by
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'sent',$12,$13)
+                """,
+                    user["org_id"],
+                    q_number,
+                    str(ctx.get("metal_type", "")).lower(),
+                    float(ctx.get("weight_grams", 0)),
+                    float(ctx.get("rate_per_gram", 0)),
+                    float(ctx.get("making_charge_pct", 0)),
+                    float(ctx.get("making_charges", 0)),
+                    float(ctx.get("subtotal", 0)),
+                    float(ctx.get("gst_pct", 3.0)),
+                    float(ctx.get("gst_amount", 0)),
+                    float(ctx.get("total_amount", 0)),
+                    valid_until,
+                    user["user_id"]
+                )
+                extra_context["quotation_number"] = q_number
+                extra_context["valid_until"] = valid_until
+                print(f"[AGENT] Quotation saved to DB: {q_number}")
+            except Exception as e:
+                print(f"[AGENT] Quotation DB save failed (non-fatal): {e}")
+                # Non-fatal — still generate the PDF even if save fails
+        # ─────────────────────────────────────────────────────────────────────
 
         # ── Pre-process rows for aging analysis, risk buckets, etc. ──────
         enriched_rows, analysis_summary = preprocess_rows(rows, doc_type)

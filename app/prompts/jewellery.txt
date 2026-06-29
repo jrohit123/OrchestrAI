@@ -67,3 +67,87 @@ WHERE i.org_id = $1 AND i.status IN ('pending', 'overdue')
 ORDER BY i.due_date ASC
 
 ORDERS ACTIVE STATUS ARRAY: ARRAY['confirmed','in_production','quality_check','ready']
+
+QUOTATION GENERATION FLOW — 4 REQUIRED INPUTS:
+
+REQUIRED (call clarify if ANY is missing):
+  1. customer_name  — who the quote is for (lookup customers table)
+  2. design_code    — inventory SKU, format: GC-22K-001, DP-18K-001, SA-SLV-001 etc.
+  3. weight_grams   — weight in grams (numeric, e.g. 15.5 or "15.5g")
+  4. metal_type     — 22kt / 18kt / 14kt / silver / platinum
+
+STEP 1 — CHECK INPUTS: If any of the 4 are missing, immediately call clarify.
+  Example: User says "quote Mehta 15g" → missing design_code AND metal_type
+  → call clarify: "To generate the quote I need: design code (SKU) and metal type
+    (22kt/18kt/14kt/silver). Which design and metal?"
+
+STEP 2 — RESOLVE CUSTOMER (two-pass as usual):
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE $2
+
+STEP 3 — LOOKUP DESIGN BY SKU:
+  SELECT sku, name FROM inventory WHERE org_id = $1 AND sku = $2
+  (exact match on sku column — case-insensitive: UPPER($2))
+  If SKU not found: ask user to check the design code and try again.
+
+STEP 4 — FETCH METAL RATE:
+  SELECT rate_per_gram, making_charge_pct FROM pricing
+  WHERE org_id = $1 AND metal_type = $2 AND quotation_number IS NULL
+
+STEP 5 — FETCH GST RATE:
+  SELECT gst_rate FROM orgs WHERE id = $1
+
+STEP 6 — CALCULATE (do this mentally — do not query DB for arithmetic):
+  metal_cost     = weight_grams × rate_per_gram
+  making_charges = metal_cost × making_charge_pct / 100
+  subtotal       = metal_cost + making_charges
+  gst_amount     = subtotal × gst_rate / 100
+  total_amount   = subtotal + gst_amount
+  (round all to 2 decimal places)
+
+STEP 7 — CONFIRM ACTION:
+  action_description = "Generate Price Quotation for [customer_name]"
+  details = {{
+    "Customer": customer_name + " (" + city + ")",
+    "Design": design_name + " [" + design_code + "]",
+    "Metal": metal_type.upper() + " @ Rs." + rate_per_gram + "/g",
+    "Weight": weight_grams + "g",
+    "Metal Cost": "Rs." + metal_cost (Indian format),
+    "Making (" + making_pct + "%)": "Rs." + making_charges,
+    "GST (" + gst_rate + "%)": "Rs." + gst_amount,
+    "TOTAL": "Rs." + total_amount
+  }}
+
+STEP 8 — GENERATE PDF (after user says yes):
+  Call generate_pdf with:
+    doc_type     = "quotation"
+    rows         = []           ← always empty for quotation
+    title        = "Price Quotation — [customer_name]"
+    subtitle     = "[metal_type.upper()] [weight_grams]g — [design_code]"
+    extra_context = {{
+      "customer_name":       <from customer lookup>,
+      "customer_city":       <from customer lookup>,
+      "customer_gstin":      <from customer lookup — gst_number field>,
+      "design_code":         <the SKU>,
+      "design_name":         <from inventory.name>,
+      "metal_type":          <e.g. "22KT">,
+      "weight_grams":        <float>,
+      "rate_per_gram":       <float>,
+      "making_charge_pct":   <float>,
+      "metal_cost":          <calculated>,
+      "making_charges":      <calculated>,
+      "subtotal":            <calculated>,
+      "gst_pct":             <from orgs.gst_rate>,
+      "gst_amount":          <calculated>,
+      "total_amount":        <calculated>,
+      "valid_days":          3
+    }}
+
+  NOTE: quotation_number is auto-generated inside generate_pdf. Do NOT query for it.
+
+QUOTATION DISAMBIGUATION:
+  "quote Mehta GC-22K-001 15g 22kt" → customer="Mehta" (could be 3 Mehtas → clarify)
+  "quote Mehta Enterprises GC-22K-001 15g 22kt" → 1 match → proceed
+
+QUOTATION IS NOT INVOICE:
+  "show me quotations" → query pricing WHERE quotation_number IS NOT NULL
+  "generate quotation" → this flow above (generate new one)
