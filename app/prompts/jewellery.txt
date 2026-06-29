@@ -104,21 +104,9 @@ STEP 6 — CALCULATE (do this mentally — do not query DB for arithmetic):
   total_amount   = subtotal + gst_amount
   (round all to 2 decimal places)
 
-STEP 7 — CONFIRM ACTION:
-  action_description = "Generate Price Quotation for [customer_name]"
-  details = {{
-    "Customer": customer_name + " (" + city + ")",
-    "Design": design_name + " [" + design_code + "]",
-    "Metal": metal_type.upper() + " @ Rs." + rate_per_gram + "/g",
-    "Weight": weight_grams + "g",
-    "Metal Cost": "Rs." + metal_cost (Indian format),
-    "Making (" + making_pct + "%)": "Rs." + making_charges,
-    "GST (" + gst_rate + "%)": "Rs." + gst_amount,
-    "TOTAL": "Rs." + total_amount
-  }}
-
-STEP 8 — GENERATE PDF (after user says yes):
-  CRITICAL: After user confirms with YES, IMMEDIATELY call generate_pdf.
+STEP 7 — GENERATE PDF IMMEDIATELY:
+  CRITICAL: After calculation, IMMEDIATELY call generate_pdf.
+  Do NOT call confirm_action - generate PDF directly.
   Do NOT query the database again - use the values you already calculated.
   Call generate_pdf with:
     doc_type     = "quotation"
