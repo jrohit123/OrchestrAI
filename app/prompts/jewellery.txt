@@ -118,6 +118,8 @@ STEP 7 — CONFIRM ACTION:
   }}
 
 STEP 8 — GENERATE PDF (after user says yes):
+  CRITICAL: After user confirms with YES, IMMEDIATELY call generate_pdf.
+  Do NOT query the database again - use the values you already calculated.
   Call generate_pdf with:
     doc_type     = "quotation"
     rows         = []           ← always empty for quotation
