@@ -284,6 +284,26 @@ RULE 10 — intent_key:
   For reads: describe the data (get_outstanding, check_stock, list_orders_by_status)
   For actions: describe the action (create_invoice, update_order_status, send_dues_pdf)
 
+RULE 11 — pdf_config (for all workflows):
+  How should PDFs look when generated from this workflow's data?
+  "doc_type": one of report/invoice/statement/orders/quotation
+    - statement: single customer's dues with aging + customer header
+    - report: multi-customer lists, inventory, order lists
+    - invoice: ONLY single specific Tax Invoice (not lists)
+    - quotation: price quotations
+    - orders: production order lists
+  "title_template": e.g. "Outstanding Statement — {customer_name}"
+  "aging_analysis": true if data has due_date and risk bucketing makes sense
+  "show_key_insights": true for financial/operational summaries
+  "insight_focus": ONE sentence — what Key Actions should focus on
+  For action workflows: null
+
+RULE 12 — response_template (for action workflows):
+  WhatsApp response format after action completes.
+  Use {variable} placeholders. Use *bold* for key values. Include emoji.
+  Example: "✅ *Invoice Created*\\n\\nInvoice #: *{invoice_number}*\\nCustomer: {customer_name}\\nAmount: *Rs.{amount}*\\n\\n📄 PDF sent above ↑"
+  For read workflows: null
+
 ══════════════════ MANDATORY FIELDS — NEVER EMPTY ══════════════════════════════════
 
 CRITICAL: The following fields MUST ALWAYS be populated with valid content. Never return empty arrays or null for these:
@@ -313,7 +333,15 @@ Return ONLY this JSON, no markdown, no explanation:
   "steps": ["Step 1", "Step 2", "Step 3"],
   "otp_required": false,
   "otp_threshold": null,
-  "approval_threshold": null
+  "approval_threshold": null,
+  "pdf_config": {{
+    "doc_type": "report|invoice|statement|orders|quotation",
+    "title_template": "...",
+    "aging_analysis": true/false,
+    "show_key_insights": true/false,
+    "insight_focus": "..."
+  }} or null,
+  "response_template": "..." or null
 }}"""
 
     last_error = "Unknown error"
@@ -414,7 +442,8 @@ async def save_generated_workflow(request: Request):
                 business_glossary, llm_system_prompt,
                 trigger_patterns, adapter_method,
                 otp_required, otp_threshold, approval_threshold,
-                is_active, steps
+                is_active, steps,
+                pdf_config, response_template
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6::jsonb, $7::jsonb,
@@ -422,7 +451,8 @@ async def save_generated_workflow(request: Request):
                 $11::jsonb, $12,
                 '[]'::jsonb, $13,
                 $14, $15, $16,
-                true, ARRAY(SELECT value FROM jsonb_array_elements($17::jsonb))
+                true, ARRAY(SELECT value FROM jsonb_array_elements($17::jsonb)),
+                $18::jsonb, $19
             )
         """,
             org_id,
@@ -441,7 +471,9 @@ async def save_generated_workflow(request: Request):
             body.get("otp_required", False),
             body.get("otp_threshold"),
             body.get("approval_threshold"),
-            json.dumps(body.get("steps", []))                  # JSON string for SQL conversion
+            json.dumps(body.get("steps", [])),                  # JSON string for SQL conversion
+            json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,  # $18
+            body.get("response_template")                                                     # $19
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")

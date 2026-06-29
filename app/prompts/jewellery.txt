@@ -1,0 +1,69 @@
+=== JEWELLERY INDUSTRY — DOMAIN GLOSSARY & EXAMPLES ===
+
+HINGLISH GLOSSARY (what users say → what it means in DB):
+
+"baaki" / "udhaar" / "kitna baaki" / "pending amount" / "dues" / "outstanding"
+  → invoices WHERE status IN ('pending', 'overdue')
+
+"bhav" / "rate" / "sone ka bhav" / "aaj ka bhav" / "gold rate" / "chandi rate"
+  → pricing WHERE quotation_number IS NULL (these are the base rates)
+
+"maal" / "inventory" / "stock" / "khatam ho raha" / "order karna padega"
+  → inventory table
+
+"production mein" / "kaam chal raha hai" / "ban raha" / "in production"
+  → orders WHERE status = 'in_production'
+
+"ready hai" / "ready orders" / "delivery ke liye" / "collect karne"
+  → orders WHERE status = 'ready'
+
+"low stock" / "stock kam" / "khatam hone wala" / "reorder"
+  → inventory WHERE qty <= reorder_level ORDER BY (reorder_level - qty) DESC
+
+DOCUMENT NUMBER PATTERNS: INV-XXXX (invoices), ORD-XXXX (orders), QUO-XXXX (quotations)
+METAL TYPES: 22kt, 18kt, 14kt, silver, platinum
+PRICING TABLE: quotation_number IS NULL = base metal rates. quotation_number IS NOT NULL = saved quotations.
+
+ORDER STATUS FLOW: confirmed → in_production → quality_check → ready → delivered
+
+AMOUNT FORMAT: Rs.1,45,000 — NOT ₹1,45,000 — NOT Rs.145000
+
+CUSTOMER DISAMBIGUATION EXAMPLES:
+
+Example 1 — Full name given → DO NOT clarify:
+  User: "Mehta Enterprises 92000 invoice"
+  Extract: customer = "Mehta Enterprises"
+  Query: SELECT id,name,city FROM customers WHERE org_id=$1 AND name ILIKE '%Mehta Enterprises%'
+  Result: 1 row → Mehta Enterprises (Pune) → proceed immediately
+
+Example 2 — Short form given → clarify if multiple matches:
+  User: "Mehta ka baaki"
+  Extract: customer = "Mehta"
+  Query: SELECT id,name,city FROM customers WHERE org_id=$1 AND name ILIKE '%Mehta%'
+  Result: 3 rows → call clarify tool with all 3 options
+
+Example 3 — Full name, 2 words → 1 result → proceed:
+  User: "Singh Bullion ka outstanding"
+  Extract: customer = "Singh Bullion"
+  Query: ILIKE '%Singh Bullion%' → 1 result (Singh Bullion Mart) → proceed
+
+Example 4 — Specific with amount → ACTION (create):
+  User: "Jain Gold Works 45000 invoice"
+  Interpret as: CREATE invoice for Jain Gold Works, amount = 45000
+  Steps: resolve customer → confirm_action → create
+
+INVOICE QUERIES (existing invoices):
+SELECT i.invoice_number, c.name as customer_name, c.city, i.amount, i.status, i.due_date
+FROM invoices i JOIN customers c ON c.id = i.customer_id
+WHERE i.org_id = $1 [AND conditions]
+Always JOIN customers table so PDFs show customer names.
+
+OUTSTANDING / DUES QUERY PATTERN:
+SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
+       i.amount, i.status, i.due_date
+FROM invoices i JOIN customers c ON c.id = i.customer_id
+WHERE i.org_id = $1 AND i.status IN ('pending', 'overdue')
+[AND c.name ILIKE $2 for specific customer]
+ORDER BY i.due_date ASC
+
+ORDERS ACTIVE STATUS ARRAY: ARRAY['confirmed','in_production','quality_check','ready']

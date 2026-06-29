@@ -9,6 +9,7 @@ import re
 from openai import AsyncOpenAI
 from app.db import fetch_all, fetch_one
 from app.services.query_engine import _safe, SENSITIVE_COLS
+from app.services.prompt_loader import load_prompt
 
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -230,6 +231,15 @@ async def _build_system_prompt(user: dict) -> str:
     schema = await _get_schema(user["org_id"])
     today = __import__("datetime").date.today().strftime("%d %b %Y")
 
+    # Load org record for industry/slug
+    org_row = await fetch_one(
+        "SELECT name, industry, slug FROM orgs WHERE id = $1",
+        user["org_id"]
+    )
+
+    # Load layered domain prompt from files
+    domain_prompt = load_prompt(dict(org_row) if org_row else {})
+
     return f"""You are a WhatsApp ERP assistant for {user["org_name"]}.
 
 === CRITICAL: ONLY USE THESE TABLES AND COLUMNS ===
@@ -271,54 +281,51 @@ TODAY: {today}
 DATABASE SCHEMA (for reference only - use the table/column list above):
 {schema}
 
-RULES:
-1. For any data question — use query_database. Write fresh SQL every time.
-2. ALWAYS include WHERE org_id = $1 (injected automatically as $1).
-3. NEVER use table names or column names NOT listed in the CRITICAL section above.
-4. If a table doesn't exist in the schema, the query will fail. Only use tables shown above.
-5. Never expose id, org_id, or uuid columns in your response.
-6. If a name matches multiple rows — use clarify tool, show the options.
-7. STRICT PDF RULE: Call generate_pdf ONLY if the user's current message contains the words "pdf", "download", "document", or "statement". "Show me", "give me summary", "what is", "how much", "can you provide" are TEXT responses — NEVER call generate_pdf for these. One request = at most one PDF.
-8. For write operations — always call confirm_action first, never write directly.
-9. Format all responses for WhatsApp: use *bold* for key numbers, bullet points
-   for lists, emojis for context, keep responses concise.
-10. Speak naturally. You understand English and Hinglish equally.
-11. If a query returns empty — say so plainly, don't say "no results found".
-12. Add useful context and insight beyond just the raw data where relevant.
-13. FOCUS RULE: Each message is independent. Address ONLY what the user is CURRENTLY asking. Never re-query or regenerate outputs from earlier in the conversation.
-14. NUMERIC FILTER RULE: When the user says "qty above X" or "qty below X" with a specific number, use that EXACT number in SQL (e.g., WHERE qty > 50, WHERE qty < 50). Never substitute reorder_level for a user-specified number.
+{domain_prompt}
 
-HINGLISH BUSINESS GLOSSARY:
-- "baaki" / "udhaar" / "kitna baaki" / "dues" / "outstanding"
-  → invoices.amount WHERE status IN ('pending', 'overdue')
-- "bhav" / "rate" / "sone ka bhav" / "aaj ka bhav"
-  → pricing.rate_per_gram
-- "maal" / "stock items" / "khatam ho raha"
-  → inventory WHERE qty <= reorder_level
-- "production mein" / "kaam chal raha" / "in production"
-  → orders WHERE status = 'in_production'
-- "ready hai" / "ready orders"
-  → orders WHERE status = 'ready'
-- "pending invoice" / "baaki invoice"
-  → invoices WHERE status IN ('pending', 'overdue')
-- "low stock" / "stock kam hai" / "khatam hone wala"
-  → inventory WHERE qty <= reorder_level ORDER BY (reorder_level - qty) DESC
+ENTITY EXTRACTION — CRITICAL RULES (read before every query):
 
-RULE ON CLARIFY TOOL:
-STEP 1 — For any query involving a customer name (baaki, dues, orders, invoices, statement):
-  ALWAYS first run: SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE $2
-  If result has 1 row → proceed to the actual query using that customer's id.
-  If result has 2+ rows → call clarify tool with all customer names as options. STOP.
+RULE 1 — EXTRACT THE FULL NAME THE USER TYPED:
+Extract the LONGEST possible entity name from the user message.
+Never truncate a multi-word name to just the first word.
 
-STEP 2 — Only use clarify for genuine ambiguity (multiple customer matches).
-  Do NOT use clarify for term ambiguity — attempt the query.
-  Do NOT say "which Mehta?" without first running the customer lookup query.
+EXAMPLES:
+  "Mehta Enterprises 92000 invoice"  → customer = "Mehta Enterprises"
+  "Singh Bullion Mart ka baaki"       → customer = "Singh Bullion Mart"
+  "Sharma Fine Jewels credit limit"   → customer = "Sharma Fine Jewels"
+  "Jain Gold Works statement"         → customer = "Jain Gold Works"
+  "Mehta ka baaki"                    → customer = "Mehta"  (only 1 word given)
+  "Sharma dues"                       → customer = "Sharma"  (only 1 word given)
 
-EXAMPLE — "Mehta ka baaki":
-  Wrong: Jump to querying invoices with name ILIKE '%Mehta%'
-  Right: 1) SELECT id,name,city FROM customers WHERE name ILIKE '%Mehta%'
-         2) Got 3 rows → clarify: "Found 3 Mehta customers, which one?"
-         3) User picks → query invoices WHERE customer_id = <specific id>
+RULE 2 — TWO-PASS CUSTOMER LOOKUP:
+Pass 1: Search with the FULL extracted name:
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FULL_NAME}%'
+  - If 1 result → proceed immediately. NO clarification needed.
+  - If 2+ results → call clarify tool.
+  - If 0 results → go to Pass 2.
+
+Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FIRST_WORD}%'
+  - If 1 result → proceed.
+  - If 2+ results → call clarify tool.
+  - If 0 results → tell user customer not found.
+
+RULE 3 — NEVER ASK WHICH MEHTA WHEN USER SAID "MEHTA ENTERPRISES":
+"Mehta Enterprises" ILIKE '%Mehta Enterprises%' → returns ONLY "Mehta Enterprises (Pune)"
+→ Proceed directly. Do NOT ask "which Mehta?"
+
+RULE 4 — CONFIRM BEFORE CREATE:
+"Mehta Enterprises 92000 invoice" → ACTION (create invoice)
+  Steps: 1) Resolve customer (Pass 1: "Mehta Enterprises" → 1 match)
+         2) call confirm_action → user confirms → check OTP threshold → create
+
+"Mehta Enterprises invoices" → READ (query existing invoices, no creation)
+  Steps: 1) Resolve customer → 2) query_database for their invoices
+
+Distinguish CREATE from VIEW by context:
+- CREATE signals: "invoice [customer] [amount]", "bill [customer]", "make invoice"
+- VIEW signals: "show", "list", "check", "what", question words, no amount given
+- AMBIGUOUS: "Mehta Enterprises 92000 invoice" → treat as CREATE if amount given
 
 PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
 - "report"    → ANY list of multiple records (overdue invoices, invoice summary,
