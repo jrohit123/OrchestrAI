@@ -299,13 +299,13 @@ EXAMPLES:
 
 RULE 2 — TWO-PASS CUSTOMER LOOKUP:
 Pass 1: Search with the FULL extracted name:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FULL_NAME}%'
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FULL_NAME}}%'
   - If 1 result → proceed immediately. NO clarification needed.
   - If 2+ results → call clarify tool.
   - If 0 results → go to Pass 2.
 
 Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FIRST_WORD}%'
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FIRST_WORD}}%'
   - If 1 result → proceed.
   - If 2+ results → call clarify tool.
   - If 0 results → tell user customer not found.
