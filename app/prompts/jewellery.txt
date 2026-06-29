@@ -1,24 +1,189 @@
 === JEWELLERY INDUSTRY — DOMAIN GLOSSARY & EXAMPLES ===
 
-HINGLISH GLOSSARY (what users say → what it means in DB):
+─────────────────────────────────────────────
+SECTION A — QUERY INTENT GLOSSARY (EXPANDED)
+─────────────────────────────────────────────
 
-"baaki" / "udhaar" / "kitna baaki" / "pending amount" / "dues" / "outstanding"
-  → invoices WHERE status IN ('pending', 'overdue')
+OUTSTANDING / DUES:
+"baaki" / "baki" / "bakki" / "udhaar" / "udhar"
+"kitna baaki hai" / "kitna lena hai" / "kitna dena hai"
+"pending amount" / "outstanding" / "dues" / "unpaid"
+"abhi tak nahi aaya" / "paise nahi mile" / "recover karna"
+"khata dikhao" / "ledger" / "account"
+→ invoices WHERE status IN ('pending', 'overdue')
+   JOIN customers for customer_name
 
-"bhav" / "rate" / "sone ka bhav" / "aaj ka bhav" / "gold rate" / "chandi rate"
-  → pricing WHERE quotation_number IS NULL (these are the base rates)
+METAL RATES:
+"bhav" / "bhaw" / "aaj ka bhav" / "sone ka bhav"
+"rate kya hai" / "kya rate hai" / "gold rate" / "silver rate"
+"chandi ka rate" / "18kt ka rate" / "22kt kya chal raha"
+"aaj ka sona" / "market rate"
+→ pricing WHERE quotation_number IS NULL (base rates)
 
-"maal" / "inventory" / "stock" / "khatam ho raha" / "order karna padega"
-  → inventory table
+INVENTORY / STOCK:
+"stock" / "maal" / "item" / "cheez" / "saamaan"
+"kya hai mere paas" / "kya available hai" / "kya hai"
+"kitna bacha hai" / "inventory check" / "store mein kya hai"
+"khatam ho raha" / "kam ho gaya" / "reorder"
+→ inventory table
 
-"production mein" / "kaam chal raha hai" / "ban raha" / "in production"
-  → orders WHERE status = 'in_production'
+LOW STOCK ALERTS:
+"stock kam hai" / "khatam hone wala" / "order karna padega"
+"low stock" / "reorder alert" / "stock warning"
+→ inventory WHERE qty <= reorder_level
 
-"ready hai" / "ready orders" / "delivery ke liye" / "collect karne"
-  → orders WHERE status = 'ready'
+PRODUCTION / ORDERS:
+"kaam chal raha" / "ban raha hai" / "production mein" / "factory mein"
+"kab milega" / "kab ready hoga" / "delivery kab"
+→ orders WHERE status = 'in_production'
 
-"low stock" / "stock kam" / "khatam hone wala" / "reorder"
-  → inventory WHERE qty <= reorder_level ORDER BY (reorder_level - qty) DESC
+"ready hai" / "ready ho gaya" / "tayyar hai" / "pick up karo"
+"delivery ke liye" / "collect karne wala" / "bahar dene wala"
+→ orders WHERE status = 'ready'
+
+"maal nikala" / "deliver ho gaya" / "de diya" / "gaya"
+→ orders WHERE status = 'delivered'
+
+"confirm ho gaya" / "order laga diya" / "book ho gaya"
+→ orders WHERE status = 'confirmed'
+
+"quality check" / "checking chal rahi" / "QC mein"
+→ orders WHERE status = 'quality_check'
+
+"active orders" / "chal rahe orders" / "sab orders"
+→ orders WHERE status IN ('confirmed','in_production','quality_check','ready')
+
+─────────────────────────────────────────────
+SECTION B — ACTION INTENT GLOSSARY
+─────────────────────────────────────────────
+
+CREATE INVOICE:
+"invoice banao" / "bill banao" / "invoice kar" / "bill kar"
+"invoice dena" / "receipt banani hai" / "GST invoice chahiye"
+→ create_sales_invoice workflow
+
+CREATE QUOTATION:
+"quote banao" / "quotation chahiye" / "estimate do"
+"price batao" / "kitne ka padega" / "rate dikhao [SKU]"
+→ generate_price_quotation workflow
+
+SEND DOCUMENT:
+"bhejo" / "send karo" / "WhatsApp pe bhejo" / "PDF bhejo"
+"document chahiye" / "statement chahiye"
+→ triggers generate_pdf if user has previously received data
+
+─────────────────────────────────────────────
+SECTION C — NUMBER WORD HANDLING
+─────────────────────────────────────────────
+
+Indian number words → always convert to digits BEFORE entity extraction or SQL:
+
+"ek lakh"      → 100000
+"do lakh"      → 200000
+"teen lakh"    → 300000
+"paanch lakh"  → 500000
+"das lakh"     → 1000000
+"ek crore"     → 10000000
+"paanch crore" → 50000000
+"ek hazaar"    → 1000
+"pachaas hazaar" → 50000
+"navve hazaar" → 90000
+
+MIXED: "1.5 lakh" → 150000 | "2.5 lakh" → 250000
+Rule: lakh = 100,000 | crore = 10,000,000 | hazaar = 1,000
+
+Example: "Mehta Enterprises 2 lakh invoice banao"
+→ customer = "Mehta Enterprises", amount = 200000 → create invoice
+
+─────────────────────────────────────────────
+SECTION D — RESPONSE LANGUAGE TEMPLATES
+─────────────────────────────────────────────
+
+When user asks in Hinglish, respond in Hinglish:
+
+Outstanding query (Hinglish response):
+"*{Customer}* ka outstanding:
+• INV-{num}: Rs.{amount} — {status} — {date} tak
+• INV-{num}: Rs.{amount} — {status} — overdue
+
+*Total baaki: Rs.{total}*
+_{n} invoice(s)_
+
+_📥 PDF chahiye? Reply karo *pdf*_"
+
+Orders query (Hinglish response):
+"*Production Orders:*
+🟢 Ready: {n} orders — *deliver karne waale*
+🟡 Chal rahe: {n} orders
+🔵 Confirmed: {n} orders
+
+Ready orders detail:
+• ORD-{num} — {customer} — {desc} (Rs.{amount})
+
+_📥 Full list PDF mein chahiye? Reply karo *pdf*_"
+
+─────────────────────────────────────────────
+SECTION E — CITY/LOCATION DISAMBIGUATION
+─────────────────────────────────────────────
+
+Users sometimes specify city to disambiguate:
+"Pune waale Mehta" → customer name ILIKE '%Mehta%' AND city ILIKE '%Pune%'
+"Nagpur wala Mehta Diamond" → customer ILIKE '%Mehta Diamond%' AND city ILIKE '%Nagpur%'
+"Jaipur ke Sharma" → customer ILIKE '%Sharma%' AND city ILIKE '%Jaipur%'
+
+Always extract both name fragment AND city if provided.
+Use both in the WHERE clause to resolve ambiguity before calling clarify.
+
+─────────────────────────────────────────────
+SECTION F — COMMON SPELLING VARIATIONS
+─────────────────────────────────────────────
+
+These all mean the same thing — normalise before processing:
+
+"baaki" = "baki" = "bakki" = "baakee"
+"bhav" = "bhaw" = "bhaav" = "bhavv"  
+"sona" = "gold" = "sonar" (as metal type → 22kt or check context)
+"chandi" = "silver" = "chandee"
+"hazaar" = "hazar" = "hajar" = "hazaar"
+"lakh" = "lac" = "lakhs"
+"crore" = "kror" = "crores"
+"invoice" = "invois" = "invo" (truncated)
+
+─────────────────────────────────────────────
+SECTION G — QUERY EXAMPLES (HINGLISH → SQL INTENT)
+─────────────────────────────────────────────
+
+"Mehta ka kitna baaki hai"
+→ Outstanding dues for customer ILIKE '%Mehta%'
+
+"sone ka aaj ka bhav kya hai"
+→ SELECT rate_per_gram, making_charge_pct FROM pricing WHERE quotation_number IS NULL
+
+"low stock mein kya kya hai"
+→ SELECT name, qty, reorder_level FROM inventory WHERE qty <= reorder_level
+
+"Sharma Fine Jewels ki ready order dikhao"
+→ orders WHERE customer_name ILIKE '%Sharma Fine Jewels%' AND status = 'ready'
+
+"kitne orders production mein hain"
+→ SELECT COUNT(*), SUM(estimated_amount) FROM orders WHERE status = 'in_production'
+
+"ORD-1006 ka kya status hai"
+→ SELECT * FROM orders WHERE order_number = 'ORD-1006'
+
+"Singh Bullion Mart 3 lakh invoice banao"
+→ Create invoice for Singh Bullion Mart, amount = 300000
+
+"Pune waale Mehta ka baaki"
+→ dues for customer ILIKE '%Mehta%' AND city ILIKE '%Pune%'
+
+"GC-22K-001 ka quote Jain Gold Works ke liye, 15 gram 22kt"
+→ generate_price_quotation: customer=Jain Gold Works, design_code=GC-22K-001,
+   weight_grams=15, metal_type=22kt
+
+─────────────────────────────────────────────
+ORIGINAL GLOSSARY (RETAINED)
+─────────────────────────────────────────────
 
 DOCUMENT NUMBER PATTERNS: INV-XXXX (invoices), ORD-XXXX (orders), QUO-XXXX (quotations)
 METAL TYPES: 22kt, 18kt, 14kt, silver, platinum

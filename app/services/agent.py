@@ -6,6 +6,7 @@ Zero domain hardcoding. Works for any schema, any industry.
 import json
 import os
 import re
+import datetime as _dt
 from openai import AsyncOpenAI
 from app.db import fetch_all, fetch_one
 from app.services.query_engine import _safe, SENSITIVE_COLS
@@ -13,8 +14,179 @@ from app.services.prompt_loader import load_prompt
 
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ── IST timezone for greetings ────────────────────────────────────────────────
+try:
+    import zoneinfo
+    _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+except ImportError:
+    import pytz
+    _IST = pytz.timezone("Asia/Kolkata")
+
 # ── Schema cache (per org, reloaded on restart) ──────────────────────────────
 _schema_cache: dict[str, str] = {}
+
+# ── Greeting & help detection patterns ────────────────────────────────────────
+_GREETING_PATTERNS = {
+    # English
+    "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+    "good night", "howdy", "greetings", "what's up", "sup",
+    # Hindi / Hinglish
+    "namaste", "namaskar", "namasté", "pranam", "jai shri krishna",
+    "ram ram", "jai jinendra", "sat sri akal", "salaam", "adaab",
+    "kya haal", "kya hal", "kaise ho", "kya chal raha", "hello ji",
+    "hi ji", "bhai", "sir", "boss",
+}
+
+_HELP_PATTERNS = {
+    "help", "menu", "options", "what can i do", "what can i ask",
+    "kya kar sakta hoon", "kya pooch sakta hoon", "kya help milegi",
+    "kya karna hai", "guide", "guide me", "start", "get started",
+    "capabilities", "features", "what do you do", "tell me what you can do",
+    "commands", "list commands", "how to use",
+}
+
+# Permission → friendly capability label (domain-agnostic)
+_PERM_LABELS = {
+    "check_stock":            ("📦", "Check inventory & stock levels"),
+    "check_outstanding":      ("💰", "View outstanding dues"),
+    "create_invoice":         ("🧾", "Create sales invoices"),
+    "view_report":            ("📊", "View business reports"),
+    "approve_invoice":        ("✅", "Approve invoices"),
+    "dues_report":            ("📋", "Outstanding dues report"),
+    "check_metal_rates":      ("📈", "Check current metal rates"),
+    "view_orders_by_status":  ("🔨", "Check production order status"),
+    "check_low_stock":        ("⚠️", "Check low stock alerts"),
+    "generate_price_quotation": ("💎", "Generate price quotations"),
+    "create_sales_invoice":   ("🧾", "Create & send tax invoices"),
+    "get_customer_dues_statement": ("📄", "Customer dues statement PDF"),
+    "send_invoice_pdf":       ("📤", "Send invoice PDFs via WhatsApp"),
+    "set_metal_rate":         ("⚙️",  "Update metal rates"),
+    "clear_sessions":         ("🔒", "Manage user sessions"),
+    "check_credit_limit":     ("💳", "Check customer credit limits"),
+}
+
+
+def _is_pure_greeting(message: str) -> bool:
+    """Return True if the message is ONLY a greeting (≤4 words, no query body)."""
+    clean = message.strip().lower().rstrip("!.?,")
+    # Direct pattern match
+    if clean in _GREETING_PATTERNS:
+        return True
+    # 1-4 word message where first word is a greeting
+    words = clean.split()
+    if len(words) <= 4 and words[0] in _GREETING_PATTERNS:
+        return True
+    return False
+
+
+def _is_help_request(message: str) -> bool:
+    """Return True if user is asking what the system can do."""
+    clean = message.strip().lower()
+    for pattern in _HELP_PATTERNS:
+        if pattern in clean:
+            return True
+    return False
+
+
+def _time_of_day_greeting(ist_hour: int) -> str:
+    if 5 <= ist_hour < 12:
+        return "Good morning"
+    elif 12 <= ist_hour < 17:
+        return "Good afternoon"
+    elif 17 <= ist_hour < 21:
+        return "Good evening"
+    else:
+        return "Namaskar"
+
+
+def _build_greeting_response(user: dict, message: str) -> str:
+    """Build a personalised greeting. No LLM call, no DB query."""
+    now_ist = _dt.datetime.now(_IST)
+    tod = _time_of_day_greeting(now_ist.hour)
+    first_name = user["user_name"].split()[0]
+    role = user.get("role", "user").title()
+    org = user.get("org_name", "")
+
+    # Build capability list from this user's actual permissions
+    perms = set(user.get("permissions", []))
+    capability_lines = []
+    seen_labels = set()
+    for perm in _PERM_LABELS:
+        if perm in perms:
+            emoji, label = _PERM_LABELS[perm]
+            if label not in seen_labels:
+                capability_lines.append(f"  {emoji} {label}")
+                seen_labels.add(label)
+
+    caps_block = "\n".join(capability_lines) if capability_lines else "  • Query data and run reports"
+
+    return (
+        f"{tod}, *{first_name}!* 👋\n\n"
+        f"I'm your ERP assistant for *{org}*.\n"
+        f"You're logged in as *{role}*.\n\n"
+        f"*Here's what I can help you with:*\n"
+        f"{caps_block}\n\n"
+        f"Just ask me in plain language — English, Hindi, or Hinglish, "
+        f"whatever is comfortable. 😊\n\n"
+        f"_Example: \"Mehta ka kitna baaki hai?\" or \"Show ready orders\"_"
+    )
+
+
+def _build_help_response(user: dict) -> str:
+    """Build a detailed capability guide based on this user's permissions."""
+    perms = set(user.get("permissions", []))
+    role = user.get("role", "user").title()
+    first_name = user["user_name"].split()[0]
+
+    # Group by category
+    query_caps, action_caps, report_caps = [], [], []
+
+    perm_to_cat = {
+        "check_stock":           ("query",   "📦 *Stock & Inventory*\n  Check stock levels, low stock, item locations"),
+        "check_outstanding":     ("query",   "💰 *Outstanding Dues*\n  Check pending/overdue invoices for any customer"),
+        "check_credit_limit":    ("query",   "💳 *Credit Limits*\n  View customer credit limits"),
+        "check_metal_rates":     ("query",   "📈 *Metal Rates*\n  Current 22kt/18kt/silver rates"),
+        "view_orders_by_status": ("query",   "🔨 *Production Orders*\n  In-production, ready, confirmed orders"),
+        "create_invoice":        ("action",  "🧾 *Create Invoice*\n  Create & send tax invoice via WhatsApp"),
+        "create_sales_invoice":  ("action",  "🧾 *Sales Invoice*\n  Generate GST tax invoice with PDF"),
+        "generate_price_quotation": ("action","💎 *Price Quotation*\n  Generate quotation PDF for a customer"),
+        "approve_invoice":       ("action",  "✅ *Approve Invoices*\n  Approve pending invoices"),
+        "set_metal_rate":        ("action",  "⚙️ *Set Metal Rates*\n  Update 22kt/18kt/silver base rates"),
+        "view_report":           ("report",  "📊 *Business Reports*\n  Revenue, outstanding, inventory reports"),
+        "dues_report":           ("report",  "📋 *Dues Report*\n  Full outstanding report with aging analysis"),
+        "get_customer_dues_statement": ("report", "📄 *Statement PDF*\n  Dues statement for specific customer"),
+        "send_invoice_pdf":      ("report",  "📤 *Send Invoice PDF*\n  Resend any invoice as PDF via WhatsApp"),
+    }
+
+    seen = set()
+    for perm, (cat, label) in perm_to_cat.items():
+        if perm in perms and label not in seen:
+            if cat == "query":   query_caps.append(label)
+            elif cat == "action": action_caps.append(label)
+            elif cat == "report": report_caps.append(label)
+            seen.add(label)
+
+    sections = []
+    if query_caps:
+        sections.append("*🔍 What you can check/query:*\n" + "\n\n".join(query_caps))
+    if action_caps:
+        sections.append("*⚡ What you can create/action:*\n" + "\n\n".join(action_caps))
+    if report_caps:
+        sections.append("*📁 Reports & Documents:*\n" + "\n\n".join(report_caps))
+
+    body = "\n\n".join(sections) if sections else "Ask me anything about your business data."
+
+    return (
+        f"Hi *{first_name}!* Here's your full menu as *{role}*:\n\n"
+        f"{body}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"*How to ask:*\n"
+        f"• English: \"Show Mehta Enterprises dues\"\n"
+        f"• Hinglish: \"Mehta ka kitna baaki hai?\"\n"
+        f"• Hindi: \"Sharma ka outstanding dikhao\"\n"
+        f"• Short: \"low stock\", \"ready orders\", \"22kt rate\"\n\n"
+        f"Say *pdf* at the end to get any result as a document. 📄"
+    )
 
 
 async def _get_schema(org_id: str) -> str:
@@ -146,21 +318,26 @@ TOOLS = [
         "function": {
             "name": "generate_pdf",
             "description": (
-                "Generate a PDF from query results and send it to the user. "
-                "Call ONLY when user explicitly says 'pdf', 'download', 'document', or 'statement'. "
-                "Always call query_database FIRST to get data, then call this. "
-                "\n\nDOC_TYPE SELECTION — THIS IS CRITICAL:"
-                "\n'report'    → Use for ANY list of multiple records: overdue invoices list, "
-                "invoice summary, customer list, inventory report, order list. "
-                "DEFAULT CHOICE when showing many rows."
-                "\n'invoice'   → Use ONLY for a SINGLE specific formal Tax Invoice "
-                "(e.g. user says 'send me INV-301 as pdf'). When using invoice type, "
-                "ALWAYS JOIN customers table to include customer_name, city, gst_number in rows."
-                "\n'statement' → Use for dues/outstanding account statements for one customer."
-                "\n'orders'    → Use for production orders list."
-                "\n'quotation' → Use for price quotations."
-                "\n\nNEVER use 'invoice' type for 'all invoices', 'overdue invoices', "
-                "'invoice summary' — those are ALWAYS 'report'."
+                "Generate a professional PDF and send it via WhatsApp.\n\n"
+                "STRICT TRIGGER RULE — only call this when the user's current message "
+                "contains at least one of:\n"
+                "  'pdf', 'download', 'document'\n"
+                "  'statement pdf' (formal account statement requested as document)\n"
+                "  'bhejo' after a data response (send as document)\n\n"
+                "DO NOT CALL for: 'show', 'check', 'list', 'dikhao', 'batao', 'kitna', "
+                "'baaki', 'outstanding', 'dues', 'orders' — UNLESS the word pdf/download/document "
+                "is also present.\n\n"
+                "CORRECT FLOW:\n"
+                "  1. User asks question → query_database → return TEXT\n"
+                "  2. Append to text: '_📥 Reply *pdf* to get this as a document._'\n"
+                "  3. Only when user replies 'pdf' → THEN call generate_pdf\n\n"
+                "DOC_TYPE:\n"
+                "  'report'    → any multi-row result (DEFAULT)\n"
+                "  'invoice'   → single Tax Invoice by INV-XXXX\n"
+                "  'statement' → account statement for one customer\n"
+                "  'orders'    → production orders list\n"
+                "  'quotation' → price quotation\n"
+                "NEVER use 'invoice' for lists of invoices — always 'report'."
             ),
             "parameters": {
                 "type": "object",
@@ -361,6 +538,24 @@ Include i.items so the Tax Invoice can show line-item breakdown.
 AMOUNT DISPLAY: Always display monetary values in Indian format with Rs. prefix.
 Rs.1,45,000 not Rs.145000. Use commas at Indian positions.
 
+SQL SELF-CORRECTION PROTOCOL:
+When query_database returns an ERROR:
+1. Do NOT show the user raw errors or SQL
+2. Identify the issue: wrong column name? wrong table? syntax error?
+3. Write a corrected SELECT and call query_database again
+4. If the second attempt also fails: "I couldn't retrieve that data.
+   Please verify [specific thing] and try again."
+Example: tried `inventory.quantity` → error → retry with `inventory.qty`
+
+RESPONSE QUALITY CHECK (before sending any reply):
+Ask yourself: Does my response contain any of these? If yes, rewrite it.
+  ✗ SQL queries or WHERE clauses
+  ✗ Column names (org_id, customer_id, invoice_number as raw text)
+  ✗ UUID strings
+  ✗ Table names mentioned to the user
+  ✗ Raw error strings from the database
+  ✗ Technical system details
+
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 """
@@ -398,7 +593,8 @@ async def _execute_tool(
                 return f"ERROR: Table '{forbidden}' does not exist. Use 'inventory' instead."
 
         for forbidden in forbidden_columns:
-            if forbidden in sql_lower:
+            # Match as standalone word only — not as substring of valid column names
+            if re.search(r'\b' + re.escape(forbidden) + r'\b', sql_lower):
                 return f"ERROR: Column '{forbidden}' does not exist. Check schema for correct column names."
 
         ok, reason = _safe(sql)
@@ -631,6 +827,23 @@ async def run_agent(
     Runs the tool-calling loop until the LLM produces a final text response.
     """
     print(f"[AGENT] Starting agent for: {message}")
+    
+    # ── Fast-path: greetings and help (no LLM call needed) ──────────────────
+    msg_stripped = message.strip()
+    
+    if _is_pure_greeting(msg_stripped):
+        greeting_text = _build_greeting_response(user, msg_stripped)
+        history_to_save = [{"role": "user", "content": message},
+                           {"role": "assistant", "content": greeting_text}]
+        return greeting_text, history_to_save
+    
+    if _is_help_request(msg_stripped):
+        help_text = _build_help_response(user)
+        history_to_save = [{"role": "user", "content": message},
+                           {"role": "assistant", "content": help_text}]
+        return help_text, history_to_save
+    # ─────────────────────────────────────────────────────────────────────────
+    
     try:
         system_prompt = await _build_system_prompt(user)
         print(f"[AGENT] System prompt built, length: {len(system_prompt)}")
