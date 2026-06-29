@@ -292,7 +292,7 @@ RULE 11 — pdf_config (for all workflows):
     - invoice: ONLY single specific Tax Invoice (not lists)
     - quotation: price quotations
     - orders: production order lists
-  "title_template": e.g. "Outstanding Statement — {customer_name}"
+  "title_template": e.g. "Outstanding Statement — {{customer_name}}"
   "aging_analysis": true if data has due_date and risk bucketing makes sense
   "show_key_insights": true for financial/operational summaries
   "insight_focus": ONE sentence — what Key Actions should focus on
@@ -300,8 +300,8 @@ RULE 11 — pdf_config (for all workflows):
 
 RULE 12 — response_template (for action workflows):
   WhatsApp response format after action completes.
-  Use {variable} placeholders. Use *bold* for key values. Include emoji.
-  Example: "✅ *Invoice Created*\\n\\nInvoice #: *{invoice_number}*\\nCustomer: {customer_name}\\nAmount: *Rs.{amount}*\\n\\n📄 PDF sent above ↑"
+  Use {{variable}} placeholders. Use *bold* for key values. Include emoji.
+  Example: "✅ *Invoice Created*\\n\\nInvoice #: *{{invoice_number}}*\\nCustomer: {{customer_name}}\\nAmount: *Rs.{{amount}}*\\n\\n📄 PDF sent above ↑"
   For read workflows: null
 
 ══════════════════ MANDATORY FIELDS — NEVER EMPTY ══════════════════════════════════
@@ -349,7 +349,7 @@ Return ONLY this JSON, no markdown, no explanation:
         try:
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
-                max_tokens=2000,
+                max_tokens=4000,
                 temperature=0.1 + (attempt * 0.1),   # slight temp bump on retry
                 messages=[{"role": "user", "content": prompt}]
             )
