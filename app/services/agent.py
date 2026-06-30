@@ -1128,10 +1128,12 @@ async def run_agent(
             result_str = str(result)[:100] if result else "None"
             print(f"[AGENT] Tool result: {result_str}...")
 
+            # Convert dict results to JSON string for OpenAI API
+            content = json.dumps(result) if isinstance(result, dict) else str(result)
             tool_results.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
-                "content": result
+                "content": content
             })
 
             # If this was a clarify call, stop the loop
