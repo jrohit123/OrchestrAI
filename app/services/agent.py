@@ -732,6 +732,7 @@ async def _execute_tool(
     tool_input: dict,
     user: dict,
     phone: str,
+    message: str = "",
 ) -> str:
     """Execute a tool call and return result as string."""
 
@@ -1121,7 +1122,8 @@ async def run_agent(
                 tool_name=tool_call.function.name,
                 tool_input=json.loads(tool_call.function.arguments),
                 user=user,
-                phone=phone
+                phone=phone,
+                message=message
             )
             print(f"[AGENT] Tool result: {result[:100]}...")
 
