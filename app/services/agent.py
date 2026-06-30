@@ -661,6 +661,16 @@ When the user provides a price (e.g., "at 45000", "Rs.45000"), use that price di
 Do NOT query the pricing table to look up metal rates.
 Calculate GST based on the org's gst_rate (default 3%) if not provided.
 Example: "platinum necklace 25g 1 pc at 45000" → unit_price: 45000, gst: 1350, total: 46350
+
+RULE 10 — EXTRACT OPTIONAL DESIGN DETAILS:
+When the user provides design details in their message, extract them into the item fields:
+- "design code PT-NECK-001" → design_code: "PT-NECK-001"
+- "design name Platinum Necklace" → design_name: "Platinum Necklace"
+- "metal type Platinum" → metal_type: "Platinum"
+- "25g" or "25 grams" → weight: 25
+- "making charges 5000" → making_charges: 5000
+Example: "platinum necklace 25g 1 pc at 45000 with making charges 5000, design code PT-NECK-001, design name Platinum Necklace, metal type Platinum"
+→ items = [{description: "platinum necklace 25g", design_code: "PT-NECK-001", design_name: "Platinum Necklace", metal_type: "Platinum", weight: 25, qty: 1, unit_price: 45000, making_charges: 5000, gst: 1350, total: 46350}]
 ]
 
 Each item needs:
