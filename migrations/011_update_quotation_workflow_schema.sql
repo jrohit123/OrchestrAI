@@ -12,6 +12,7 @@ SET entity_schema = jsonb_build_object(
             'description', jsonb_build_object('type', 'string', 'required', true),
             'qty', jsonb_build_object('type', 'integer', 'required', true),
             'unit_price', jsonb_build_object('type', 'float', 'required', true),
+            'making_charges', jsonb_build_object('type', 'float', 'required', false),
             'gst', jsonb_build_object('type', 'float', 'required', true),
             'total', jsonb_build_object('type', 'float', 'required', true)
         )

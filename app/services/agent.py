@@ -336,6 +336,12 @@ TOOLS = [
             "name": "generate_pdf",
             "description": (
                 "Generate a professional PDF and send it via WhatsApp.\n\n"
+                "IMPORTANT: This tool is ONLY for generating PDFs from EXISTING database records.\n"
+                "Do NOT use this to create new invoices or quotations.\n\n"
+                "For CREATING new invoices/quotations, you MUST use:\n"
+                "  1. update_draft → accumulate fields\n"
+                "  2. confirm_action → trigger execution\n"
+                "The system will automatically generate the PDF after database insert.\n\n"
                 "STRICT TRIGGER RULE — only call this when the user's current message "
                 "contains at least one of:\n"
                 "  'pdf', 'download', 'document'\n"
@@ -624,11 +630,24 @@ Example: For create_sales_invoice, required fields are: customer_name (string, R
 
 RULE 8 — INVOICE & QUOTATION ITEMS STRUCTURE:
 When creating an invoice OR quotation, you MUST collect items with the following structure:
+
+For INVOICES:
 items = [
   {{
     "description": "22kt Gold Necklace with Ruby, 60g",
     "qty": 1,
     "unit_price": 330097.09,
+    "gst": 9902.91,
+    "total": 340000
+  }}
+
+For QUOTATIONS (making_charges is optional):
+items = [
+  {{
+    "description": "22kt Gold Necklace with Ruby, 60g",
+    "qty": 1,
+    "unit_price": 330097.09,
+    "making_charges": 15000,
     "gst": 9902.91,
     "total": 340000
   }}
@@ -644,8 +663,9 @@ Each item needs:
 - description: string (what the item is - e.g., "22kt Gold Necklace with Ruby, 60g")
 - qty: integer (quantity - default 1 if not specified)
 - unit_price: float (price per unit, ex-GST)
+- making_charges: float (making charges for this item - OPTIONAL, only for quotations)
 - gst: float (GST amount for this item)
-- total: float (line total = qty × unit_price + gst, or just the final total)
+- total: float (line total = qty × unit_price + making_charges + gst, or just the final total)
 
 If the user provides a simple description like "gold chain 60g", you can:
 1. Ask for quantity (default 1)
