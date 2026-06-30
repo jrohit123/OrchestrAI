@@ -4,6 +4,7 @@ action_executor.py — Deterministic executor for pending actions.
 Replaces LLM-routed execution with a single, testable Python function.
 Handles OTP checks, approval thresholds, and actual database writes.
 """
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from app.db import fetch_one, execute
