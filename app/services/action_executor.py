@@ -171,7 +171,7 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
             $1, $2, $3, $4,
             'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5, $6
         )
-    """, user["org_id"], invoice_number, customer_id, str(total_amount), items, user["user_id"])
+    """, user["org_id"], invoice_number, customer_id, str(total_amount), json.dumps(items), user["user_id"])
 
     # Fetch customer details for PDF
     customer = await fetch_one(
@@ -273,7 +273,7 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
             $1, $2, $3, $4,
             $5, 'sent', $6, NOW(), $7
         )
-    """, user["org_id"], quotation_number, customer_id, items,
+    """, user["org_id"], quotation_number, customer_id, json.dumps(items),
         str(total_amount), valid_until, user["user_id"])
 
     # Fetch customer details
