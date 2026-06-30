@@ -198,8 +198,9 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             result = await execute_pending_action(pending_action, user)
 
             if result.get("success"):
-                # Clear pending action on success
-                await set_session(session_id, {})
+                # Clear pending action on success but preserve conversation history
+                session.pop("pending_action", None)
+                await set_session(session_id, session)
                 reply = result.get("message", "Action completed successfully")
                 await send_text(phone, reply)
 
@@ -289,17 +290,15 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         # Apply session patch if any
         if session_patch:
-            await set_session(session_id, {**session, **session_patch})
+            session = {**session, **session_patch}
             # Update pending_action reference for next iteration
             pending_action = session_patch.get("pending_action")
 
-        # Save last 4 messages (2 turns) to limit context contamination
-        updated_history = updated_history[-4:]
-        await set_session(session_id, {
-            **session,
-            "last_message": text,
-            "conversation_history": updated_history
-        })
+        # Save last 15 messages (7-8 turns) for context
+        updated_history = updated_history[-15:]
+        session["last_message"] = text
+        session["conversation_history"] = updated_history
+        await set_session(session_id, session)
 
         await send_text(phone, reply)
 
