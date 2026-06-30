@@ -670,7 +670,7 @@ When the user provides design details in their message, extract them into the it
 - "25g" or "25 grams" → weight: 25
 - "making charges 5000" → making_charges: 5000
 Example: "platinum necklace 25g 1 pc at 45000 with making charges 5000, design code PT-NECK-001, design name Platinum Necklace, metal type Platinum"
-→ items = [{description: "platinum necklace 25g", design_code: "PT-NECK-001", design_name: "Platinum Necklace", metal_type: "Platinum", weight: 25, qty: 1, unit_price: 45000, making_charges: 5000, gst: 1350, total: 46350}]
+→ items = [{{"description": "platinum necklace 25g", "design_code": "PT-NECK-001", "design_name": "Platinum Necklace", "metal_type": "Platinum", "weight": 25, "qty": 1, "unit_price": 45000, "making_charges": 5000, "gst": 1350, "total": 46350}}]
 ]
 
 Each item needs:
