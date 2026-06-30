@@ -671,6 +671,15 @@ When the user provides design details in their message, extract them into the it
 - "making charges 5000" → making_charges: 5000
 Example: "platinum necklace 25g 1 pc at 45000 with making charges 5000, design code PT-NECK-001, design name Platinum Necklace, metal type Platinum"
 → items = [{{"description": "platinum necklace 25g", "design_code": "PT-NECK-001", "design_name": "Platinum Necklace", "metal_type": "Platinum", "weight": 25, "qty": 1, "unit_price": 45000, "making_charges": 5000, "gst": 1350, "total": 46350}}]
+
+RULE 11 — NEVER CALL generate_pdf FOR CREATING QUOTATIONS/INVOICES:
+When creating a NEW quotation or invoice, you MUST follow this flow:
+1. Call update_draft to collect all required fields
+2. Call confirm_action to trigger execution
+3. The system will automatically generate the PDF after database insert
+
+DO NOT call generate_pdf directly when creating new quotations or invoices.
+generate_pdf is ONLY for generating PDFs from EXISTING database records (e.g., "show invoice INV-125", "send pdf of quotation QUO-1001").
 ]
 
 Each item needs:
