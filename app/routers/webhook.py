@@ -368,7 +368,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 user["org_id"], f"%{customer_name}%"
             )
             if customer:
-                merged_fields["customer_id"] = customer["id"]
+                merged_fields["customer_id"] = str(customer["id"])
                 print(f"[WEBHOOK] Resolved customer_id: {customer['id']}")
 
         # Validate merged draft
