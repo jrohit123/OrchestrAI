@@ -192,6 +192,27 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     session_id = f"{user['org_id']}:{phone}"
     session    = await get_session(session_id)
 
+    # Sanitize conversation history immediately after loading - remove tool messages
+    # to prevent OpenAI API errors from corrupted history
+    conversation_history = session.get("conversation_history", [])
+    has_corrupted = False
+    sanitized_history = []
+    for msg in conversation_history:
+        if msg.get("role") == "tool":
+            has_corrupted = True
+            continue
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            has_corrupted = True
+            continue
+        if msg.get("role") in ("user", "assistant"):
+            if msg.get("content") and not msg.get("tool_calls"):
+                sanitized_history.append(msg)
+
+    if has_corrupted:
+        print(f"[WEBHOOK] Corrupted history detected, sanitizing session {session_id}")
+        session["conversation_history"] = sanitized_history
+        await set_session(session_id, session, ttl=ttl_minutes * 60)
+
     # 5. Approval button responses
     if msg_type == "interactive" and text in ("action:approve", "action:reject"):
         await handle_approval_response(phone, text, user)
@@ -318,31 +339,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     session = await get_session(session_id)
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
-
-    # Sanitize conversation history - remove tool messages and tool_call assistant messages
-    # to prevent OpenAI API errors from corrupted history
-    sanitized_history = []
-    has_corrupted = False
-    for msg in conversation_history:
-        if msg.get("role") == "tool":
-            has_corrupted = True
-            continue
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            has_corrupted = True
-            continue
-        if msg.get("role") in ("user", "assistant"):
-            if msg.get("content") and not msg.get("tool_calls"):
-                sanitized_history.append(msg)
-
-    # If corrupted history detected, clear the session to prevent API errors
-    if has_corrupted:
-        print(f"[WEBHOOK] Corrupted history detected, clearing session {session_id}")
-        session = {"conversation_history": [], "pending_action": None}
-        conversation_history = []
-        pending_action = None
-        await set_session(session_id, session, ttl=session_ttl)
-    else:
-        conversation_history = sanitized_history
 
     try:
         reply, updated_history, session_patch = await run_agent(
