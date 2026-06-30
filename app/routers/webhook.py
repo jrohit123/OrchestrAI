@@ -322,12 +322,27 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # Sanitize conversation history - remove tool messages and tool_call assistant messages
     # to prevent OpenAI API errors from corrupted history
     sanitized_history = []
+    has_corrupted = False
     for msg in conversation_history:
+        if msg.get("role") == "tool":
+            has_corrupted = True
+            continue
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            has_corrupted = True
+            continue
         if msg.get("role") in ("user", "assistant"):
-            # Keep only user/assistant messages with content
             if msg.get("content") and not msg.get("tool_calls"):
                 sanitized_history.append(msg)
-    conversation_history = sanitized_history
+
+    # If corrupted history detected, clear the session to prevent API errors
+    if has_corrupted:
+        print(f"[WEBHOOK] Corrupted history detected, clearing session {session_id}")
+        session = {"conversation_history": [], "pending_action": None}
+        conversation_history = []
+        pending_action = None
+        await set_session(session_id, session, ttl=session_ttl)
+    else:
+        conversation_history = sanitized_history
 
     try:
         reply, updated_history, session_patch = await run_agent(
