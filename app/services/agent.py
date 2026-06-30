@@ -1032,6 +1032,50 @@ async def _execute_tool(
     return f"ERROR: Unknown tool {tool_name}"
 
 
+async def _extract_fields_from_message(message: str, intent_key: str, user: dict) -> dict:
+    """Extract relevant fields from a message for a specific intent using LLM."""
+    from app.db import fetch_one
+
+    org_id = user["org_id"]
+
+    # Get workflow schema to know what fields to extract
+    workflow = await fetch_one(
+        "SELECT llm_system_prompt FROM workflows WHERE intent_key = $1 AND org_id = $2",
+        intent_key, org_id
+    )
+
+    if not workflow:
+        return {}
+
+    # Build extraction prompt
+    extraction_prompt = f"""Extract fields from this user message for the intent '{intent_key}'.
+
+User message: {message}
+
+Extract ONLY the fields mentioned in the message. Return as JSON with field names as keys.
+If a field is not mentioned, do not include it.
+For items arrays, extract description, qty, unit_price, gst, total if mentioned.
+
+Return ONLY valid JSON, no other text."""
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": extraction_prompt},
+                {"role": "user", "content": message}
+            ],
+            temperature=0
+        )
+
+        import json
+        extracted = json.loads(response.choices[0].message.content)
+        return extracted
+    except Exception as e:
+        print(f"[AGENT] Field extraction error: {e}")
+        return {}
+
+
 # ── Main agent loop ───────────────────────────────────────────────────────────
 
 async def run_agent(
