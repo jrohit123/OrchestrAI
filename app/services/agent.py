@@ -680,6 +680,12 @@ When creating a NEW quotation or invoice, you MUST follow this flow:
 
 DO NOT call generate_pdf directly when creating new quotations or invoices.
 generate_pdf is ONLY for generating PDFs from EXISTING database records (e.g., "show invoice INV-125", "send pdf of quotation QUO-1001").
+
+RULE 12 — DESIGN CODE IS JUST A FIELD, NOT AN INVENTORY SKU:
+When the user provides a design code (e.g., "PT-NECK-001"), do NOT query the inventory table to look it up.
+The design_code is simply a field to store in the quotation items for reference.
+It does NOT need to exist in the inventory table.
+Only query inventory if the user specifically asks to check stock or if you need to find an item by name/price.
 ]
 
 Each item needs:
