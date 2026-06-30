@@ -1059,7 +1059,7 @@ For items arrays, extract description, qty, unit_price, gst, total if mentioned.
 Return ONLY valid JSON, no other text."""
 
     try:
-        response = await client.chat.completions.create(
+        response = await _client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": extraction_prompt},
