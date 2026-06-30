@@ -444,11 +444,14 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             pending_action=pending_action
         )
 
+        print(f"[WEBHOOK] Agent returned session_patch: {session_patch}")
+
         # Apply session patch if any
         if session_patch:
             session = {**session, **session_patch}
             # Update pending_action reference for next iteration
             pending_action = session_patch.get("pending_action")
+            print(f"[WEBHOOK] Updated pending_action: {pending_action}")
 
         # Save last 15 messages (7-8 turns) for context
         updated_history = _sanitize_history(updated_history[-15:])
