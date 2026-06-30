@@ -12,7 +12,7 @@ _DANGEROUS = [
 ]
 
 SENSITIVE_COLS = {
-    'id', 'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id',
+    'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id',
     'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
     'decided_by', 'requester_id', 'approver_role', 'workflow_id',
     'otp_hash', 'config',
