@@ -1125,7 +1125,8 @@ async def run_agent(
                 phone=phone,
                 message=message
             )
-            print(f"[AGENT] Tool result: {result[:100]}...")
+            result_str = str(result)[:100] if result else "None"
+            print(f"[AGENT] Tool result: {result_str}...")
 
             tool_results.append({
                 "tool_call_id": tool_call.id,
