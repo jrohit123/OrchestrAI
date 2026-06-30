@@ -657,10 +657,12 @@ items = [
   }}
 
 RULE 9 — USE USER-PROVIDED PRICES:
-When the user provides a price (e.g., "at 45000", "Rs.45000"), use that price directly as unit_price.
+When the user provides a price (e.g., "at 45000", "Rs.45000"), check if it's per gram or total:
+- If weight is provided (e.g., "25g at 45000"), calculate: unit_price = price_per_gram × weight
+  Example: "platinum necklace 25g at 45000" → unit_price: 45000 × 25 = 1,125,000
+- If no weight or price seems like total, use it directly as unit_price
 Do NOT query the pricing table to look up metal rates.
 Calculate GST based on the org's gst_rate (default 3%) if not provided.
-Example: "platinum necklace 25g 1 pc at 45000" → unit_price: 45000, gst: 1350, total: 46350
 
 RULE 10 — EXTRACT OPTIONAL DESIGN DETAILS:
 When the user provides design details in their message, extract them into the item fields:
@@ -670,7 +672,8 @@ When the user provides design details in their message, extract them into the it
 - "25g" or "25 grams" → weight: 25
 - "making charges 5000" → making_charges: 5000
 Example: "platinum necklace 25g 1 pc at 45000 with making charges 5000, design code PT-NECK-001, design name Platinum Necklace, metal type Platinum"
-→ items = [{{"description": "platinum necklace 25g", "design_code": "PT-NECK-001", "design_name": "Platinum Necklace", "metal_type": "Platinum", "weight": 25, "qty": 1, "unit_price": 45000, "making_charges": 5000, "gst": 1350, "total": 46350}}]
+→ unit_price = 45000 × 25 = 1,125,000
+→ items = [{{"description": "platinum necklace 25g", "design_code": "PT-NECK-001", "design_name": "Platinum Necklace", "metal_type": "Platinum", "weight": 25, "qty": 1, "unit_price": 1125000, "making_charges": 5000, "gst": 33750, "total": 1163750}}]
 
 RULE 11 — NEVER CALL generate_pdf FOR CREATING QUOTATIONS/INVOICES:
 When creating a NEW quotation or invoice, you MUST follow this flow:
@@ -1054,6 +1057,9 @@ async def _execute_tool(
         intent_key = tool_input.get("intent_key")
         fields = tool_input.get("fields", {})
         stage = tool_input.get("stage", "collecting")
+
+        # Log draft fields for debugging
+        print(f"[AGENT] update_draft: intent_key={intent_key}, fields={fields}, stage={stage}")
 
         # Validate draft against workflow schema
         validation = await _validate_draft(intent_key, fields, user["org_id"])
