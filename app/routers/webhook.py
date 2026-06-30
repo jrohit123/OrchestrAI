@@ -30,20 +30,6 @@ _CONFIRM_WORDS = frozenset({
 _CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
 
 
-def _sanitize_history(history: list) -> list:
-    """Remove tool messages and tool_call assistant messages from history."""
-    sanitized = []
-    for msg in history:
-        if msg.get("role") == "tool":
-            continue
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            continue
-        if msg.get("role") in ("user", "assistant"):
-            if msg.get("content") and not msg.get("tool_calls"):
-                sanitized.append(msg)
-    return sanitized
-
-
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
 @router.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
@@ -124,9 +110,6 @@ async def receive_message(request: Request):
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
 async def handle_message(phone: str, text: str, msg_type: str = "text"):
-    # Ensure fetch_one is available in local scope
-    from app.db import fetch_one, execute
-    
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
@@ -254,10 +237,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
             if result.get("success"):
                 session.pop("pending_action", None)
-                session["conversation_history"] = _sanitize_history((session.get("conversation_history") or []) + [
+                session["conversation_history"] = (session.get("conversation_history") or []) + [
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": result.get("message", "Action completed successfully")}
-                ])
+                ]
                 session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session, ttl=session_ttl)
                 await send_text(phone, result.get("message", "Action completed successfully"))
@@ -311,10 +294,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
             if exec_result.get("success"):
                 session.pop("pending_action", None)
-                session["conversation_history"] = _sanitize_history((session.get("conversation_history") or []) + [
+                session["conversation_history"] = (session.get("conversation_history") or []) + [
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": exec_result.get("message", "Action completed successfully")}
-                ])
+                ]
                 session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session, ttl=session_ttl)
                 await send_text(phone, exec_result.get("message", "Action completed successfully"))
@@ -336,90 +319,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
 
-    # Aggressive cleanup: clear conversation history on every new action request
-    # to prevent LLM from hallucinating from old data
-    action_keywords = ["invoice", "quotation", "create", "generate", "make"]
-    if any(keyword in text.lower() for keyword in action_keywords):
-        print(f"[WEBHOOK] Action request detected, clearing conversation history")
-        conversation_history = []
-        session["conversation_history"] = []
-        await set_session(session_id, session, ttl=session_ttl)
-
-    # Slot extraction mode: if pending_action exists, extract fields and merge
-    if pending_action and pending_action.get("stage") != "awaiting_confirmation":
-        from app.services.agent import _extract_fields_from_message
-        intent_key = pending_action.get("intent_key")
-        existing_fields = pending_action.get("fields", {})
-
-        print(f"[WEBHOOK] Slot extraction mode for intent: {intent_key}")
-
-        # Extract fields from new message
-        extracted_fields = await _extract_fields_from_message(text, intent_key, user)
-        print(f"[WEBHOOK] Extracted fields: {extracted_fields}")
-
-        # Merge into existing draft
-        merged_fields = {**existing_fields, **extracted_fields}
-
-        # Resolve customer_id if customer_name is present but customer_id is not
-        if merged_fields.get("customer_name") and not merged_fields.get("customer_id"):
-            customer_name = merged_fields["customer_name"]
-            customer = await fetch_one(
-                "SELECT id FROM customers WHERE org_id = $1 AND name ILIKE $2",
-                user["org_id"], f"%{customer_name}%"
-            )
-            if customer:
-                merged_fields["customer_id"] = str(customer["id"])
-                print(f"[WEBHOOK] Resolved customer_id: {customer['id']}")
-
-        # Validate merged draft
-        from app.services.agent import _validate_draft
-        validation = await _validate_draft(intent_key, merged_fields, user["org_id"])
-
-        # Update pending_action with merged fields
-        pending_action["fields"] = merged_fields
-        session["pending_action"] = pending_action
-
-        if validation.get("complete"):
-            # Draft complete - move to confirmation
-            pending_action["stage"] = "awaiting_confirmation"
-            session["pending_action"] = pending_action
-            await set_session(session_id, session, ttl=session_ttl)
-
-            # Generate confirmation message
-            confirm_text = f"⚠️ Confirm Action\n\n"
-            confirm_text += pending_action.get("action_description", "Complete the action")
-            confirm_text += "\n\nReply yes to confirm or no to cancel."
-
-            session["conversation_history"] = _sanitize_history(conversation_history + [
-                {"role": "user", "content": text},
-                {"role": "assistant", "content": confirm_text}
-            ])
-            session["conversation_history"] = session["conversation_history"][-15:]
-            await set_session(session_id, session, ttl=session_ttl)
-
-            await send_text(phone, confirm_text)
-            return
-        else:
-            # Draft incomplete - ask for missing fields
-            missing = validation.get("missing_fields", [])
-            ask_text = f"I have the following information:\n"
-            for key, value in merged_fields.items():
-                if value:
-                    ask_text += f"  • {key}: {value}\n"
-            ask_text += f"\nI still need: {', '.join(missing)}"
-            ask_text += "\n\nPlease provide the missing details."
-
-            session["conversation_history"] = _sanitize_history(conversation_history + [
-                {"role": "user", "content": text},
-                {"role": "assistant", "content": ask_text}
-            ])
-            session["conversation_history"] = session["conversation_history"][-15:]
-            await set_session(session_id, session, ttl=session_ttl)
-
-            await send_text(phone, ask_text)
-            return
-
     # Sanitize conversation history - remove tool messages and tool_call assistant messages
+    # to prevent OpenAI API errors from corrupted history
     sanitized_history = []
     has_corrupted = False
     for msg in conversation_history:
@@ -443,14 +344,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     else:
         conversation_history = sanitized_history
 
-    # Emergency: if conversation history is too long (>20 messages), clear it
-    if len(conversation_history) > 20:
-        print(f"[WEBHOOK] History too long ({len(conversation_history)}), clearing session {session_id}")
-        session = {"conversation_history": [], "pending_action": None}
-        conversation_history = []
-        pending_action = None
-        await set_session(session_id, session, ttl=session_ttl)
-
     try:
         reply, updated_history, session_patch = await run_agent(
             text, user, phone,
@@ -458,17 +351,14 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             pending_action=pending_action
         )
 
-        print(f"[WEBHOOK] Agent returned session_patch: {session_patch}")
-
         # Apply session patch if any
         if session_patch:
             session = {**session, **session_patch}
             # Update pending_action reference for next iteration
             pending_action = session_patch.get("pending_action")
-            print(f"[WEBHOOK] Updated pending_action: {pending_action}")
 
         # Save last 15 messages (7-8 turns) for context
-        updated_history = _sanitize_history(updated_history[-15:])
+        updated_history = updated_history[-15:]
         session["last_message"] = text
         session["conversation_history"] = updated_history
         await set_session(session_id, session, ttl=session_ttl)

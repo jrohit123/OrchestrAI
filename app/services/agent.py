@@ -272,19 +272,17 @@ TOOLS = [
         "function": {
             "name": "update_draft",
             "description": (
-                "CRITICAL: MUST use this tool for ANY action creation request (invoice, quotation, etc.). "
-                "Use to accumulate information across multiple turns. "
-                "ALWAYS call this when user wants to create something, even if information is incomplete. "
-                "Call with intent_key to start a new draft. Call with fields to update existing draft. "
-                "The response shows what fields are still missing. "
-                "NEVER respond with text asking for details without calling this tool first."
+                "Update or read the pending action draft. Use this to accumulate "
+                "information across multiple turns before confirmation. "
+                "Call with intent_key to start a new draft. Call with fields to update "
+                "an existing draft. The response shows what fields are still missing."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "intent_key": {
                         "type": "string",
-                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation'). REQUIRED to start a draft."
+                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')"
                     },
                     "fields": {
                         "type": "object",
@@ -296,7 +294,7 @@ TOOLS = [
                         "description": "Stage of the draft. Default 'collecting'. Set to 'awaiting_confirmation' when all fields are collected."
                     }
                 },
-                "required": ["intent_key"]
+                "required": []
             }
         }
     },
@@ -305,10 +303,10 @@ TOOLS = [
         "function": {
             "name": "clarify",
             "description": (
-                "Ask a clarifying question ONLY when a customer name matches 2+ records in the database. "
-                "Do NOT use for incomplete action requests - use update_draft instead. "
-                "Do NOT use for missing information - use update_draft instead. "
-                "Only use when genuinely ambiguous customer names."
+                "Ask the user a clarifying question when their request is ambiguous. "
+                "Use when: a name matches multiple records, the request is incomplete, "
+                "or you need one more piece of information before proceeding. "
+                "Do NOT use this for every message — only when genuinely unclear."
             ),
             "parameters": {
                 "type": "object",
@@ -591,9 +589,6 @@ When the user provides incomplete information for an action (e.g., "create invoi
   3) On the next message, call update_draft again with the new fields merged
   4) When all required fields are collected, call update_draft with stage="awaiting_confirmation"
   5) Then call confirm_action
-
-CRITICAL: NEVER use clarify tool for incomplete action requests. Use clarify ONLY for ambiguous customer names (when 2+ customers match).
-If user says "invoice for Mehta Enterprises" without amount → use update_draft, NOT clarify.
 
 Example:
   User: "create invoice"
@@ -1030,50 +1025,6 @@ async def _execute_tool(
         }
 
     return f"ERROR: Unknown tool {tool_name}"
-
-
-async def _extract_fields_from_message(message: str, intent_key: str, user: dict) -> dict:
-    """Extract relevant fields from a message for a specific intent using LLM."""
-    from app.db import fetch_one
-
-    org_id = user["org_id"]
-
-    # Get workflow schema to know what fields to extract
-    workflow = await fetch_one(
-        "SELECT llm_system_prompt FROM workflows WHERE intent_key = $1 AND org_id = $2",
-        intent_key, org_id
-    )
-
-    if not workflow:
-        return {}
-
-    # Build extraction prompt
-    extraction_prompt = f"""Extract fields from this user message for the intent '{intent_key}'.
-
-User message: {message}
-
-Extract ONLY the fields mentioned in the message. Return as JSON with field names as keys.
-If a field is not mentioned, do not include it.
-For items arrays, extract description, qty, unit_price, gst, total if mentioned.
-
-Return ONLY valid JSON, no other text."""
-
-    try:
-        response = await _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": extraction_prompt},
-                {"role": "user", "content": message}
-            ],
-            temperature=0
-        )
-
-        import json
-        extracted = json.loads(response.choices[0].message.content)
-        return extracted
-    except Exception as e:
-        print(f"[AGENT] Field extraction error: {e}")
-        return {}
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
