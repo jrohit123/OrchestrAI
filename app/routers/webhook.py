@@ -6,6 +6,7 @@ from app.services.identity import resolve_identity, check_permission, check_rout
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
 from app.services.agent import run_agent
+from app.services.action_executor import execute_pending_action
 from app.executor.workflow_executor import (
     resume_after_otp, handle_approval_response
 )
@@ -189,30 +190,109 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
 
-    # 8. Pending confirmation check
-    if session.get("pending_confirm"):
-        pending = session.get("pending_confirm")
+    # 8. Pending action confirmation check (NEW - replaces pending_confirm)
+    pending_action = session.get("pending_action")
+    if pending_action and pending_action.get("stage") == "awaiting_confirmation":
         if text.strip().lower() in ("yes", "y", "haan", "ha", "ok", "confirm"):
-            await set_session(session_id, {})
-            original_msg = pending.get("original_message", "")
-            user_with_confirm = {**user, "confirmed": True}
-            reply, _ = await run_agent(original_msg, user_with_confirm, phone)
-            await send_text(phone, reply)
+            # User confirmed - execute the action
+            result = await execute_pending_action(pending_action, user)
+
+            if result.get("success"):
+                # Clear pending action on success
+                await set_session(session_id, {})
+                reply = result.get("message", "Action completed successfully")
+                await send_text(phone, reply)
+
+                # Send PDF if generated
+                if result.get("pdf_bytes"):
+                    from app.services.whatsapp import send_document
+                    import re
+                    safe_filename = re.sub(r'[^\w\-]', '_', result.get("invoice_number", result.get("quotation_number", "document")))[:50] + ".pdf"
+                    await send_document(
+                        to=phone,
+                        pdf_bytes=result["pdf_bytes"],
+                        filename=safe_filename,
+                        caption=f"📄 {result.get('invoice_number', result.get('quotation_number', 'Document'))}"
+                    )
+            else:
+                # Check if we need to move to OTP stage
+                if result.get("stage") == "awaiting_otp":
+                    pending_action["stage"] = "awaiting_otp"
+                    await set_session(session_id, {"pending_action": pending_action})
+                    await send_text(phone, result.get("message"))
+                elif result.get("stage") == "awaiting_approval":
+                    pending_action["stage"] = "awaiting_approval"
+                    await set_session(session_id, {"pending_action": pending_action})
+                    await send_text(phone, result.get("message"))
+                else:
+                    # Error - clear pending action
+                    await set_session(session_id, {})
+                    await send_text(phone, result.get("message", "Action failed"))
         else:
+            # User cancelled
             await set_session(session_id, {})
             await send_text(phone, "❌ Action cancelled.")
         return
 
-    # 9. Run the agent — replaces classify + execute pipeline
+    # 9. OTP reply for pending action (NEW)
+    if pending_action and pending_action.get("stage") == "awaiting_otp":
+        if text.strip().lower() == "retry":
+            await set_session(session_id, {})
+            await send_text(phone, "🔄 Session cleared. Please resend your original request.")
+            return
+
+        result = await verify_otp(user["user_id"], text.strip())
+
+        if result["valid"]:
+            # OTP verified - execute the action
+            exec_result = await execute_pending_action(pending_action, user, otp_verified=True)
+
+            if exec_result.get("success"):
+                await set_session(session_id, {})
+                reply = exec_result.get("message", "Action completed successfully")
+                await send_text(phone, reply)
+
+                # Send PDF if generated
+                if exec_result.get("pdf_bytes"):
+                    from app.services.whatsapp import send_document
+                    import re
+                    safe_filename = re.sub(r'[^\w\-]', '_', exec_result.get("invoice_number", exec_result.get("quotation_number", "document")))[:50] + ".pdf"
+                    await send_document(
+                        to=phone,
+                        pdf_bytes=exec_result["pdf_bytes"],
+                        filename=safe_filename,
+                        caption=f"📄 {exec_result.get('invoice_number', exec_result.get('quotation_number', 'Document'))}"
+                    )
+            else:
+                # Check if we need approval
+                if exec_result.get("stage") == "awaiting_approval":
+                    pending_action["stage"] = "awaiting_approval"
+                    await set_session(session_id, {"pending_action": pending_action})
+                    await send_text(phone, exec_result.get("message"))
+                else:
+                    await set_session(session_id, {})
+                    await send_text(phone, exec_result.get("message", "Action failed"))
+        else:
+            await send_text(phone, f"❌ {result['reason']}")
+        return
+
+    # 10. Run the agent — replaces classify + execute pipeline
     # Load conversation history from session
     conversation_history = session.get("conversation_history", [])
 
     try:
-        reply, updated_history = await run_agent(
+        reply, updated_history, session_patch = await run_agent(
             text, user, phone,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
+            pending_action=pending_action
         )
-        
+
+        # Apply session patch if any
+        if session_patch:
+            await set_session(session_id, {**session, **session_patch})
+            # Update pending_action reference for next iteration
+            pending_action = session_patch.get("pending_action")
+
         # Save last 4 messages (2 turns) to limit context contamination
         updated_history = updated_history[-4:]
         await set_session(session_id, {
@@ -220,7 +300,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             "last_message": text,
             "conversation_history": updated_history
         })
-        
+
         await send_text(phone, reply)
 
         # Log to audit_log
