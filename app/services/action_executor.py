@@ -52,9 +52,18 @@ async def execute_pending_action(
     adapter_method = workflow.get("adapter_method")
     pdf_config = workflow.get("pdf_config")
 
+    # ── Helper: Resolve amount from fields or items[].total ────────────────────
+    def _resolve_amount(fields: dict) -> float:
+        if fields.get("amount") is not None:
+            return float(fields["amount"])
+        total = 0.0
+        for item in fields.get("items") or []:
+            total += float(item.get("total") or 0)
+        return total
+
     # ── Stage: awaiting_confirmation → check OTP ───────────────────────────
     if stage == "awaiting_confirmation":
-        amount = fields.get("amount") or 0
+        amount = _resolve_amount(fields)
 
         if amount >= otp_threshold and not otp_verified:
             # Need OTP before proceeding
@@ -157,12 +166,12 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
     await execute("""
         INSERT INTO invoices (
             org_id, invoice_number, customer_id, amount,
-            status, due_date, created_at, items
+            status, due_date, created_at, items, created_by
         ) VALUES (
             $1, $2, $3, $4,
-            'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5
+            'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5, $6
         )
-    """, user["org_id"], invoice_number, customer_id, str(total_amount), items)
+    """, user["org_id"], invoice_number, customer_id, str(total_amount), items, user["user_id"])
 
     # Fetch customer details for PDF
     customer = await fetch_one(

@@ -217,33 +217,14 @@ async def _get_schema(org_id: str) -> str:
             f"{c['column_name']} ({c['data_type']})"
         )
 
-    # Get 2 sample rows per table so LLM sees real values
-    sample_lines = []
-    for table in sorted(table_cols.keys()):
-        try:
-            rows = await fetch_all(
-                f"SELECT * FROM {table} WHERE org_id = $1 LIMIT 2",
-                org_id
-            )
-            if rows:
-                # Strip sensitive columns from samples
-                clean = [
-                    {k: v for k, v in dict(r).items()
-                     if k not in SENSITIVE_COLS}
-                    for r in rows
-                ]
-                sample_lines.append(
-                    f"  sample: {json.dumps(clean, default=str)}"
-                )
-            else:
-                sample_lines.append("  sample: (empty)")
-        except Exception:
-            sample_lines.append("  sample: (unavailable)")
+    # NOTE: Sample rows removed to prevent hallucination
+    # Schema samples were causing LLM to use example data (Jain Gold Works, etc.)
+    # as if it were user input. Column types only are sufficient for query building.
 
     schema_parts = []
-    for i, (table, columns) in enumerate(sorted(table_cols.items())):
+    for table, columns in sorted(table_cols.items()):
         schema_parts.append(
-            f"- {table}: {', '.join(columns)}\n{sample_lines[i]}"
+            f"- {table}: {', '.join(columns)}"
         )
 
     result = "\n".join(schema_parts)
@@ -620,6 +601,21 @@ Example:
   → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works", "amount": 92000}}, stage="awaiting_confirmation")
   → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={{...}})
 
+RULE 6B — NEVER INVENT DATA:
+If the user says only "create invoice" or "invoice banao" with NO customer, item, or amount:
+  → Call update_draft with empty fields
+  → Ask ONLY for missing required fields
+  → Do NOT use example names (Jain Gold Works, Mehta Enterprises) from this prompt
+  → Do NOT use schema sample rows as invoice data
+  → Do NOT pull items from orders/inventory unless user asked
+
+RULE 6C — SINGLE CONFIRMATION:
+When all required fields are collected:
+  → Call update_draft with stage="awaiting_confirmation"
+  → Immediately call confirm_action
+  → Do NOT also ask "Please confirm if this is correct" in plain text
+  → The ONLY confirmation the user sees is the ⚠️ Confirm Action block
+
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.
 Each workflow lists its required fields with types and whether they're required.
@@ -723,6 +719,35 @@ Ask yourself: Does my response contain any of these? If yes, rewrite it.
 NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
 NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 """
+
+
+# ── Draft validation helper ────────────────────────────────────────────────────
+
+async def _validate_draft(intent_key: str, fields: dict, org_id: str) -> dict:
+    """Validate draft fields against workflow entity_schema."""
+    wf = await fetch_one(
+        "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
+        intent_key, org_id
+    )
+    if not wf:
+        return {"missing_fields": [], "complete": True}  # No schema = no validation
+
+    schema = wf.get("entity_schema") or {}
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except:
+            schema = {}
+
+    missing = []
+    for field_name, field_def in schema.items():
+        if not field_def.get("required"):
+            continue
+        val = fields.get(field_name)
+        if val is None or val == "" or val == []:
+            missing.append(field_name)
+
+    return {"missing_fields": missing, "complete": len(missing) == 0}
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
@@ -969,13 +994,18 @@ async def _execute_tool(
         fields = tool_input.get("fields", {})
         stage = tool_input.get("stage", "collecting")
 
+        # Validate draft against workflow schema
+        validation = await _validate_draft(intent_key, fields, user["org_id"])
+
         # Return session patch for webhook to persist
         return {
             "type": "draft_update",
             "intent_key": intent_key,
             "fields": fields,
             "stage": stage,
-            "raw_text": message
+            "raw_text": message,
+            "missing_fields": validation.get("missing_fields", []),
+            "complete": validation.get("complete", False)
         }
 
     elif tool_name == "confirm_action":
@@ -1051,6 +1081,20 @@ async def run_agent(
                         break
     # ─────────────────────────────────────────────────────────────────────────
     
+    # Format pending action context for LLM
+    def _format_pending_action_context(pending_action: dict | None) -> str:
+        if not pending_action:
+            return ""
+        fields = pending_action.get("fields") or {}
+        return (
+            "\n=== ACTIVE DRAFT (from this conversation — do NOT discard or replace unless user changes it) ===\n"
+            f"Intent: {pending_action.get('intent_key')}\n"
+            f"Stage: {pending_action.get('stage', 'collecting')}\n"
+            f"Collected fields: {json.dumps(fields, default=str)}\n"
+            "Only ask for fields NOT listed above. Never invent values not provided by the user.\n"
+            "=== END ACTIVE DRAFT ===\n"
+        )
+
     try:
         system_prompt = await _build_system_prompt(user)
         print(f"[AGENT] System prompt built, length: {len(system_prompt)}")
@@ -1060,14 +1104,18 @@ async def run_agent(
         traceback.print_exc()
         return f"Error building system prompt: {str(e)}", [], {}
 
+    # Inject pending action into system prompt
+    draft_context = _format_pending_action_context(pending_action)
+    system_with_draft = system_prompt + draft_context if draft_context else system_prompt
+
     messages = [
-        {"role": "system", "content": system_prompt}
+        {"role": "system", "content": system_with_draft}
     ]
-    
+
     # Inject prior conversation (last N turns)
     if conversation_history:
         messages.extend(conversation_history)
-    
+
     messages.append({"role": "user", "content": message})
 
     for iteration in range(max_iterations):
@@ -1167,10 +1215,21 @@ async def run_agent(
             # If confirm_action was called, pause and return the prompt
             if tool_call.function.name == "confirm_action":
                 if isinstance(result, dict) and result.get("type") == "confirm_pending":
-                    # Set stage to awaiting_confirmation
-                    if pending_action:
-                        pending_action["stage"] = "awaiting_confirmation"
-                        session_patch["pending_action"] = pending_action
+                    # Validate draft is complete before allowing confirmation
+                    draft = session_patch.get("pending_action") or pending_action or {}
+                    validation = await _validate_draft(
+                        draft.get("intent_key"),
+                        draft.get("fields", {}),
+                        user["org_id"]
+                    )
+                    if not validation["complete"]:
+                        # Draft incomplete - don't confirm, let LLM ask for missing fields
+                        messages.extend(tool_results)
+                        continue
+
+                    # Set stage to awaiting_confirmation - use session_patch draft, not old pending_action
+                    draft["stage"] = "awaiting_confirmation"
+                    session_patch["pending_action"] = draft
                 action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
                 details = json.loads(tool_call.function.arguments).get("details", {})
                 lines = [f"⚠️ *Confirm Action*\n\n{action_desc}"]
@@ -1178,8 +1237,10 @@ async def run_agent(
                     for k, v in details.items():
                         lines.append(f"  • {k}: {v}")
                 lines.append("\nReply *yes* to confirm or *no* to cancel.")
+                confirm_text = "\n".join(lines)
                 history_to_save = _serialize_history(messages)
-                return "\n".join(lines), history_to_save, session_patch
+                history_to_save.append({"role": "assistant", "content": confirm_text})
+                return confirm_text, history_to_save, session_patch
 
         # Add tool results back into message history
         messages.extend(tool_results)

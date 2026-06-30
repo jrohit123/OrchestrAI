@@ -200,6 +200,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             if result.get("success"):
                 # Clear pending action on success but preserve conversation history
                 session.pop("pending_action", None)
+                # Append execution result to conversation history
+                session["conversation_history"] = (session.get("conversation_history") or []) + [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": result.get("message", "Action completed successfully")}
+                ]
+                session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session)
                 reply = result.get("message", "Action completed successfully")
                 await send_text(phone, reply)
@@ -219,19 +225,21 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 # Check if we need to move to OTP stage
                 if result.get("stage") == "awaiting_otp":
                     pending_action["stage"] = "awaiting_otp"
-                    await set_session(session_id, {"pending_action": pending_action})
+                    await set_session(session_id, {**session, "pending_action": pending_action})
                     await send_text(phone, result.get("message"))
                 elif result.get("stage") == "awaiting_approval":
                     pending_action["stage"] = "awaiting_approval"
-                    await set_session(session_id, {"pending_action": pending_action})
+                    await set_session(session_id, {**session, "pending_action": pending_action})
                     await send_text(phone, result.get("message"))
                 else:
-                    # Error - clear pending action
-                    await set_session(session_id, {})
+                    # Error - clear pending action but preserve history
+                    session.pop("pending_action", None)
+                    await set_session(session_id, session)
                     await send_text(phone, result.get("message", "Action failed"))
         else:
-            # User cancelled
-            await set_session(session_id, {})
+            # User cancelled - clear pending action but preserve history
+            session.pop("pending_action", None)
+            await set_session(session_id, session)
             await send_text(phone, "❌ Action cancelled.")
         return
 
