@@ -342,7 +342,21 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         pending_action = None
         await set_session(session_id, session, ttl=session_ttl)
     else:
-        conversation_history = sanitized_history
+        # Also clear if there's a pending_action but no recent confirmation request
+        # This prevents reusing old draft data from previous failed attempts
+        if pending_action and pending_action.get("stage") == "awaiting_confirmation":
+            # Check if the last message was a confirmation prompt
+            last_msg = conversation_history[-1] if conversation_history else None
+            if not (last_msg and last_msg.get("role") == "assistant" and "confirm" in last_msg.get("content", "").lower()):
+                print(f"[WEBHOOK] Stale pending_action detected, clearing session {session_id}")
+                session = {"conversation_history": [], "pending_action": None}
+                conversation_history = []
+                pending_action = None
+                await set_session(session_id, session, ttl=session_ttl)
+            else:
+                conversation_history = sanitized_history
+        else:
+            conversation_history = sanitized_history
 
     try:
         reply, updated_history, session_patch = await run_agent(
