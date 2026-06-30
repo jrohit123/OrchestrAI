@@ -235,7 +235,9 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
             str(total_amount), json.dumps(items), user["user_id"])
     except Exception as e:
         print(f"[EXECUTOR] Invoice insert failed: {e}")
-        return {"success": False, "message": "❌ Could not create invoice. Please try again."}
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": f"❌ Could not create invoice: {str(e)}"}
 
     customer = await fetch_one(
         "SELECT name, city, gst_number FROM customers WHERE id = $1",
