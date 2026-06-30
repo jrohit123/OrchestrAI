@@ -223,7 +223,6 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
     invoice_number = f"INV-{100 + int(count_row['cnt'])}"
 
     try:
-        # asyncpg accepts Python list/dict for jsonb columns
         await execute("""
             INSERT INTO invoices (
                 org_id, invoice_number, customer_id, amount,
@@ -233,7 +232,7 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
                 'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5, $6
             )
         """, user["org_id"], invoice_number, customer_id,
-            str(total_amount), items, user["user_id"])
+            str(total_amount), json.dumps(items), user["user_id"])
     except Exception as e:
         print(f"[EXECUTOR] Invoice insert failed: {e}")
         return {"success": False, "message": "❌ Could not create invoice. Please try again."}
@@ -348,7 +347,7 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
                 $1, $2, $3, $4,
                 $5, 'sent', $6, NOW(), $7
             )
-        """, user["org_id"], quotation_number, customer_id, items,
+        """, user["org_id"], quotation_number, customer_id, json.dumps(items),
             str(total_amount), valid_until, user["user_id"])
     except Exception as e:
         print(f"[EXECUTOR] Quotation insert failed: {e}")
