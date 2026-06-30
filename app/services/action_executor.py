@@ -80,13 +80,19 @@ async def _normalize_items(items: list, org_id: str) -> list:
         if not desc:
             raise ValueError("Each item needs a description")
 
-        normalized.append({
+        # Preserve optional design detail fields
+        item_dict = {
             "description": desc,
             "qty": qty,
             "unit_price": unit_price,
             "gst": gst,
             "total": total,
-        })
+        }
+        # Add optional fields if present
+        for field in ["design_code", "design_name", "metal_type", "weight", "making_charges"]:
+            if raw.get(field) is not None:
+                item_dict[field] = raw[field]
+        normalized.append(item_dict)
     return normalized
 
 
