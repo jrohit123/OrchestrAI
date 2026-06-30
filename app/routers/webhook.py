@@ -319,44 +319,46 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
 
-    # Sanitize conversation history - remove tool messages and tool_call assistant messages
-    # to prevent OpenAI API errors from corrupted history
-    sanitized_history = []
-    has_corrupted = False
-    for msg in conversation_history:
-        if msg.get("role") == "tool":
-            has_corrupted = True
-            continue
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            has_corrupted = True
-            continue
-        if msg.get("role") in ("user", "assistant"):
-            if msg.get("content") and not msg.get("tool_calls"):
-                sanitized_history.append(msg)
-
-    # If corrupted history detected, clear the session to prevent API errors
-    if has_corrupted:
-        print(f"[WEBHOOK] Corrupted history detected, clearing session {session_id}")
+    # Aggressive cleanup: if there's a pending_action from a previous failed attempt,
+    # clear the entire session to prevent conversation history corruption
+    if pending_action:
+        print(f"[WEBHOOK] Clearing stale pending_action and session {session_id}")
         session = {"conversation_history": [], "pending_action": None}
         conversation_history = []
         pending_action = None
         await set_session(session_id, session, ttl=session_ttl)
     else:
-        # Also clear if there's a pending_action but no recent confirmation request
-        # This prevents reusing old draft data from previous failed attempts
-        if pending_action and pending_action.get("stage") == "awaiting_confirmation":
-            # Check if the last message was a confirmation prompt
-            last_msg = conversation_history[-1] if conversation_history else None
-            if not (last_msg and last_msg.get("role") == "assistant" and "confirm" in last_msg.get("content", "").lower()):
-                print(f"[WEBHOOK] Stale pending_action detected, clearing session {session_id}")
-                session = {"conversation_history": [], "pending_action": None}
-                conversation_history = []
-                pending_action = None
-                await set_session(session_id, session, ttl=session_ttl)
-            else:
-                conversation_history = sanitized_history
+        # Sanitize conversation history - remove tool messages and tool_call assistant messages
+        sanitized_history = []
+        has_corrupted = False
+        for msg in conversation_history:
+            if msg.get("role") == "tool":
+                has_corrupted = True
+                continue
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                has_corrupted = True
+                continue
+            if msg.get("role") in ("user", "assistant"):
+                if msg.get("content") and not msg.get("tool_calls"):
+                    sanitized_history.append(msg)
+
+        # If corrupted history detected, clear the session to prevent API errors
+        if has_corrupted:
+            print(f"[WEBHOOK] Corrupted history detected, clearing session {session_id}")
+            session = {"conversation_history": [], "pending_action": None}
+            conversation_history = []
+            pending_action = None
+            await set_session(session_id, session, ttl=session_ttl)
         else:
             conversation_history = sanitized_history
+
+    # Emergency: if conversation history is too long (>20 messages), clear it
+    if len(conversation_history) > 20:
+        print(f"[WEBHOOK] History too long ({len(conversation_history)}), clearing session {session_id}")
+        session = {"conversation_history": [], "pending_action": None}
+        conversation_history = []
+        pending_action = None
+        await set_session(session_id, session, ttl=session_ttl)
 
     try:
         reply, updated_history, session_patch = await run_agent(
