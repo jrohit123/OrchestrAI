@@ -629,13 +629,13 @@ Example: For create_sales_invoice, required fields are: customer_name (string, R
 RULE 8 — INVOICE & QUOTATION ITEMS STRUCTURE:
 When creating an invoice OR quotation, you MUST collect items with the following structure:
 items = [
-  {
+  {{
     "description": "22kt Gold Necklace with Ruby, 60g",
     "qty": 1,
     "unit_price": 330097.09,
     "gst": 9902.91,
     "total": 340000
-  }
+  }}
 ]
 
 Each item needs:
