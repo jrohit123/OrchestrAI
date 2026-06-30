@@ -124,6 +124,9 @@ async def receive_message(request: Request):
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
 async def handle_message(phone: str, text: str, msg_type: str = "text"):
+    # Ensure fetch_one is available in local scope
+    from app.db import fetch_one, execute
+    
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
@@ -359,7 +362,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         # Resolve customer_id if customer_name is present but customer_id is not
         if merged_fields.get("customer_name") and not merged_fields.get("customer_id"):
-            from app.db import fetch_one
             customer_name = merged_fields["customer_name"]
             customer = await fetch_one(
                 "SELECT id FROM customers WHERE org_id = $1 AND name ILIKE $2",
