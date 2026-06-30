@@ -333,6 +333,15 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
 
+    # Aggressive cleanup: clear conversation history on every new action request
+    # to prevent LLM from hallucinating from old data
+    action_keywords = ["invoice", "quotation", "create", "generate", "make"]
+    if any(keyword in text.lower() for keyword in action_keywords):
+        print(f"[WEBHOOK] Action request detected, clearing conversation history")
+        conversation_history = []
+        session["conversation_history"] = []
+        await set_session(session_id, session, ttl=session_ttl)
+
     # Slot extraction mode: if pending_action exists, extract fields and merge
     if pending_action and pending_action.get("stage") != "awaiting_confirmation":
         from app.services.agent import _extract_fields_from_message
