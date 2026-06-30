@@ -1217,7 +1217,7 @@ async def run_agent(
 
         # LLM finished — return the text response
         if not assistant_message.tool_calls:
-            print(f"[AGENT] No tool calls, returning text response")
+            print(f"[AGENT] No tool calls, returning text response: {assistant_message.content[:200]}")
             history_to_save = _serialize_history(messages)
             return assistant_message.content.strip(), history_to_save, session_patch
 
