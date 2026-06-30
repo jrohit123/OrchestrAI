@@ -319,6 +319,16 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
 
+    # Sanitize conversation history - remove tool messages and tool_call assistant messages
+    # to prevent OpenAI API errors from corrupted history
+    sanitized_history = []
+    for msg in conversation_history:
+        if msg.get("role") in ("user", "assistant"):
+            # Keep only user/assistant messages with content
+            if msg.get("content") and not msg.get("tool_calls"):
+                sanitized_history.append(msg)
+    conversation_history = sanitized_history
+
     try:
         reply, updated_history, session_patch = await run_agent(
             text, user, phone,
