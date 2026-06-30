@@ -614,10 +614,10 @@ Example:
   → update_draft(intent_key="create_sales_invoice", fields={{}})
   → "I'll create an invoice for you. I need: customer name, amount. Please provide customer name."
   User: "Jain Gold Works"
-  → update_draft(intent_key="create_sales_invoice", fields={{customer_id, customer_name}})
+  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works"}})
   → "I have: customer Jain Gold Works. I need: amount. Please provide amount."
   User: "92000"
-  → update_draft(intent_key="create_sales_invoice", fields={{customer_id, customer_name, amount}}, stage="awaiting_confirmation")
+  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works", "amount": 92000}}, stage="awaiting_confirmation")
   → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={{...}})
 
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
