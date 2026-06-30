@@ -641,10 +641,14 @@ items = [
     "total": 340000
   }}
 
-For QUOTATIONS (making_charges is optional):
+For QUOTATIONS (making_charges and design details are optional):
 items = [
   {{
     "description": "22kt Gold Necklace with Ruby, 60g",
+    "design_code": "GN-22K-001",
+    "design_name": "Heritage Kundan Set",
+    "metal_type": "22kt Gold",
+    "weight": 60,
     "qty": 1,
     "unit_price": 330097.09,
     "making_charges": 15000,
@@ -661,6 +665,10 @@ Example: "platinum necklace 25g 1 pc at 45000" → unit_price: 45000, gst: 1350,
 
 Each item needs:
 - description: string (what the item is - e.g., "22kt Gold Necklace with Ruby, 60g")
+- design_code: string (optional design code - e.g., "GN-22K-001")
+- design_name: string (optional design name - e.g., "Heritage Kundan Set")
+- metal_type: string (optional metal type - e.g., "22kt Gold", "Platinum")
+- weight: float (optional weight in grams - e.g., 60)
 - qty: integer (quantity - default 1 if not specified)
 - unit_price: float (price per unit, ex-GST)
 - making_charges: float (making charges for this item - OPTIONAL, only for quotations)

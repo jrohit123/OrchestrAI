@@ -376,6 +376,11 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
     subtotal = sum(float(i["unit_price"]) * int(i["qty"]) for i in items)
     gst_amount = sum(float(i["gst"]) for i in items)
 
+    # Extract design details from first item for PDF
+    first_item = items[0] if items else {}
+    making_charges_total = sum(float(i.get("making_charges", 0)) for i in items)
+    metal_cost = subtotal - making_charges_total
+
     pdf_bytes = None
     try:
         pdf_bytes = await generate_pdf(
@@ -389,7 +394,15 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
                 "customer_name": customer["name"],
                 "city": customer["city"],
                 "gstin": customer["gst_number"],
+                "design_code": first_item.get("design_code", "N/A"),
+                "design_name": first_item.get("design_name", "N/A"),
+                "metal_type": first_item.get("metal_type", "N/A"),
+                "weight_grams": first_item.get("weight", 0),
+                "metal_cost": str(metal_cost),
+                "making_charges": str(making_charges_total),
+                "making_charge_pct": "0" if metal_cost == 0 else str(round((making_charges_total / metal_cost) * 100, 1)),
                 "subtotal": str(subtotal),
+                "gst_pct": "3",
                 "gst_amount": str(gst_amount),
                 "total_amount": str(total_amount),
                 "valid_days": 3,
