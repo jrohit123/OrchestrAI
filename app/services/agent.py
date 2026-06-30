@@ -289,6 +289,37 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "update_draft",
+            "description": (
+                "Update or read the pending action draft. Use this to accumulate "
+                "information across multiple turns before confirmation. "
+                "Call with intent_key to start a new draft. Call with fields to update "
+                "an existing draft. The response shows what fields are still missing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_key": {
+                        "type": "string",
+                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Fields to update in the draft (e.g., {customer_id: '...', amount: 92000})"
+                    },
+                    "stage": {
+                        "type": "string",
+                        "enum": ["collecting", "awaiting_confirmation"],
+                        "description": "Stage of the draft. Default 'collecting'. Set to 'awaiting_confirmation' when all fields are collected."
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "clarify",
             "description": (
                 "Ask the user a clarifying question when their request is ambiguous. "
@@ -307,6 +338,11 @@ TOOLS = [
                         "type": "array",
                         "description": "Optional list of choices to present",
                         "items": {"type": "string"}
+                    },
+                    "candidates": {
+                        "type": "array",
+                        "description": "Optional list of candidate rows from database for disambiguation context",
+                        "items": {"type": "object"}
                     }
                 },
                 "required": ["question"]
@@ -366,7 +402,7 @@ TOOLS = [
                     "send_via": {
                         "type": "string",
                         "enum": ["whatsapp", "email", "both"],
-                        "description": "Delivery method. Default 'whatsapp'. Use 'email' or 'both' when user asks to email the PDF."
+                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'."
                     }
                 },
                 "required": ["rows", "title"]
@@ -414,6 +450,41 @@ async def _build_system_prompt(user: dict) -> str:
         user["org_id"]
     )
 
+    # Load workflows entity_schema for slot-filling guidance
+    workflows = await fetch_all("""
+        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt
+        FROM workflows
+        WHERE org_id = $1 AND is_active = true
+    """, user["org_id"])
+
+    # Build workflow schema guidance
+    workflow_schema_text = ""
+    if workflows:
+        workflow_schema_text = "\n\n=== WORKFLOW SCHEMAS — REQUIRED FIELDS FOR EACH ACTION ===\n"
+        for wf in workflows:
+            intent_key = wf.get("intent_key")
+            entity_schema = wf.get("entity_schema", {})
+            business_glossary = wf.get("business_glossary", {})
+            llm_prompt = wf.get("llm_system_prompt", "")
+
+            if entity_schema:
+                workflow_schema_text += f"\n{intent_key}:\n"
+                workflow_schema_text += f"  Required fields:\n"
+                for field_name, field_def in entity_schema.items():
+                    required = "REQUIRED" if field_def.get("required") else "optional"
+                    field_type = field_def.get("type", "string")
+                    workflow_schema_text += f"    - {field_name} ({field_type}, {required})\n"
+
+            if business_glossary:
+                workflow_schema_text += f"  Business glossary:\n"
+                for term, meaning in business_glossary.items():
+                    workflow_schema_text += f"    - '{term}' means: {meaning}\n"
+
+            if llm_prompt:
+                workflow_schema_text += f"  Workflow-specific instructions: {llm_prompt}\n"
+
+        workflow_schema_text += "\n=== END WORKFLOW SCHEMAS ===\n"
+
     # Load layered domain prompt from files
     domain_prompt = load_prompt(dict(org_row) if org_row else {})
 
@@ -458,6 +529,8 @@ TODAY: {today}
 DATABASE SCHEMA (for reference only - use the table/column list above):
 {schema}
 
+{workflow_schema_text}
+
 {domain_prompt}
 
 ENTITY EXTRACTION — CRITICAL RULES (read before every query):
@@ -501,10 +574,12 @@ proceed immediately. Only clarify when the name is genuinely ambiguous.
 "Mehta Enterprises" ILIKE '%Mehta Enterprises%' → returns ONLY "Mehta Enterprises (Pune)"
 → Proceed directly. Do NOT ask "which Mehta?"
 
-RULE 5 — CONFIRM BEFORE CREATE:
+RULE 5 — CONFIRM BEFORE CREATE (UPDATED with draft system):
 "Mehta Enterprises 92000 invoice" → ACTION (create invoice)
   Steps: 1) Resolve customer (Pass 1: "Mehta Enterprises" → 1 match)
-         2) call confirm_action → user confirms → check OTP threshold → create
+         2) Call update_draft with intent_key="create_sales_invoice" and fields={customer_id, customer_name, amount}
+         3) Call confirm_action with action_description and details
+         4) User confirms → webhook executes → check OTP threshold → create
 
 "Mehta Enterprises invoices" → READ (query existing invoices, no creation)
   Steps: 1) Resolve customer → 2) query_database for their invoices
@@ -513,6 +588,73 @@ Distinguish CREATE from VIEW by context:
 - CREATE signals: "invoice [customer] [amount]", "bill [customer]", "make invoice"
 - VIEW signals: "show", "list", "check", "what", question words, no amount given
 - AMBIGUOUS: "Mehta Enterprises 92000 invoice" → treat as CREATE if amount given
+
+RULE 6 — USE update_draft FOR MULTI-TURN SLOT ACCUMULATION:
+When the user provides incomplete information for an action (e.g., "create invoice" without amount):
+  1) Call update_draft with intent_key and the fields you have
+  2) Tell the user what you have and what's missing (refer to WORKFLOW SCHEMAS for required fields)
+  3) On the next message, call update_draft again with the new fields merged
+  4) When all required fields are collected, call update_draft with stage="awaiting_confirmation"
+  5) Then call confirm_action
+
+Example:
+  User: "create invoice"
+  → update_draft(intent_key="create_sales_invoice", fields={})
+  → "I'll create an invoice for you. I need: customer name, amount. Please provide customer name."
+  User: "Jain Gold Works"
+  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name})
+  → "I have: customer Jain Gold Works. I need: amount. Please provide amount."
+  User: "92000"
+  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name, amount}, stage="awaiting_confirmation")
+  → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={...})
+
+RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
+Before asking for information, check the WORKFLOW SCHEMAS section above.
+Each workflow lists its required fields with types and whether they're required.
+Use this to give accurate guidance on what's missing.
+Example: For create_sales_invoice, required fields are: customer_name (string, REQUIRED), items (array, REQUIRED).
+
+RULE 8 — INVOICE & QUOTATION ITEMS STRUCTURE:
+When creating an invoice OR quotation, you MUST collect items with the following structure:
+items = [
+  {
+    "description": "22kt Gold Necklace with Ruby, 60g",
+    "qty": 1,
+    "unit_price": 330097.09,
+    "gst": 9902.91,
+    "total": 340000
+  }
+]
+
+Each item needs:
+- description: string (what the item is - e.g., "22kt Gold Necklace with Ruby, 60g")
+- qty: integer (quantity - default 1 if not specified)
+- unit_price: float (price per unit, ex-GST)
+- gst: float (GST amount for this item)
+- total: float (line total = qty × unit_price + gst, or just the final total)
+
+If the user provides a simple description like "gold chain 60g", you can:
+1. Ask for quantity (default 1)
+2. Ask for unit price (or calculate from inventory if available)
+3. Calculate GST (typically 3% for jewellery)
+4. Calculate total
+
+Example flow for invoice:
+  User: "invoice for Jain Gold Works, 22kt gold chain 60g"
+  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name})
+  → "I have: customer Jain Gold Works. I need: items. What items should be on this invoice?"
+  User: "22kt gold chain 60g, 1 piece"
+  → query_database to get unit_price from inventory if available
+  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name, items: [{description, qty, unit_price, gst, total}]})
+  → confirm_action(...)
+
+Example flow for quotation:
+  User: "quote for Sharma, 22kt gold chain 60g"
+  → update_draft(intent_key="generate_price_quotation", fields={customer_id, customer_name})
+  → "I have: customer Sharma. I need: items. What items should be on this quotation?"
+  User: "22kt gold chain 60g, 1 piece at 330000"
+  → update_draft(intent_key="generate_price_quotation", fields={customer_id, customer_name, items: [{description, qty, unit_price, gst, total}]})
+  → confirm_action(...)
 
 PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
 - "report"    → ANY list of multiple records (overdue invoices, invoice summary,
@@ -809,6 +951,20 @@ async def _execute_tool(
             import traceback; traceback.print_exc()
             return f"ERROR generating PDF: {str(e)}"
 
+    elif tool_name == "update_draft":
+        intent_key = tool_input.get("intent_key")
+        fields = tool_input.get("fields", {})
+        stage = tool_input.get("stage", "collecting")
+
+        # Return session patch for webhook to persist
+        return {
+            "type": "draft_update",
+            "intent_key": intent_key,
+            "fields": fields,
+            "stage": stage,
+            "raw_text": message
+        }
+
     elif tool_name == "confirm_action":
         action_desc = tool_input.get("action_description", "")
         details = tool_input.get("details", {})
@@ -816,9 +972,12 @@ async def _execute_tool(
             f"  • {k}: {v}" for k, v in details.items()
         ) if details else ""
 
-        # Store in session that we're awaiting confirmation
-        # The webhook handles the reply
-        return f"CONFIRM_PENDING: {action_desc}\n{details_str}"
+        # Return session patch for webhook to persist
+        return {
+            "type": "confirm_pending",
+            "action_description": action_desc,
+            "details": details
+        }
 
     return f"ERROR: Unknown tool {tool_name}"
 
@@ -831,27 +990,33 @@ async def run_agent(
     phone: str,
     max_iterations: int = 6,
     conversation_history: list = None,
-) -> tuple[str, list]:
+    pending_action: dict = None,
+) -> tuple[str, list, dict]:
     """
     Main entry point. Replaces classify_message + execute_intent entirely.
     Runs the tool-calling loop until the LLM produces a final text response.
+
+    Returns: (reply_text, history_to_save, session_patch)
+    session_patch is a dict of session updates (e.g., pending_action) for webhook to persist.
     """
     print(f"[AGENT] Starting agent for: {message}")
-    
+
+    session_patch = {}
+
     # ── Fast-path: greetings and help (no LLM call needed) ──────────────────
     msg_stripped = message.strip()
-    
+
     if _is_pure_greeting(msg_stripped):
         greeting_text = _build_greeting_response(user, msg_stripped)
         history_to_save = [{"role": "user", "content": message},
                            {"role": "assistant", "content": greeting_text}]
-        return greeting_text, history_to_save
-    
+        return greeting_text, history_to_save, {}
+
     if _is_help_request(msg_stripped):
         help_text = _build_help_response(user)
         history_to_save = [{"role": "user", "content": message},
                            {"role": "assistant", "content": help_text}]
-        return help_text, history_to_save
+        return help_text, history_to_save, {}
     
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
@@ -911,13 +1076,14 @@ async def run_agent(
                 return (
                     "⚠️ That request returned too much data to process in one go. "
                     "Try narrowing it down — e.g. ask for a specific customer or date range.",
-                    history_to_save
+                    history_to_save,
+                    {}
                 )
         except Exception as e:
             print(f"[AGENT] OpenAI API error: {e}")
             import traceback
             traceback.print_exc()
-            return f"OpenAI API error: {str(e)}", []
+            return f"OpenAI API error: {str(e)}", [], {}
 
         assistant_message = response.choices[0].message
 
@@ -925,7 +1091,7 @@ async def run_agent(
         if not assistant_message.tool_calls:
             print(f"[AGENT] No tool calls, returning text response")
             history_to_save = _serialize_history(messages)
-            return assistant_message.content.strip(), history_to_save
+            return assistant_message.content.strip(), history_to_save, session_patch
 
         # LLM wants to call tools
         # Add assistant's response to message history
@@ -962,12 +1128,32 @@ async def run_agent(
                         f"{i+1}. {o}" for i, o in enumerate(options)
                     )
                     history_to_save = _serialize_history(messages)
-                    return f"🤔 {clarify_question}\n\n{opts}", history_to_save
+                    return f"🤔 {clarify_question}\n\n{opts}", history_to_save, {}
                 history_to_save = _serialize_history(messages)
-                return f"🤔 {clarify_question}", history_to_save
+                return f"🤔 {clarify_question}", history_to_save, {}
+
+            # If update_draft was called, capture session patch
+            if tool_call.function.name == "update_draft":
+                if isinstance(result, dict) and result.get("type") == "draft_update":
+                    # Build pending_action from result
+                    current_draft = pending_action or {}
+                    updated_draft = {
+                        "intent_key": result.get("intent_key") or current_draft.get("intent_key"),
+                        "stage": result.get("stage") or current_draft.get("stage", "collecting"),
+                        "fields": {**current_draft.get("fields", {}), **result.get("fields", {})},
+                        "raw_text": result.get("raw_text", message),
+                        "created_at": current_draft.get("created_at") or __import__("datetime").datetime.now().isoformat()
+                    }
+                    session_patch["pending_action"] = updated_draft
+                # Continue loop to let LLM respond with confirmation or next question
 
             # If confirm_action was called, pause and return the prompt
             if tool_call.function.name == "confirm_action":
+                if isinstance(result, dict) and result.get("type") == "confirm_pending":
+                    # Set stage to awaiting_confirmation
+                    if pending_action:
+                        pending_action["stage"] = "awaiting_confirmation"
+                        session_patch["pending_action"] = pending_action
                 action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
                 details = json.loads(tool_call.function.arguments).get("details", {})
                 lines = [f"⚠️ *Confirm Action*\n\n{action_desc}"]
@@ -976,13 +1162,13 @@ async def run_agent(
                         lines.append(f"  • {k}: {v}")
                 lines.append("\nReply *yes* to confirm or *no* to cancel.")
                 history_to_save = _serialize_history(messages)
-                return "\n".join(lines), history_to_save
+                return "\n".join(lines), history_to_save, session_patch
 
         # Add tool results back into message history
         messages.extend(tool_results)
 
     history_to_save = _serialize_history(messages)
-    return "🤔 Something went wrong. Please try again.", history_to_save
+    return "🤔 Something went wrong. Please try again.", history_to_save, session_patch
 
 
 def _serialize_history(messages: list) -> list:
