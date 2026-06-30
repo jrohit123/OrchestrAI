@@ -179,7 +179,10 @@ async def _execute_action(
     """Execute the actual action based on intent_key."""
     amount = _resolve_amount(fields)
 
-    if amount >= approval_threshold:
+    # Bypass approval for owners (role_id for owner is 22220000-0000-0000-0000-000000000001)
+    user_role_id = user.get("role_id", "")
+    owner_role_id = "22220000-0000-0000-0000-000000000001"
+    if amount >= approval_threshold and user_role_id != owner_role_id:
         return {
             "success": False,
             "message": (
