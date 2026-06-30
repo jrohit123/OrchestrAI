@@ -173,7 +173,10 @@ STRUCTURE:
 ── TAX INVOICE ──
 - TOP RIGHT badge: <div style="background:{BRAND_BLUE};color:#fff;padding:4px 12px;font-weight:700;display:inline-block">TAX INVOICE</div>
 - BILL TO section (left): customer_name, city, GSTIN from extra_context
-- Invoice meta (right): Invoice #, Date, Due Date from extra_context
+- Invoice meta (right): Invoice #, Date, Due Date, STATUS from extra_context
+  Status badge: <div style="background:#16a34a;color:#fff;padding:4px 12px;font-weight:700;display:inline-block">PAID</div> for "paid"
+               <div style="background:#dc2626;color:#fff;padding:4px 12px;font-weight:700;display:inline-block">OVERDUE</div> for "overdue"
+               <div style="background:#f59e0b;color:#fff;padding:4px 12px;font-weight:700;display:inline-block">PENDING</div> for "pending"
 - Items table: Description | Qty | Unit Price (ex-GST) | GST % | Total
 - Totals block (right-align, 40% width):
     Subtotal  : use subtotal from extra_context if present; else = amount / 1.03 rounded
