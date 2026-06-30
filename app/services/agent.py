@@ -632,6 +632,12 @@ items = [
     "gst": 9902.91,
     "total": 340000
   }}
+
+RULE 9 — USE USER-PROVIDED PRICES:
+When the user provides a price (e.g., "at 45000", "Rs.45000"), use that price directly as unit_price.
+Do NOT query the pricing table to look up metal rates.
+Calculate GST based on the org's gst_rate (default 3%) if not provided.
+Example: "platinum necklace 25g 1 pc at 45000" → unit_price: 45000, gst: 1350, total: 46350
 ]
 
 Each item needs:
