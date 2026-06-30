@@ -467,6 +467,18 @@ async def _build_system_prompt(user: dict) -> str:
             business_glossary = wf.get("business_glossary", {})
             llm_prompt = wf.get("llm_system_prompt", "")
 
+            # Parse JSONB if it's a string
+            if isinstance(entity_schema, str):
+                try:
+                    entity_schema = json.loads(entity_schema)
+                except:
+                    entity_schema = {}
+            if isinstance(business_glossary, str):
+                try:
+                    business_glossary = json.loads(business_glossary)
+                except:
+                    business_glossary = {}
+
             if entity_schema:
                 workflow_schema_text += f"\n{intent_key}:\n"
                 workflow_schema_text += f"  Required fields:\n"
@@ -1045,7 +1057,7 @@ async def run_agent(
         print(f"[AGENT] Error building system prompt: {e}")
         import traceback
         traceback.print_exc()
-        return f"Error building system prompt: {str(e)}", []
+        return f"Error building system prompt: {str(e)}", [], {}
 
     messages = [
         {"role": "system", "content": system_prompt}
