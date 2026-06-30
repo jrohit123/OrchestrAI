@@ -23,6 +23,12 @@ router = APIRouter()
 VERIFY_TOKEN      = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify_2024")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 
+_CONFIRM_WORDS = frozenset({
+    "yes", "y", "haan", "ha", "ok", "confirm", "confirmed",
+    "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
+})
+_CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
+
 
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
 @router.get("/webhook/whatsapp")
@@ -85,7 +91,16 @@ async def receive_message(request: Request):
             return {"status": "ok"}
 
         print(f"[WEBHOOK] From: {phone} | Message: {text}")
-        await handle_message(phone=phone, text=text, msg_type=msg_type)
+        try:
+            await handle_message(phone=phone, text=text, msg_type=msg_type)
+        except Exception as e:
+            print(f"[WEBHOOK] handle_message error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await send_text(phone, "❌ Something went wrong. Please try again.")
+            except Exception:
+                pass
 
     except (KeyError, IndexError) as e:
         print(f"[WEBHOOK] Parse error: {e}")
@@ -190,104 +205,119 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await _handle_otp_reply(phone, text, user, session, session_id)
         return
 
-    # 8. Pending action confirmation check (NEW - replaces pending_confirm)
+    session_ttl = ttl_minutes * 60
     pending_action = session.get("pending_action")
+
+    async def _send_action_pdf(exec_result: dict):
+        if not exec_result.get("pdf_bytes"):
+            return
+        from app.services.whatsapp import send_document
+        import re
+        doc_id = exec_result.get("invoice_number") or exec_result.get("quotation_number") or "document"
+        safe_filename = re.sub(r'[^\w\-]', '_', str(doc_id))[:50] + ".pdf"
+        await send_document(
+            to=phone,
+            pdf_bytes=exec_result["pdf_bytes"],
+            filename=safe_filename,
+            caption=f"📄 {doc_id}"
+        )
+
+    # 8. Pending action confirmation
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
-        if text.strip().lower() in ("yes", "y", "haan", "ha", "ok", "confirm"):
-            # User confirmed - execute the action
-            result = await execute_pending_action(pending_action, user)
+        text_lower = text.strip().lower()
+        if text_lower in _CONFIRM_WORDS:
+            try:
+                result = await execute_pending_action(pending_action, user)
+            except Exception as e:
+                print(f"[WEBHOOK] execute_pending_action error: {e}")
+                import traceback
+                traceback.print_exc()
+                await send_text(phone, "❌ Something went wrong creating the document. Please try again.")
+                return
 
             if result.get("success"):
-                # Clear pending action on success but preserve conversation history
                 session.pop("pending_action", None)
-                # Append execution result to conversation history
                 session["conversation_history"] = (session.get("conversation_history") or []) + [
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": result.get("message", "Action completed successfully")}
                 ]
                 session["conversation_history"] = session["conversation_history"][-15:]
-                await set_session(session_id, session)
-                reply = result.get("message", "Action completed successfully")
-                await send_text(phone, reply)
-
-                # Send PDF if generated
-                if result.get("pdf_bytes"):
-                    from app.services.whatsapp import send_document
-                    import re
-                    safe_filename = re.sub(r'[^\w\-]', '_', result.get("invoice_number", result.get("quotation_number", "document")))[:50] + ".pdf"
-                    await send_document(
-                        to=phone,
-                        pdf_bytes=result["pdf_bytes"],
-                        filename=safe_filename,
-                        caption=f"📄 {result.get('invoice_number', result.get('quotation_number', 'Document'))}"
-                    )
+                await set_session(session_id, session, ttl=session_ttl)
+                await send_text(phone, result.get("message", "Action completed successfully"))
+                await _send_action_pdf(result)
+            elif result.get("stage") == "awaiting_otp":
+                pending_action["stage"] = "awaiting_otp"
+                await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
+                await send_text(phone, result.get("message"))
+            elif result.get("stage") == "awaiting_approval":
+                pending_action["stage"] = "awaiting_approval"
+                await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
+                await send_text(phone, result.get("message"))
             else:
-                # Check if we need to move to OTP stage
-                if result.get("stage") == "awaiting_otp":
-                    pending_action["stage"] = "awaiting_otp"
-                    await set_session(session_id, {**session, "pending_action": pending_action})
-                    await send_text(phone, result.get("message"))
-                elif result.get("stage") == "awaiting_approval":
-                    pending_action["stage"] = "awaiting_approval"
-                    await set_session(session_id, {**session, "pending_action": pending_action})
-                    await send_text(phone, result.get("message"))
-                else:
-                    # Error - clear pending action but preserve history
-                    session.pop("pending_action", None)
-                    await set_session(session_id, session)
-                    await send_text(phone, result.get("message", "Action failed"))
-        else:
-            # User cancelled - clear pending action but preserve history
-            session.pop("pending_action", None)
-            await set_session(session_id, session)
-            await send_text(phone, "❌ Action cancelled.")
-        return
+                session.pop("pending_action", None)
+                await set_session(session_id, session, ttl=session_ttl)
+                await send_text(phone, result.get("message", "Action failed"))
+            return
 
-    # 9. OTP reply for pending action (NEW)
-    if pending_action and pending_action.get("stage") == "awaiting_otp":
+        if text_lower in _CANCEL_WORDS:
+            session.pop("pending_action", None)
+            await set_session(session_id, session, ttl=session_ttl)
+            await send_text(phone, "❌ Action cancelled.")
+            return
+
+        # Unrecognised reply while awaiting confirm — treat as correction/new info
+        session.pop("pending_action", None)
+        await set_session(session_id, session, ttl=session_ttl)
+        pending_action = None
+        # fall through to agent
+
+    # 9. OTP reply for pending action
+    elif pending_action and pending_action.get("stage") == "awaiting_otp":
         if text.strip().lower() == "retry":
-            await set_session(session_id, {})
+            session.pop("pending_action", None)
+            session.pop("state", None)
+            await set_session(session_id, session, ttl=session_ttl)
             await send_text(phone, "🔄 Session cleared. Please resend your original request.")
             return
 
-        result = await verify_otp(user["user_id"], text.strip())
+        otp_result = await verify_otp(user["user_id"], text.strip())
 
-        if result["valid"]:
-            # OTP verified - execute the action
-            exec_result = await execute_pending_action(pending_action, user, otp_verified=True)
+        if otp_result["valid"]:
+            try:
+                exec_result = await execute_pending_action(pending_action, user, otp_verified=True)
+            except Exception as e:
+                print(f"[WEBHOOK] execute_pending_action after OTP error: {e}")
+                import traceback
+                traceback.print_exc()
+                await send_text(phone, "❌ Something went wrong after verification. Please try again.")
+                return
 
             if exec_result.get("success"):
-                await set_session(session_id, {})
-                reply = exec_result.get("message", "Action completed successfully")
-                await send_text(phone, reply)
-
-                # Send PDF if generated
-                if exec_result.get("pdf_bytes"):
-                    from app.services.whatsapp import send_document
-                    import re
-                    safe_filename = re.sub(r'[^\w\-]', '_', exec_result.get("invoice_number", exec_result.get("quotation_number", "document")))[:50] + ".pdf"
-                    await send_document(
-                        to=phone,
-                        pdf_bytes=exec_result["pdf_bytes"],
-                        filename=safe_filename,
-                        caption=f"📄 {exec_result.get('invoice_number', exec_result.get('quotation_number', 'Document'))}"
-                    )
+                session.pop("pending_action", None)
+                session["conversation_history"] = (session.get("conversation_history") or []) + [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": exec_result.get("message", "Action completed successfully")}
+                ]
+                session["conversation_history"] = session["conversation_history"][-15:]
+                await set_session(session_id, session, ttl=session_ttl)
+                await send_text(phone, exec_result.get("message", "Action completed successfully"))
+                await _send_action_pdf(exec_result)
+            elif exec_result.get("stage") == "awaiting_approval":
+                pending_action["stage"] = "awaiting_approval"
+                await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
+                await send_text(phone, exec_result.get("message"))
             else:
-                # Check if we need approval
-                if exec_result.get("stage") == "awaiting_approval":
-                    pending_action["stage"] = "awaiting_approval"
-                    await set_session(session_id, {"pending_action": pending_action})
-                    await send_text(phone, exec_result.get("message"))
-                else:
-                    await set_session(session_id, {})
-                    await send_text(phone, exec_result.get("message", "Action failed"))
+                session.pop("pending_action", None)
+                await set_session(session_id, session, ttl=session_ttl)
+                await send_text(phone, exec_result.get("message", "Action failed"))
         else:
-            await send_text(phone, f"❌ {result['reason']}")
+            await send_text(phone, f"❌ {otp_result['reason']}")
         return
 
-    # 10. Run the agent — replaces classify + execute pipeline
-    # Load conversation history from session
+    # 10. Run the agent — refresh session in case it was updated above
+    session = await get_session(session_id)
     conversation_history = session.get("conversation_history", [])
+    pending_action = session.get("pending_action")
 
     try:
         reply, updated_history, session_patch = await run_agent(
@@ -306,7 +336,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         updated_history = updated_history[-15:]
         session["last_message"] = text
         session["conversation_history"] = updated_history
-        await set_session(session_id, session)
+        await set_session(session_id, session, ttl=session_ttl)
 
         await send_text(phone, reply)
 

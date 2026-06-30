@@ -4,12 +4,89 @@ action_executor.py — Deterministic executor for pending actions.
 Replaces LLM-routed execution with a single, testable Python function.
 Handles OTP checks, approval thresholds, and actual database writes.
 """
-from datetime import datetime, timezone
-from typing import Any
+import uuid
+from datetime import datetime, timedelta, timezone
 from app.db import fetch_one, execute
 from app.services.otp_service import generate_and_send_otp
 from app.services.pdf_engine import generate_pdf
-from app.services.pdf_preprocessor import preprocess_rows
+
+
+def _resolve_amount(fields: dict) -> float:
+    """Total from top-level amount or sum of items[].total."""
+    if fields.get("amount") is not None:
+        return float(fields["amount"])
+    total = 0.0
+    for item in fields.get("items") or []:
+        total += float(item.get("total") or 0)
+    return total
+
+
+def _is_valid_uuid(val) -> bool:
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+async def _resolve_customer_id(fields: dict, org_id: str) -> str | None:
+    """Resolve customer_id from fields; fall back to name lookup if needed."""
+    customer_id = fields.get("customer_id")
+    if customer_id and _is_valid_uuid(customer_id):
+        row = await fetch_one(
+            "SELECT id FROM customers WHERE id = $1 AND org_id = $2",
+            str(customer_id), org_id
+        )
+        if row:
+            return str(row["id"])
+
+    name = fields.get("customer_name")
+    if not name:
+        return None
+
+    row = await fetch_one(
+        "SELECT id FROM customers WHERE org_id = $1 AND name ILIKE $2 LIMIT 1",
+        org_id, f"%{name}%"
+    )
+    return str(row["id"]) if row else None
+
+
+async def _normalize_items(items: list, org_id: str) -> list:
+    """Ensure each line item has qty, unit_price, gst, total as numbers."""
+    org = await fetch_one("SELECT gst_rate FROM orgs WHERE id = $1", org_id)
+    gst_rate = float(org["gst_rate"]) if org and org.get("gst_rate") is not None else 3.0
+
+    normalized = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        qty = max(1, int(raw.get("qty") or 1))
+        unit_price = float(raw.get("unit_price") or 0)
+        if unit_price <= 0:
+            raise ValueError("Each item needs a positive unit_price")
+
+        if raw.get("gst") is not None:
+            gst = float(raw["gst"])
+        else:
+            gst = round(unit_price * qty * gst_rate / 100, 2)
+
+        if raw.get("total") is not None:
+            total = float(raw["total"])
+        else:
+            total = round(unit_price * qty + gst, 2)
+
+        desc = str(raw.get("description") or "").strip()
+        if not desc:
+            raise ValueError("Each item needs a description")
+
+        normalized.append({
+            "description": desc,
+            "qty": qty,
+            "unit_price": unit_price,
+            "gst": gst,
+            "total": total,
+        })
+    return normalized
 
 
 async def execute_pending_action(
@@ -25,7 +102,7 @@ async def execute_pending_action(
             "success": bool,
             "message": str,
             "pdf_bytes": bytes | None,
-            "stage": str,  # next stage if not done
+            "stage": str,
             "invoice_number": str | None,
             "quotation_number": str | None,
         }
@@ -37,7 +114,6 @@ async def execute_pending_action(
     if not intent_key:
         return {"success": False, "message": "No intent_key in pending_action"}
 
-    # ── Load workflow config ────────────────────────────────────────────────
     workflow = await fetch_one("""
         SELECT otp_threshold, approval_threshold, adapter_method, pdf_config
         FROM workflows
@@ -47,26 +123,14 @@ async def execute_pending_action(
     if not workflow:
         return {"success": False, "message": f"Workflow {intent_key} not found"}
 
-    otp_threshold = workflow.get("otp_threshold") or 0
-    approval_threshold = workflow.get("approval_threshold") or 0
-    adapter_method = workflow.get("adapter_method")
+    otp_threshold = float(workflow.get("otp_threshold") or 0)
+    approval_threshold = float(workflow.get("approval_threshold") or 0)
     pdf_config = workflow.get("pdf_config")
 
-    # ── Helper: Resolve amount from fields or items[].total ────────────────────
-    def _resolve_amount(fields: dict) -> float:
-        if fields.get("amount") is not None:
-            return float(fields["amount"])
-        total = 0.0
-        for item in fields.get("items") or []:
-            total += float(item.get("total") or 0)
-        return total
-
-    # ── Stage: awaiting_confirmation → check OTP ───────────────────────────
     if stage == "awaiting_confirmation":
         amount = _resolve_amount(fields)
 
         if amount >= otp_threshold and not otp_verified:
-            # Need OTP before proceeding
             sent = await generate_and_send_otp(
                 user_id=user["user_id"],
                 user_email=user["email"],
@@ -77,109 +141,111 @@ async def execute_pending_action(
             if sent:
                 return {
                     "success": False,
-                    "message": f"🔐 Security Verification Required\n\nA 4-digit code has been sent to {user['email']}\nReply with the code to continue.\n\n⏱ Code expires in 3 minutes.",
+                    "message": (
+                        f"🔐 *Security Verification Required*\n\n"
+                        f"A 4-digit code has been sent to *{user['email']}*\n"
+                        f"Reply with the code to continue.\n\n"
+                        f"⏱ Code expires in 3 minutes."
+                    ),
                     "stage": "awaiting_otp"
                 }
-            else:
-                return {"success": False, "message": "❌ Could not send verification email. Contact admin."}
+            return {"success": False, "message": "❌ Could not send verification email. Contact admin."}
 
-        # No OTP needed or already verified, proceed to execution
         return await _execute_action(
-            intent_key, fields, user, workflow, approval_threshold, pdf_config
+            intent_key, fields, user, approval_threshold, pdf_config
         )
 
-    # ── Stage: awaiting_otp → verify and proceed ─────────────────────────────
     if stage == "awaiting_otp" and otp_verified:
         return await _execute_action(
-            intent_key, fields, user, workflow, approval_threshold, pdf_config
+            intent_key, fields, user, approval_threshold, pdf_config
         )
 
-    # ── Stage: awaiting_approval → user already approved, execute ─────────────
     if stage == "awaiting_approval":
         return await _execute_action(
-            intent_key, fields, user, workflow, approval_threshold, pdf_config
+            intent_key, fields, user, approval_threshold, pdf_config
         )
 
-    return {"success": False, "message": f"Unknown stage: {stage}"}
+    return {"success": False, "message": f"Cannot execute action in stage: {stage}"}
 
 
 async def _execute_action(
     intent_key: str,
     fields: dict,
     user: dict,
-    workflow: dict,
     approval_threshold: float,
     pdf_config: dict,
 ) -> dict:
     """Execute the actual action based on intent_key."""
-    amount = fields.get("amount") or 0
+    amount = _resolve_amount(fields)
 
-    # ── Check approval threshold ─────────────────────────────────────────────
     if amount >= approval_threshold:
-        # Need MD approval - set stage and return
-        from app.services.whatsapp import send_buttons
-        from app.redis_client import set_session
-
-        # Send approval request to MD
-        # For now, we'll mark as awaiting_approval and return
-        # In a full implementation, this would send a WhatsApp button to the MD
         return {
             "success": False,
-            "message": f"Invoice ₹{amount:,.0f} requires MD approval.\nApproval request sent to Mr. Sharma.\nYou'll be notified once approved.",
+            "message": (
+                f"Invoice *Rs.{amount:,.0f}* requires MD approval.\n"
+                f"Approval request sent to Mr. Sharma.\n"
+                f"You'll be notified once approved."
+            ),
             "stage": "awaiting_approval"
         }
 
-    # ── Execute based on intent_key ─────────────────────────────────────────
     if intent_key == "create_sales_invoice":
         return await _create_invoice(fields, user, pdf_config)
-    elif intent_key == "generate_price_quotation":
+    if intent_key == "generate_price_quotation":
         return await _create_quotation(fields, user, pdf_config)
-    else:
-        return {"success": False, "message": f"Unknown intent_key: {intent_key}"}
+    return {"success": False, "message": f"Unknown intent_key: {intent_key}"}
 
 
 async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
     """Create an invoice record and generate PDF."""
-    customer_id = fields.get("customer_id")
-    items = fields.get("items", [])
+    items_raw = fields.get("items") or []
+    if not items_raw:
+        return {
+            "success": False,
+            "message": "Missing items. Please provide at least one item with description, quantity, and unit price."
+        }
 
+    try:
+        items = await _normalize_items(items_raw, user["org_id"])
+    except ValueError as e:
+        return {"success": False, "message": f"❌ Invalid item data: {e}"}
+
+    customer_id = await _resolve_customer_id(fields, user["org_id"])
     if not customer_id:
-        return {"success": False, "message": "Missing customer_id"}
+        return {"success": False, "message": "❌ Customer not found. Please check the customer name."}
 
-    if not items or len(items) == 0:
-        return {"success": False, "message": "Missing items. Please provide at least one item with description, quantity, and unit price."}
+    total_amount = sum(float(i["total"]) for i in items)
 
-    # Calculate total amount from items
-    total_amount = 0.0
-    for item in items:
-        item_total = item.get("total", 0)
-        total_amount += float(item_total)
-
-    # Generate invoice number
     count_row = await fetch_one(
         "SELECT COUNT(*) as cnt FROM invoices WHERE org_id = $1",
         user["org_id"]
     )
     invoice_number = f"INV-{100 + int(count_row['cnt'])}"
 
-    # Insert invoice
-    await execute("""
-        INSERT INTO invoices (
-            org_id, invoice_number, customer_id, amount,
-            status, due_date, created_at, items, created_by
-        ) VALUES (
-            $1, $2, $3, $4,
-            'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5, $6
-        )
-    """, user["org_id"], invoice_number, customer_id, str(total_amount), json.dumps(items), user["user_id"])
+    try:
+        # asyncpg accepts Python list/dict for jsonb columns
+        await execute("""
+            INSERT INTO invoices (
+                org_id, invoice_number, customer_id, amount,
+                status, due_date, created_at, items, created_by
+            ) VALUES (
+                $1, $2, $3, $4,
+                'pending', CURRENT_DATE + INTERVAL '30 days', NOW(), $5, $6
+            )
+        """, user["org_id"], invoice_number, customer_id,
+            str(total_amount), items, user["user_id"])
+    except Exception as e:
+        print(f"[EXECUTOR] Invoice insert failed: {e}")
+        return {"success": False, "message": "❌ Could not create invoice. Please try again."}
 
-    # Fetch customer details for PDF
     customer = await fetch_one(
         "SELECT name, city, gst_number FROM customers WHERE id = $1",
         customer_id
     )
+    if not customer:
+        return {"success": False, "message": "❌ Customer record missing after insert."}
 
-    # Build invoice rows for PDF
+    due = datetime.now(timezone.utc) + timedelta(days=30)
     invoice_rows = [{
         "invoice_number": invoice_number,
         "customer_name": customer["name"],
@@ -187,16 +253,14 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
         "gst_number": customer["gst_number"],
         "amount": str(total_amount),
         "status": "pending",
-        "due_date": (datetime.now(timezone.utc).replace(day=30) if datetime.now(timezone.utc).day < 30 else 
-                     datetime.now(timezone.utc).replace(month=datetime.now(timezone.utc).month % 12 + 1, day=30)).strftime("%Y-%m-%d"),
+        "due_date": due.strftime("%Y-%m-%d"),
         "items": items
     }]
 
-    # Calculate subtotal and GST for PDF
-    subtotal = sum(float(item.get("unit_price", 0)) * float(item.get("qty", 1)) for item in items)
-    gst_amount = sum(float(item.get("gst", 0)) for item in items)
+    subtotal = sum(float(i["unit_price"]) * int(i["qty"]) for i in items)
+    gst_amount = sum(float(i["gst"]) for i in items)
 
-    # Generate PDF
+    pdf_bytes = None
     try:
         pdf_bytes = await generate_pdf(
             rows=invoice_rows,
@@ -217,20 +281,32 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
             }
         )
     except Exception as e:
-        pdf_bytes = None
+        print(f"[EXECUTOR] Invoice PDF failed: {e}")
 
-    # Log to audit
-    await execute("""
-        INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome, otp_used)
-        VALUES ($1, $2, $3, $4, 'success', false)
-    """, user["org_id"], user["user_id"], "create_sales_invoice", f"invoice {customer['name']} {total_amount}")
+    try:
+        await execute("""
+            INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome, otp_used)
+            VALUES ($1, $2, $3, $4, 'success', false)
+        """, user["org_id"], user["user_id"], "create_sales_invoice",
+            f"invoice {customer['name']} {total_amount}")
+    except Exception as e:
+        print(f"[EXECUTOR] Audit log failed (non-fatal): {e}")
 
-    # Build item summary for message
-    item_summary = "\n".join([f"  • {i.get('description', 'Item')}: Qty {i.get('qty', 1)} × Rs.{float(i.get('unit_price', 0)):,.0f} = Rs.{float(i.get('total', 0)):,.0f}" for i in items])
+    item_summary = "\n".join(
+        f"  • {i['description']}: Qty {i['qty']} × Rs.{i['unit_price']:,.0f} = Rs.{i['total']:,.0f}"
+        for i in items
+    )
 
     return {
         "success": True,
-        "message": f"✅ Invoice #{invoice_number} created\n\nCustomer: {customer['name']}\nItems:\n{item_summary}\n\nTotal: Rs.{total_amount:,.0f}\nStatus: PENDING\nDue Date: 30 days",
+        "message": (
+            f"✅ Invoice *#{invoice_number}* created\n\n"
+            f"Customer: *{customer['name']}*\n"
+            f"Items:\n{item_summary}\n\n"
+            f"Total: *Rs.{total_amount:,.0f}*\n"
+            f"Status: PENDING\n"
+            f"Due Date: 30 days"
+        ),
         "pdf_bytes": pdf_bytes,
         "invoice_number": invoice_number
     }
@@ -238,51 +314,53 @@ async def _create_invoice(fields: dict, user: dict, pdf_config: dict) -> dict:
 
 async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
     """Create a quotation record and generate PDF."""
-    customer_id = fields.get("customer_id")
-    items = fields.get("items", [])
+    items_raw = fields.get("items") or []
+    if not items_raw:
+        return {
+            "success": False,
+            "message": "Missing items. Please provide at least one item with description, quantity, and unit price."
+        }
 
+    try:
+        items = await _normalize_items(items_raw, user["org_id"])
+    except ValueError as e:
+        return {"success": False, "message": f"❌ Invalid item data: {e}"}
+
+    customer_id = await _resolve_customer_id(fields, user["org_id"])
     if not customer_id:
-        return {"success": False, "message": "Missing customer_id"}
+        return {"success": False, "message": "❌ Customer not found. Please check the customer name."}
 
-    if not items or len(items) == 0:
-        return {"success": False, "message": "Missing items. Please provide at least one item with description, quantity, and unit price."}
+    total_amount = sum(float(i["total"]) for i in items)
 
-    # Calculate total amount from items
-    total_amount = 0.0
-    for item in items:
-        item_total = item.get("total", 0)
-        total_amount += float(item_total)
-
-    # Generate quotation number
     count_row = await fetch_one(
         "SELECT COUNT(*) as cnt FROM quotations WHERE org_id = $1",
         user["org_id"]
     )
     quotation_number = f"QUO-{1001 + int(count_row['cnt'])}"
-
-    # Calculate valid until date (3 days from now)
-    from datetime import timedelta
     valid_until = datetime.now(timezone.utc) + timedelta(days=3)
 
-    # Insert quotation
-    await execute("""
-        INSERT INTO quotations (
-            org_id, quotation_number, customer_id, items,
-            total_amount, status, valid_until, created_at, created_by
-        ) VALUES (
-            $1, $2, $3, $4,
-            $5, 'sent', $6, NOW(), $7
-        )
-    """, user["org_id"], quotation_number, customer_id, json.dumps(items),
-        str(total_amount), valid_until, user["user_id"])
+    try:
+        await execute("""
+            INSERT INTO quotations (
+                org_id, quotation_number, customer_id, items,
+                total_amount, status, valid_until, created_at, created_by
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, 'sent', $6, NOW(), $7
+            )
+        """, user["org_id"], quotation_number, customer_id, items,
+            str(total_amount), valid_until, user["user_id"])
+    except Exception as e:
+        print(f"[EXECUTOR] Quotation insert failed: {e}")
+        return {"success": False, "message": "❌ Could not create quotation. Please try again."}
 
-    # Fetch customer details
     customer = await fetch_one(
         "SELECT name, city, gst_number FROM customers WHERE id = $1",
         customer_id
     )
+    if not customer:
+        return {"success": False, "message": "❌ Customer record missing after insert."}
 
-    # Build quotation rows for PDF
     quotation_rows = [{
         "quotation_number": quotation_number,
         "customer_name": customer["name"],
@@ -293,11 +371,10 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
         "items": items
     }]
 
-    # Calculate subtotal and GST for PDF
-    subtotal = sum(float(item.get("unit_price", 0)) * float(item.get("qty", 1)) for item in items)
-    gst_amount = sum(float(item.get("gst", 0)) for item in items)
+    subtotal = sum(float(i["unit_price"]) * int(i["qty"]) for i in items)
+    gst_amount = sum(float(i["gst"]) for i in items)
 
-    # Generate PDF
+    pdf_bytes = None
     try:
         pdf_bytes = await generate_pdf(
             rows=quotation_rows,
@@ -318,20 +395,31 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
             }
         )
     except Exception as e:
-        pdf_bytes = None
+        print(f"[EXECUTOR] Quotation PDF failed: {e}")
 
-    # Log to audit
-    await execute("""
-        INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome, otp_used)
-        VALUES ($1, $2, $3, $4, 'success', false)
-    """, user["org_id"], user["user_id"], "generate_price_quotation", f"quote {customer['name']}")
+    try:
+        await execute("""
+            INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome, otp_used)
+            VALUES ($1, $2, $3, $4, 'success', false)
+        """, user["org_id"], user["user_id"], "generate_price_quotation",
+            f"quote {customer['name']}")
+    except Exception as e:
+        print(f"[EXECUTOR] Audit log failed (non-fatal): {e}")
 
-    # Build item summary for message
-    item_summary = "\n".join([f"  • {i.get('description', 'Item')}: Qty {i.get('qty', 1)} × Rs.{float(i.get('unit_price', 0)):,.0f} = Rs.{float(i.get('total', 0)):,.0f}" for i in items])
+    item_summary = "\n".join(
+        f"  • {i['description']}: Qty {i['qty']} × Rs.{i['unit_price']:,.0f} = Rs.{i['total']:,.0f}"
+        for i in items
+    )
 
     return {
         "success": True,
-        "message": f"✅ Quotation {quotation_number} created\n\nCustomer: {customer['name']}\nItems:\n{item_summary}\n\nTotal: Rs.{total_amount:,.0f}\n\nValid for 3 days. Gold rates subject to market fluctuation.",
+        "message": (
+            f"✅ Quotation *{quotation_number}* created\n\n"
+            f"Customer: *{customer['name']}*\n"
+            f"Items:\n{item_summary}\n\n"
+            f"Total: *Rs.{total_amount:,.0f}*\n\n"
+            f"Valid for 3 days. Gold rates subject to market fluctuation."
+        ),
         "pdf_bytes": pdf_bytes,
         "quotation_number": quotation_number
     }
