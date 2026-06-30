@@ -590,6 +590,9 @@ When the user provides incomplete information for an action (e.g., "create invoi
   4) When all required fields are collected, call update_draft with stage="awaiting_confirmation"
   5) Then call confirm_action
 
+CRITICAL: NEVER use clarify tool for incomplete action requests. Use clarify ONLY for ambiguous customer names (when 2+ customers match).
+If user says "invoice for Mehta Enterprises" without amount → use update_draft, NOT clarify.
+
 Example:
   User: "create invoice"
   → update_draft(intent_key="create_sales_invoice", fields={{}})
