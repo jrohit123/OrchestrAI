@@ -793,6 +793,8 @@ async def _execute_tool(
 
         try:
             full_params = [user["org_id"]] + list(params)
+            print(f"[AGENT] Executing SQL: {sql}")
+            print(f"[AGENT] SQL params: {full_params}")
             rows = await fetch_all(sql, *full_params)
 
             # Strip sensitive columns
