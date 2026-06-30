@@ -272,17 +272,19 @@ TOOLS = [
         "function": {
             "name": "update_draft",
             "description": (
-                "Update or read the pending action draft. Use this to accumulate "
-                "information across multiple turns before confirmation. "
-                "Call with intent_key to start a new draft. Call with fields to update "
-                "an existing draft. The response shows what fields are still missing."
+                "CRITICAL: MUST use this tool for ANY action creation request (invoice, quotation, etc.). "
+                "Use to accumulate information across multiple turns. "
+                "ALWAYS call this when user wants to create something, even if information is incomplete. "
+                "Call with intent_key to start a new draft. Call with fields to update existing draft. "
+                "The response shows what fields are still missing. "
+                "NEVER respond with text asking for details without calling this tool first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "intent_key": {
                         "type": "string",
-                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')"
+                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation'). REQUIRED to start a draft."
                     },
                     "fields": {
                         "type": "object",
@@ -294,7 +296,7 @@ TOOLS = [
                         "description": "Stage of the draft. Default 'collecting'. Set to 'awaiting_confirmation' when all fields are collected."
                     }
                 },
-                "required": []
+                "required": ["intent_key"]
             }
         }
     },
@@ -303,10 +305,10 @@ TOOLS = [
         "function": {
             "name": "clarify",
             "description": (
-                "Ask the user a clarifying question when their request is ambiguous. "
-                "Use when: a name matches multiple records, the request is incomplete, "
-                "or you need one more piece of information before proceeding. "
-                "Do NOT use this for every message — only when genuinely unclear."
+                "Ask a clarifying question ONLY when a customer name matches 2+ records in the database. "
+                "Do NOT use for incomplete action requests - use update_draft instead. "
+                "Do NOT use for missing information - use update_draft instead. "
+                "Only use when genuinely ambiguous customer names."
             ),
             "parameters": {
                 "type": "object",
