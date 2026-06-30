@@ -211,6 +211,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     if has_corrupted:
         print(f"[WEBHOOK] Corrupted history detected, sanitizing session {session_id}")
         session["conversation_history"] = sanitized_history
+        conversation_history = sanitized_history
         await set_session(session_id, session, ttl=ttl_minutes * 60)
 
     # 5. Approval button responses
