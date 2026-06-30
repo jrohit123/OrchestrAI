@@ -357,6 +357,18 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         # Merge into existing draft
         merged_fields = {**existing_fields, **extracted_fields}
 
+        # Resolve customer_id if customer_name is present but customer_id is not
+        if merged_fields.get("customer_name") and not merged_fields.get("customer_id"):
+            from app.db import fetch_one
+            customer_name = merged_fields["customer_name"]
+            customer = await fetch_one(
+                "SELECT id FROM customers WHERE org_id = $1 AND name ILIKE $2",
+                user["org_id"], f"%{customer_name}%"
+            )
+            if customer:
+                merged_fields["customer_id"] = customer["id"]
+                print(f"[WEBHOOK] Resolved customer_id: {customer['id']}")
+
         # Validate merged draft
         from app.services.agent import _validate_draft
         validation = await _validate_draft(intent_key, merged_fields, user["org_id"])
