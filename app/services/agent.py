@@ -599,14 +599,14 @@ When the user provides incomplete information for an action (e.g., "create invoi
 
 Example:
   User: "create invoice"
-  → update_draft(intent_key="create_sales_invoice", fields={})
+  → update_draft(intent_key="create_sales_invoice", fields={{}})
   → "I'll create an invoice for you. I need: customer name, amount. Please provide customer name."
   User: "Jain Gold Works"
-  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name})
+  → update_draft(intent_key="create_sales_invoice", fields={{customer_id, customer_name}})
   → "I have: customer Jain Gold Works. I need: amount. Please provide amount."
   User: "92000"
-  → update_draft(intent_key="create_sales_invoice", fields={customer_id, customer_name, amount}, stage="awaiting_confirmation")
-  → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={...})
+  → update_draft(intent_key="create_sales_invoice", fields={{customer_id, customer_name, amount}}, stage="awaiting_confirmation")
+  → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={{...}})
 
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.
