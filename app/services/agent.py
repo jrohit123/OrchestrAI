@@ -1268,9 +1268,33 @@ async def run_agent(
 
         # LLM finished — return the text response
         if not assistant_message.tool_calls:
-            print(f"[AGENT] No tool calls, returning text response: {assistant_message.content[:200]}")
+            content = assistant_message.content or ""
+
+            # Intercept: LLM printed a ⚠️ Confirm block as plain text instead of
+            # calling confirm_action tool. This happens when all info is given in one
+            # message and the model skips tool-calling. Inject a corrective message
+            # and retry so the draft gets properly saved to Redis.
+            if "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower()):
+                # Only intercept if there's a draft being collected
+                active_draft = session_patch.get("pending_action") or pending_action
+                if active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation"):
+                    print(f"[AGENT] Intercepted plain-text confirm block — forcing tool retry")
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You printed the confirmation block as plain text. "
+                            "This does NOT work — the user's 'yes' cannot be detected without the tool. "
+                            "You MUST now call update_draft (with all collected fields and "
+                            "stage='awaiting_confirmation') followed immediately by confirm_action. "
+                            "Use the exact same details you just showed. Do it now."
+                        )
+                    })
+                    continue  # retry this iteration
+
+            print(f"[AGENT] No tool calls, returning text response: {content[:200]}")
             history_to_save = _serialize_history(messages)
-            return assistant_message.content.strip(), history_to_save, session_patch
+            return content.strip(), history_to_save, session_patch
 
         # LLM wants to call tools
         # Add assistant's response to message history
