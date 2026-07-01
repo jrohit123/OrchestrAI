@@ -497,6 +497,48 @@ TOOLS = [
                 "required": ["action"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_to_user",
+            "description": (
+                "Send a report, summary, or any data to another user in the same org via WhatsApp.\n\n"
+                "Use this when the current user asks to forward, share, or send something to a colleague.\n\n"
+                "Examples:\n"
+                "  'send inventory summary to Rohit'\n"
+                "  'forward this outstanding report to Ravi'\n"
+                "  'share low stock alert with Priya'\n"
+                "  'send pdf of pending orders to Rajeswari'\n\n"
+                "Steps:\n"
+                "  1. Look up the recipient in the users table by name\n"
+                "  2. Run the requested query (query_database or generate_pdf)\n"
+                "  3. Call this tool with the result and recipient phone\n\n"
+                "If recipient name is ambiguous (multiple matches), call clarify first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient_phone": {
+                        "type": "string",
+                        "description": "WhatsApp phone number of the recipient (from users table)"
+                    },
+                    "recipient_name": {
+                        "type": "string",
+                        "description": "Name of the recipient user"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The text message or report summary to send"
+                    },
+                    "sender_name": {
+                        "type": "string",
+                        "description": "Name of the person sending (current user)"
+                    }
+                },
+                "required": ["recipient_phone", "message"]
+            }
+        }
     }
 ]
 
@@ -1306,7 +1348,27 @@ async def _execute_tool(
 
         return "ERROR: Unknown manage_schedule action"
 
-    return f"ERROR: Unknown tool {tool_name}"
+    elif tool_name == "send_to_user":
+        from app.services.whatsapp import send_text as _send_text
+        recipient_phone = tool_input.get("recipient_phone", "")
+        recipient_name  = tool_input.get("recipient_name", "someone")
+        message         = tool_input.get("message", "")
+        sender_name     = tool_input.get("sender_name") or user.get("user_name", "A colleague")
+
+        if not recipient_phone or not message:
+            return "ERROR: recipient_phone and message are required"
+
+        try:
+            header = f"📨 *Message from {sender_name}:*\n\n"
+            await _send_text(recipient_phone, header + message)
+            return {
+                "type": "sent_to_user",
+                "recipient": recipient_name,
+                "recipient_phone": recipient_phone,
+                "success": True
+            }
+        except Exception as e:
+            return f"ERROR sending to {recipient_name}: {str(e)}"
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────

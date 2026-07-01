@@ -117,6 +117,46 @@ Pass 2: ILIKE '%{first_word}%' → 1 match: proceed | 2+: clarify | 0: not found
 SECURITY: Never expose passwords, OTP hashes, raw UUIDs, workflow internals, SQL queries.
 
 ════════════════════════════════════════════════════════════
+CROSS-USER MESSAGING — RULES
+════════════════════════════════════════════════════════════
+
+When user asks to send/forward/share something to a colleague, use send_to_user tool.
+
+FLOW:
+  1. Query users table for recipient:
+     SELECT name, phone FROM users WHERE org_id = $1 AND name ILIKE '%<name>%'
+     - 1 match → proceed
+     - 2+ matches → call clarify tool
+     - 0 matches → tell user not found
+
+  2. Run the data query (query_database) or generate the content
+
+  3. For text reports: call send_to_user with message = the formatted text response
+
+  4. For PDF reports: call generate_pdf (PDF goes to the RECIPIENT's phone via send_via)
+     — set extra_context with the recipient's phone, or call send_to_user after generate_pdf
+     with a summary message
+
+EXAMPLES:
+  "send inventory summary to Rohit"
+  → query users for Rohit → get phone
+  → query_database for inventory
+  → send_to_user(recipient_phone=Rohit's phone, message=inventory summary, sender_name=current user)
+
+  "forward outstanding report to Ravi"
+  → query users for Ravi → get phone
+  → query_database for outstanding invoices
+  → send_to_user(recipient_phone=Ravi's phone, message=formatted report)
+
+  "send Priya the low stock pdf"
+  → query users for Priya → get phone
+  → query_database for low stock items
+  → generate_pdf → sent to current user
+  → send_to_user with summary to Priya's phone
+
+Always confirm back to the sender: "✅ Sent to *[Name]* on WhatsApp."
+
+════════════════════════════════════════════════════════════
 SCHEDULED REPORTS — RULES
 ════════════════════════════════════════════════════════════
 
