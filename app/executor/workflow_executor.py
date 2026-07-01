@@ -4,7 +4,7 @@ from app.services.otp_service import generate_and_send_otp
 from app.services.whatsapp import send_text, send_buttons
 from app.redis_client import set_session, clear_all_sessions
 from app.db import fetch_one, execute
-from app.scheduler.jobs import reschedule_dues_report, stop_dues_report, get_job_schedule
+from app.scheduler.jobs import start_scheduler  # noqa: F401 — kept for any future direct use
 
 
 async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
@@ -139,56 +139,9 @@ async def execute_intent(
 
     # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
     if intent == "manage_schedule":
-        if user["role"] != "owner":
-            return "❌ Only the Owner can change schedule settings."
-
-        parsed = _parse_schedule(raw_text)
-
-        if parsed["action"] == "error":
-            return parsed["message"]
-
-        if parsed["action"] == "status":
-            schedule = get_job_schedule()
-            return f"📅 Dues report is scheduled for: *{schedule}*"
-
-        if parsed["action"] == "stop":
-            stop_dues_report()
-            await execute("""
-                UPDATE workflows SET is_scheduled = false
-                WHERE intent_key = 'weekly_dues_report' AND org_id = $1
-            """, org_id)
-            return "⏸ Dues report schedule *paused*.\nSend *schedule dues report every Monday 9 AM* to restart."
-
-        if parsed["action"] == "set":
-            # Auto-create workflow if it doesn't exist
-            existing = await fetch_one(
-                "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = 'weekly_dues_report'",
-                org_id
-            )
-            if not existing:
-                await execute("""
-                    INSERT INTO workflows (
-                        org_id, intent_key, name, description, steps,
-                        adapter_method, trigger_patterns, is_active, is_scheduled
-                    ) VALUES ($1, 'weekly_dues_report', 'Scheduled Dues Report',
-                    'System workflow for cron-scheduled overdue summary. Not used for ad-hoc user queries.',
-                    ARRAY['["Send aggregated overdue report to scheduled user via WhatsApp"]'::jsonb],
-                    'crm.get_all_overdue', '[]'::jsonb, true, false)
-                """, org_id)
-            
-            reschedule_dues_report(parsed["day"], parsed["hour"], parsed.get("minute", 0))
-            await execute("""
-                UPDATE workflows
-                SET is_scheduled = true,
-                    schedule_cron = $1,
-                    scheduled_by = $2
-                WHERE intent_key = 'weekly_dues_report' AND org_id = $3
-            """, f"{parsed.get('minute', 0)} {parsed['hour']} * * {parsed['day']}", user_id, org_id)
-            return (
-                f"✅ *Schedule Updated*\n\n"
-                f"Dues report will now be sent *{parsed['label']}*\n"
-                f"Next run: {get_job_schedule()}"
-            )
+        # Scheduling is now handled entirely by the agent's manage_schedule tool.
+        # If this legacy path is ever triggered, redirect the user.
+        return "To manage schedules, just tell me what you want — e.g. 'send me outstanding report every day at 8am' or 'show my schedules'."
 
     if intent == "clear_sessions":
         if user["role"] != "owner":
