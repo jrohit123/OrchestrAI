@@ -572,6 +572,8 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 
     <div class="stats" id="statsGrid"></div>
 
+    <!-- AI Workflow Builder - Hidden for now -->
+    <!--
     <div class="card" style="border-left:4px solid #8b5cf6;margin-bottom:20px">
       <div class="card-title" style="color:#8b5cf6">🤖 AI Workflow Builder</div>
       <div style="display:flex;flex-direction:column;gap:12px">
@@ -581,13 +583,13 @@ input:checked+.slider:before{{transform:translateX(18px)}}
             style="width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:13px;
                    margin-top:6px;font-family:inherit;resize:vertical"></textarea>
         </div>
-        <button onclick="generateWorkflow()" 
+        <button onclick="generateWorkflow()"
           style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;
                  padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;width:fit-content">
           ✨ Generate Config
         </button>
       </div>
-      
+
       <div id="workflowForm" style="display:none;margin-top:16px;padding-top:16px;
                                    border-top:1px solid #e8edf5">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
@@ -627,12 +629,12 @@ input:checked+.slider:before{{transform:translateX(18px)}}
           </div>
         </div>
         <div style="display:flex;gap:8px">
-          <button onclick="saveWorkflow()" 
+          <button onclick="saveWorkflow()"
             style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;
                    padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500">
             💾 Save Workflow
           </button>
-          <button onclick="cancelWorkflow()" 
+          <button onclick="cancelWorkflow()"
             style="background:#e5e7eb;color:#374151;border:none;border-radius:6px;
                    padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500">
             Cancel
@@ -640,6 +642,7 @@ input:checked+.slider:before{{transform:translateX(18px)}}
         </div>
       </div>
     </div>
+    -->
 
     <div class="card" style="border-left:4px solid #dc2626;margin-bottom:20px">
       <div class="card-title" style="color:#dc2626">🔒 Security — Session Management</div>
@@ -689,22 +692,16 @@ input:checked+.slider:before{{transform:translateX(18px)}}
       </table>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div class="card">
-        <div class="card-title">⚠️ Low Stock Alerts</div>
-        <table>
-          <thead><tr><th>Item</th><th>Current</th><th>Reorder</th></tr></thead>
-          <tbody id="lowStockTable"></tbody>
-        </table>
-      </div>
-      <div class="card">
-        <div class="card-title">📋 Recent Activity</div>
-        <table>
-          <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
-          <tbody id="activityTable"></tbody>
-        </table>
-      </div>
+    <div class="card">
+      <div class="card-title">📋 Recent Activity</div>
+      <table>
+        <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
+        <tbody id="activityTable"></tbody>
+      </table>
     </div>
+
+    <!-- AI Workflow Builder - Hidden for now -->
+    <!--
 
   </div>
 </div>
@@ -938,7 +935,7 @@ async function loadData() {{
       <tr>
         <td style="font-size:12px">${{r.user_name || '—'}}</td>
         <td style="font-size:11px;color:#555">${{r.intent_key}}</td>
-        <td style="font-size:11px;color:#555">${{r.created_at}}</td>
+        <td style="font-size:11px;color:#555">${{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}}</td>
         <td><span class="badge ${{
           r.outcome === 'success' ? 'badge-success' :
           r.outcome === 'pending_approval' ? 'badge-pending' : 'badge-failed'
