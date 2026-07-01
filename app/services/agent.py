@@ -614,12 +614,16 @@ If the user says only "create invoice" or "invoice banao" with NO customer, item
   → Do NOT use schema sample rows as invoice data
   → Do NOT pull items from orders/inventory unless user asked
 
-RULE 6C — SINGLE CONFIRMATION:
+RULE 6C — CONFIRMATION MUST USE THE confirm_action TOOL — NEVER PLAIN TEXT:
 When all required fields are collected:
   → Call update_draft with stage="awaiting_confirmation"
-  → Immediately call confirm_action
-  → Do NOT also ask "Please confirm if this is correct" in plain text
-  → The ONLY confirmation the user sees is the ⚠️ Confirm Action block
+  → Immediately call confirm_action TOOL
+  → FORBIDDEN: Do NOT write "⚠️ Confirm Action" as plain text in your response
+  → FORBIDDEN: Do NOT format a confirmation block yourself and return it as a message
+  → FORBIDDEN: Do NOT ask "yes or no?" or "shall I proceed?" in plain text
+  The confirm_action TOOL is the ONLY way a confirmation block ever reaches the user.
+  If you write the ⚠️ block as text, the system cannot detect it and "yes" from the user
+  will be treated as a new message with no pending action — the quotation/invoice will NOT be created.
 
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.

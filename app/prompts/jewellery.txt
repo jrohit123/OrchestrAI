@@ -238,7 +238,11 @@ STEP 4 — CALL update_draft:
     stage = "awaiting_confirmation"
   )
 
-STEP 5 — CALL confirm_action:
+STEP 5 — CALL confirm_action TOOL (NEVER as plain text):
+  ⚠️ ABSOLUTE RULE: You MUST call the confirm_action TOOL here.
+  DO NOT write "⚠️ Confirm Action..." as a plain text response.
+  If you write it as text, "yes" from the user does nothing — no DB entry, no PDF.
+  The ONLY valid action is calling the confirm_action tool with:
   confirm_action(
     action_description = "Generate price quotation for <customer>",
     details = {
