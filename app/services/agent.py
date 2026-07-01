@@ -785,6 +785,36 @@ NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 
 # ── Draft validation helper ────────────────────────────────────────────────────
 
+# Fields that are resolved by the executor, not supplied by the LLM
+_EXECUTOR_RESOLVED_FIELDS = {"customer_id", "org_id", "created_by"}
+
+# Stale draft threshold in minutes
+_DRAFT_STALE_MINUTES = 30
+
+def _is_draft_stale(pending_action: dict | None) -> bool:
+    """Return True if this collecting draft is too old to still be relevant."""
+    if not pending_action:
+        return False
+    if pending_action.get("stage") != "collecting":
+        return False  # awaiting_confirmation drafts should never be auto-abandoned
+    created = pending_action.get("created_at")
+    if not created:
+        return False
+    try:
+        import datetime as _datetime_mod
+        if isinstance(created, str):
+            created_dt = _datetime_mod.datetime.fromisoformat(created)
+        else:
+            created_dt = created
+        # Make both timezone-aware or both naive for comparison
+        now = _datetime_mod.datetime.now(_datetime_mod.timezone.utc)
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=_datetime_mod.timezone.utc)
+        age_minutes = (now - created_dt).total_seconds() / 60
+        return age_minutes > _DRAFT_STALE_MINUTES
+    except Exception:
+        return False
+
 async def _validate_draft(intent_key: str, fields: dict, org_id: str) -> dict:
     """Validate draft fields against workflow entity_schema."""
     wf = await fetch_one(
@@ -804,6 +834,8 @@ async def _validate_draft(intent_key: str, fields: dict, org_id: str) -> dict:
     missing = []
     for field_name, field_def in schema.items():
         if not field_def.get("required"):
+            continue
+        if field_name in _EXECUTOR_RESOLVED_FIELDS:  # Skip executor-resolved fields
             continue
         val = fields.get(field_name)
         if val is None or val == "" or val == []:
@@ -1130,22 +1162,36 @@ async def run_agent(
     
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
-    if conversation_history and len(conversation_history) >= 2:
-        last_assistant = conversation_history[-1].get("content", "")
+    if conversation_history:
+        # Find the most recent assistant message
+        last_assistant_msg = next(
+            (m for m in reversed(conversation_history) if m.get("role") == "assistant"),
+            None
+        )
+        last_assistant = last_assistant_msg.get("content", "") if last_assistant_msg else ""
+
         if "🤔" in last_assistant:
             # User is responding to a clarify menu
             if msg_stripped.lower() in ("all", "all of them", "summary", "all customers", "sab"):
                 # User wants all options - append this context
-                message = f"Show results for all options (summary)"
+                message = "Show results for all options (summary)"
             elif msg_stripped.isdigit():
                 # User is selecting a specific option
                 lines = last_assistant.split("\n")
+                selected_option = None
                 for line in lines:
-                    if line.strip().startswith(msg_stripped + "."):
-                        selected_option = line.strip()[len(msg_stripped)+1:].strip()
-                        # Append the selection to the message for context
-                        message = f"{selected_option} (selected from menu)"
+                    stripped_line = line.strip()
+                    if stripped_line.startswith(msg_stripped + ".") or \
+                       stripped_line.startswith(msg_stripped + " "):
+                        selected_option = stripped_line[len(msg_stripped):].lstrip(". ").strip()
                         break
+                if selected_option:
+                    # Provide the full context: what the user was doing + what they picked
+                    draft_intent = (pending_action or {}).get("intent_key", "the previous request")
+                    message = (
+                        f"User selected option {msg_stripped}: {selected_option}. "
+                        f"Continue with {draft_intent} for this customer/selection."
+                    )
     # ─────────────────────────────────────────────────────────────────────────
     
     # Format pending action context for LLM
@@ -1153,11 +1199,17 @@ async def run_agent(
         if not pending_action:
             return ""
         fields = pending_action.get("fields") or {}
+        correction = pending_action.get("correction_hint", "")
+        correction_line = (
+            f"\nUser just said: \"{correction}\" — treat this as a correction to the draft above. "
+            "Update only the relevant field(s), keep everything else.\n"
+        ) if correction else ""
         return (
             "\n=== ACTIVE DRAFT (from this conversation — do NOT discard or replace unless user changes it) ===\n"
             f"Intent: {pending_action.get('intent_key')}\n"
             f"Stage: {pending_action.get('stage', 'collecting')}\n"
             f"Collected fields: {json.dumps(fields, default=str)}\n"
+            f"{correction_line}"
             "Only ask for fields NOT listed above. Never invent values not provided by the user.\n"
             "=== END ACTIVE DRAFT ===\n"
         )
@@ -1171,17 +1223,37 @@ async def run_agent(
         traceback.print_exc()
         return f"Error building system prompt: {str(e)}", [], {}
 
-    # Inject pending action into system prompt
-    draft_context = _format_pending_action_context(pending_action)
-    system_with_draft = system_prompt + draft_context if draft_context else system_prompt
-
-    messages = [
-        {"role": "system", "content": system_with_draft}
-    ]
+    # Abandon stale collecting drafts — they belong to old conversations
+    if _is_draft_stale(pending_action):
+        print(f"[AGENT] Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning")
+        pending_action = None
+        # Note: webhook will clean it up from session on next session_patch write
 
     # Inject prior conversation (last N turns)
+    messages = [
+        {"role": "system", "content": system_prompt}  # clean system prompt, no draft appended
+    ]
+
     if conversation_history:
         messages.extend(conversation_history)
+
+    # Inject active draft as the most recent assistant context — gets higher attention than system
+    if pending_action and not _is_draft_stale(pending_action):
+        fields = pending_action.get("fields") or {}
+        stage = pending_action.get("stage", "collecting")
+        correction = pending_action.get("correction_hint", "")
+        correction_line = (
+            f"\nThe user just said: \"{correction}\" — this is a correction. "
+            "Update only the relevant field(s), keep everything else intact.\n"
+        ) if correction else ""
+
+        draft_msg = (
+            f"[ACTIVE DRAFT — intent: {pending_action.get('intent_key')}, stage: {stage}]\n"
+            f"Already collected: {json.dumps(fields, default=str)}\n"
+            f"{correction_line}"
+            "Only ask for fields NOT listed above. Never re-ask for already-collected data."
+        )
+        messages.append({"role": "assistant", "content": draft_msg})
 
     messages.append({"role": "user", "content": message})
 
@@ -1260,9 +1332,13 @@ async def run_agent(
                         f"{i+1}. {o}" for i, o in enumerate(options)
                     )
                     history_to_save = _serialize_history(messages)
-                    return f"🤔 {clarify_question}\n\n{opts}", history_to_save, {}
+                    clarify_text = f"🤔 {clarify_question}\n\n{opts}"
+                    history_to_save.append({"role": "assistant", "content": clarify_text})
+                    return clarify_text, history_to_save, session_patch  # Fix 2: return session_patch
                 history_to_save = _serialize_history(messages)
-                return f"🤔 {clarify_question}", history_to_save, {}
+                clarify_text = f"🤔 {clarify_question}"
+                history_to_save.append({"role": "assistant", "content": clarify_text})
+                return clarify_text, history_to_save, session_patch  # Fix 2: return session_patch
 
             # If update_draft was called, capture session patch
             if tool_call.function.name == "update_draft":
@@ -1277,6 +1353,7 @@ async def run_agent(
                         "created_at": current_draft.get("created_at") or __import__("datetime").datetime.now().isoformat()
                     }
                     session_patch["pending_action"] = updated_draft
+                    pending_action = updated_draft  # Fix 1: refresh local var for subsequent iterations
                 # Continue loop to let LLM respond with confirmation or next question
 
             # If confirm_action was called, pause and return the prompt

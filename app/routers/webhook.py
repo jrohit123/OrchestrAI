@@ -28,6 +28,7 @@ _CONFIRM_WORDS = frozenset({
     "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
 })
 _CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
+_RESET_WORDS = frozenset({"reset", "start over", "cancel everything", "clear draft"})
 
 
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
@@ -121,6 +122,17 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     if not user["is_active"] or not user["org_active"]:
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
+        return
+
+    # 0. Reset keyword check - clear draft unconditionally (after identity check)
+    text_stripped = text.strip().lower()
+    if text_stripped in _RESET_WORDS:
+        session_id = f"session:{user['org_id']}:{phone}"
+        session = await get_session(session_id)
+        if session:
+            session.pop("pending_action", None)
+            await set_session(session_id, session, ttl=480)
+        await send_text(phone, "🔄 Cleared. What would you like to do?")
         return
 
     # 2. Fetch org TTL
@@ -287,10 +299,18 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_text(phone, "❌ Action cancelled.")
             return
 
-        # Unrecognised reply while awaiting confirm — treat as correction/new info
-        session.pop("pending_action", None)
-        await set_session(session_id, session, ttl=session_ttl)
-        pending_action = None
+        # Unrecognised reply while awaiting confirm — treat as correction to the draft
+        if pending_action:
+            # Downgrade stage so the agent re-enters collection mode with existing fields
+            pending_action["stage"] = "collecting"
+            pending_action["correction_hint"] = text  # pass the user's correction text
+            session["pending_action"] = pending_action
+            await set_session(session_id, session, ttl=session_ttl)
+            # pending_action stays non-None → agent receives it as an active draft to update
+            # fall through to agent (do NOT pop pending_action)
+        else:
+            # No draft at all — just fall through
+            pass
         # fall through to agent
 
     # 9. OTP reply for pending action
@@ -355,6 +375,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             pending_action = session_patch.get("pending_action")
 
         # Save last 15 messages (7-8 turns) for context
+        # Ensure agent reply is in history (it's present for normal text replies,
+        # but clarify-path skips it — add it here unconditionally if not already last)
+        if not updated_history or updated_history[-1].get("content") != reply:
+            updated_history = updated_history + [{"role": "assistant", "content": reply}]
+
         updated_history = updated_history[-15:]
         session["last_message"] = text
         session["conversation_history"] = updated_history
