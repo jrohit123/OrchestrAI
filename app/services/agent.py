@@ -794,15 +794,26 @@ NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
 # Fields that are resolved by the executor, not supplied by the LLM
 _EXECUTOR_RESOLVED_FIELDS = {"customer_id", "org_id", "created_by"}
 
-# Stale draft threshold in minutes
-_DRAFT_STALE_MINUTES = 30
+# Stale draft thresholds in minutes
+_DRAFT_STALE_MINUTES   = 30   # collecting stage — abandon after 30 min of inactivity
+_CONFIRM_STALE_MINUTES = 10   # awaiting_confirmation — shorter: stale unconfirmed writes are riskier
+
+# Max reprompt attempts before forcing a clean restart
+_MAX_REPROMPT_COUNT = 3
+
 
 def _is_draft_stale(pending_action: dict | None) -> bool:
-    """Return True if this collecting draft is too old to still be relevant."""
+    """
+    Return True if this draft is too old to still be relevant.
+    Covers both 'collecting' (30 min) and 'awaiting_confirmation' (10 min) stages.
+    """
     if not pending_action:
         return False
-    if pending_action.get("stage") != "collecting":
-        return False  # awaiting_confirmation drafts should never be auto-abandoned
+    stage = pending_action.get("stage")
+    if stage not in ("collecting", "awaiting_confirmation"):
+        return False
+    # Use a shorter threshold for confirmation-stage drafts
+    threshold = _CONFIRM_STALE_MINUTES if stage == "awaiting_confirmation" else _DRAFT_STALE_MINUTES
     created = pending_action.get("created_at")
     if not created:
         return False
@@ -817,7 +828,7 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
         if created_dt.tzinfo is None:
             created_dt = created_dt.replace(tzinfo=_datetime_mod.timezone.utc)
         age_minutes = (now - created_dt).total_seconds() / 60
-        return age_minutes > _DRAFT_STALE_MINUTES
+        return age_minutes > threshold
     except Exception:
         return False
 
@@ -1311,13 +1322,21 @@ async def run_agent(
         tool_results = []
         for tool_call in assistant_message.tool_calls:
             print(f"[AGENT] Executing tool: {tool_call.function.name}")
-            result = await _execute_tool(
-                tool_name=tool_call.function.name,
-                tool_input=json.loads(tool_call.function.arguments),
-                user=user,
-                phone=phone,
-                message=message
-            )
+            # Bug 12 fix: catch per-tool exceptions so a failing tool (e.g. generate_pdf
+            # network error) doesn't propagate out of run_agent and lose session_patch
+            # that was accumulated from earlier update_draft calls in the same turn.
+            try:
+                result = await _execute_tool(
+                    tool_name=tool_call.function.name,
+                    tool_input=json.loads(tool_call.function.arguments),
+                    user=user,
+                    phone=phone,
+                    message=message
+                )
+            except Exception as tool_err:
+                print(f"[AGENT] Tool {tool_call.function.name} raised: {tool_err}")
+                import traceback as _tb; _tb.print_exc()
+                result = f"ERROR: {tool_err}"
             result_str = str(result)[:100] if result else "None"
             print(f"[AGENT] Tool result: {result_str}...")
 
@@ -1358,6 +1377,14 @@ async def run_agent(
                         "raw_text": result.get("raw_text", message),
                         "created_at": current_draft.get("created_at") or __import__("datetime").datetime.now().isoformat()
                     }
+                    # Reset reprompt_count whenever fields actually advance (new data was provided)
+                    # This prevents the cap from triggering when the user IS making progress.
+                    new_fields = result.get("fields", {})
+                    old_fields = current_draft.get("fields", {})
+                    if new_fields and any(k not in old_fields or old_fields[k] != v for k, v in new_fields.items()):
+                        updated_draft["reprompt_count"] = 0
+                    else:
+                        updated_draft["reprompt_count"] = current_draft.get("reprompt_count", 0)
                     session_patch["pending_action"] = updated_draft
                     pending_action = updated_draft  # Fix 1: refresh local var for subsequent iterations
                 # Continue loop to let LLM respond with confirmation or next question
@@ -1373,9 +1400,21 @@ async def run_agent(
                         user["org_id"]
                     )
                     if not validation["complete"]:
-                        # Draft incomplete - don't confirm, let LLM ask for missing fields
-                        messages.extend(tool_results)
-                        continue
+                        # Bug 9 fix: do NOT extend messages here — the single
+                        # messages.extend(tool_results) at the bottom of the loop
+                        # handles it. Just overwrite the tool result content so the
+                        # LLM gets a clear explanation of WHY confirm was rejected
+                        # instead of the silent {"type": "confirm_pending"} dict.
+                        missing_str = ", ".join(validation["missing_fields"])
+                        tool_results[-1]["content"] = json.dumps({
+                            "error": (
+                                f"Draft incomplete. Missing required fields: {missing_str}. "
+                                f"Ask the user for these specific fields before calling "
+                                f"confirm_action again."
+                            )
+                        })
+                        # Fall through to messages.extend(tool_results) below — no continue here
+                        break  # exit the for-tool_call loop so we reach messages.extend once
 
                     # Set stage to awaiting_confirmation - use session_patch draft, not old pending_action
                     draft["stage"] = "awaiting_confirmation"

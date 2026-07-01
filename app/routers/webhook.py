@@ -299,15 +299,43 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_text(phone, "❌ Action cancelled.")
             return
 
-        # Unrecognised reply while awaiting confirm — treat as correction to the draft
+        # Unrecognised reply while awaiting confirm — check staleness first, then treat as correction
         if pending_action:
-            # Downgrade stage so the agent re-enters collection mode with existing fields
-            pending_action["stage"] = "collecting"
-            pending_action["correction_hint"] = text  # pass the user's correction text
-            session["pending_action"] = pending_action
-            await set_session(session_id, session, ttl=session_ttl)
-            # pending_action stays non-None → agent receives it as an active draft to update
-            # fall through to agent (do NOT pop pending_action)
+            from app.services.agent import _is_draft_stale, _MAX_REPROMPT_COUNT
+
+            if _is_draft_stale(pending_action):
+                # Confirmation window (10 min) has expired — drop the draft entirely
+                # and let the message fall through as a brand-new request.
+                print(f"[WEBHOOK] Stale awaiting_confirmation draft detected — clearing")
+                session.pop("pending_action", None)
+                await set_session(session_id, session, ttl=session_ttl)
+                pending_action = None
+                await send_text(phone,
+                    "_⏱️ Your previous confirmation timed out and was cleared. "
+                    "Let me help with your new request._"
+                )
+                # fall through to agent with pending_action=None
+            else:
+                # Still fresh — treat as a correction to the existing draft.
+                # Downgrade stage so the agent re-enters collection mode.
+                reprompt_count = pending_action.get("reprompt_count", 0) + 1
+                if reprompt_count >= _MAX_REPROMPT_COUNT:
+                    # Cap hit — the user and the bot are going in circles. Force a clean restart.
+                    print(f"[WEBHOOK] Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+                    session.pop("pending_action", None)
+                    await set_session(session_id, session, ttl=session_ttl)
+                    await send_text(phone,
+                        "🤔 I'm having trouble understanding the details for this request. "
+                        "Let's start fresh — please send your request again with all the details "
+                        "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+                    )
+                    return
+                pending_action["stage"] = "collecting"
+                pending_action["correction_hint"] = text
+                pending_action["reprompt_count"] = reprompt_count
+                session["pending_action"] = pending_action
+                await set_session(session_id, session, ttl=session_ttl)
+                # fall through to agent
         else:
             # No draft at all — just fall through
             pass
@@ -360,6 +388,25 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     session = await get_session(session_id)
     conversation_history = session.get("conversation_history", [])
     pending_action = session.get("pending_action")
+
+    # Reprompt cap check for collecting stage (same cap, different entry point than confirm stage)
+    if pending_action and pending_action.get("stage") == "collecting":
+        from app.services.agent import _MAX_REPROMPT_COUNT
+        reprompt_count = pending_action.get("reprompt_count", 0)
+        if reprompt_count >= _MAX_REPROMPT_COUNT:
+            print(f"[WEBHOOK] Collecting-stage reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+            session.pop("pending_action", None)
+            await set_session(session_id, session, ttl=session_ttl)
+            await send_text(phone,
+                "🤔 I'm having trouble understanding the details for this request. "
+                "Let's start fresh — please send your request again with all the details "
+                "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+            )
+            return
+        # Increment reprompt_count each turn we stay in collecting mode
+        pending_action["reprompt_count"] = reprompt_count + 1
+        session["pending_action"] = pending_action
+        await set_session(session_id, session, ttl=session_ttl)
 
     try:
         reply, updated_history, session_patch = await run_agent(
