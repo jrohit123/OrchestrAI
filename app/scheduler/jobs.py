@@ -6,7 +6,7 @@ calls run_agent with the stored query_text, and delivers the result via
 WhatsApp (text or PDF) and/or email — same as the user typing the query manually.
 """
 import datetime
-import pytz
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -15,7 +15,7 @@ from app.db import fetch_all, execute, fetch_one
 from app.services.whatsapp import send_text
 
 scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
-_IST = pytz.timezone("Asia/Kolkata")
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 # ── Compute next_run_at from a schedule row ──────────────────────────────────
