@@ -689,21 +689,12 @@ input:checked+.slider:before{{transform:translateX(18px)}}
       </table>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div class="card">
-        <div class="card-title">⚠️ Low Stock Alerts</div>
-        <table>
-          <thead><tr><th>Item</th><th>Current</th><th>Reorder</th></tr></thead>
-          <tbody id="lowStockTable"></tbody>
-        </table>
-      </div>
-      <div class="card">
-        <div class="card-title">📋 Recent Activity</div>
-        <table>
-          <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
-          <tbody id="activityTable"></tbody>
-        </table>
-      </div>
+    <div class="card">
+      <div class="card-title">📋 Recent Activity</div>
+      <table>
+        <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
+        <tbody id="activityTable"></tbody>
+      </table>
     </div>
 
   </div>
@@ -881,11 +872,6 @@ async function loadData() {{
         <div class="stat-label">Total Customers</div>
         <div class="stat-sub">Registered accounts</div>
       </div>
-      <div class="stat-card" style="border-color:#ef4444">
-        <div class="stat-value" style="color:#ef4444">${{data.low_stock.length}}</div>
-        <div class="stat-label">Low Stock Items</div>
-        <div class="stat-sub">Below reorder level</div>
-      </div>
     `;
 
     // Workflows
@@ -922,23 +908,12 @@ async function loadData() {{
     `).join('');
     document.getElementById('workflowsTable').innerHTML = wfHtml;
 
-    // Low stock
-    const lsHtml = data.low_stock.length
-      ? data.low_stock.map(r => `
-          <tr>
-            <td class="low-stock-item">${{r.name}}</td>
-            <td>${{r.qty}}</td>
-            <td style="color:#888">${{r.reorder_level}}</td>
-          </tr>`).join('')
-      : '<tr><td colspan="3" style="color:#888;padding:12px 0">✅ All stock levels normal</td></tr>';
-    document.getElementById('lowStockTable').innerHTML = lsHtml;
-
     // Activity
     const actHtml = data.recent_logs.map(r => `
       <tr>
         <td style="font-size:12px">${{r.user_name || '—'}}</td>
         <td style="font-size:11px;color:#555">${{r.intent_key}}</td>
-        <td style="font-size:11px;color:#555">${{r.created_at}}</td>
+        <td style="font-size:11px;color:#555">${{r.created_at ? new Date(r.created_at).toLocaleString('en-IN', {{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}}) : '—'}}</td>
         <td><span class="badge ${{
           r.outcome === 'success' ? 'badge-success' :
           r.outcome === 'pending_approval' ? 'badge-pending' : 'badge-failed'
