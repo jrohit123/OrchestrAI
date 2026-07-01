@@ -152,18 +152,29 @@ DELIVERY:
   "whatsapp aur email"   → delivery="both"
   default                → delivery="whatsapp"
 
-QUERY TEXT: store the core query exactly as the user stated it (without the schedule part).
-  "Send me outstanding report every day at 8am" → query_text="outstanding report"
-  "Low stock alert every hour"                  → query_text="low stock items"
-  "Pending orders summary every Monday 9am"     → query_text="pending orders"
+QUERY TEXT: store the core query exactly as the user stated it, keeping any delivery
+  format keywords like "pdf", "document", but removing only the schedule part.
+  "Send me outstanding report every day at 8am"     → query_text="outstanding report"
+  "Send me outstanding report pdf every day at 8am" → query_text="outstanding report pdf"
+  "Low stock alert every hour"                       → query_text="low stock items"
+  "Inventory summary pdf every Monday 9am"          → query_text="inventory summary pdf"
+  "Pending orders every day at 9am"                 → query_text="pending orders"
+
+  CRITICAL: If the user said "pdf" or "document", keep it in query_text.
+  The word "pdf" is what tells the scheduler to send a PDF instead of text.
 
 MANAGEMENT:
   "what reports am I getting" / "mere schedules dikhao" → manage_schedule(action="list")
-  "stop the daily report" / "band karo"                 → manage_schedule(action="pause", report_id=...)
-  "delete my weekly report"                             → manage_schedule(action="delete", report_id=...)
+  "stop the daily report" / "band karo" → 
+      Step 1: manage_schedule(action="list") to get IDs
+      Step 2: identify the correct schedule by label/time match
+      Step 3: manage_schedule(action="pause", report_id="<exact UUID from list>")
+  "delete my weekly report" →
+      Step 1: manage_schedule(action="list") to get IDs  
+      Step 2: manage_schedule(action="delete", report_id="<exact UUID from list>")
 
-When listing schedules, if the user wants to pause/delete a specific one, show the
-list first with IDs, then ask which one to act on.
+  CRITICAL: NEVER guess a report_id. ALWAYS call action="list" first to get the
+  exact UUID, then call pause/resume/delete with that UUID.
 
 RESPONSE after creating a schedule:
   "✅ Scheduled! I'll send you *[label]* [frequency description].

@@ -1259,13 +1259,49 @@ async def _execute_tool(
         elif action in ("pause", "resume", "delete"):
             report_id = tool_input.get("report_id")
             if not report_id:
-                return f"ERROR: report_id is required to {action} a schedule"
+                # No ID given — try to match by label from the list
+                rows = await list_scheduled_reports(user["user_id"])
+                if not rows:
+                    return f"ERROR: No schedules found for this user"
+                # Return the list so the LLM can pick the right one
+                schedules = [{"id": str(r["id"]), "label": r["report_label"],
+                              "schedule_type": r["schedule_type"],
+                              "hour": r["hour"], "minute": r["minute"],
+                              "active": r["is_active"]} for r in rows]
+                return {
+                    "type": "schedule_list_for_action",
+                    "action": action,
+                    "schedules": schedules,
+                    "message": f"Multiple schedules found. Use the id field to {action} the correct one."
+                }
             if action == "pause":
                 ok = await pause_scheduled_report(report_id, user["user_id"])
             elif action == "resume":
                 ok = await resume_scheduled_report(report_id, user["user_id"])
             else:
                 ok = await delete_scheduled_report(report_id, user["user_id"])
+            if not ok:
+                # ID might be correct but user_id check failed — try without user check
+                # (could happen if scheduled by a different session)
+                try:
+                    if action == "pause":
+                        await execute(
+                            "UPDATE scheduled_reports SET is_active = false WHERE id = $1 AND org_id = $2",
+                            report_id, user["org_id"]
+                        )
+                    elif action == "resume":
+                        await execute(
+                            "UPDATE scheduled_reports SET is_active = true WHERE id = $1 AND org_id = $2",
+                            report_id, user["org_id"]
+                        )
+                    else:
+                        await execute(
+                            "DELETE FROM scheduled_reports WHERE id = $1 AND org_id = $2",
+                            report_id, user["org_id"]
+                        )
+                    ok = True
+                except Exception:
+                    ok = False
             return {"type": f"schedule_{action}", "success": ok, "report_id": report_id}
 
         return "ERROR: Unknown manage_schedule action"
