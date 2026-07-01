@@ -1498,6 +1498,22 @@ async def run_agent(
                     })
                     continue  # retry this iteration
 
+            # Intercept: LLM printed a ✅ Scheduled confirmation as plain text instead of
+            # calling manage_schedule tool. Nothing gets saved to DB in this case.
+            if "✅ Scheduled" in content or ("scheduled" in content.lower() and "first delivery" in content.lower()):
+                print(f"[AGENT] Intercepted plain-text schedule confirmation — forcing tool retry")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You printed the schedule confirmation as plain text. "
+                        "Nothing was saved — the schedule does NOT exist yet. "
+                        "You MUST call the manage_schedule tool with action='create' and all the "
+                        "details you just described. Do it now."
+                    )
+                })
+                continue  # retry this iteration
+
             print(f"[AGENT] No tool calls, returning text response: {content[:200]}")
             history_to_save = _serialize_history(messages)
             return content.strip(), history_to_save, session_patch
