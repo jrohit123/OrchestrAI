@@ -1356,17 +1356,48 @@ async def run_agent(
                 if isinstance(result, dict) and result.get("type") == "draft_update":
                     # Build pending_action from result
                     current_draft = pending_action or {}
+                    old_fields = current_draft.get("fields", {})
+                    new_fields = result.get("fields", {})
+
+                    # Deep-merge items array: if the correction only contains partial
+                    # item data (e.g. just making_charges), merge into each existing
+                    # item rather than replacing the whole array.
+                    merged_fields = {**old_fields}
+                    for k, v in new_fields.items():
+                        if (
+                            k == "items"
+                            and isinstance(v, list)
+                            and isinstance(old_fields.get("items"), list)
+                            and len(old_fields["items"]) > 0
+                        ):
+                            old_items = old_fields["items"]
+                            new_items = v
+                            # If correction has fewer items than original, it's a partial
+                            # patch — merge each new item's keys into the corresponding
+                            # existing item by index.
+                            if len(new_items) <= len(old_items):
+                                merged_items = []
+                                for i, old_item in enumerate(old_items):
+                                    if i < len(new_items):
+                                        # new_items[i] may only have changed keys — merge
+                                        merged_items.append({**old_item, **new_items[i]})
+                                    else:
+                                        merged_items.append(old_item)
+                                merged_fields["items"] = merged_items
+                            else:
+                                # More items than before — full replacement is intentional
+                                merged_fields["items"] = v
+                        else:
+                            merged_fields[k] = v
+
                     updated_draft = {
                         "intent_key": result.get("intent_key") or current_draft.get("intent_key"),
                         "stage": result.get("stage") or current_draft.get("stage", "collecting"),
-                        "fields": {**current_draft.get("fields", {}), **result.get("fields", {})},
+                        "fields": merged_fields,
                         "raw_text": result.get("raw_text", message),
                         "created_at": current_draft.get("created_at") or __import__("datetime").datetime.now().isoformat()
                     }
-                    # Reset reprompt_count whenever fields actually advance (new data was provided)
-                    # This prevents the cap from triggering when the user IS making progress.
-                    new_fields = result.get("fields", {})
-                    old_fields = current_draft.get("fields", {})
+                    # Reset reprompt_count whenever fields actually advance
                     if new_fields and any(k not in old_fields or old_fields[k] != v for k, v in new_fields.items()):
                         updated_draft["reprompt_count"] = 0
                     else:
