@@ -44,9 +44,10 @@ async def admin_data(request: Request):
 
     stats = await fetch_one("""
         SELECT
-            COUNT(*) FILTER (WHERE status = 'approved') AS total_invoices,
-            COALESCE(SUM(amount) FILTER (WHERE status = 'overdue'), 0) AS total_overdue,
-            COUNT(*) FILTER (WHERE status = 'pending') AS pending_approvals
+            COUNT(*) FILTER (WHERE status = 'paid') AS total_invoices,
+            COALESCE(SUM(amount) FILTER (WHERE status = 'paid'), 0) AS total_amount,
+            COUNT(*) FILTER (WHERE status = 'pending') AS pending_invoices,
+            (SELECT COUNT(*) FROM customers WHERE org_id = $1) AS total_customers
         FROM invoices WHERE org_id = $1
     """, org_id)
 
@@ -678,12 +679,10 @@ input:checked+.slider:before{{transform:translateX(18px)}}
         <thead>
           <tr>
             <th>Workflow</th>
-            <th>Intent Key</th>
             <th>Status</th>
             <th>OTP Required</th>
             <th>OTP Threshold (Rs.)</th>
             <th>Approval Threshold (Rs.)</th>
-            <th>Last Run</th>
           </tr>
         </thead>
         <tbody id="workflowsTable"></tbody>
@@ -701,7 +700,7 @@ input:checked+.slider:before{{transform:translateX(18px)}}
       <div class="card">
         <div class="card-title">📋 Recent Activity</div>
         <table>
-          <thead><tr><th>User</th><th>Action</th><th>OTP</th><th>Status</th></tr></thead>
+          <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
           <tbody id="activityTable"></tbody>
         </table>
       </div>
@@ -865,17 +864,22 @@ async function loadData() {{
       <div class="stat-card">
         <div class="stat-label">Total Invoices</div>
         <div class="stat-value">${{s.total_invoices || 0}}</div>
-        <div class="stat-sub">Approved & issued</div>
+        <div class="stat-sub">Paid invoices</div>
       </div>
-      <div class="stat-card" style="border-color:#dc2626">
-        <div class="stat-value" style="color:#dc2626">Rs.${{Number(s.total_overdue||0).toLocaleString('en-IN')}}</div>
-        <div class="stat-label">Total Overdue</div>
-        <div class="stat-sub">Across all customers</div>
+      <div class="stat-card" style="border-color:#16a34a">
+        <div class="stat-value" style="color:#16a34a">Rs.${{Number(s.total_amount||0).toLocaleString('en-IN')}}</div>
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-sub">From paid invoices</div>
       </div>
       <div class="stat-card" style="border-color:#f59e0b">
-        <div class="stat-value" style="color:#f59e0b">${{s.pending_approvals || 0}}</div>
-        <div class="stat-label">Pending Approvals</div>
-        <div class="stat-sub">Awaiting MD action</div>
+        <div class="stat-value" style="color:#f59e0b">${{s.pending_invoices || 0}}</div>
+        <div class="stat-label">Pending Invoices</div>
+        <div class="stat-sub">Awaiting payment</div>
+      </div>
+      <div class="stat-card" style="border-color:#3b82f6">
+        <div class="stat-value" style="color:#3b82f6">${{s.total_customers || 0}}</div>
+        <div class="stat-label">Total Customers</div>
+        <div class="stat-sub">Registered accounts</div>
       </div>
       <div class="stat-card" style="border-color:#ef4444">
         <div class="stat-value" style="color:#ef4444">${{data.low_stock.length}}</div>
@@ -888,7 +892,6 @@ async function loadData() {{
     const wfHtml = data.workflows.map(w => `
       <tr>
         <td><strong>${{w.name}}</strong></td>
-        <td><code style="font-size:11px;color:#888">${{w.intent_key}}</code></td>
         <td><span class="badge ${{w.is_active ? 'badge-active' : 'badge-inactive'}}">
           ${{w.is_active ? 'Active' : 'Inactive'}}</span></td>
         <td>
@@ -915,8 +918,6 @@ async function loadData() {{
             <button class="save-btn" onclick="saveApprovalThreshold('${{w.id}}')">Save</button>
           </div>
         </td>
-        <td style="color:#888;font-size:12px">
-          ${{w.last_run ? new Date(w.last_run).toLocaleDateString('en-IN') : '—'}}</td>
       </tr>
     `).join('');
     document.getElementById('workflowsTable').innerHTML = wfHtml;
@@ -937,7 +938,7 @@ async function loadData() {{
       <tr>
         <td style="font-size:12px">${{r.user_name || '—'}}</td>
         <td style="font-size:11px;color:#555">${{r.intent_key}}</td>
-        <td>${{r.otp_used ? '🔐' : '—'}}</td>
+        <td style="font-size:11px;color:#555">${{r.created_at}}</td>
         <td><span class="badge ${{
           r.outcome === 'success' ? 'badge-success' :
           r.outcome === 'pending_approval' ? 'badge-pending' : 'badge-failed'
