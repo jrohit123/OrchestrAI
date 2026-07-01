@@ -421,6 +421,82 @@ TOOLS = [
                 "required": ["action_description"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_schedule",
+            "description": (
+                "Create, list, pause, resume, or delete a scheduled report.\n\n"
+                "Use 'create' when the user asks to automatically send any report/query "
+                "on a recurring basis — e.g. 'send me outstanding report every day at 8am', "
+                "'low stock alert every hour', 'inventory summary every Monday at 9am'.\n\n"
+                "Use 'list' when user asks 'what reports am I getting?' or 'show my schedules'.\n"
+                "Use 'pause'/'resume'/'delete' when user wants to stop or manage a schedule.\n\n"
+                "schedule_type values:\n"
+                "  'minutely' — every N minutes (set interval_minutes)\n"
+                "  'hourly'   — every hour\n"
+                "  'daily'    — every day at specified hour:minute IST\n"
+                "  'weekly'   — every week on day_of_week at hour:minute IST\n"
+                "  'monthly'  — every month on day_of_month at hour:minute IST\n\n"
+                "delivery: 'whatsapp' (default), 'email', or 'both'\n"
+                "For 'email' or 'both': only use when user explicitly says 'mail me' or 'email me'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "list", "pause", "resume", "delete"],
+                        "description": "What to do"
+                    },
+                    "query_text": {
+                        "type": "string",
+                        "description": "The exact query to run on schedule (e.g. 'outstanding report', 'low stock items', 'pending orders'). Required for create."
+                    },
+                    "report_label": {
+                        "type": "string",
+                        "description": "Short human-readable name (e.g. 'Daily Outstanding Report'). Required for create."
+                    },
+                    "schedule_type": {
+                        "type": "string",
+                        "enum": ["minutely", "hourly", "daily", "weekly", "monthly"],
+                        "description": "Frequency type. Required for create."
+                    },
+                    "interval_minutes": {
+                        "type": "integer",
+                        "description": "For minutely: how often in minutes (e.g. 30 = every 30 min). Min 1."
+                    },
+                    "hour": {
+                        "type": "integer",
+                        "description": "Hour in IST 24h format (0-23). Required for daily/weekly/monthly."
+                    },
+                    "minute": {
+                        "type": "integer",
+                        "description": "Minute (0-59). Default 0."
+                    },
+                    "day_of_week": {
+                        "type": "string",
+                        "enum": ["mon","tue","wed","thu","fri","sat","sun"],
+                        "description": "Day of week for weekly schedules."
+                    },
+                    "day_of_month": {
+                        "type": "integer",
+                        "description": "Day of month (1-31) for monthly schedules."
+                    },
+                    "delivery": {
+                        "type": "string",
+                        "enum": ["whatsapp", "email", "both"],
+                        "description": "Where to send. Default 'whatsapp'."
+                    },
+                    "report_id": {
+                        "type": "string",
+                        "description": "UUID of the schedule to pause/resume/delete."
+                    }
+                },
+                "required": ["action"]
+            }
+        }
     }
 ]
 
@@ -496,6 +572,7 @@ YOU MUST ONLY USE THE FOLLOWING TABLES. NO OTHERS EXIST:
 - invoices: id, org_id, invoice_number, customer_id, created_by, items, amount, status, due_date, paid_at, pdf_url, created_at
 - orders: id, org_id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status, status_history, expected_delivery, notes, created_by, status_updated_at, created_at
 - quotations: id, org_id, quotation_number, customer_id, items, total_amount, status, valid_until, created_at, created_by
+- scheduled_reports: id, org_id, user_id, phone, query_text, report_label, schedule_type, interval_minutes, hour, minute, day_of_week, day_of_month, delivery, is_active, next_run_at, last_run_at, run_count, created_at
 - orgs: id, name, slug, industry, plan, is_active, created_at, session_ttl_minutes, gst_rate
 - users: id, org_id, role_id, name, phone, email, channel, is_active, created_at
 - roles: id, org_id, name, permissions, created_at
@@ -1099,6 +1176,99 @@ async def _execute_tool(
             "action_description": action_desc,
             "details": details
         }
+
+    elif tool_name == "manage_schedule":
+        from app.scheduler.jobs import (
+            create_scheduled_report, list_scheduled_reports,
+            pause_scheduled_report, resume_scheduled_report,
+            delete_scheduled_report, compute_next_run
+        )
+        import datetime as _dt
+
+        action = tool_input.get("action")
+
+        if action == "create":
+            query_text    = tool_input.get("query_text", "")
+            report_label  = tool_input.get("report_label", query_text[:50])
+            schedule_type = tool_input.get("schedule_type", "daily")
+            delivery      = tool_input.get("delivery", "whatsapp")
+            hour          = tool_input.get("hour")
+            minute        = tool_input.get("minute", 0)
+            day_of_week   = tool_input.get("day_of_week")
+            day_of_month  = tool_input.get("day_of_month")
+            interval_mins = tool_input.get("interval_minutes")
+
+            if not query_text:
+                return "ERROR: query_text is required to create a schedule"
+
+            result = await create_scheduled_report(
+                org_id=user["org_id"],
+                user_id=user["user_id"],
+                phone=phone,
+                email=user.get("email", ""),
+                query_text=query_text,
+                report_label=report_label,
+                schedule_type=schedule_type,
+                delivery=delivery,
+                interval_minutes=interval_mins,
+                hour=hour,
+                minute=minute,
+                day_of_week=day_of_week,
+                day_of_month=day_of_month,
+            )
+            next_run_ist = result["next_run_at"].astimezone(
+                _dt.timezone(  # type: ignore
+                    _dt.timedelta(hours=5, minutes=30)
+                )
+            )
+            return {
+                "type": "schedule_created",
+                "id": result["id"],
+                "report_label": report_label,
+                "schedule_type": schedule_type,
+                "next_run": next_run_ist.strftime("%d %b %Y at %I:%M %p IST")
+            }
+
+        elif action == "list":
+            rows = await list_scheduled_reports(user["user_id"])
+            if not rows:
+                return {"type": "schedule_list", "schedules": [], "count": 0}
+            schedules = []
+            for r in rows:
+                next_run = r["next_run_at"]
+                if next_run:
+                    try:
+                        next_run_ist = next_run.astimezone(
+                            _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+                        )
+                        next_str = next_run_ist.strftime("%d %b at %I:%M %p")
+                    except Exception:
+                        next_str = str(next_run)
+                else:
+                    next_str = "—"
+                schedules.append({
+                    "id": str(r["id"]),
+                    "label": r["report_label"],
+                    "schedule_type": r["schedule_type"],
+                    "active": r["is_active"],
+                    "next_run": next_str,
+                    "run_count": r["run_count"]
+                })
+            return {"type": "schedule_list", "schedules": schedules, "count": len(schedules)}
+
+        elif action in ("pause", "resume", "delete"):
+            report_id = tool_input.get("report_id")
+            if not report_id:
+                return f"ERROR: report_id is required to {action} a schedule"
+            if action == "pause":
+                ok = await pause_scheduled_report(report_id, user["user_id"])
+            elif action == "resume":
+                ok = await resume_scheduled_report(report_id, user["user_id"])
+            else:
+                ok = await delete_scheduled_report(report_id, user["user_id"])
+            return {"type": f"schedule_{action}", "success": ok, "report_id": report_id}
+
+        return "ERROR: Unknown manage_schedule action"
 
     return f"ERROR: Unknown tool {tool_name}"
 
