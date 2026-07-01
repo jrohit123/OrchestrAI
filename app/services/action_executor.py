@@ -389,7 +389,27 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
     # Extract design details from first item for PDF
     first_item = items[0] if items else {}
     making_charges_total = sum(float(i.get("making_charges", 0)) for i in items)
-    metal_cost = subtotal - making_charges_total
+
+    # Compute metal_cost from weight × unit_price per item (unit_price is rate/g × weight)
+    # For each item: metal_cost = unit_price × qty - making_charges
+    # unit_price already contains the full metal value (rate_per_gram × weight_grams)
+    # so metal_cost_per_item = unit_price × qty, making_charge is separate
+    metal_cost = sum(
+        float(i.get("unit_price", 0)) * int(i.get("qty", 1)) for i in items
+    )
+    # subtotal for PDF breakdown = metal_cost + making_charges (pre-GST)
+    subtotal_for_pdf = metal_cost + making_charges_total
+    making_charge_pct_display = (
+        str(round((making_charges_total / metal_cost) * 100, 1))
+        if metal_cost > 0 else "0"
+    )
+
+    # Design name: use explicit design_name if set, fall back to description
+    design_name_display = (
+        first_item.get("design_name")
+        or first_item.get("description")
+        or "N/A"
+    )
 
     pdf_bytes = None
     try:
@@ -405,13 +425,13 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
                 "city": customer["city"],
                 "gstin": customer["gst_number"],
                 "design_code": first_item.get("design_code", "N/A"),
-                "design_name": first_item.get("design_name", "N/A"),
+                "design_name": design_name_display,
                 "metal_type": first_item.get("metal_type", "N/A"),
                 "weight_grams": first_item.get("weight", 0),
                 "metal_cost": str(metal_cost),
                 "making_charges": str(making_charges_total),
-                "making_charge_pct": "0" if metal_cost == 0 else str(round((making_charges_total / metal_cost) * 100, 1)),
-                "subtotal": str(subtotal),
+                "making_charge_pct": making_charge_pct_display,
+                "subtotal": str(subtotal_for_pdf),
                 "gst_pct": "3",
                 "gst_amount": str(gst_amount),
                 "total_amount": str(total_amount),
