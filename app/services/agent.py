@@ -682,6 +682,12 @@ When creating a NEW quotation or invoice, you MUST follow this flow:
 3. The system will automatically generate the PDF after database insert
 
 DO NOT call generate_pdf directly when creating new quotations or invoices.
+This applies EVEN when:
+- The user provides custom pricing (per-gram rate, making charges)
+- The user provides custom design details (design_code, design_name, metal_type)
+- The metal type is not in the pricing table
+- The design code is not in the inventory table
+
 generate_pdf is ONLY for generating PDFs from EXISTING database records (e.g., "show invoice INV-125", "send pdf of quotation QUO-1001").
 
 RULE 12 — DESIGN CODE IS JUST A FIELD, NOT AN INVENTORY SKU:

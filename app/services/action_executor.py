@@ -361,7 +361,7 @@ async def _create_quotation(fields: dict, user: dict, pdf_config: dict) -> dict:
                 $5, 'sent', $6, NOW(), $7
             )
         """, user["org_id"], quotation_number, customer_id, json.dumps(items),
-            str(total_amount), valid_until, user["user_id"])
+            str(total_amount), valid_until.date() if isinstance(valid_until, datetime) else valid_until, user["user_id"])
     except Exception as e:
         print(f"[EXECUTOR] Quotation insert failed: {e}")
         return {"success": False, "message": "❌ Could not create quotation. Please try again."}
