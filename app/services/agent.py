@@ -495,7 +495,7 @@ YOU MUST ONLY USE THE FOLLOWING TABLES. NO OTHERS EXIST:
 - customers: id, org_id, name, phone, email, gst_number, city, credit_limit, created_at
 - invoices: id, org_id, invoice_number, customer_id, created_by, items, amount, status, due_date, paid_at, pdf_url, created_at
 - orders: id, org_id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status, status_history, expected_delivery, notes, created_by, status_updated_at, created_at
-- pricing: id, org_id, metal_type, rate_per_gram, making_charge_pct, updated_by, updated_at, quotation_number, weight_grams, making_charges, subtotal, gst_pct, gst_amount, total_amount, status, valid_until, created_by
+- quotations: id, org_id, quotation_number, customer_id, items, total_amount, status, valid_until, created_at, created_by
 - orgs: id, name, slug, industry, plan, is_active, created_at, session_ttl_minutes, gst_rate
 - users: id, org_id, role_id, name, phone, email, channel, is_active, created_at
 - roles: id, org_id, name, permissions, created_at
@@ -514,7 +514,6 @@ FORBIDDEN COLUMN NAMES (USE THE CORRECT ONES):
 - inventory.reorder_level (NOT: threshold, min_stock, reorder_point)
 - invoices.status (NOT: invoice_status, payment_status)
 - customers.name (NOT: customer_name, client_name)
-- pricing.metal_type (NOT: metal, gold_type)
 
 === END OF CRITICAL CONSTRAINTS ===
 
@@ -877,9 +876,9 @@ async def _execute_tool(
         params = tool_input.get("params", [])
 
         # Validate SQL against forbidden tables/columns
-        forbidden_tables = ["products", "items", "inventory_items", "stock", "stock_items", "goods", "merchandise", "materials", "locations", "businesses", "companies", "organizations", "firms"]
+        forbidden_tables = ["products", "items", "inventory_items", "stock", "stock_items", "goods", "merchandise", "materials", "locations", "businesses", "companies", "organizations", "firms", "pricing"]
         # customer_name IS a valid column in orders table — do NOT block it
-        # metal IS a substring of metal_type — blocking it breaks every orders/pricing query
+        # metal IS a substring of metal_type — blocking it breaks every orders query
         # These two were causing ORD-1006 to fail. Only block truly non-existent names.
         forbidden_columns = [
             "quantity", "stock_quantity", "stock_level", "amount_on_hand",
@@ -996,50 +995,9 @@ async def _execute_tool(
                 # Everything else — invoice lists, customer lists, inventory, etc. — is "report"
                 doc_type = "report"
 
-        # ── QUOTATION: generate number and persist to pricing table ──────────
-        if doc_type == "quotation" and extra_context.get("metal_type"):
-            try:
-                from app.db import execute as _execute, fetch_one as _fetch_one
-                from datetime import timedelta
-
-                count_row = await _fetch_one(
-                    "SELECT COUNT(*) as cnt FROM pricing "
-                    "WHERE org_id = $1 AND quotation_number IS NOT NULL",
-                    user["org_id"]
-                )
-                q_number = f"QUO-{1001 + int(count_row['cnt'])}"
-                valid_until = (__import__("datetime").date.today()
-                               + timedelta(days=3)).strftime("%Y-%m-%d")
-
-                ctx = extra_context
-                await _execute("""
-                    INSERT INTO pricing (
-                        org_id, quotation_number, metal_type, weight_grams,
-                        rate_per_gram, making_charge_pct, making_charges, subtotal,
-                        gst_pct, gst_amount, total_amount, status, valid_until, created_by
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'sent',$12,$13)
-                """,
-                    user["org_id"],
-                    q_number,
-                    str(ctx.get("metal_type", "")).lower(),
-                    float(ctx.get("weight_grams", 0)),
-                    float(ctx.get("rate_per_gram", 0)),
-                    float(ctx.get("making_charge_pct", 0)),
-                    float(ctx.get("making_charges", 0)),
-                    float(ctx.get("subtotal", 0)),
-                    float(ctx.get("gst_pct", 3.0)),
-                    float(ctx.get("gst_amount", 0)),
-                    float(ctx.get("total_amount", 0)),
-                    valid_until,
-                    user["user_id"]
-                )
-                extra_context["quotation_number"] = q_number
-                extra_context["valid_until"] = valid_until
-                print(f"[AGENT] Quotation saved to DB: {q_number}")
-            except Exception as e:
-                print(f"[AGENT] Quotation DB save failed (non-fatal): {e}")
-                # Non-fatal — still generate the PDF even if save fails
-        # ─────────────────────────────────────────────────────────────────────
+        # NOTE: Quotation records are created exclusively by action_executor._create_quotation
+        # via the update_draft → confirm_action → execute_pending_action flow.
+        # generate_pdf here is only called for EXISTING quotations being re-sent as PDFs.
 
         # ── Pre-process rows for aging analysis, risk buckets, etc. ──────
         enriched_rows, analysis_summary = preprocess_rows(rows, doc_type)
