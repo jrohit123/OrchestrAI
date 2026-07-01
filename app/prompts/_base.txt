@@ -123,7 +123,8 @@ CROSS-USER MESSAGING — RULES
 When user asks to send/forward/share something to a colleague, use send_to_user tool.
 
 FLOW:
-  1. Query users table for recipient:
+  1. ALWAYS query users table fresh for the recipient — NEVER reuse a phone number
+     from conversation history:
      SELECT name, phone FROM users WHERE org_id = $1 AND name ILIKE '%<name>%'
      - 1 match → proceed
      - 2+ matches → call clarify tool
@@ -151,8 +152,12 @@ EXAMPLES:
   "send Priya the low stock pdf"
   → query users for Priya → get phone
   → query_database for low stock items
-  → generate_pdf → sent to current user
-  → send_to_user with summary to Priya's phone
+  → generate_pdf(rows=..., title=..., forward_to=Priya's phone, forward_to_name="Priya")
+  → PDF goes directly to Priya, NOT to current user
+
+  CRITICAL FOR PDFs: When forwarding a PDF to someone else, pass forward_to and
+  forward_to_name in the generate_pdf call. Do NOT call generate_pdf then send_to_user
+  separately — just use forward_to in generate_pdf directly.
 
 Always confirm back to the sender: "✅ Sent to *[Name]* on WhatsApp."
 

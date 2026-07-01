@@ -390,6 +390,14 @@ TOOLS = [
                         "type": "string",
                         "enum": ["whatsapp", "email", "both"],
                         "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'."
+                    },
+                    "forward_to": {
+                        "type": "string",
+                        "description": "Phone number of another user to send this PDF to instead of the current user. Use when asked to 'send to [name]', 'forward to [name]', 'share with [name]'. Look up their phone from the users table first."
+                    },
+                    "forward_to_name": {
+                        "type": "string",
+                        "description": "Name of the recipient for the forward caption (e.g. 'Rajeswari')"
                     }
                 },
                 "required": ["rows", "title"]
@@ -1070,6 +1078,8 @@ async def _execute_tool(
         doc_type      = tool_input.get("doc_type", "report")
         extra_context = tool_input.get("extra_context", {})
         send_via      = tool_input.get("send_via", "whatsapp")
+        forward_to    = tool_input.get("forward_to")       # phone of another user to send to
+        forward_name  = tool_input.get("forward_to_name")  # their name for caption
 
         # For quotations: rows are always empty — all data is in extra_context. Allow it.
         # For invoices: if items array is empty, construct a synthetic line item from amount.
@@ -1144,8 +1154,8 @@ async def _execute_tool(
 
             results = []
 
-            # WhatsApp delivery
-            if send_via in ("whatsapp", "both"):
+            # WhatsApp delivery to current user
+            if send_via in ("whatsapp", "both") and not forward_to:
                 await send_document(
                     to=phone,
                     pdf_bytes=pdf_bytes,
@@ -1153,6 +1163,17 @@ async def _execute_tool(
                     caption=f"📄 {title}"
                 )
                 results.append("WhatsApp")
+
+            # Forward to another user (instead of or in addition to current user)
+            if forward_to:
+                sender_name = user.get("user_name", "A colleague")
+                await send_document(
+                    to=forward_to,
+                    pdf_bytes=pdf_bytes,
+                    filename=safe_filename,
+                    caption=f"📨 *From {sender_name}:* 📄 {title}"
+                )
+                results.append(f"WhatsApp → {forward_name or forward_to}")
 
             # Email delivery
             if send_via in ("email", "both"):
@@ -1349,7 +1370,7 @@ async def _execute_tool(
         return "ERROR: Unknown manage_schedule action"
 
     elif tool_name == "send_to_user":
-        from app.services.whatsapp import send_text as _send_text
+        from app.services.whatsapp import send_text as _send_text, send_document as _send_doc
         recipient_phone = tool_input.get("recipient_phone", "")
         recipient_name  = tool_input.get("recipient_name", "someone")
         message         = tool_input.get("message", "")
@@ -1369,6 +1390,11 @@ async def _execute_tool(
             }
         except Exception as e:
             return f"ERROR sending to {recipient_name}: {str(e)}"
+
+    elif tool_name == "forward_pdf_to_user":
+        # Internal tool — called programmatically after generate_pdf when
+        # the user asked to send a PDF to someone else. Not exposed to LLM directly.
+        pass
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
