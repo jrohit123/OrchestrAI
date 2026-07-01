@@ -1379,22 +1379,30 @@ async def _execute_tool(
         if not recipient_phone or not message:
             return "ERROR: recipient_phone and message are required"
 
+        # Validate phone against users table — prevents wrong numbers from context bleed
+        valid = await fetch_one(
+            "SELECT name, phone FROM users WHERE org_id = $1 AND phone = $2",
+            user["org_id"], recipient_phone
+        )
+        if not valid:
+            return (
+                f"ERROR: {recipient_phone} is not a registered user in this org. "
+                f"You MUST query the users table to get the correct phone for {recipient_name} "
+                f"before calling send_to_user."
+            )
+
+        confirmed_name = valid["name"]
         try:
             header = f"📨 *Message from {sender_name}:*\n\n"
             await _send_text(recipient_phone, header + message)
             return {
                 "type": "sent_to_user",
-                "recipient": recipient_name,
+                "recipient": confirmed_name,
                 "recipient_phone": recipient_phone,
                 "success": True
             }
         except Exception as e:
-            return f"ERROR sending to {recipient_name}: {str(e)}"
-
-    elif tool_name == "forward_pdf_to_user":
-        # Internal tool — called programmatically after generate_pdf when
-        # the user asked to send a PDF to someone else. Not exposed to LLM directly.
-        pass
+            return f"ERROR sending to {confirmed_name}: {str(e)}"
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
