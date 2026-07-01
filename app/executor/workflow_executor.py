@@ -4,7 +4,6 @@ from app.services.otp_service import generate_and_send_otp
 from app.services.whatsapp import send_text, send_buttons
 from app.redis_client import set_session, clear_all_sessions
 from app.db import fetch_one, execute
-from app.scheduler.jobs import start_scheduler  # noqa: F401 — kept for any future direct use
 
 
 async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
