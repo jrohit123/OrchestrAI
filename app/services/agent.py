@@ -1500,7 +1500,13 @@ async def run_agent(
 
             # Intercept: LLM printed a ✅ Scheduled confirmation as plain text instead of
             # calling manage_schedule tool. Nothing gets saved to DB in this case.
-            if "✅ Scheduled" in content or ("scheduled" in content.lower() and "first delivery" in content.lower()):
+            # IMPORTANT: only intercept if manage_schedule create was NOT already called
+            # successfully in this iteration — otherwise we'd create duplicates.
+            schedule_created_this_turn = session_patch.get("_schedule_created_this_turn", False)
+            if (
+                not schedule_created_this_turn
+                and ("✅ Scheduled" in content or ("scheduled" in content.lower() and "first delivery" in content.lower()))
+            ):
                 print(f"[AGENT] Intercepted plain-text schedule confirmation — forcing tool retry")
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
@@ -1555,6 +1561,15 @@ async def run_agent(
                 "role": "tool",
                 "content": content
             })
+
+            # Track if manage_schedule create succeeded this turn — prevents
+            # the plain-text intercept from firing again and creating duplicates
+            if (
+                tool_call.function.name == "manage_schedule"
+                and isinstance(result, dict)
+                and result.get("type") == "schedule_created"
+            ):
+                session_patch["_schedule_created_this_turn"] = True
 
             # If this was a clarify call, stop the loop
             if tool_call.function.name == "clarify":
