@@ -261,7 +261,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         text_lower = text.strip().lower()
         if text_lower in _CONFIRM_WORDS:
             try:
-                result = await execute_pending_action(pending_action, user)
+                result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
                 print(f"[WEBHOOK] execute_pending_action error: {e}")
                 import traceback
@@ -280,11 +280,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 await send_text(phone, result.get("message", "Action completed successfully"))
                 await _send_action_pdf(result)
             elif result.get("stage") == "awaiting_otp":
-                pending_action["stage"] = "awaiting_otp"
+                pending_action["stage"]       = "awaiting_otp"
+                pending_action["resume_step"] = result.get("resume_step", 0)
                 await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
                 await send_text(phone, result.get("message"))
             elif result.get("stage") == "awaiting_approval":
-                pending_action["stage"] = "awaiting_approval"
+                pending_action["stage"]       = "awaiting_approval"
+                pending_action["resume_step"] = result.get("resume_step", 0)
                 await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
                 await send_text(phone, result.get("message"))
             else:
@@ -354,7 +356,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         if otp_result["valid"]:
             try:
-                exec_result = await execute_pending_action(pending_action, user, otp_verified=True)
+                exec_result = await execute_pending_action(pending_action, user, phone=phone, otp_verified=True)
             except Exception as e:
                 print(f"[WEBHOOK] execute_pending_action after OTP error: {e}")
                 import traceback
@@ -373,7 +375,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 await send_text(phone, exec_result.get("message", "Action completed successfully"))
                 await _send_action_pdf(exec_result)
             elif exec_result.get("stage") == "awaiting_approval":
-                pending_action["stage"] = "awaiting_approval"
+                pending_action["stage"]       = "awaiting_approval"
+                pending_action["resume_step"] = exec_result.get("resume_step", 0)
                 await set_session(session_id, {**session, "pending_action": pending_action}, ttl=session_ttl)
                 await send_text(phone, exec_result.get("message"))
             else:

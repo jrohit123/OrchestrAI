@@ -7,3 +7,5 @@ python-dotenv
 httpx
 apscheduler
 weasyprint
+simpleeval
+pymupdf

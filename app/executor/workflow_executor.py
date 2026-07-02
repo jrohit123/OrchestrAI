@@ -1,283 +1,47 @@
+"""
+workflow_executor.py — Minimal live functions still used by webhook.py.
+
+resume_after_otp     — called after security OTP verification
+handle_approval_response — called when owner taps Approve/Reject button
+
+Everything else that was here has been removed:
+  - execute_intent        → replaced by run_agent (agent.py)
+  - _get_invoice_thresholds → read from workflows table in step_interpreter
+  - _parse_schedule       → replaced by manage_schedule tool in agent.py
+  - _send_approval_request → now done inside step_interpreter._op_approval_gate
+  - accounting.create_invoice calls → replaced by execute_pending_action
+  - _log                  → done in webhook.py directly
+"""
 import json
-import re
-from app.services.otp_service import generate_and_send_otp
-from app.services.whatsapp import send_text, send_buttons
-from app.redis_client import set_session, clear_all_sessions
 from app.db import fetch_one, execute
-
-
-async def _get_invoice_thresholds(org_id: str) -> tuple[float, float]:
-    """Fetch OTP and approval thresholds from DB. Returns (otp_threshold, approval_threshold)."""
-    row = await fetch_one("""
-        SELECT otp_threshold, approval_threshold, otp_required
-        FROM workflows
-        WHERE org_id = $1 AND intent_key = 'create_invoice'
-    """, org_id)
-
-    if not row or not row["otp_required"]:
-        return (999999999, 999999999)  # effectively disabled
-
-    otp = float(row["otp_threshold"]) if row["otp_threshold"] else 50000.0
-    approval = float(row["approval_threshold"]) if row["approval_threshold"] else 100000.0
-    return (otp, approval)
-
-
-def _parse_schedule(text: str) -> dict:
-    """Parse day + time from natural language schedule command."""
-    t = text.lower()
-
-    # Stop/cancel
-    if any(w in t for w in ["stop", "cancel", "pause", "off"]):
-        return {"action": "stop"}
-
-    # Status check
-    if any(w in t for w in ["when", "what time", "status", "check"]):
-        return {"action": "status"}
-
-    # Parse day
-    day_map = {
-        "monday": "mon", "tuesday": "tue", "wednesday": "wed",
-        "thursday": "thu", "friday": "fri", "saturday": "sat", "sunday": "sun",
-        "mon": "mon", "tue": "tue", "wed": "wed", "thu": "thu",
-        "fri": "fri", "sat": "sat", "sun": "sun",
-        "daily": "*", "everyday": "*", "every day": "*"
-    }
-    day = "mon"  # default
-    for word, code in day_map.items():
-        if word in t:
-            day = code
-            break
-
-    # Parse hour + minute — AM/PM format like "5:15 PM" or "5 PM"
-    hour = None
-    minute = 0
-
-    m = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)", t)
-    if m:
-        hour = int(m.group(1))
-        minute = int(m.group(2))
-        period = m.group(3)
-        if period == "pm" and hour != 12:
-            hour += 12
-        elif period == "am" and hour == 12:
-            hour = 0
-
-    # No minutes — just hour + AM/PM like "5 PM"
-    if hour is None:
-        m = re.search(r"(\d{1,2})\s*(am|pm)", t)
-        if m:
-            hour = int(m.group(1))
-            minute = 0
-            period = m.group(2)
-            if period == "pm" and hour != 12:
-                hour += 12
-            elif period == "am" and hour == 12:
-                hour = 0
-
-    # 24hr with minutes like "17:10" or "at 14:30"
-    if hour is None:
-        m = re.search(r"(\d{1,2}):(\d{2})", t)
-        if m:
-            hour = int(m.group(1))
-            minute = int(m.group(2))
-
-    # Plain hour like "at 17"
-    if hour is None:
-        m = re.search(r"at\s+(\d{1,2})(?:\s|$)", t)
-        if m:
-            hour = int(m.group(1))
-            minute = 0
-
-    if hour is None:
-        return {
-            "action": "error",
-            "message": (
-                "🤔 Could not parse time.\n"
-                "Try: *schedule dues report every Monday 9 AM*\n"
-                "Or: *send report every Tuesday 2 PM*"
-            )
-        }
-
-    day_labels = {
-        "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
-        "thu": "Thursday", "fri": "Friday", "sat": "Saturday",
-        "sun": "Sunday", "*": "day"
-    }
-    display_hour = hour if hour <= 12 else hour - 12
-    display_hour = 12 if display_hour == 0 else display_hour
-    period = "AM" if hour < 12 else "PM"
-    minute_str = f":{minute:02d}" if minute > 0 else ":00"
-
-    return {
-        "action": "set",
-        "day": day,
-        "hour": hour,
-        "minute": minute,
-        "label": f"every {day_labels.get(day, day)} at {display_hour}{minute_str} {period} IST"
-    }
-
-
-async def execute_intent(
-    intent: str,
-    entity_raw: str | None,
-    user: dict,
-    session_id: str,
-    session: dict,
-    raw_text: str,
-    route_type: str = "workflow",
-    parameters: dict = None,
-    analyzer_intent: str = "",
-    workflow: dict = None,
-) -> str:
-    """
-    Simplified executor - only handles system intents now.
-    All read queries go through the agent (tool-calling).
-    """
-    org_id  = user["org_id"]
-    user_id = user["user_id"]
-
-    # ── SYSTEM ADMIN INTENTS (always hardcoded — security critical) ────
-    if intent == "manage_schedule":
-        # Scheduling is now handled entirely by the agent's manage_schedule tool.
-        # If this legacy path is ever triggered, redirect the user.
-        return "To manage schedules, just tell me what you want — e.g. 'send me outstanding report every day at 8am' or 'show my schedules'."
-
-    if intent == "clear_sessions":
-        if user["role"] != "owner":
-            return "❌ Only the Owner can clear all sessions."
-        await clear_all_sessions(org_id)
-        await _log(org_id, user_id, intent, raw_text, "success")
-        return (
-            "🔒 *Emergency Lockdown Activated*\n\n"
-            "All active sessions have been cleared.\n"
-            "Every user will need to re-verify their identity on their next message.\n\n"
-            "_Action logged in audit trail._"
-        )
-
-    return "🤔 Unhandled system intent."
+from app.services.whatsapp import send_text, send_buttons
+from app.redis_client import set_session
 
 
 async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
-    """Called after OTP verified — resumes the pending intent."""
+    """
+    Called after security session OTP is verified.
+    The actual pending_action OTP path is handled in webhook.py directly
+    via execute_pending_action(otp_verified=True) — this function only
+    handles the legacy security_auth OTP path.
+    """
     pending = session.get("pending_intent")
-    if not pending:
-        return "✅ Verified! Please resend your original request."
 
-    # For security OTP (not invoice-specific), re-execute the original intent
-    if pending.get("type") == "security_auth":
-        # Clear the OTP state
-        await set_session(session_id, {"otp_verified": True, "verified_at": "now"})
+    if pending and pending.get("type") == "security_auth":
+        await set_session(session_id, {"otp_verified": True})
         return "✅ Identity verified! Session active for 4h. Please resend your request."
 
-    # For invoice OTP (legacy)
-    if pending.get("intent") == "create_invoice":
-        amount    = pending["amount"]
-        org_id    = user["org_id"]
-        user_id   = user["user_id"]
-        phone     = pending.get("phone", user["phone"])
-        customer  = pending["customer_name"]
-        item_name = pending.get("item_name")
-        qty       = pending.get("qty")
-
-        # Fetch thresholds from DB
-        _, approval_threshold = await _get_invoice_thresholds(org_id)
-
-        # Check approval gate after OTP
-        if amount >= approval_threshold and user["role"] != "owner":
-            sent = await _send_approval_request(
-                user=user,
-                customer_name=customer,
-                amount=amount,
-                qty=qty,
-                item_name=item_name,
-                raw_text=pending.get("raw_text", ""),
-                session_id=session_id
-            )
-            if sent:
-                await _log(org_id, user_id, "create_invoice",
-                           pending.get("raw_text", ""), "pending_approval", otp_used=True)
-                return (
-                    f"✅ Identity verified!\n\n"
-                    f"Invoice for *{customer}* — Rs.{amount:,.0f} requires MD approval.\n"
-                    f"Approval request sent to Owner. You'll be notified once approved."
-                )
-
-        result = await accounting.create_invoice(
-            org_id=org_id,
-            user_id=user_id,
-            customer_name=customer,
-            amount=amount,
-            phone=phone,
-            item_name=item_name,
-            qty=qty
-        )
-        await _log(org_id, user_id, "create_invoice",
-                   pending.get("raw_text", ""), "success", otp_used=True)
-        # Clear otp_verified so next transaction needs fresh OTP
-        await set_session(session_id, {})
-        return result["message"]
-
+    # Fallback for any other legacy pending_intent shapes
     return "✅ Verified! Please resend your original request."
 
 
-async def _send_approval_request(
-    user, customer_name, amount, qty, item_name, raw_text, session_id
-) -> bool:
-    """Send WhatsApp approval buttons to Owner."""
-    org_id = user["org_id"]
-
-    owner = await fetch_one("""
-        SELECT u.phone, u.name FROM users u
-        JOIN roles r ON r.id = u.role_id
-        WHERE u.org_id = $1 AND r.name = 'owner'
-        AND u.is_active = true AND u.phone IS NOT NULL
-        LIMIT 1
-    """, org_id)
-
-    if not owner:
-        return False
-
-    context = {
-        "intent": "create_invoice",
-        "customer_name": customer_name,
-        "amount": amount,
-        "qty": qty,
-        "item_name": item_name,
-        "raw_text": raw_text,
-        "requester_id": user["user_id"],
-        "requester_phone": user["phone"],
-        "requester_name": user["user_name"],
-        "session_id": session_id
-    }
-
-    await execute("""
-        INSERT INTO pending_approvals
-        (org_id, requester_id, approver_role, intent_key, context, status)
-        VALUES ($1, $2, 'owner', 'create_invoice', $3::jsonb, 'pending')
-    """, org_id, user["user_id"], json.dumps(context))
-
-    item_line = f"\nItems: {qty} × {item_name}" if item_name and qty else ""
-
-    await send_buttons(
-        to=owner["phone"],
-        body=(
-            f"📋 *Invoice Approval Request*\n\n"
-            f"From: {user['user_name']} ({user['role']})\n"
-            f"Customer: {customer_name}\n"
-            f"Amount: Rs.{amount:,.0f}"
-            f"{item_line}\n\n"
-            f"Please approve or reject:"
-        ),
-        buttons=[
-            {"id": "action:approve", "title": "✅ Approve"},
-            {"id": "action:reject",  "title": "❌ Reject"}
-        ]
-    )
-    return True
-
-
 async def handle_approval_response(phone: str, action: str, user: dict):
-    """Called when Owner taps Approve/Reject button."""
+    """
+    Called when an owner taps Approve or Reject on a pending_approvals button.
+    Resumes execution via execute_pending_action(approved=True).
+    """
+    from app.services.action_executor import execute_pending_action
+
     org_id = user["org_id"]
 
     approval = await fetch_one("""
@@ -295,43 +59,60 @@ async def handle_approval_response(phone: str, action: str, user: dict):
     if isinstance(ctx, str):
         ctx = json.loads(ctx)
 
+    # Mark as decided
     await execute("""
         UPDATE pending_approvals
         SET status = $1, decided_by = $2, decided_at = NOW()
         WHERE id = $3
-    """, "approved" if action == "action:approve" else "rejected",
-        user["user_id"], approval["id"])
+    """,
+        "approved" if action == "action:approve" else "rejected",
+        user["user_id"],
+        approval["id"]
+    )
+
+    requester_phone = ctx.get("requester_phone", "")
+    requester_name  = ctx.get("requester_name", "Your colleague")
 
     if action == "action:reject":
-        await send_text(phone, f"❌ Invoice rejected.")
-        await send_text(
-            ctx["requester_phone"],
-            f"❌ Your invoice request for *{ctx['customer_name']}* "
-            f"— Rs.{ctx['amount']:,.0f} was *rejected* by {user['user_name']}."
-        )
+        await send_text(phone, "❌ Action rejected.")
+        if requester_phone:
+            await send_text(
+                requester_phone,
+                f"❌ Your request was *rejected* by {user['user_name']}."
+            )
         return
 
-    # Approved — create invoice
-    result = await accounting.create_invoice(
-        org_id=org_id,
-        user_id=ctx["requester_id"],
-        customer_name=ctx["customer_name"],
-        amount=ctx["amount"],
-        phone=ctx["requester_phone"],
-        item_name=ctx.get("item_name"),
-        qty=ctx.get("qty")
+    # Approved — resume execution from where it halted
+    pending_action = ctx.get("pending_action")
+    if not pending_action:
+        await send_text(phone, "✅ Approved, but no pending action found to execute.")
+        return
+
+    result = await execute_pending_action(
+        pending_action=pending_action,
+        user={
+            "user_id":    ctx.get("requester_id", user["user_id"]),
+            "org_id":     org_id,
+            "user_name":  requester_name,
+            "org_name":   user.get("org_name", ""),
+            "email":      ctx.get("requester_email", ""),
+            "role":       "owner",
+            "role_id":    user.get("role_id", ""),
+            "permissions": [],
+            "phone":      requester_phone,
+            "is_active":  True,
+            "org_active": True,
+        },
+        phone=requester_phone,
+        approved=True,
     )
 
-    await send_text(phone, f"✅ Approved.\n\n{result['message']}")
-    await send_text(
-        ctx["requester_phone"],
-        f"✅ Your invoice was *approved* by {user['user_name']}.\n\n{result['message']}"
-    )
-
-
-async def _log(org_id, user_id, intent, text, outcome, otp_used=False):
-    await execute("""
-        INSERT INTO audit_log
-        (org_id, user_id, intent_key, input_text, outcome, otp_used)
-        VALUES ($1, $2, $3, $4, $5, $6)
-    """, org_id, user_id, intent, text, outcome, otp_used)
+    if result.get("success"):
+        await send_text(phone, f"✅ Approved.\n\n{result['message']}")
+        if requester_phone:
+            await send_text(
+                requester_phone,
+                f"✅ Your request was *approved* by {user['user_name']}.\n\n{result['message']}"
+            )
+    else:
+        await send_text(phone, f"✅ Approved but execution failed: {result.get('message', '?')}")

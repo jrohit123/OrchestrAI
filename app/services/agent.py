@@ -45,26 +45,6 @@ _HELP_PATTERNS = {
     "commands", "list commands", "how to use",
 }
 
-# Permission → friendly capability label (domain-agnostic)
-_PERM_LABELS = {
-    "check_stock":            ("📦", "Check inventory & stock levels"),
-    "check_outstanding":      ("💰", "View outstanding dues"),
-    "create_invoice":         ("🧾", "Create sales invoices"),
-    "view_report":            ("📊", "View business reports"),
-    "approve_invoice":        ("✅", "Approve invoices"),
-    "dues_report":            ("📋", "Outstanding dues report"),
-    "check_metal_rates":      ("📈", "Check current metal rates"),
-    "view_orders_by_status":  ("🔨", "Check production order status"),
-    "check_low_stock":        ("⚠️", "Check low stock alerts"),
-    "generate_price_quotation": ("💎", "Generate price quotations"),
-    "create_sales_invoice":   ("🧾", "Create & send tax invoices"),
-    "get_customer_dues_statement": ("📄", "Customer dues statement PDF"),
-    "send_invoice_pdf":       ("📤", "Send invoice PDFs via WhatsApp"),
-    "set_metal_rate":         ("⚙️",  "Update metal rates"),
-    "clear_sessions":         ("🔒", "Manage user sessions"),
-    "check_credit_limit":     ("💳", "Check customer credit limits"),
-}
-
 
 def _is_pure_greeting(message: str) -> bool:
     """Return True if the message is ONLY a greeting (≤4 words, no query body)."""
@@ -99,26 +79,35 @@ def _time_of_day_greeting(ist_hour: int) -> str:
         return "Namaskar"
 
 
-def _build_greeting_response(user: dict, message: str) -> str:
-    """Build a personalised greeting. No LLM call, no DB query."""
-    now_ist = _dt.datetime.now(_IST)
-    tod = _time_of_day_greeting(now_ist.hour)
+async def _build_greeting_response(user: dict, message: str) -> str:
+    """Build a personalised greeting. Reads workflow names from DB — no hardcoded labels."""
+    from app.db import fetch_all as _fetch_all
+    now_ist   = _dt.datetime.now(_IST)
+    tod       = _time_of_day_greeting(now_ist.hour)
     first_name = user["user_name"].split()[0]
-    role = user.get("role", "user").title()
-    org = user.get("org_name", "")
+    role      = user.get("role", "user").title()
+    org       = user.get("org_name", "")
 
-    # Build capability list from this user's actual permissions
+    # Build capability list from workflows the user has permission for
     perms = set(user.get("permissions", []))
+    workflows = await _fetch_all(
+        "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
+        user["org_id"]
+    )
     capability_lines = []
-    seen_labels = set()
-    for perm in _PERM_LABELS:
-        if perm in perms:
-            emoji, label = _PERM_LABELS[perm]
-            if label not in seen_labels:
-                capability_lines.append(f"  {emoji} {label}")
-                seen_labels.add(label)
+    seen = set()
+    for wf in workflows:
+        if wf["intent_key"] in perms or not perms:
+            if wf["name"] not in seen:
+                emoji = "⚡" if wf["workflow_type"] == "action" else "🔍"
+                capability_lines.append(f"  {emoji} {wf['name']}")
+                seen.add(wf["name"])
 
-    caps_block = "\n".join(capability_lines) if capability_lines else "  • Query data and run reports"
+    # Fallback for non-workflow permissions
+    if not capability_lines:
+        capability_lines = ["  • Query data and run reports"]
+
+    caps_block = "\n".join(capability_lines)
 
     return (
         f"{tod}, *{first_name}!* 👋\n\n"
@@ -132,47 +121,34 @@ def _build_greeting_response(user: dict, message: str) -> str:
     )
 
 
-def _build_help_response(user: dict) -> str:
-    """Build a detailed capability guide based on this user's permissions."""
-    perms = set(user.get("permissions", []))
-    role = user.get("role", "user").title()
+async def _build_help_response(user: dict) -> str:
+    """Build a detailed capability guide from DB workflows — no hardcoded labels."""
+    from app.db import fetch_all as _fetch_all
+    role       = user.get("role", "user").title()
     first_name = user["user_name"].split()[0]
+    perms      = set(user.get("permissions", []))
 
-    # Group by category
-    query_caps, action_caps, report_caps = [], [], []
+    workflows = await _fetch_all(
+        "SELECT intent_key, name, description, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
+        user["org_id"]
+    )
 
-    perm_to_cat = {
-        "check_stock":           ("query",   "📦 *Stock & Inventory*\n  Check stock levels, low stock, item locations"),
-        "check_outstanding":     ("query",   "💰 *Outstanding Dues*\n  Check pending/overdue invoices for any customer"),
-        "check_credit_limit":    ("query",   "💳 *Credit Limits*\n  View customer credit limits"),
-        "check_metal_rates":     ("query",   "📈 *Metal Rates*\n  Current 22kt/18kt/silver rates"),
-        "view_orders_by_status": ("query",   "🔨 *Production Orders*\n  In-production, ready, confirmed orders"),
-        "create_invoice":        ("action",  "🧾 *Create Invoice*\n  Create & send tax invoice via WhatsApp"),
-        "create_sales_invoice":  ("action",  "🧾 *Sales Invoice*\n  Generate GST tax invoice with PDF"),
-        "generate_price_quotation": ("action","💎 *Price Quotation*\n  Generate quotation PDF for a customer"),
-        "approve_invoice":       ("action",  "✅ *Approve Invoices*\n  Approve pending invoices"),
-        "set_metal_rate":        ("action",  "⚙️ *Set Metal Rates*\n  Update 22kt/18kt/silver base rates"),
-        "view_report":           ("report",  "📊 *Business Reports*\n  Revenue, outstanding, inventory reports"),
-        "dues_report":           ("report",  "📋 *Dues Report*\n  Full outstanding report with aging analysis"),
-        "get_customer_dues_statement": ("report", "📄 *Statement PDF*\n  Dues statement for specific customer"),
-        "send_invoice_pdf":      ("report",  "📤 *Send Invoice PDF*\n  Resend any invoice as PDF via WhatsApp"),
-    }
-
-    seen = set()
-    for perm, (cat, label) in perm_to_cat.items():
-        if perm in perms and label not in seen:
-            if cat == "query":   query_caps.append(label)
-            elif cat == "action": action_caps.append(label)
-            elif cat == "report": report_caps.append(label)
-            seen.add(label)
+    read_caps, action_caps = [], []
+    for wf in workflows:
+        if wf["intent_key"] in perms or not perms:
+            label = f"🔍 *{wf['name']}*"
+            if wf.get("description"):
+                label += f"\n  {wf['description']}"
+            if wf["workflow_type"] == "action":
+                action_caps.append(label.replace("🔍", "⚡"))
+            else:
+                read_caps.append(label)
 
     sections = []
-    if query_caps:
-        sections.append("*🔍 What you can check/query:*\n" + "\n\n".join(query_caps))
+    if read_caps:
+        sections.append("*🔍 What you can check/query:*\n" + "\n\n".join(read_caps))
     if action_caps:
         sections.append("*⚡ What you can create/action:*\n" + "\n\n".join(action_caps))
-    if report_caps:
-        sections.append("*📁 Reports & Documents:*\n" + "\n\n".join(report_caps))
 
     body = "\n\n".join(sections) if sections else "Ask me anything about your business data."
 
@@ -184,7 +160,7 @@ def _build_help_response(user: dict) -> str:
         f"• English: \"Show Mehta Enterprises dues\"\n"
         f"• Hinglish: \"Mehta ka kitna baaki hai?\"\n"
         f"• Hindi: \"Sharma ka outstanding dikhao\"\n"
-        f"• Short: \"low stock\", \"ready orders\", \"22kt rate\"\n\n"
+        f"• Short: \"low stock\", \"ready orders\"\n\n"
         f"Say *pdf* at the end to get any result as a document. 📄"
     )
 
@@ -596,9 +572,19 @@ async def _build_system_prompt(user: dict) -> str:
                 workflow_schema_text += f"\n{intent_key}:\n"
                 workflow_schema_text += f"  Required fields:\n"
                 for field_name, field_def in entity_schema.items():
-                    required = "REQUIRED" if field_def.get("required") else "optional"
+                    required   = "REQUIRED" if field_def.get("required") else "optional"
                     field_type = field_def.get("type", "string")
-                    workflow_schema_text += f"    - {field_name} ({field_type}, {required})\n"
+                    computed   = " [COMPUTED — do not fill, system calculates this]" if field_def.get("computed") else ""
+                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}\n"
+
+                # Add note about computed fields if any exist
+                has_computed = any(v.get("computed") for v in entity_schema.values())
+                if has_computed:
+                    workflow_schema_text += (
+                        "  CRITICAL: Never pass values for [COMPUTED] fields to update_draft.\n"
+                        "  The system recalculates them deterministically. Filling them yourself\n"
+                        "  will be silently overwritten and may show wrong numbers to the user.\n"
+                    )
 
             if business_glossary:
                 workflow_schema_text += f"  Business glossary:\n"
@@ -963,32 +949,19 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
         return False
 
 async def _validate_draft(intent_key: str, fields: dict, org_id: str) -> dict:
-    """Validate draft fields against workflow entity_schema."""
+    """Validate draft fields. Thin wrapper over qa_verifier for backward compatibility."""
+    from app.services.qa_verifier import verify_draft, VerificationError
     wf = await fetch_one(
-        "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
+        "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
         intent_key, org_id
     )
     if not wf:
-        return {"missing_fields": [], "complete": True}  # No schema = no validation
-
-    schema = wf.get("entity_schema") or {}
-    if isinstance(schema, str):
-        try:
-            schema = json.loads(schema)
-        except:
-            schema = {}
-
-    missing = []
-    for field_name, field_def in schema.items():
-        if not field_def.get("required"):
-            continue
-        if field_name in _EXECUTOR_RESOLVED_FIELDS:  # Skip executor-resolved fields
-            continue
-        val = fields.get(field_name)
-        if val is None or val == "" or val == []:
-            missing.append(field_name)
-
-    return {"missing_fields": missing, "complete": len(missing) == 0}
+        return {"missing_fields": [], "complete": True}
+    try:
+        await verify_draft(dict(wf), fields, org_id)
+        return {"missing_fields": [], "complete": True}
+    except VerificationError as e:
+        return {"missing_fields": e.missing_fields + e.invalid_fields, "complete": False}
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
@@ -1430,13 +1403,13 @@ async def run_agent(
     msg_stripped = message.strip()
 
     if _is_pure_greeting(msg_stripped):
-        greeting_text = _build_greeting_response(user, msg_stripped)
+        greeting_text = await _build_greeting_response(user, msg_stripped)
         history_to_save = [{"role": "user", "content": message},
                            {"role": "assistant", "content": greeting_text}]
         return greeting_text, history_to_save, {}
 
     if _is_help_request(msg_stripped):
-        help_text = _build_help_response(user)
+        help_text = await _build_help_response(user)
         history_to_save = [{"role": "user", "content": message},
                            {"role": "assistant", "content": help_text}]
         return help_text, history_to_save, {}
@@ -1744,30 +1717,43 @@ async def run_agent(
                 if isinstance(result, dict) and result.get("type") == "confirm_pending":
                     # Validate draft is complete before allowing confirmation
                     draft = session_patch.get("pending_action") or pending_action or {}
-                    validation = await _validate_draft(
-                        draft.get("intent_key"),
-                        draft.get("fields", {}),
-                        user["org_id"]
+
+                    # QA verification: validate + recompute via calc_rules
+                    # This catches missing fields AND silently corrects LLM arithmetic
+                    from app.services.qa_verifier import verify_draft, VerificationError, diff_for_audit
+                    workflow_row = await fetch_one(
+                        "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
+                        draft.get("intent_key"), user["org_id"]
                     )
-                    if not validation["complete"]:
-                        # Bug 9 fix: do NOT extend messages here — the single
-                        # messages.extend(tool_results) at the bottom of the loop
-                        # handles it. Just overwrite the tool result content so the
-                        # LLM gets a clear explanation of WHY confirm was rejected
-                        # instead of the silent {"type": "confirm_pending"} dict.
-                        missing_str = ", ".join(validation["missing_fields"])
+                    if not workflow_row:
+                        tool_results[-1]["content"] = json.dumps({
+                            "error": f"Workflow '{draft.get('intent_key')}' not found. Cannot confirm."
+                        })
+                        break
+
+                    try:
+                        verified_fields = await verify_draft(
+                            dict(workflow_row), draft.get("fields", {}), user["org_id"]
+                        )
+                    except VerificationError as e:
+                        missing_str = ", ".join(e.missing_fields + e.invalid_fields)
                         tool_results[-1]["content"] = json.dumps({
                             "error": (
-                                f"Draft incomplete. Missing required fields: {missing_str}. "
-                                f"Ask the user for these specific fields before calling "
-                                f"confirm_action again."
+                                f"Draft incomplete/invalid. Missing: {e.missing_fields}. "
+                                f"Invalid: {e.invalid_fields}. "
+                                f"Ask the user for: {missing_str} before calling confirm_action again."
                             )
                         })
-                        # Fall through to messages.extend(tool_results) below — no continue here
-                        break  # exit the for-tool_call loop so we reach messages.extend once
+                        break
 
-                    # Set stage to awaiting_confirmation - use session_patch draft, not old pending_action
-                    draft["stage"] = "awaiting_confirmation"
+                    # Log any corrections the QA layer made
+                    mismatches = diff_for_audit(draft.get("fields", {}), verified_fields)
+                    if mismatches:
+                        print(f"[QA] Corrected LLM-drafted values before confirmation: {mismatches}")
+
+                    # Store verified fields — these are what gets executed, not the LLM's originals
+                    draft["fields"] = verified_fields
+                    draft["stage"]  = "awaiting_confirmation"
                     session_patch["pending_action"] = draft
                 action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
                 details = json.loads(tool_call.function.arguments).get("details", {})

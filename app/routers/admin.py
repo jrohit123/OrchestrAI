@@ -305,6 +305,68 @@ RULE 12 — response_template (for action workflows):
   Example: "✅ *Invoice Created*\\n\\nInvoice #: *{{invoice_number}}*\\nCustomer: {{customer_name}}\\nAmount: *Rs.{{amount}}*\\n\\n📄 PDF sent above ↑"
   For read workflows: null
 
+RULE 13 — calc_rules (REQUIRED for action workflows with computed numeric fields):
+  Defines how the system calculates derived values deterministically.
+  The LLM NEVER fills computed fields — it only collects raw inputs.
+  {{
+    "item_rules": {{
+      "<computed_field>": "<expression using raw item fields + org columns>"
+    }},
+    "aggregate_rules": {{
+      "<computed_field>": "<expression using top-level fields>"
+    }}
+  }}
+  Available names: every field on the item/draft + every column on the orgs table.
+  Available functions ONLY: round(x, n), abs(x), min(a,b), max(a,b),
+    sum_field(items, 'field_name'), count_field(items).
+  Mark every field these rules produce as "computed": true in entity_schema.
+  Example for a GST invoice:
+    calc_rules = {{
+      "item_rules": {{
+        "gst": "round(unit_price * qty * gst_rate / 100, 2)",
+        "total": "round(unit_price * qty + gst, 2)"
+      }},
+      "aggregate_rules": {{
+        "total_amount": "round(sum_field(items, 'total'), 2)"
+      }}
+    }}
+  For read workflows: {{}}.
+
+RULE 14 — steps (REQUIRED for workflow_type="action"):
+  Ordered array of {{"op": ..., "params": {{...}}}} — this IS the execution logic.
+  Available ops:
+    resolve_entity   — look up a named entity (customer, vendor…) from any table
+      params: {{table, name_from: "$fields.<field>", into: "<alias>", match_column: "name"}}
+    compute          — run QA verification + recompute all calc_rules
+      params: {{}}
+    otp_gate         — halt for OTP if amount >= otp_threshold
+      params: {{amount_field: "$computed.<total_field>"}}
+    approval_gate    — halt for approval if amount >= approval_threshold
+      params: {{amount_field: "$computed.<total_field>"}}
+    db.insert_row    — insert one row into any table
+      params: {{
+        table: "<table_name>",
+        values: {{
+          "<column>": "$fields.<field>" | "$computed.<field>" | "$<alias>.id" | "$org_id" | "$user.user_id" | "literal_value"
+        }},
+        sequence: {{field: "<doc_number_column>", prefix: "INV-", start: 100}}
+      }}
+    pdf.generate     — generate PDF from pdf_config
+      params: {{subtitle: ""}}
+    notify.whatsapp  — send PDF + success message
+      params: {{attach_pdf: true}}
+  Typical pipeline for an invoice/quotation:
+    resolve_entity → compute → otp_gate → approval_gate → db.insert_row → pdf.generate → notify.whatsapp
+  For read workflows: [].
+
+RULE 15 — pdf_config render_instructions and theme (for action workflows):
+  Add these two keys to pdf_config:
+  "theme": {{"primary": "#hex", "light_bg": "#hex", "text": "#hex", "muted": "#hex"}}
+  "render_instructions": "200-400 words describing the exact document layout —
+    badge/header style, customer block, items table columns and alignment,
+    totals block structure, footer text, any special formatting.
+    Written as instructions for an LLM to follow when building the HTML."
+
 ══════════════════ MANDATORY FIELDS — NEVER EMPTY ══════════════════════════════════
 
 CRITICAL: The following fields MUST ALWAYS be populated with valid content. Never return empty arrays or null for these:
@@ -387,6 +449,11 @@ Return ONLY this JSON, no markdown, no explanation:
                 last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
                 print(f"[GENERATE] {last_error} — retrying")
                 continue
+            # Action workflows must have steps[]
+            if config.get("workflow_type") == "action" and not config.get("steps"):
+                last_error = f"Attempt {attempt+1}: action workflow missing steps[]"
+                print(f"[GENERATE] {last_error} — retrying")
+                continue
 
             print(f"[GENERATE] ✅ Succeeded on attempt {attempt+1}")
             return config
@@ -444,7 +511,7 @@ async def save_generated_workflow(request: Request):
                 trigger_patterns, adapter_method,
                 otp_required, otp_threshold, approval_threshold,
                 is_active, steps,
-                pdf_config, response_template
+                pdf_config, response_template, calc_rules
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6::jsonb, $7::jsonb,
@@ -452,8 +519,8 @@ async def save_generated_workflow(request: Request):
                 $11::jsonb, $12,
                 '[]'::jsonb, $13,
                 $14, $15, $16,
-                true, ARRAY(SELECT value FROM jsonb_array_elements($17::jsonb)),
-                $18::jsonb, $19
+                true, $17::jsonb,
+                $18::jsonb, $19, $20::jsonb
             )
         """,
             org_id,
@@ -465,16 +532,17 @@ async def save_generated_workflow(request: Request):
             json.dumps(body.get("entity_schema", {})),
             body.get("sql_template"),
             json.dumps(body.get("sql_params_order", [])),
-            body.get("response_format") or "generic",          # NOT NULL safe fallback
+            body.get("response_format") or "generic",
             json.dumps(body.get("business_glossary", {})),
             body.get("llm_system_prompt"),
-            body.get("adapter_method"),
+            body.get("adapter_method") or "generic",
             body.get("otp_required", False),
             body.get("otp_threshold"),
             body.get("approval_threshold"),
-            json.dumps(body.get("steps", [])),                  # JSON string for SQL conversion
-            json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,  # $18
-            body.get("response_template")                                                     # $19
+            json.dumps(body.get("steps", [])),
+            json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,
+            body.get("response_template"),
+            json.dumps(body.get("calc_rules", {})),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
