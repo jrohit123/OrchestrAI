@@ -21,8 +21,10 @@ class CalcError(Exception):
     pass
 
 
-def _evaluator(names: dict) -> EvalWithCompoundTypes:
-    return EvalWithCompoundTypes(names=names, functions=_ALLOWED_FUNCTIONS)
+def _eval(expr: str, names: dict):
+    """Evaluate an expression safely."""
+    ev = EvalWithCompoundTypes(names=names, functions=_ALLOWED_FUNCTIONS)
+    return ev.eval(expr)
 
 
 def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
@@ -37,7 +39,7 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     out = dict(item)
     for field, expr in item_rules.items():
         try:
-            result = _evaluator(names)(expr)
+            result = _eval(expr, names)
             out[field] = round(result, 2) if isinstance(result, float) else result
             names[field] = out[field]
         except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
@@ -55,7 +57,7 @@ def compute_aggregate_rules(aggregate_rules: dict, fields: dict, context: dict) 
     out = {}
     for field, expr in aggregate_rules.items():
         try:
-            result = _evaluator(names)(expr)
+            result = _eval(expr, names)
             out[field] = round(result, 2) if isinstance(result, float) else result
             names[field] = out[field]
         except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
