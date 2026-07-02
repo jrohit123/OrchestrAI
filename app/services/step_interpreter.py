@@ -372,6 +372,9 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
     row = await fetch_one(sql, *sql_values)
     ctx.setdefault("upserted", {})[table] = dict(row) if row else {}
     return ctx
+
+
+async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
     """
     Send PDF document and/or text message to the user's WhatsApp.
     """
