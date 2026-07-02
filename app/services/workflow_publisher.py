@@ -80,7 +80,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
         draft.get("name") or draft.get("intent_key"),
         draft["intent_key"],
         draft.get("description", ""),
-        draft.get("workflow_type", "action"),
+        draft.get("workflow_type") or "action",
         _j(draft.get("training_phrases"), "[]"),
         _j(draft.get("entity_schema"),    "{}"),
         _j(draft.get("calc_rules"),       "{}"),

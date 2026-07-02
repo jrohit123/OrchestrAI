@@ -176,17 +176,19 @@ async def _execute_tool(
         await execute("""
             UPDATE workflow_drafts SET
                 name=$1, intent_key=$2, description=$3,
-                training_phrases=$4::jsonb, entity_schema=$5::jsonb,
-                calc_rules=$6::jsonb, steps=$7::jsonb,
-                sql_template=$8, sql_params_order=$9::jsonb, response_format=$10,
-                business_glossary=$11::jsonb, llm_system_prompt=$12,
-                pdf_config=$13::jsonb, response_template=$14,
-                otp_required=$15, otp_threshold=$16, approval_threshold=$17,
-                plain_english_summary=$18,
+                workflow_type=$4,
+                training_phrases=$5::jsonb, entity_schema=$6::jsonb,
+                calc_rules=$7::jsonb, steps=$8::jsonb,
+                sql_template=$9, sql_params_order=$10::jsonb, response_format=$11,
+                business_glossary=$12::jsonb, llm_system_prompt=$13,
+                pdf_config=$14::jsonb, response_template=$15,
+                otp_required=$16, otp_threshold=$17, approval_threshold=$18,
+                plain_english_summary=$19,
                 status = 'ready_for_review', updated_at = now()
-            WHERE id = $19
+            WHERE id = $20
         """,
             spec["name"], spec["intent_key"], spec["description"],
+            spec.get("workflow_type") or "action",
             json.dumps(spec["training_phrases"]),
             json.dumps(spec["entity_schema"]),
             json.dumps(spec.get("calc_rules", {})),
