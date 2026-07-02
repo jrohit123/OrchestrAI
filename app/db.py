@@ -6,6 +6,7 @@ load_dotenv()
 
 _pool = None
 
+# KARTIK
 
 async def init_db():
     global _pool
