@@ -181,7 +181,7 @@ async def _get_schema(org_id: str) -> str:
         WHERE table_schema = 'public'
           AND table_name NOT IN (
               'audit_log', 'otp_tokens', 'pending_approvals',
-              'credentials', 'workflows'
+              'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
           )
         ORDER BY table_name, ordinal_position
     """)
@@ -744,109 +744,21 @@ Each workflow lists its required fields with types and whether they're required.
 Use this to give accurate guidance on what's missing.
 Example: For create_sales_invoice, required fields are: customer_name (string, REQUIRED), items (array, REQUIRED).
 
-RULE 8 — INVOICE & QUOTATION ITEMS STRUCTURE:
-When creating an invoice OR quotation, you MUST collect items with the following structure:
+RULE 8 — WORKFLOW-SPECIFIC FIELD STRUCTURE:
+Every field a workflow needs — including nested item fields and which ones are
+computed automatically — is defined in WORKFLOW SCHEMAS above, plus that
+workflow's own llm_system_prompt. Follow that schema exactly.
+Never invent a field structure not declared in the workflow's entity_schema.
+Fields marked [COMPUTED] are calculated by the system — do NOT ask the user
+for them and do NOT fill them in update_draft.
 
-For INVOICES:
-items = [
-  {{
-    "description": "22kt Gold Necklace with Ruby, 60g",
-    "qty": 1,
-    "unit_price": 330097.09,
-    "gst": 9902.91,
-    "total": 340000
-  }}
-
-For QUOTATIONS (making_charges and design details are optional):
-items = [
-  {{
-    "description": "22kt Gold Necklace with Ruby, 60g",
-    "design_code": "GN-22K-001",
-    "design_name": "Heritage Kundan Set",
-    "metal_type": "22kt Gold",
-    "weight": 60,
-    "qty": 1,
-    "unit_price": 330097.09,
-    "making_charges": 15000,
-    "gst": 9902.91,
-    "total": 340000
-  }}
-
-RULE 9 — USE USER-PROVIDED PRICES:
-When the user provides a price (e.g., "at 45000", "Rs.45000"), check if it's per gram or total:
-- If weight is provided (e.g., "25g at 45000"), calculate: unit_price = price_per_gram × weight
-  Example: "platinum necklace 25g at 45000" → unit_price: 45000 × 25 = 1,125,000
-- If no weight or price seems like total, use it directly as unit_price
-Do NOT query the pricing table to look up metal rates.
-Calculate GST based on the org's gst_rate (default 3%) if not provided.
-
-RULE 10 — EXTRACT OPTIONAL DESIGN DETAILS:
-When the user provides design details in their message, extract them into the item fields:
-- "design code PT-NECK-001" → design_code: "PT-NECK-001"
-- "design name Platinum Necklace" → design_name: "Platinum Necklace"
-- "metal type Platinum" → metal_type: "Platinum"
-- "25g" or "25 grams" → weight: 25
-- "making charges 5000" → making_charges: 5000
-Example: "platinum necklace 25g 1 pc at 45000 with making charges 5000, design code PT-NECK-001, design name Platinum Necklace, metal type Platinum"
-→ unit_price = 45000 × 25 = 1,125,000
-→ items = [{{"description": "platinum necklace 25g", "design_code": "PT-NECK-001", "design_name": "Platinum Necklace", "metal_type": "Platinum", "weight": 25, "qty": 1, "unit_price": 1125000, "making_charges": 5000, "gst": 33750, "total": 1163750}}]
-
-RULE 11 — NEVER CALL generate_pdf FOR CREATING QUOTATIONS/INVOICES:
-When creating a NEW quotation or invoice, you MUST follow this flow:
-1. Call update_draft to collect all required fields
-2. Call confirm_action to trigger execution
-3. The system will automatically generate the PDF after database insert
-
-DO NOT call generate_pdf directly when creating new quotations or invoices.
-This applies EVEN when:
-- The user provides custom pricing (per-gram rate, making charges)
-- The user provides custom design details (design_code, design_name, metal_type)
-- The metal type is not in the pricing table
-- The design code is not in the inventory table
-
-generate_pdf is ONLY for generating PDFs from EXISTING database records (e.g., "show invoice INV-125", "send pdf of quotation QUO-1001").
-
-RULE 12 — DESIGN CODE IS JUST A FIELD, NOT AN INVENTORY SKU:
-When the user provides a design code (e.g., "PT-NECK-001"), do NOT query the inventory table to look it up.
-The design_code is simply a field to store in the quotation items for reference.
-It does NOT need to exist in the inventory table.
-Only query inventory if the user specifically asks to check stock or if you need to find an item by name/price.
-]
-
-Each item needs:
-- description: string (what the item is - e.g., "22kt Gold Necklace with Ruby, 60g")
-- design_code: string (optional design code - e.g., "GN-22K-001")
-- design_name: string (optional design name - e.g., "Heritage Kundan Set")
-- metal_type: string (optional metal type - e.g., "22kt Gold", "Platinum")
-- weight: float (optional weight in grams - e.g., 60)
-- qty: integer (quantity - default 1 if not specified)
-- unit_price: float (price per unit, ex-GST)
-- making_charges: float (making charges for this item - OPTIONAL, only for quotations)
-- gst: float (GST amount for this item)
-- total: float (line total = qty × unit_price + making_charges + gst, or just the final total)
-
-If the user provides a simple description like "gold chain 60g", you can:
-1. Ask for quantity (default 1)
-2. Ask for unit price (or calculate from inventory if available)
-3. Calculate GST (typically 3% for jewellery)
-4. Calculate total
-
-Example flow for invoice:
-  User: "invoice for Jain Gold Works, 22kt gold chain 60g"
-  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works"}})
-  → "I have: customer Jain Gold Works. I need: items. What items should be on this invoice?"
-  User: "22kt gold chain 60g, 1 piece"
-  → query_database to get unit_price from inventory if available
-  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works", "items": [{{"description": "22kt gold chain 60g", "qty": 1, "unit_price": 330000, "gst": 9900, "total": 339900}}]}})
-  → confirm_action(...)
-
-Example flow for quotation:
-  User: "quote for Sharma, 22kt gold chain 60g"
-  → update_draft(intent_key="generate_price_quotation", fields={{"customer_id": "uuid", "customer_name": "Sharma"}})
-  → "I have: customer Sharma. I need: items. What items should be on this quotation?"
-  User: "22kt gold chain 60g, 1 piece at 330000"
-  → update_draft(intent_key="generate_price_quotation", fields={{"customer_id": "uuid", "customer_name": "Sharma", "items": [{{"description": "22kt gold chain 60g", "qty": 1, "unit_price": 330000, "gst": 9900, "total": 339900}}]}})
-  → confirm_action(...)
+RULE 9 — NEVER CALL generate_pdf WHEN CREATING OR CHANGING A RECORD:
+If a workflow writes to the database, always follow:
+  1. update_draft → accumulate fields per that workflow's entity_schema
+  2. confirm_action → trigger execution
+The system generates any PDF automatically after the write.
+generate_pdf is ONLY for re-sending a document from an EXISTING record
+(e.g. "resend INV-301 as pdf", "send QUO-1001 pdf again").
 
 PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
 - "report"    → ANY list of multiple records (overdue invoices, invoice summary,
@@ -979,27 +891,20 @@ async def _execute_tool(
         sql = tool_input.get("sql", "")
         params = tool_input.get("params", [])
 
-        # Validate SQL against forbidden tables/columns
-        forbidden_tables = ["products", "items", "inventory_items", "stock", "stock_items", "goods", "merchandise", "materials", "locations", "businesses", "companies", "organizations", "firms", "pricing"]
-        # customer_name IS a valid column in orders table — do NOT block it
-        # metal IS a substring of metal_type — blocking it breaks every orders query
-        # These two were causing ORD-1006 to fail. Only block truly non-existent names.
-        forbidden_columns = [
-            "quantity", "stock_quantity", "stock_level", "amount_on_hand",
-            "threshold", "min_stock", "reorder_point",
-            "invoice_status", "payment_status",
-            "client_name", "gold_type"
-        ]
-
-        sql_lower = sql.lower()
-        for forbidden in forbidden_tables:
-            if f"from {forbidden}" in sql_lower or f"join {forbidden}" in sql_lower:
-                return f"ERROR: Table '{forbidden}' does not exist. Use 'inventory' instead."
-
-        for forbidden in forbidden_columns:
-            # Match as standalone word only — not as substring of valid column names
-            if re.search(r'\b' + re.escape(forbidden) + r'\b', sql_lower):
-                return f"ERROR: Column '{forbidden}' does not exist. Check schema for correct column names."
+        # Validate SQL against live schema — check referenced tables actually exist.
+        # This replaces a hardcoded denylist with an always-correct schema check.
+        schema_text = await _get_schema(user["org_id"])
+        known_tables = set(re.findall(r'^- (\w+):', schema_text, re.MULTILINE))
+        referenced_tables = set(re.findall(
+            r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE
+        ))
+        unknown_tables = referenced_tables - known_tables
+        if unknown_tables:
+            return (
+                f"ERROR: Table(s) {', '.join(sorted(unknown_tables))} not found in schema. "
+                f"Available tables: {', '.join(sorted(known_tables))}. "
+                f"Correct the query and retry."
+            )
 
         ok, reason = _safe(sql)
         if not ok:

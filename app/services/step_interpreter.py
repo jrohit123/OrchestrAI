@@ -5,11 +5,13 @@ Adding workflow #41 never requires touching this file.
 All execution logic lives in the workflow record in the DB.
 
 Available step ops:
-  resolve_entity   — look up a named entity (customer, vendor, etc.) from any table
+  resolve_entity   — look up a named entity from any table (supports expose param)
   compute          — run qa_verifier to validate + recompute via calc_rules
   otp_gate         — halt for OTP verification if amount >= threshold
   approval_gate    — halt for approval if amount >= threshold and user is not owner
   db.insert_row    — insert a row into any table with field mapping + sequence generation
+  db.update_row    — update an existing row in any table
+  db.upsert_row    — insert or update (ON CONFLICT) in any table
   pdf.generate     — generate PDF using workflow's pdf_config
   notify.whatsapp  — send PDF and/or text message to the user
 """
@@ -67,6 +69,8 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     """
     Look up a named entity from any table by a fuzzy name match.
     Stores the full resolved row in ctx[into] for downstream steps.
+    Optional expose: {"alias": "column"} copies columns into ctx["fields"]
+    so calc_rules can reference them.
     """
     table      = params["table"]
     match_col  = params.get("match_column", "name")
@@ -85,12 +89,18 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     if len(rows) == 0:
         raise StepError(f"No {table} record found matching '{name_val}'")
     if len(rows) > 1:
-        # Signal ambiguity — caller handles clarification
         raise StepError(
             f"AMBIGUOUS:{table}:{json.dumps([dict(r) for r in rows], default=str)}"
         )
 
-    ctx[into] = dict(rows[0])
+    resolved = dict(rows[0])
+    ctx[into] = resolved
+
+    # expose: copy named columns from resolved row into ctx["fields"]
+    # so calc_rules can reference them as if they were user-provided inputs
+    for alias, column in (params.get("expose") or {}).items():
+        ctx["fields"][alias] = resolved.get(column)
+
     return ctx
 
 
@@ -288,7 +298,80 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
     return ctx
 
 
-async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
+async def _op_update_row(params: dict, ctx: dict) -> dict:
+    """
+    Generic parameterized UPDATE.
+    params: {table, set: {col: $path_or_literal}, where: {col: $path_or_literal}}
+    Use "NOW()" as a literal string to set timestamp columns to current time.
+    """
+    import datetime as _dt
+    table       = params["table"]
+    set_vals    = _resolve_values(params.get("set", {}), ctx)
+    where_vals  = _resolve_values(params.get("where", {}), ctx)
+
+    # Resolve NOW() string to actual Python datetime
+    def _resolve_now(v):
+        if v == "NOW()":
+            return _dt.datetime.now(_dt.timezone.utc)
+        return v
+
+    set_vals   = {k: _resolve_now(v) for k, v in set_vals.items()}
+    where_vals = {k: _resolve_now(v) for k, v in where_vals.items()}
+
+    set_cols   = list(set_vals.keys())
+    where_cols = list(where_vals.keys())
+
+    set_clause   = ", ".join(f"{c} = ${i+1}" for i, c in enumerate(set_cols))
+    where_clause = " AND ".join(
+        f"{c} = ${i+1+len(set_cols)}" for i, c in enumerate(where_cols)
+    )
+    sql_values = (
+        [json.dumps(v) if isinstance(v, (list, dict)) else v for v in set_vals.values()]
+        + list(where_vals.values())
+    )
+    sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause} RETURNING *"
+
+    row = await fetch_one(sql, *sql_values)
+    if not row:
+        raise StepError(f"db.update_row: no matching row in {table}")
+    ctx.setdefault("updated", {})[table] = dict(row)
+    return ctx
+
+
+async def _op_upsert_row(params: dict, ctx: dict) -> dict:
+    """
+    Generic INSERT ... ON CONFLICT DO UPDATE.
+    params: {table, values: {col: $path_or_literal}, conflict_columns: [col1, col2]}
+    """
+    import datetime as _dt
+    table          = params["table"]
+    conflict_cols  = params.get("conflict_columns", [])
+    raw_values     = _resolve_values(params.get("values", {}), ctx)
+
+    def _resolve_now(v):
+        if v == "NOW()":
+            return _dt.datetime.now(_dt.timezone.utc)
+        return v
+
+    values = {k: _resolve_now(v) for k, v in raw_values.items()}
+
+    cols         = list(values.keys())
+    placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
+    update_clause = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict_cols
+    )
+    sql_values = [
+        json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()
+    ]
+    sql = (
+        f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({', '.join(conflict_cols)}) DO UPDATE SET {update_clause} "
+        f"RETURNING *"
+    )
+
+    row = await fetch_one(sql, *sql_values)
+    ctx.setdefault("upserted", {})[table] = dict(row) if row else {}
+    return ctx
     """
     Send PDF document and/or text message to the user's WhatsApp.
     """
@@ -322,6 +405,8 @@ PRIMITIVES = {
     "otp_gate":         _op_otp_gate,
     "approval_gate":    _op_approval_gate,
     "db.insert_row":    _op_insert_row,
+    "db.update_row":    _op_update_row,
+    "db.upsert_row":    _op_upsert_row,
     "pdf.generate":     _op_generate_pdf,
     "notify.whatsapp":  _op_notify_whatsapp,
 }

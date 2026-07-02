@@ -52,10 +52,11 @@ async def compile_workflow_spec(draft: dict, org_id: str) -> dict:
 WORKFLOW TYPE HINT: {draft.get('workflow_type', 'unclear — infer from purpose')}
 FIELDS DISCUSSED WITH THE ADMIN: {', '.join(raw_fields) if raw_fields else '(none specified yet)'}
 BUSINESS RULES MENTIONED: {draft.get('business_rules') or '(none)'}"""
+        # Always check for PDF analysis regardless of how the draft was built
         pdf_analysis = _parse(draft.get("pdf_sample_analysis"), None)
     else:
         description_block = draft.get("description", "")
-        pdf_analysis = None
+        pdf_analysis = _parse(draft.get("pdf_sample_analysis"), None)
 
     # If admin uploaded a sample PDF, inject the extracted layout spec
     pdf_context = ""
@@ -86,7 +87,25 @@ RULE 2 — training_phrases: 8-12 realistic WhatsApp-style phrases, English + Hi
 
 RULE 3 — entity_schema: Only entities actually needed. Per field:
   table, column, match (ILIKE/exact), required, format (wildcard/exact), type (string/integer/float)
-  Mark computed fields with "computed": true — these are NEVER collected from the user.
+  CRITICAL: Mark computed fields with "computed": true — these are NEVER collected from the user.
+  For items arrays, include item_schema with per-item field definitions.
+  Example for an invoice with computed GST:
+  {{
+    "customer_name": {{"type":"string","required":true,"table":"customers","column":"name","match":"ILIKE","format":"wildcard"}},
+    "items": {{
+      "type":"array","required":true,
+      "item_schema": {{
+        "description": {{"type":"string","required":true}},
+        "qty":         {{"type":"integer","required":true}},
+        "unit_price":  {{"type":"float","required":true}},
+        "gst":         {{"type":"float","required":false,"computed":true}},
+        "total":       {{"type":"float","required":false,"computed":true}}
+      }}
+    }},
+    "total_amount": {{"type":"float","required":false,"computed":true}}
+  }}
+  RULE: Every field produced by calc_rules MUST appear in entity_schema with "computed":true.
+  RULE: Never mark a computed field as "required":true — the user never provides it.
 
 RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id, $2+ for entities).
   null for action workflows.
@@ -99,11 +118,17 @@ RULE 6 — response_format: outstanding_summary|inventory|orders|customers|quota
 RULE 7 — business_glossary: 3-6 term mappings for this specific workflow.
 
 RULE 8 — llm_system_prompt: Under 300 words. What it does, tables involved, 3 example inputs,
-  1 disambiguation rule.
+  1 disambiguation rule. Include the exact intent_key so the agent knows which workflow to use.
 
 RULE 9 — adapter_method: "generic" for all workflows (execution is driven by steps[]).
 
-RULE 10 — intent_key: unique snake_case. reads: describe data. actions: describe action.
+RULE 10 — intent_key: unique snake_case. CRITICAL: Use EXACTLY these keys for standard workflows:
+  - Creating a sales invoice → "create_sales_invoice"
+  - Generating a price quotation → "generate_price_quotation"
+  - Updating order status → "update_order_status"
+  - Setting metal rates → "set_metal_rate"
+  - Customer dues statement → "get_customer_dues_statement"
+  For any other workflow, derive a clear snake_case key from the purpose.
 
 RULE 11 — pdf_config: doc_type, title_template, aging_analysis, show_key_insights, insight_focus.
   For action workflows also add theme and render_instructions (RULE 15).
@@ -111,45 +136,67 @@ RULE 11 — pdf_config: doc_type, title_template, aging_analysis, show_key_insig
 RULE 12 — response_template: WhatsApp message after action. Use {{variable}} placeholders. null for reads.
 
 RULE 13 — calc_rules (action workflows with computed fields):
-  item_rules: per-line-item expressions using item fields + org columns.
+  item_rules: per-line-item expressions using item fields + org columns (e.g. gst_rate from orgs).
   aggregate_rules: top-level expressions (e.g. sum of items).
   Available functions: round(x,n), abs(x), min(a,b), max(a,b), sum_field(items,'field'), count_field(items).
+  CRITICAL: Every field produced here MUST have "computed":true in entity_schema.
+  Example for GST invoice:
+  {{
+    "item_rules": {{
+      "gst":   "round(unit_price * qty * gst_rate / 100, 2)",
+      "total": "round(unit_price * qty + gst, 2)"
+    }},
+    "aggregate_rules": {{
+      "total_amount": "round(sum_field(items, 'total'), 2)"
+    }}
+  }}
   {{}} for read workflows.
 
 RULE 14 — steps (action workflows — this IS the execution logic):
   Ordered array of {{"op":"...", "params":{{...}}}}.
   Available ops:
     resolve_entity  — {{"table","name_from":"$fields.X","into":"alias","match_column":"name"}}
-    compute         — {{}}
+                      optional: "expose":{{"ctx_alias":"db_column"}} to copy row values into fields
+    compute         — {{}} — REQUIRED whenever calc_rules is non-empty
     otp_gate        — {{"amount_field":"$computed.total_amount"}}
     approval_gate   — {{"amount_field":"$computed.total_amount"}}
     db.insert_row   — {{"table","values":{{"col":"$fields.X|$computed.X|$alias.id|$org_id|$user.user_id|literal"}},
                        "sequence":{{"field":"doc_number_col","prefix":"INV-","start":100}}}}
+    db.update_row   — {{"table","set":{{"col":"$fields.X|NOW()"}},"where":{{"col":"$alias.id"}}}}
+    db.upsert_row   — {{"table","values":{{...}},"conflict_columns":["col1","col2"]}}
     pdf.generate    — {{"subtitle":""}}
     notify.whatsapp — {{"attach_pdf":true}}
-  Typical pipeline: resolve_entity→compute→otp_gate→approval_gate→db.insert_row→pdf.generate→notify.whatsapp
+  Typical pipeline for invoice/quotation:
+    resolve_entity → compute → otp_gate → approval_gate → db.insert_row → pdf.generate → notify.whatsapp
+  For status update: resolve_entity → db.update_row → notify.whatsapp
   [] for read workflows.
 
 RULE 15 — pdf_config theme + render_instructions (action workflows):
   "theme": {{"primary":"#hex","light_bg":"#hex","text":"#hex","muted":"#hex"}}
   "render_instructions": "200-400 words — exact layout instructions for the PDF:
-    badge/header style, customer block, items table columns and alignment,
-    totals block, footer text. Written so an LLM can rebuild this layout from scratch."
+    header style (badges, org name placement), customer/recipient block,
+    items table columns with alignment (right-align amounts, center qty),
+    totals block structure (subtotal, tax, grand total),
+    footer text, any special visual elements.
+    Written so an AI can rebuild this exact layout with new data."
 
-RULE 16 — plain_english_summary (NEW — always required):
+RULE 16 — plain_english_summary (always required):
   2-5 short lines a non-technical business owner can read in one glance.
-  Structure:
-    - What it's called and when it triggers (example phrases)
-    - What it collects, in plain words
-    - What's calculated automatically, if anything
-    - Any OTP/approval rule, in plain words
-    - What document it produces, if any
+  - What it's called and when it triggers (example phrases)
+  - What it collects, in plain words
+  - What's calculated automatically, if anything
+  - Any OTP/approval rule, in plain words
+  - What document it produces, if any
   End with: "Shall I create this?"
   No JSON, no field names, no technical jargon.
 
-══════════════════ MANDATORY ══════════════════════════════════════
-training_phrases ≥ 8. entity_schema not empty. business_glossary not empty.
-llm_system_prompt not null. action workflows must have steps[].
+══════════════════ MANDATORY VALIDATION ═══════════════════════════
+BEFORE generating the final JSON, verify:
+  1. Every field in calc_rules item_rules/aggregate_rules appears in entity_schema with "computed":true
+  2. No computed field has "required":true
+  3. Action workflows have at least resolve_entity + db.insert_row in steps (unless it's an update/upsert)
+  4. training_phrases has ≥ 8 phrases
+  5. plain_english_summary is present and ends with "Shall I create this?"
 
 ══════════════════ OUTPUT ══════════════════════════════════════════
 Return ONLY this JSON, no markdown:
@@ -157,7 +204,7 @@ Return ONLY this JSON, no markdown:
   "name":"...", "intent_key":"...", "workflow_type":"read|action",
   "description":"...", "training_phrases":[...], "entity_schema":{{}},
   "calc_rules":{{}}, "steps":[...], "sql_template":null, "sql_params_order":[],
-  "response_format":"...", "business_glossary":{{}}, "llm_system_prompt":"...",
+  "response_format":null, "business_glossary":{{}}, "llm_system_prompt":"...",
   "adapter_method":"generic", "otp_required":false, "otp_threshold":null,
   "approval_threshold":null,
   "pdf_config":{{"doc_type":"...","title_template":"...","theme":{{}},"render_instructions":"..."}},
@@ -188,6 +235,35 @@ Return ONLY this JSON, no markdown:
                 json.loads(s) if isinstance(s, str) else s
                 for s in raw_steps
             ]
+
+            # Auto-fix: ensure every calc_rules field is marked computed:true in entity_schema
+            calc_rules = spec.get("calc_rules") or {}
+            entity_schema = spec.get("entity_schema") or {}
+            item_rules = calc_rules.get("item_rules") or {}
+            aggregate_rules = calc_rules.get("aggregate_rules") or {}
+
+            # Fix aggregate-level computed fields
+            for field_name in aggregate_rules:
+                if field_name not in entity_schema:
+                    entity_schema[field_name] = {"type": "float", "required": False, "computed": True}
+                else:
+                    entity_schema[field_name]["computed"] = True
+                    entity_schema[field_name]["required"] = False
+
+            # Fix item-level computed fields — they go into items.item_schema
+            if item_rules:
+                items_def = entity_schema.get("items") or {}
+                item_schema = items_def.get("item_schema") or {}
+                for field_name in item_rules:
+                    if field_name not in item_schema:
+                        item_schema[field_name] = {"type": "float", "required": False, "computed": True}
+                    else:
+                        item_schema[field_name]["computed"] = True
+                        item_schema[field_name]["required"] = False
+                items_def["item_schema"] = item_schema
+                entity_schema["items"] = items_def
+
+            spec["entity_schema"] = entity_schema
 
             # Validate mandatory fields
             if not spec.get("training_phrases") or len(spec["training_phrases"]) < 5:
