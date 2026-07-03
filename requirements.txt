@@ -9,3 +9,4 @@ apscheduler
 weasyprint
 simpleeval
 pymupdf
+python-multipart
