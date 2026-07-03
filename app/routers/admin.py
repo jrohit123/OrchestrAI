@@ -650,6 +650,7 @@ async def workflow_builder_chat(request: Request):
         org_id=org_id,
         draft_id=body.get("draft_id"),
         attachment_b64=body.get("attachment"),
+        pre_extracted_pdf=body.get("pdf_analysis"),  # pre-extracted from browser
     )
     return result
 
@@ -871,7 +872,7 @@ input:checked+.slider:before{{transform:translateX(18px)}}
     <div id="chatMessages" class="chat-messages"></div>
     <div class="chat-input-row">
       <input type="file" id="chatAttachment" accept="application/pdf" style="display:none"
-             onchange="document.getElementById('attachLabel').textContent = this.files[0]?.name || ''">
+             onchange="onPdfSelected(this)">
       <button class="btn btn-gray" onclick="document.getElementById('chatAttachment').click()" title="Attach sample PDF">📎</button>
       <span id="attachLabel" style="font-size:11px;color:#888;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
       <input id="chatInput" class="field-input" placeholder="Describe your workflow..."
@@ -887,6 +888,7 @@ const TOKEN = "{token}";
 const API  = path => `/admin/api${{path}}?token=${{TOKEN}}`;
 let chatDraftId = null;
 let chatTyping  = false;
+let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
 
 // ── Utility ───────────────────────────────────────────────────────
 function closeModal(id) {{ document.getElementById(id).classList.remove('open'); }}
@@ -1015,12 +1017,35 @@ async function saveWorkflowEdit() {{
 // ── Chat Builder ─────────────────────────────────────────────────
 function openBuilderChat() {{
   chatDraftId = null;
+  chatPdfAnalysis = null;
   document.getElementById('chatMessages').innerHTML = '';
   document.getElementById('chatInput').value = '';
   document.getElementById('attachLabel').textContent = '';
   document.getElementById('builderStatus').textContent = '';
   openModal('builderModal');
   appendBotMsg('Hi! Tell me about the workflow you want to build — what should it do?');
+}}
+
+async function onPdfSelected(input) {{
+  if (!input.files.length) return;
+  const file = input.files[0];
+  document.getElementById('attachLabel').textContent = file.name;
+  document.getElementById('builderStatus').textContent = '⏳ Analyzing PDF layout...';
+
+  try {{
+    const fd = new FormData();
+    fd.append('pdf_file', file);
+    fd.append('doc_type_hint', 'invoice');
+    const resp = await fetch(API('/workflow-builder/pdf-extract'), {{method:'POST', body:fd}});
+    if (resp.ok) {{
+      chatPdfAnalysis = await resp.json();
+      document.getElementById('builderStatus').textContent = '✅ PDF layout extracted — send your message to continue.';
+    }} else {{
+      document.getElementById('builderStatus').textContent = '⚠️ Could not analyze PDF — will proceed without it.';
+    }}
+  }} catch(e) {{
+    document.getElementById('builderStatus').textContent = '⚠️ PDF analysis failed — will proceed without it.';
+  }}
 }}
 
 function appendBotMsg(text) {{
@@ -1054,24 +1079,24 @@ async function sendChatMsg() {{
   appendUserMsg(msg);
   input.value = '';
 
-  // Handle PDF attachment
-  let attachment = null;
-  const fileInput = document.getElementById('chatAttachment');
-  if (fileInput.files.length) {{
-    const buf = await fileInput.files[0].arrayBuffer();
-    attachment = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    fileInput.value = '';
-    document.getElementById('attachLabel').textContent = '';
-  }}
-
   chatTyping = true;
   document.getElementById('builderStatus').textContent = 'Thinking...';
 
   try {{
+    const body = {{
+      message:      msg,
+      draft_id:     chatDraftId,
+      pdf_analysis: chatPdfAnalysis  // pre-extracted, null if no PDF
+    }};
+    // Clear pdf analysis after sending so it's not re-sent on every turn
+    chatPdfAnalysis = null;
+    document.getElementById('attachLabel').textContent = '';
+    document.getElementById('chatAttachment').value = '';
+
     const resp = await fetch(API('/workflow-builder/chat'), {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{ message: msg, draft_id: chatDraftId, attachment }})
+      body: JSON.stringify(body)
     }});
     const data = await resp.json();
     chatDraftId = data.draft_id;

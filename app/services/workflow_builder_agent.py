@@ -243,6 +243,7 @@ async def run_builder_agent(
     org_id: str,
     draft_id: str | None = None,
     attachment_b64: str | None = None,
+    pre_extracted_pdf: dict | None = None,
     max_iterations: int = 6,
 ) -> dict:
     """
@@ -258,6 +259,16 @@ async def run_builder_agent(
         }
     """
     draft = await _get_or_create_draft(org_id, draft_id)
+
+    # If a pre-extracted PDF analysis was passed from the browser (extracted before this call),
+    # save it to the draft immediately so compile_and_summarize can use it
+    if pre_extracted_pdf and isinstance(pre_extracted_pdf, dict):
+        await execute(
+            "UPDATE workflow_drafts SET pdf_sample_analysis = $1::jsonb, updated_at = now() WHERE id = $2",
+            json.dumps(pre_extracted_pdf), draft["id"]
+        )
+        draft["pdf_sample_analysis"] = pre_extracted_pdf
+        print(f"[BUILDER] Pre-extracted PDF analysis saved to draft {draft['id']}")
 
     # Load chat history from DB (server-side storage)
     chat_history = draft.get("chat_history") or []
