@@ -33,6 +33,10 @@ most useful question. Cover these topics (skip what's already answered or not re
    "Do you have a sample PDF you already send? Attach it and I'll match the look."
    If no PDF attached, ask what the document should show.
 
+IMPORTANT: If a message in the conversation contains "[Admin uploaded a sample PDF" — that means
+the PDF has already been analyzed and saved. Do NOT ask the admin to upload again.
+When asked about the document format, confirm you'll use the uploaded sample's layout.
+
 Once you have enough information, call compile_and_summarize.
 Show the summary in plain English and ask if it's correct.
 If they want changes, call revise_draft, then show the new summary.
@@ -269,6 +273,19 @@ async def run_builder_agent(
         )
         draft["pdf_sample_analysis"] = pre_extracted_pdf
         print(f"[BUILDER] Pre-extracted PDF analysis saved to draft {draft['id']}")
+        # Inject a system note into chat history so the bot knows the PDF is available
+        chat_history = draft.get("chat_history") or []
+        if isinstance(chat_history, str):
+            chat_history = json.loads(chat_history)
+        chat_history.append({
+            "role": "user",
+            "content": f"[Admin uploaded a sample PDF — it has been analyzed. doc_type: {pre_extracted_pdf.get('doc_type_guess', 'invoice')}. The layout has been extracted and saved. When compiling, use this PDF layout for render_instructions.]"
+        })
+        await execute(
+            "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
+            json.dumps(chat_history), draft["id"]
+        )
+        draft["chat_history"] = chat_history
 
     # Load chat history from DB (server-side storage)
     chat_history = draft.get("chat_history") or []
