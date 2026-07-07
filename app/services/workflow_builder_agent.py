@@ -540,9 +540,14 @@ async def run_builder_agent(
 
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments)
-            result = await _execute_tool(
-                tc.function.name, tool_input, draft, org_id, attachment_b64
-            )
+            try:
+                result = await _execute_tool(
+                    tc.function.name, tool_input, draft, org_id, attachment_b64
+                )
+            except Exception as e:
+                import logging
+                logging.exception("builder tool %s failed", tc.function.name)
+                result = f"ERROR: {tc.function.name} failed: {type(e).__name__}: {e}. Tell the user you hit a temporary problem saving that, and that their answer is noted in the conversation."
 
             if result.get("_show_confirm_buttons"):
                 summary_card = result.get("summary")

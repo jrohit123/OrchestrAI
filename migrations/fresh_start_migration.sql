@@ -62,6 +62,8 @@ DROP INDEX IF EXISTS quotations_quotation_number_key;
 
 -- Quotation numbers unique per org (replaces the global unique just dropped)
 ALTER TABLE quotations
+  DROP CONSTRAINT IF EXISTS quotations_org_id_quotation_number_key;
+ALTER TABLE quotations
   ADD CONSTRAINT quotations_org_id_quotation_number_key
   UNIQUE (org_id, quotation_number);
 
@@ -90,13 +92,19 @@ CREATE INDEX IF NOT EXISTS idx_otp_org ON otp_tokens (org_id);
 -- audit_log: real FKs (wiping old rows so orphans can't block the FK add)
 TRUNCATE audit_log;
 ALTER TABLE audit_log
+  DROP CONSTRAINT IF EXISTS audit_log_org_id_fkey;
+ALTER TABLE audit_log
   ADD CONSTRAINT audit_log_org_id_fkey
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE;
+ALTER TABLE audit_log
+  DROP CONSTRAINT IF EXISTS audit_log_user_id_fkey;
 ALTER TABLE audit_log
   ADD CONSTRAINT audit_log_user_id_fkey
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
 
 -- orders: missing FK to quotations
+ALTER TABLE orders
+  DROP CONSTRAINT IF EXISTS orders_quotation_id_fkey;
 ALTER TABLE orders
   ADD CONSTRAINT orders_quotation_id_fkey
   FOREIGN KEY (quotation_id) REFERENCES quotations(id) ON DELETE SET NULL;
@@ -134,6 +142,7 @@ ALTER TABLE workflow_drafts
   ADD COLUMN IF NOT EXISTS slash_command varchar(32),
   ADD COLUMN IF NOT EXISTS command_description varchar(80),
   ADD COLUMN IF NOT EXISTS menu_section varchar(30),
+  ADD COLUMN IF NOT EXISTS granted_roles text[] DEFAULT '{}',
   ADD COLUMN IF NOT EXISTS published_workflow_id uuid REFERENCES workflows(id) ON DELETE SET NULL;
 
 -- roles: data-driven table access (replaces hardcoded ROLE_READ_ACCESS dict)
