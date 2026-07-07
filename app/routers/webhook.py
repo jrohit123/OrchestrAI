@@ -69,15 +69,6 @@ async def receive_message(request: Request):
         if phone == WHATSAPP_PHONE_ID:
             return {"status": "ok"}
 
-        # ── Deduplication — ignore already processed message IDs ──
-        redis = get_redis()
-        dedup_key = f"msg_processed:{msg_id}"
-        already_processed = await redis.get(dedup_key)
-        if already_processed:
-            print(f"[WEBHOOK] Duplicate msg_id {msg_id} — skipping")
-            return {"status": "ok"}
-        await redis.setex(dedup_key, 300, "1")  # TTL 5 min
-
         # ── Normalize: WhatsApp omits +, DB stores with + ──
         if phone and not phone.startswith('+'):
             phone = '+' + phone
@@ -94,20 +85,27 @@ async def receive_message(request: Request):
         else:
             return {"status": "ok"}
 
-        # ── Deduplication by phone+text+timestamp (last 10 seconds) ──
-        # This catches duplicates even if msg_id differs
+        # ── Deduplication: use both message ID and phone+text for reliability ──
         redis = get_redis()
-        dedup_key = f"msg_dedup:{phone}:{text}"
-        # Use SETNX (set if not exists) for atomic deduplication
-        try:
-            already_set = await redis.set(dedup_key, "1", nx=True, ex=10)
-            if not already_set:
-                print(f"[WEBHOOK] Duplicate message from {phone} ('{text}') — skipping")
-                return {"status": "ok"}
-            print(f"[WEBHOOK] Deduplication key set: {dedup_key}")
-        except Exception as e:
-            print(f"[WEBHOOK] Deduplication error: {e}")
-            # Continue without deduplication if Redis fails
+        
+        # Check message ID first
+        msg_dedup_key = f"msg_processed:{msg_id}"
+        already_processed = await redis.get(msg_dedup_key)
+        if already_processed:
+            print(f"[WEBHOOK] Duplicate msg_id {msg_id} — skipping")
+            return {"status": "ok"}
+        
+        # Also check phone+text combination (catches duplicates with different IDs)
+        text_dedup_key = f"msg_text:{phone}:{text}"
+        text_already_processed = await redis.get(text_dedup_key)
+        if text_already_processed:
+            print(f"[WEBHOOK] Duplicate text from {phone} ('{text}') — skipping")
+            return {"status": "ok"}
+        
+        # Set both keys atomically
+        await redis.setex(msg_dedup_key, 300, "1")
+        await redis.setex(text_dedup_key, 10, "1")  # Text dedup only 10 seconds
+        print(f"[WEBHOOK] Deduplication keys set: {msg_dedup_key}, {text_dedup_key}")
 
         print(f"[WEBHOOK] From: {phone} | Message: {text}")
         try:
