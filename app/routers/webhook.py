@@ -141,7 +141,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         return
 
     # ── Slash commands & menu ────────────────────────────────────────────
-    from app.services.menu import build_menu_sections, resolve_slash_command, get_menu_workflows
+    from app.services.menu import build_menu_sections, resolve_slash_command
     from app.services.whatsapp import send_list
 
     text_stripped = text.strip()
@@ -151,9 +151,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_list(phone, "What would you like to do?", "📋 Menu", sections)
         return
 
-    # Detect natural language menu requests
-    menu_keywords = ["menu", "options", "what can i do", "what can you do", "help me", "show menu", "access menu"]
-    if any(kw in text_stripped.lower() for kw in menu_keywords):
+    # Detect natural language menu requests (exact phrase matching to avoid false positives)
+    menu_phrases = {"menu", "show menu", "give me the menu", "menu dikhao",
+                    "options", "what can i do", "what can you do"}
+    if text_stripped.lower().rstrip("?.!") in menu_phrases:
         sections = await build_menu_sections(user["org_id"], user)
         await send_list(phone, "What would you like to do?", "📋 Menu", sections)
         return
@@ -198,15 +199,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_list(phone, "Didn't recognise that command — here's what's available:",
                             "📋 Menu", sections)
             return
-
-    # ── Direct intent_key from a list-row tap ────────────────────────────
-    # This is now redundant since we pass intent_key directly from slash commands
-    # But keep it for other cases where intent_key comes directly
-    allowed = {w["intent_key"]: w for w in await get_menu_workflows(user["org_id"], user)}
-    
-    if text_stripped in allowed:
-        # Already handled by slash command logic above, skip to avoid duplicate
-        pass
 
     # 2. Fetch org TTL
     org_row = await fetch_one(
@@ -510,8 +502,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             pending_action=pending_action
         )
 
+        # Capture the menu flag BEFORE popping it
+        sent_menu = bool(session_patch.get("_send_menu"))
+
         # Check if agent wants to send interactive menu
-        if session_patch.get("_send_menu"):
+        if sent_menu:
             from app.services.whatsapp import send_list
             await send_list(phone, reply, session_patch["button_label"], session_patch["menu_sections"])
             # Remove menu flag from session_patch before saving
@@ -539,7 +534,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await set_session(session_id, session, ttl=session_ttl)
 
         # Only send text reply if not sending menu
-        if not session_patch.get("_send_menu"):
+        if not sent_menu:
             await send_text(phone, reply)
 
             # Log to audit_log
