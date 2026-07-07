@@ -138,14 +138,48 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_list(phone, "What would you like to do?", "📋 Menu", sections)
         return
 
+    # Detect natural language menu requests
+    menu_keywords = ["menu", "options", "what can i do", "what can you do", "help me", "show menu", "access menu"]
+    if any(kw in text_stripped.lower() for kw in menu_keywords):
+        sections = await build_menu_sections(user["org_id"], user)
+        await send_list(phone, "What would you like to do?", "📋 Menu", sections)
+        return
+
     if text_stripped.startswith("/"):
         if text_stripped.lower() == "/cancel":
             await cancel_user_draft(user, phone, confirm=False)
             return
+        if text_stripped.lower() in ("/help", "/h"):
+            await send_text(phone,
+                "📖 *How to use OrchestrAI*\n\n"
+                "• Type / or 'menu' to see available workflows\n"
+                "• Use slash commands like /invoice, /quote for quick access\n"
+                "• Ask questions in plain English or Hindi\n"
+                "• Say 'pdf' after any result to get a document\n"
+                "• Tap /cancel to clear a draft in progress"
+            )
+            return
+        if text_stripped.lower() in ("/status", "/mystatus", "/s"):
+            from app.services.draft_store import get_active_draft
+            draft = await get_active_draft(user["org_id"], user["user_id"])
+            if draft:
+                intent = draft["intent_key"]
+                stage = draft["stage"]
+                fields = draft.get("fields", {})
+                await send_text(phone,
+                    f"📋 *Draft Status*\n"
+                    f"Workflow: {intent}\n"
+                    f"Stage: {stage}\n"
+                    f"Fields collected: {len(fields)}\n\n"
+                    f"Tap /cancel to clear this draft."
+                )
+            else:
+                await send_text(phone, "✅ No active draft. You're ready to start fresh.")
+            return
         wf = await resolve_slash_command(user["org_id"], user, text_stripped)
         if wf:
-            remainder = text_stripped.split(maxsplit=1)[1] if " " in text_stripped else ""
-            text = f"Start workflow {wf['intent_key']}. {remainder}"
+            # Pass intent_key directly to agent for execution
+            text = wf['intent_key']
         else:
             sections = await build_menu_sections(user["org_id"], user)
             await send_list(phone, "Didn't recognise that command — here's what's available:",
@@ -153,29 +187,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
 
     # ── Direct intent_key from a list-row tap ────────────────────────────
+    # This is now redundant since we pass intent_key directly from slash commands
+    # But keep it for other cases where intent_key comes directly
     allowed = {w["intent_key"]: w for w in await get_menu_workflows(user["org_id"], user)}
-    # Also map by name/title in case WhatsApp sends that instead of ID
-    allowed_by_name = {w["name"]: w for w in await get_menu_workflows(user["org_id"], user)}
-    
-    print(f"[WEBHOOK] Received text: '{text_stripped}'")
-    print(f"[WEBHOOK] Allowed intent_keys: {list(allowed.keys())}")
-    print(f"[WEBHOOK] Allowed names: {list(allowed_by_name.keys())}")
     
     if text_stripped in allowed:
-        wf = allowed[text_stripped]
-        print(f"[WEBHOOK] Matched by intent_key: {wf['intent_key']}")
-        # Pass to agent with intent_key as the message
-        text = wf['intent_key']
-    elif text_stripped in allowed_by_name:
-        wf = allowed_by_name[text_stripped]
-        print(f"[WEBHOOK] Matched by name: {wf['intent_key']}")
-        # Pass to agent with intent_key as the message
-        text = wf['intent_key']
-    elif text_stripped.startswith("sys:"):
-        await handle_system_row(text_stripped, user, phone)
-        return
-    else:
-        print(f"[WEBHOOK] No match found, continuing to agent")
+        # Already handled by slash command logic above, skip to avoid duplicate
+        pass
 
     # 2. Fetch org TTL
     org_row = await fetch_one(
@@ -515,6 +533,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await execute("""
                 INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
                 VALUES ($1, $2, 'agent', $3, 'success')
+            """, user["org_id"], user["user_id"], text)
+        else:
+            # Log to audit_log for menu responses too
+            await execute("""
+                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
+                VALUES ($1, $2, 'menu', $3, 'success')
             """, user["org_id"], user["user_id"], text)
 
     except Exception as e:
