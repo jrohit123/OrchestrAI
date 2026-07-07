@@ -463,30 +463,43 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             pending_action=pending_action
         )
 
-        # Apply session patch if any
-        if session_patch:
-            session = {**session, **session_patch}
-            # Update pending_action reference for next iteration
-            pending_action = session_patch.get("pending_action")
+        # Check if agent wants to send interactive menu
+        if session_patch.get("_send_menu"):
+            from app.services.whatsapp import send_list
+            await send_list(phone, reply, session_patch["button_label"], session_patch["menu_sections"])
+            # Remove menu flag from session_patch before saving
+            session_patch.pop("_send_menu", None)
+            session_patch.pop("menu_sections", None)
+            session_patch.pop("button_label", None)
+            # Save history without assistant reply (menu is the reply)
+            updated_history = updated_history or [{"role": "user", "content": text}]
+        else:
+            # Apply session patch if any
+            if session_patch:
+                session = {**session, **session_patch}
+                # Update pending_action reference for next iteration
+                pending_action = session_patch.get("pending_action")
 
-        # Save last 15 messages (7-8 turns) for context
-        # Ensure agent reply is in history (it's present for normal text replies,
-        # but clarify-path skips it — add it here unconditionally if not already last)
-        if not updated_history or updated_history[-1].get("content") != reply:
-            updated_history = updated_history + [{"role": "assistant", "content": reply}]
+            # Save last 15 messages (7-8 turns) for context
+            # Ensure agent reply is in history (it's present for normal text replies,
+            # but clarify-path skips it — add it here unconditionally if not already last)
+            if not updated_history or updated_history[-1].get("content") != reply:
+                updated_history = updated_history + [{"role": "assistant", "content": reply}]
 
-        updated_history = updated_history[-15:]
-        session["last_message"] = text
+            updated_history = updated_history[-15:]
+            session["last_message"] = text
         session["conversation_history"] = updated_history
         await set_session(session_id, session, ttl=session_ttl)
 
-        await send_text(phone, reply)
+        # Only send text reply if not sending menu
+        if not session_patch.get("_send_menu"):
+            await send_text(phone, reply)
 
-        # Log to audit_log
-        await execute("""
-            INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
-            VALUES ($1, $2, 'agent', $3, 'success')
-        """, user["org_id"], user["user_id"], text)
+            # Log to audit_log
+            await execute("""
+                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
+                VALUES ($1, $2, 'agent', $3, 'success')
+            """, user["org_id"], user["user_id"], text)
 
     except Exception as e:
         print(f"[AGENT] Error: {e}")

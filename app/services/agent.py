@@ -121,6 +121,30 @@ async def _build_greeting_response(user: dict, message: str) -> str:
     )
 
 
+async def _build_greeting_response_with_menu(user: dict, message: str) -> dict:
+    """Build greeting with interactive menu instead of text."""
+    from app.services.menu import build_menu_sections
+    
+    now_ist   = _dt.datetime.now(_IST)
+    tod       = _time_of_day_greeting(now_ist.hour)
+    first_name = user["user_name"].split()[0]
+    org       = user.get("org_name", "")
+    
+    greeting_text = (
+        f"{tod}, *{first_name}!* 👋\n\n"
+        f"I'm your ERP assistant for *{org}*.\n"
+        f"Here's what I can help you with:"
+    )
+    
+    sections = await build_menu_sections(user["org_id"], user)
+    
+    return {
+        "text": greeting_text,
+        "menu_sections": sections,
+        "button_label": "📋 Menu"
+    }
+
+
 async def _build_help_response(user: dict) -> str:
     """Build a detailed capability guide from DB workflows — no hardcoded labels."""
     from app.db import fetch_all as _fetch_all
@@ -1338,10 +1362,14 @@ async def run_agent(
     msg_stripped = message.strip()
 
     if _is_pure_greeting(msg_stripped):
-        greeting_text = await _build_greeting_response(user, msg_stripped)
-        history_to_save = [{"role": "user", "content": message},
-                           {"role": "assistant", "content": greeting_text}]
-        return greeting_text, history_to_save, {}
+        greeting_data = await _build_greeting_response_with_menu(user, msg_stripped)
+        history_to_save = [{"role": "user", "content": message}]
+        # Return special marker for webhook to send interactive menu
+        return greeting_data["text"], history_to_save, {
+            "_send_menu": True,
+            "menu_sections": greeting_data["menu_sections"],
+            "button_label": greeting_data["button_label"]
+        }
 
     if _is_help_request(msg_stripped):
         help_text = await _build_help_response(user)
