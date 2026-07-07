@@ -94,15 +94,20 @@ async def receive_message(request: Request):
         else:
             return {"status": "ok"}
 
-        # ── Deduplication by phone+text+timestamp (last 5 seconds) ──
+        # ── Deduplication by phone+text+timestamp (last 10 seconds) ──
         # This catches duplicates even if msg_id differs
         redis = get_redis()
         dedup_key = f"msg_dedup:{phone}:{text}"
-        recent = await redis.get(dedup_key)
-        if recent:
-            print(f"[WEBHOOK] Duplicate message from {phone} ('{text}') — skipping")
-            return {"status": "ok"}
-        await redis.setex(dedup_key, 5, "1")  # TTL 5 seconds
+        # Use SETNX (set if not exists) for atomic deduplication
+        try:
+            already_set = await redis.set(dedup_key, "1", nx=True, ex=10)
+            if not already_set:
+                print(f"[WEBHOOK] Duplicate message from {phone} ('{text}') — skipping")
+                return {"status": "ok"}
+            print(f"[WEBHOOK] Deduplication key set: {dedup_key}")
+        except Exception as e:
+            print(f"[WEBHOOK] Deduplication error: {e}")
+            # Continue without deduplication if Redis fails
 
         print(f"[WEBHOOK] From: {phone} | Message: {text}")
         try:
