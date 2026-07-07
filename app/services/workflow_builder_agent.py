@@ -20,6 +20,37 @@ _SYSTEM_PROMPT = """You are helping a non-technical business owner describe a bu
 so it becomes a working WhatsApp workflow. They think in plain terms — not schemas, not JSON, not code.
 Never show them any technical details.
 
+EXTRACTION-FIRST RULE (highest priority):
+Before replying, extract EVERYTHING from the user's message: purpose,
+workflow type, use cases, fields, rules, thresholds — whatever is present.
+Save all of it via update_builder_draft in ONE call. Then your reply must:
+1. Briefly play back what you understood (so they can correct you)
+2. Ask ONLY about what is genuinely still unknown — never anything
+   already stated or already in the draft
+Asking about something the user already told you is the worst failure
+mode of this system.
+
+PROPOSE, DON'T INTERROGATE:
+When a detail is missing but has an obvious sensible default, propose it
+and ask for confirmation instead of asking open-ended questions.
+"Should low stock use each item's own reorder level? (that's what I'd
+suggest)" beats "how should low stock be defined?"
+
+SILENT STATE CHECKS:
+Check for existing drafts silently. Mention a draft ONLY if one exists.
+Never say "we don't have any drafts/workflows" — the user doesn't care
+about your internal lookups.
+
+LANGUAGE MIRRORING:
+Reply in the user's language mix. Hinglish in → Hinglish out. Numbers:
+understand 50k = 50,000, 2L / 2 lakh = 2,00,000.
+
+READ-WORKFLOW SHORTCUT:
+If the workflow is clearly read-only, don't ask about OTP or approval
+thresholds — state "no OTP/approval needed since this only shows data"
+in the summary and move on. Only ask about safety gates for action
+workflows.
+
 Ask ONE question at a time. After each answer, briefly restate what you understood, then ask the next
 most useful question. Cover these topics (skip what's already answered or not relevant):
 
@@ -425,8 +456,46 @@ async def run_builder_agent(
         user_content += "\n[Admin attached a PDF file with this message.]"
     chat_history.append({"role": "user", "content": user_content})
 
+    # Inject current draft state into context so LLM can avoid re-asking
+    draft_context = ""
+    if draft.get("purpose"):
+        draft_context += f"Purpose: {draft['purpose']}\n"
+    if draft.get("workflow_type"):
+        draft_context += f"Workflow Type: {draft['workflow_type']}\n"
+    if draft.get("raw_fields"):
+        raw_fields = draft.get("raw_fields")
+        if isinstance(raw_fields, str):
+            try:
+                raw_fields = json.loads(raw_fields)
+            except:
+                raw_fields = []
+        draft_context += f"Fields to collect: {', '.join(raw_fields) if raw_fields else 'none'}\n"
+    if draft.get("otp_threshold"):
+        draft_context += f"OTP Threshold: {draft['otp_threshold']}\n"
+    if draft.get("approval_threshold"):
+        draft_context += f"Approval Threshold: {draft['approval_threshold']}\n"
+    if draft.get("business_rules"):
+        draft_context += f"Business Rules: {draft['business_rules']}\n"
+    if draft.get("slash_command"):
+        draft_context += f"Slash Command: /{draft['slash_command']}\n"
+    if draft.get("command_description"):
+        draft_context += f"Command Description: {draft['command_description']}\n"
+    if draft.get("menu_section"):
+        draft_context += f"Menu Section: {draft['menu_section']}\n"
+    if draft.get("granted_roles"):
+        granted_roles = draft.get("granted_roles")
+        if isinstance(granted_roles, str):
+            try:
+                granted_roles = json.loads(granted_roles)
+            except:
+                granted_roles = []
+        draft_context += f"Granted Roles: {', '.join(granted_roles) if granted_roles else 'none'}\n"
+
     # Build messages for API call
-    messages = [{"role": "system", "content": _SYSTEM_PROMPT}] + chat_history
+    system_content = _SYSTEM_PROMPT
+    if draft_context:
+        system_content += f"\n\n=== CURRENT DRAFT STATE ===\n{draft_context}=== END DRAFT STATE ===\n"
+    messages = [{"role": "system", "content": system_content}] + chat_history
 
     summary_card = None
     published = False
