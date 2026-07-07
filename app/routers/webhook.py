@@ -154,12 +154,26 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # ── Direct intent_key from a list-row tap ────────────────────────────
     allowed = {w["intent_key"]: w for w in await get_menu_workflows(user["org_id"], user)}
+    # Also map by name/title in case WhatsApp sends that instead of ID
+    allowed_by_name = {w["name"]: w for w in await get_menu_workflows(user["org_id"], user)}
+    
+    print(f"[WEBHOOK] Received text: '{text_stripped}'")
+    print(f"[WEBHOOK] Allowed intent_keys: {list(allowed.keys())}")
+    print(f"[WEBHOOK] Allowed names: {list(allowed_by_name.keys())}")
+    
     if text_stripped in allowed:
         wf = allowed[text_stripped]
         text = f"Start workflow {wf['intent_key']}."
+        print(f"[WEBHOOK] Matched by intent_key: {wf['intent_key']}")
+    elif text_stripped in allowed_by_name:
+        wf = allowed_by_name[text_stripped]
+        text = f"Start workflow {wf['intent_key']}."
+        print(f"[WEBHOOK] Matched by name: {wf['intent_key']}")
     elif text_stripped.startswith("sys:"):
         await handle_system_row(text_stripped, user, phone)
         return
+    else:
+        print(f"[WEBHOOK] No match found, continuing to agent")
 
     # 2. Fetch org TTL
     org_row = await fetch_one(
