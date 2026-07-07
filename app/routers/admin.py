@@ -1,14 +1,25 @@
 import os
 import json
+import re
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
-from app.db import fetch_all, fetch_one, execute
+from pydantic import BaseModel
+from app.db import fetch_all, fetch_one, execute, get_pool
 from openai import AsyncOpenAI
 
 router = APIRouter()
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "orchestrai_admin_2024")
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+class PublishRequest(BaseModel):
+    roles: list[str]
+    otp_required: bool = False
+    otp_threshold: float | None = None
+    approval_required: bool = False
+    approval_threshold: float | None = None
+    slash_command: str
 
 
 def _check_token(request: Request):
@@ -717,6 +728,135 @@ async def extract_pdf_template_endpoint(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not analyze PDF: {e}")
     return spec
+
+
+@router.get("/admin/api/workflow-builder/draft/{draft_id}/publish-info")
+async def get_draft_publish_info(draft_id: str, request: Request):
+    """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
+    _check_token(request)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org")
+    
+    roles = await fetch_all("SELECT name FROM roles WHERE org_id = $1 ORDER BY name", str(org["id"]))
+    
+    # Suggest command from intent_key if not set
+    suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
+    
+    return {
+        "draft_id": str(draft["id"]),
+        "summary": draft.get("plain_english_summary"),
+        "intent_key": draft.get("intent_key"),
+        "workflow_type": draft.get("workflow_type"),
+        "roles": [r["name"] for r in roles],
+        "prefill": {
+            "otp_required": draft.get("otp_required", False),
+            "otp_threshold": draft.get("otp_threshold"),
+            "approval_threshold": draft.get("approval_threshold"),
+            "slash_command": suggested_cmd,
+        }
+    }
+
+
+@router.post("/admin/api/workflow-builder/publish/{draft_id}")
+async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request: Request):
+    """Publish a draft to live workflows with structured governance settings."""
+    _check_token(request)
+    
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    if not draft or draft["status"] != "ready_for_review":
+        raise HTTPException(status_code=409, detail="Draft is not ready for review")
+    
+    # Server-side validation
+    valid_roles = {r["name"] for r in await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1", draft["org_id"]
+    )}
+    if not body.roles or not set(body.roles) <= valid_roles:
+        raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
+    
+    if draft["workflow_type"] == "read" and (body.otp_required or body.approval_required):
+        raise HTTPException(422, "OTP/approval don't apply to read workflows")
+    
+    if body.otp_required and not body.otp_threshold:
+        raise HTTPException(422, "OTP enabled but no threshold given")
+    
+    cmd = body.slash_command.strip().lstrip("/").lower()
+    if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
+        raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
+    
+    # Check command uniqueness
+    existing = await fetch_one(
+        "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true",
+        draft["org_id"], cmd
+    )
+    if existing:
+        raise HTTPException(409, f"Command '/{cmd}' is already in use")
+    
+    # Atomic transaction: insert workflow + grant permissions + mark draft published
+    async with get_pool().acquire() as conn:
+        async with conn.transaction():
+            # Insert workflow
+            wf_id = await conn.fetchval("""
+                INSERT INTO workflows (
+                    org_id, name, intent_key, description, workflow_type,
+                    training_phrases, entity_schema, calc_rules, steps,
+                    sql_template, sql_params_order, response_format,
+                    business_glossary, llm_system_prompt, pdf_config,
+                    response_template, otp_required, otp_threshold, approval_threshold,
+                    slash_command, command_description, menu_section,
+                    version, is_active, adapter_method, trigger_patterns
+                ) VALUES (
+                    $1, $2, $3, $4, $5,
+                    $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
+                    $10, $11::jsonb, $12,
+                    $13::jsonb, $14, $15::jsonb,
+                    $16, $17, $18, $19,
+                    $20, $21, $22,
+                    1, true, 'generic', '[]'::jsonb
+                ) RETURNING id
+            """,
+                draft["org_id"],
+                draft.get("name") or draft.get("intent_key"),
+                draft["intent_key"],
+                draft.get("description", ""),
+                draft.get("workflow_type") or "action",
+                draft.get("training_phrases", "[]"),
+                draft.get("entity_schema", "{}"),
+                draft.get("calc_rules", "{}"),
+                draft.get("steps", "[]"),
+                draft.get("sql_template"),
+                draft.get("sql_params_order", "[]"),
+                draft.get("response_format") or "generic",
+                draft.get("business_glossary", "{}"),
+                draft.get("llm_system_prompt"),
+                draft.get("pdf_config"),
+                draft.get("response_template"),
+                body.otp_required,
+                body.otp_threshold,
+                body.approval_threshold,
+                cmd,
+                draft.get("command_description"),
+                draft.get("menu_section") or "other",
+            )
+            
+            # Grant permissions
+            await conn.execute("""
+                UPDATE roles SET permissions = array_append(permissions, $1)
+                WHERE org_id = $2 AND name = ANY($3) AND NOT permissions @> ARRAY[$1]
+            """, draft["intent_key"], draft["org_id"], body.roles)
+            
+            # Mark draft as published
+            await conn.execute("""
+                UPDATE workflow_drafts
+                SET status = 'published', published_workflow_id = $2, updated_at = now()
+                WHERE id = $1
+            """, draft_id, wf_id)
+    
+    return {"ok": True, "workflow_id": str(wf_id)}
 
 
 

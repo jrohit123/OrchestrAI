@@ -64,6 +64,8 @@ most useful question. Cover these topics (skip what's already answered or not re
    and/or approval_threshold set to that exact number — convert "1 lakh" to 100000,
    "50k" to 50000 yourself. Then confirm back: "Got it — OTP above Rs.50,000,
    approval above Rs.1,00,000." so they can correct you immediately if you misheard.
+   NOTE: Do NOT proactively ask about OTP/approval thresholds. Only save them if the admin
+   volunteers them. These will be set in the publish panel.
 5. Does this produce a document? If yes, ask:
    "Do you have a sample PDF you already send? Attach it and I'll match the look."
    If no PDF attached, ask what the document should show.
@@ -72,7 +74,7 @@ most useful question. Cover these topics (skip what's already answered or not re
    update_builder_draft as slash_command. Set menu_section yourself: 'reports' if
    workflow_type is read, 'create' if action. Also write a one-line
    command_description (≤72 chars) for the menu.
-7. Also ask: "Which roles should be able to use this?" listing the org's role names.
+NOTE: Do NOT ask about which roles should use this workflow. Roles are assigned in the publish panel.
 
 IMPORTANT: If a message in the conversation contains "[Admin uploaded a sample PDF" — that means
 the PDF has already been analyzed and saved. Do NOT ask the admin to upload again.
@@ -81,7 +83,8 @@ When asked about the document format, confirm you'll use the uploaded sample's l
 Once you have enough information, call compile_and_summarize.
 Show the summary in plain English and ask if it's correct.
 If they want changes, call revise_draft, then show the new summary.
-Only call publish_workflow after an explicit "yes" on a summary you've already shown.
+Only call mark_ready_for_review after an explicit "yes" on a summary you've already shown.
+The publish panel will then handle roles, OTP/approval thresholds, and the final slash command.
 
 If the first message is vague ("help me" / "I want a workflow"), call list_existing_workflows
 first, mention what already exists including unfinished drafts, and ask what to add or change.
@@ -127,11 +130,6 @@ _TOOLS = [
                 "enum": ["reports", "create", "other"],
                 "description": "Menu section: 'reports' for read workflows, 'create' for action workflows."
             },
-            "granted_roles": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of role names that should be able to use this workflow."
-            },
         }}
     }},
     {"type": "function", "function": {
@@ -154,8 +152,8 @@ _TOOLS = [
         }, "required": ["change_description"]}
     }},
     {"type": "function", "function": {
-        "name": "publish_workflow",
-        "description": "Make the confirmed workflow live. Call ONLY after admin said yes to a summary.",
+        "name": "mark_ready_for_review",
+        "description": "Mark the draft as ready for review. The admin will then use the publish panel to set roles, OTP/approval thresholds, and slash command. Call ONLY after admin said yes to a summary.",
         "parameters": {"type": "object", "properties": {}}
     }},
     {"type": "function", "function": {
@@ -234,8 +232,6 @@ async def _execute_tool(
             updates["command_description"] = tool_input["command_description"]
         if tool_input.get("menu_section"):
             updates["menu_section"] = tool_input["menu_section"]
-        if tool_input.get("granted_roles"):
-            updates["granted_roles"] = json.dumps(tool_input["granted_roles"])
 
         if updates:
             set_parts = [f"{k} = ${i+2}" for i, k in enumerate(updates)]
@@ -283,9 +279,9 @@ async def _execute_tool(
                 pdf_config=$14::jsonb, response_template=$15,
                 otp_required=$16, otp_threshold=$17, approval_threshold=$18,
                 plain_english_summary=$19,
-                slash_command=$20, command_description=$21, menu_section=$22, granted_roles=$23::jsonb,
+                slash_command=$20, command_description=$21, menu_section=$22,
                 status = 'ready_for_review', updated_at = now()
-            WHERE id = $24
+            WHERE id = $23
         """,
             spec["name"], spec["intent_key"], spec["description"],
             spec.get("workflow_type") or "action",
@@ -307,7 +303,6 @@ async def _execute_tool(
             draft.get("slash_command"),
             draft.get("command_description"),
             draft.get("menu_section"),
-            draft.get("granted_roles"),
             draft["id"]
         )
         return {
@@ -328,17 +323,21 @@ async def _execute_tool(
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
         return await _execute_tool("compile_and_summarize", {}, dict(fresh), org_id, attachment_b64)
 
-    if tool_name == "publish_workflow":
+    if tool_name == "mark_ready_for_review":
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
         if not fresh or fresh["status"] not in ("ready_for_review", "chatting"):
             return {"error": "Nothing compiled yet. Please describe the workflow first."}
         if not fresh.get("intent_key"):
             return {"error": "Workflow has no name yet — please compile first."}
-        try:
-            result = await publish_draft(dict(fresh), org_id, "admin")
-            return result
-        except ValueError as e:
-            return {"error": str(e)}
+        await execute(
+            "UPDATE workflow_drafts SET status = 'ready_for_review', updated_at = now() WHERE id = $1",
+            draft["id"]
+        )
+        return {
+            "_show_publish_panel": True,
+            "draft_id": str(draft["id"]),
+            "message": "Draft is ready — review the settings panel and hit Publish."
+        }
 
     if tool_name == "load_existing_workflow":
         intent_key = tool_input.get("intent_key", "")
@@ -365,9 +364,9 @@ async def _execute_tool(
                 llm_system_prompt=$13, pdf_config=$14::jsonb,
                 response_template=$15, otp_required=$16,
                 otp_threshold=$17, approval_threshold=$18,
-                slash_command=$19, command_description=$20, menu_section=$21, granted_roles=$22::jsonb,
+                slash_command=$19, command_description=$20, menu_section=$21,
                 status='chatting', updated_at=now()
-            WHERE id=$23
+            WHERE id=$22
         """,
             wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
             json.dumps(wf.get("training_phrases") or []),
@@ -387,7 +386,6 @@ async def _execute_tool(
             wf.get("slash_command"),
             wf.get("command_description"),
             wf.get("menu_section"),
-            wf.get("granted_roles"),
             draft["id"]
         )
         return {
@@ -482,14 +480,6 @@ async def run_builder_agent(
         draft_context += f"Command Description: {draft['command_description']}\n"
     if draft.get("menu_section"):
         draft_context += f"Menu Section: {draft['menu_section']}\n"
-    if draft.get("granted_roles"):
-        granted_roles = draft.get("granted_roles")
-        if isinstance(granted_roles, str):
-            try:
-                granted_roles = json.loads(granted_roles)
-            except:
-                granted_roles = []
-        draft_context += f"Granted Roles: {', '.join(granted_roles) if granted_roles else 'none'}\n"
 
     # Build messages for API call
     system_content = _SYSTEM_PROMPT
