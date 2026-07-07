@@ -151,14 +151,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_list(phone, "What would you like to do?", "📋 Menu", sections)
         return
 
-    # Detect natural language menu requests (exact phrase matching to avoid false positives)
-    menu_phrases = {"menu", "show menu", "give me the menu", "menu dikhao",
-                    "options", "what can i do", "what can you do"}
-    if text_stripped.lower().rstrip("?.!") in menu_phrases:
-        sections = await build_menu_sections(user["org_id"], user)
-        await send_list(phone, "What would you like to do?", "📋 Menu", sections)
-        return
-
     if text_stripped.startswith("/"):
         if text_stripped.lower() == "/cancel":
             await cancel_user_draft(user, phone, confirm=False)

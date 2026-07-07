@@ -38,7 +38,7 @@ _GREETING_PATTERNS = {
 }
 
 _HELP_PATTERNS = {
-    "help", "menu", "options", "what can i do", "what can i ask",
+    "help", "what can i do", "what can i ask",
     "kya kar sakta hoon", "kya pooch sakta hoon", "kya help milegi",
     "kya karna hai", "guide", "guide me", "start", "get started",
     "capabilities", "features", "what do you do", "tell me what you can do",
@@ -327,6 +327,25 @@ TOOLS = [
                     }
                 },
                 "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_menu",
+            "description": (
+                "Show the interactive WhatsApp menu of available workflows/options. "
+                "Call this whenever the user asks to see the menu, options, or what they can select — "
+                "in ANY phrasing or language (English, Hindi, Hinglish, mixed), at ANY point in the "
+                "conversation, not just as a first message. Examples: 'can I get the menu', 'menu chahiye', "
+                "'show me options', 'menu dikhao', 'kya options hain', 'go back to menu', 'main menu bhejo'. "
+                "Always prefer this over describing options as plain text when the user wants to SEE/SELECT "
+                "from a menu (as opposed to a general 'what can you do' capability question, which can be text)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {}
             }
         }
     },
@@ -668,6 +687,10 @@ DATABASE SCHEMA (for reference only - use the table/column list above):
 
 {domain_prompt}
 
+MENU REQUESTS:
+If the user asks to see the menu/options in ANY phrasing or language, at ANY point —
+call the show_menu tool. Do not describe the options as plain text in that case.
+
 ENTITY EXTRACTION — CRITICAL RULES (read before every query):
 
 RULE 1 — EXTRACT THE FULL NAME THE USER TYPED:
@@ -968,6 +991,9 @@ async def _execute_tool(
             )
             return f"CLARIFY_SENT: {question}\n{opts_text}"
         return f"CLARIFY_SENT: {question}"
+
+    elif tool_name == "show_menu":
+        return {"type": "show_menu"}
 
     elif tool_name == "generate_pdf":
         from app.services.pdf_engine import generate_pdf as _gen_pdf
@@ -1684,6 +1710,19 @@ async def run_agent(
                 clarify_text = f"🤔 {clarify_question}"
                 history_to_save.append({"role": "assistant", "content": clarify_text})
                 return clarify_text, history_to_save, session_patch  # Fix 2: return session_patch
+
+            # If this was a show_menu call, return menu data
+            if tool_call.function.name == "show_menu":
+                from app.services.menu import build_menu_sections
+                sections = await build_menu_sections(user["org_id"], user)
+                menu_text = "📋 Here's what you can do:"
+                history_to_save = _serialize_history(messages)
+                history_to_save.append({"role": "assistant", "content": menu_text})
+                return menu_text, history_to_save, {
+                    "_send_menu": True,
+                    "menu_sections": sections,
+                    "button_label": "📋 Menu"
+                }
 
             # If update_draft was called, capture session patch
             if tool_call.function.name == "update_draft":
