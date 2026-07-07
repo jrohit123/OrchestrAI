@@ -163,12 +163,18 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     
     if text_stripped in allowed:
         wf = allowed[text_stripped]
-        text = f"Start workflow {wf['intent_key']}."
         print(f"[WEBHOOK] Matched by intent_key: {wf['intent_key']}")
+        # Directly start workflow execution, bypass agent
+        from app.executor.workflow_executor import execute_workflow
+        await execute_workflow(wf['intent_key'], user, phone, text_stripped)
+        return
     elif text_stripped in allowed_by_name:
         wf = allowed_by_name[text_stripped]
-        text = f"Start workflow {wf['intent_key']}."
         print(f"[WEBHOOK] Matched by name: {wf['intent_key']}")
+        # Directly start workflow execution, bypass agent
+        from app.executor.workflow_executor import execute_workflow
+        await execute_workflow(wf['intent_key'], user, phone, text_stripped)
+        return
     elif text_stripped.startswith("sys:"):
         await handle_system_row(text_stripped, user, phone)
         return

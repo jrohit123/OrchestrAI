@@ -29,30 +29,24 @@ INSERT INTO workflows (
     'Check current stock of an item by name or SKU.',
     'read',
     '[
-      "What is the stock of {item_name}",
-      "Stock of {item_name}",
-      "How many {item_name} do we have",
-      "{item_name} ka stock kitna hai",
-      "{item_name} kitne bache hain",
-      "Check inventory for {item_name}",
-      "Do we have {item_name} in stock",
-      "{item_name} available hai kya",
-      "Stock check {item_name}",
-      "Kitna stock hai {item_name} ka"
+      "What is the stock",
+      "Stock",
+      "How many items do we have",
+      "Stock status",
+      "Inventory status",
+      "Check inventory",
+      "Show stock",
+      "All stock",
+      "Stock check",
+      "Kitna stock hai"
     ]'::jsonb,
-    '{
-      "item_name": {
-        "type": "string", "required": true,
-        "table": "inventory", "column": "name",
-        "match": "ILIKE", "format": "wildcard"
-      }
-    }'::jsonb,
+    '{}'::jsonb,
     'SELECT sku, name, qty, location, reorder_level, unit_price
      FROM inventory
-     WHERE org_id = $1 AND (name ILIKE $2 OR sku ILIKE $2)
+     WHERE org_id = $1
      ORDER BY name
-     LIMIT 20',
-    '["item_name"]'::jsonb,
+     LIMIT 50',
+    '[]'::jsonb,
     'inventory',
     '{
       "stock": "Quantity of an item currently available in inventory",
@@ -60,7 +54,7 @@ INSERT INTO workflows (
       "reorder level": "Minimum quantity below which the item should be restocked",
       "low stock": "Items whose quantity is below their own reorder level"
     }'::jsonb,
-    'This workflow checks current stock from the inventory table. The user provides an item name or SKU; matching is fuzzy (ILIKE). Example inputs: "stock of DZ-104", "kundan ring kitna hai", "how many gold chains do we have". If several items match, show all matches rather than asking which one. Use the intent_key ''check_stock'' to trigger this workflow.',
+    'This workflow lists all current stock from the inventory table. It shows all items with their SKU, quantity, location, and reorder level. Example inputs: "stock", "show inventory", "stock status", "kitna stock hai". Use the intent_key ''check_stock'' to trigger this workflow.',
     false, NULL, NULL,
     '[]'::jsonb, '{}'::jsonb, true,
     'stock', 'Current stock of any item by name or SKU', 'reports'
