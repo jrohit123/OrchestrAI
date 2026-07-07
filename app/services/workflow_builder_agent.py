@@ -29,9 +29,19 @@ most useful question. Cover these topics (skip what's already answered or not re
 3. Should anything be CALCULATED automatically? (tax, total, discount)
    Get the business rule in plain terms: "GST is 3% of item value" is enough.
 4. Any safety rules — verification code or someone's approval above a certain amount?
+   THE MOMENT the admin gives a number, call update_builder_draft with otp_threshold
+   and/or approval_threshold set to that exact number — convert "1 lakh" to 100000,
+   "50k" to 50000 yourself. Then confirm back: "Got it — OTP above Rs.50,000,
+   approval above Rs.1,00,000." so they can correct you immediately if you misheard.
 5. Does this produce a document? If yes, ask:
    "Do you have a sample PDF you already send? Attach it and I'll match the look."
    If no PDF attached, ask what the document should show.
+6. Before publishing, ask: "What short command should trigger this? I suggest /stock"
+   (derive suggestion from the name; lowercase, no spaces, ≤32 chars). Save via
+   update_builder_draft as slash_command. Set menu_section yourself: 'reports' if
+   workflow_type is read, 'create' if action. Also write a one-line
+   command_description (≤72 chars) for the menu.
+7. Also ask: "Which roles should be able to use this?" listing the org's role names.
 
 IMPORTANT: If a message in the conversation contains "[Admin uploaded a sample PDF" — that means
 the PDF has already been analyzed and saved. Do NOT ask the admin to upload again.
@@ -43,7 +53,12 @@ If they want changes, call revise_draft, then show the new summary.
 Only call publish_workflow after an explicit "yes" on a summary you've already shown.
 
 If the first message is vague ("help me" / "I want a workflow"), call list_existing_workflows
-first, mention what already exists including unfinished drafts, and ask what to add or change."""
+first, mention what already exists including unfinished drafts, and ask what to add or change.
+
+If the admin wants to MODIFY something that already exists, call list_existing_workflows to find
+its intent_key if needed, then call load_existing_workflow before asking what to change.
+The normal flow (update_builder_draft, compile_and_summarize, publish_workflow) works identically
+whether the draft started fresh or was loaded from an existing workflow."""
 
 _TOOLS = [
     {"type": "function", "function": {
@@ -59,7 +74,33 @@ _TOOLS = [
             "workflow_type": {"type": "string", "enum": ["action", "read"]},
             "raw_fields":    {"type": "array", "items": {"type": "string"},
                               "description": "Fields to collect, e.g. ['customer name', 'item description', 'GST — auto']"},
-            "business_rules": {"type": "string", "description": "Safety rules, thresholds, special logic"},
+            "otp_threshold": {
+                "type": "number",
+                "description": "Amount above which OTP verification is required. Set THE MOMENT admin gives a number. Convert 'lakh'=100000, 'k'=1000. Omit if not mentioned."
+            },
+            "approval_threshold": {
+                "type": "number",
+                "description": "Amount above which owner approval is required. Convert 'lakh'=100000, '1 crore'=10000000. Omit if not mentioned."
+            },
+            "business_rules": {"type": "string", "description": "Any OTHER rule not covered by the two threshold fields above."},
+            "slash_command": {
+                "type": "string",
+                "description": "Short command to trigger this workflow (e.g., 'stock', 'quote'). Lowercase, no spaces, ≤32 chars. Include the / prefix."
+            },
+            "command_description": {
+                "type": "string",
+                "description": "One-line description for the menu (≤72 chars)."
+            },
+            "menu_section": {
+                "type": "string",
+                "enum": ["reports", "create", "other"],
+                "description": "Menu section: 'reports' for read workflows, 'create' for action workflows."
+            },
+            "granted_roles": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of role names that should be able to use this workflow."
+            },
         }}
     }},
     {"type": "function", "function": {
@@ -85,6 +126,13 @@ _TOOLS = [
         "name": "publish_workflow",
         "description": "Make the confirmed workflow live. Call ONLY after admin said yes to a summary.",
         "parameters": {"type": "object", "properties": {}}
+    }},
+    {"type": "function", "function": {
+        "name": "load_existing_workflow",
+        "description": "Load a live workflow into the draft so the admin can change it by talking instead of editing JSON. Use when admin wants to modify something that already exists.",
+        "parameters": {"type": "object", "properties": {
+            "intent_key": {"type": "string", "description": "The intent_key of the workflow to load"}
+        }, "required": ["intent_key"]}
     }},
 ]
 
@@ -135,6 +183,11 @@ async def _execute_tool(
             updates["purpose"] = tool_input["purpose"]
         if tool_input.get("workflow_type"):
             updates["workflow_type"] = tool_input["workflow_type"]
+        if tool_input.get("otp_threshold") is not None:
+            updates["otp_threshold"] = float(tool_input["otp_threshold"])
+            updates["otp_required"]  = True
+        if tool_input.get("approval_threshold") is not None:
+            updates["approval_threshold"] = float(tool_input["approval_threshold"])
         if tool_input.get("business_rules"):
             existing = draft.get("business_rules") or ""
             updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
@@ -144,6 +197,14 @@ async def _execute_tool(
                 existing_fields = json.loads(existing_fields)
             merged = list({*existing_fields, *tool_input["raw_fields"]})
             updates["raw_fields"] = json.dumps(merged)
+        if tool_input.get("slash_command"):
+            updates["slash_command"] = tool_input["slash_command"].lstrip("/")
+        if tool_input.get("command_description"):
+            updates["command_description"] = tool_input["command_description"]
+        if tool_input.get("menu_section"):
+            updates["menu_section"] = tool_input["menu_section"]
+        if tool_input.get("granted_roles"):
+            updates["granted_roles"] = json.dumps(tool_input["granted_roles"])
 
         if updates:
             set_parts = [f"{k} = ${i+2}" for i, k in enumerate(updates)]
@@ -151,6 +212,9 @@ async def _execute_tool(
                 f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
                 draft["id"], *updates.values()
             )
+            # Refresh local draft dict so subsequent tool calls in same turn see the updates
+            for k, v in updates.items():
+                draft[k] = v
         return {"saved": list(updates.keys())}
 
     if tool_name == "analyze_sample_pdf":
@@ -188,8 +252,9 @@ async def _execute_tool(
                 pdf_config=$14::jsonb, response_template=$15,
                 otp_required=$16, otp_threshold=$17, approval_threshold=$18,
                 plain_english_summary=$19,
+                slash_command=$20, command_description=$21, menu_section=$22, granted_roles=$23::jsonb,
                 status = 'ready_for_review', updated_at = now()
-            WHERE id = $20
+            WHERE id = $24
         """,
             spec["name"], spec["intent_key"], spec["description"],
             spec.get("workflow_type") or "action",
@@ -208,12 +273,17 @@ async def _execute_tool(
             spec.get("otp_threshold"),
             spec.get("approval_threshold"),
             spec["plain_english_summary"],
+            draft.get("slash_command"),
+            draft.get("command_description"),
+            draft.get("menu_section"),
+            draft.get("granted_roles"),
             draft["id"]
         )
         return {
             "summary":              spec["plain_english_summary"],
             "intent_key":           spec["intent_key"],
             "_show_confirm_buttons": True,
+            "has_pdf_preview":      bool(spec.get("pdf_config")),
         }
 
     if tool_name == "revise_draft":
@@ -238,6 +308,63 @@ async def _execute_tool(
             return result
         except ValueError as e:
             return {"error": str(e)}
+
+    if tool_name == "load_existing_workflow":
+        intent_key = tool_input.get("intent_key", "")
+        wf = await fetch_one(
+            "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
+            org_id, intent_key
+        )
+        if not wf:
+            return {"error": f"No workflow found with key '{intent_key}'. Check the name and try again."}
+        wf = dict(wf)
+        steps = wf.get("steps")
+        if isinstance(steps, str):
+            try:
+                steps = json.loads(steps)
+            except Exception:
+                steps = []
+        await execute("""
+            UPDATE workflow_drafts SET
+                intent_key=$1, name=$2, description=$3, workflow_type=$4,
+                training_phrases=$5::jsonb, entity_schema=$6::jsonb,
+                calc_rules=$7::jsonb, steps=$8::jsonb,
+                sql_template=$9, sql_params_order=$10::jsonb,
+                response_format=$11, business_glossary=$12::jsonb,
+                llm_system_prompt=$13, pdf_config=$14::jsonb,
+                response_template=$15, otp_required=$16,
+                otp_threshold=$17, approval_threshold=$18,
+                slash_command=$19, command_description=$20, menu_section=$21, granted_roles=$22::jsonb,
+                status='chatting', updated_at=now()
+            WHERE id=$23
+        """,
+            wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
+            json.dumps(wf.get("training_phrases") or []),
+            json.dumps(wf.get("entity_schema") or {}),
+            json.dumps(wf.get("calc_rules") or {}),
+            json.dumps(steps or []),
+            wf.get("sql_template"),
+            json.dumps(wf.get("sql_params_order") or []),
+            wf.get("response_format") or "generic",
+            json.dumps(wf.get("business_glossary") or {}),
+            wf.get("llm_system_prompt"),
+            json.dumps(wf.get("pdf_config")) if wf.get("pdf_config") else None,
+            wf.get("response_template"),
+            wf.get("otp_required", False),
+            wf.get("otp_threshold"),
+            wf.get("approval_threshold"),
+            wf.get("slash_command"),
+            wf.get("command_description"),
+            wf.get("menu_section"),
+            wf.get("granted_roles"),
+            draft["id"]
+        )
+        return {
+            "loaded": True,
+            "name": wf["name"],
+            "intent_key": intent_key,
+            "message": f"Loaded '{wf['name']}' — tell me what to change."
+        }
 
     return {"error": f"Unknown tool: {tool_name}"}
 
@@ -304,6 +431,7 @@ async def run_builder_agent(
     summary_card = None
     published = False
     published_intent_key = None
+    has_pdf_preview = False
 
     for _ in range(max_iterations):
         response = await _client.chat.completions.create(
@@ -329,6 +457,7 @@ async def run_builder_agent(
                 "reply":                reply,
                 "draft_id":             str(draft["id"]),
                 "summary_card":         summary_card,
+                "has_pdf_preview":      has_pdf_preview,
                 "published":            published,
                 "published_intent_key": published_intent_key,
             }
@@ -348,6 +477,7 @@ async def run_builder_agent(
 
             if result.get("_show_confirm_buttons"):
                 summary_card = result.get("summary")
+                has_pdf_preview = result.get("has_pdf_preview", False)
 
             if tc.function.name == "publish_workflow" and result.get("published"):
                 published = True
@@ -370,6 +500,7 @@ async def run_builder_agent(
         "reply":                reply,
         "draft_id":             str(draft["id"]),
         "summary_card":         summary_card,
+        "has_pdf_preview":      has_pdf_preview,
         "published":            published,
         "published_intent_key": published_intent_key,
     }

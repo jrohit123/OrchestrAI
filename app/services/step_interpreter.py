@@ -235,6 +235,16 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         values[seq["field"]] = doc_number
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 
+    # Resolve special date literals
+    import datetime as _dt
+    for k, v in list(values.items()):
+        if v == "TODAY+30":
+            values[k] = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
+        elif v == "TODAY":
+            values[k] = _dt.date.today().isoformat()
+        elif v == "NOW()":
+            values[k] = _dt.datetime.now(_dt.timezone.utc)
+
     # Serialize lists/dicts to JSON for DB storage
     cols        = list(values.keys())
     sql_values  = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
@@ -260,6 +270,16 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
     # Build the row data — prefer inserted DB row, fall back to fields
     inserted  = list(ctx.get("inserted", {}).values())
     row_data  = {**(inserted[0] if inserted else {}), **ctx["fields"], **ctx.get("computed", {})}
+
+    # Merge resolved entities (e.g. customer) into extra_context so PDF can show
+    # customer name, city, GSTIN etc. without needing a separate DB query
+    for entity_key in ("customer", "order", "vendor"):
+        if ctx.get(entity_key):
+            entity = ctx[entity_key]
+            # Prefix with entity key to avoid collisions e.g. customer_name, customer_city
+            for col, val in entity.items():
+                if col not in ("id", "org_id") and val is not None:
+                    row_data.setdefault(f"customer_{col}" if entity_key == "customer" else col, val)
 
     rows, analysis = preprocess_rows([row_data], pdf_config.get("doc_type", "report"))
 

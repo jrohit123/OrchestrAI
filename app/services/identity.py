@@ -16,10 +16,13 @@ async def resolve_identity(phone: str) -> dict | None:
             u.role_id     AS role_id,
             r.name        AS role,
             r.permissions AS permissions,
+            r.readable_tables AS readable_tables,
             o.id          AS org_id,
             o.name        AS org_name,
             o.slug        AS org_slug,
-            o.is_active   AS org_active
+            o.is_active   AS org_active,
+            o.context_message_limit AS context_message_limit,
+            o.settings    AS org_settings
         FROM users u
         JOIN roles r ON r.id = u.role_id
         JOIN orgs  o ON o.id = u.org_id
@@ -38,10 +41,13 @@ async def resolve_identity(phone: str) -> dict | None:
         "role_id":    str(row["role_id"]),
         "role":       row["role"],
         "permissions": list(row["permissions"]) if row["permissions"] else [],
+        "readable_tables": list(row["readable_tables"]) if row["readable_tables"] else [],
         "org_id":     str(row["org_id"]),
         "org_name":   row["org_name"],
         "org_slug":   row["org_slug"],
         "org_active": row["org_active"],
+        "context_message_limit": row.get("context_message_limit", 12),
+        "org_settings": row.get("org_settings", {}),
     }
 
 
@@ -60,13 +66,7 @@ def check_permission(user: dict, intent: str) -> bool:
     return intent in user.get("permissions", [])
 
 
-# Tables allowed per role for general_read (extend as needed)
-ROLE_READ_ACCESS = {
-    "owner":      {"customers", "invoices", "inventory", "orders", "quotations"},
-    "accountant": {"customers", "invoices", "inventory", "orders", "quotations"},
-    "sales":      {"customers", "inventory", "orders", "quotations"},
-    "warehouse":  {"inventory"},
-}
+# ROLE_READ_ACCESS removed - now data-driven via roles.readable_tables column
 
 WORKFLOW_ACTIONS = {
     "create_invoice":       "Create",

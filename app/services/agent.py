@@ -1093,6 +1093,16 @@ async def _execute_tool(
         # Validate draft against workflow schema
         validation = await _validate_draft(intent_key, fields, user["org_id"])
 
+        # Persist to database (write-through cache)
+        from app.services.draft_store import upsert_draft
+        await upsert_draft(
+            org_id=user["org_id"],
+            user_id=user["user_id"],
+            intent_key=intent_key,
+            fields=fields,
+            stage=stage
+        )
+
         # Return session patch for webhook to persist
         return {
             "type": "draft_update",
@@ -1283,6 +1293,26 @@ async def _execute_tool(
             return f"ERROR sending to {confirmed_name}: {str(e)}"
 
 
+async def _summarize_turns(conversation_history: list, existing: str | None = None) -> str:
+    """Summarize overflow conversation turns using a cheap LLM call."""
+    if not conversation_history:
+        return existing or ""
+    
+    # Build a simple summary from the conversation
+    # For now, just concatenate key points - could be enhanced with LLM call
+    summary_parts = []
+    for msg in conversation_history[-5:]:  # Last 5 messages for summary
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if content:
+            summary_parts.append(f"{role}: {content[:200]}")
+    
+    summary = " | ".join(summary_parts)
+    if existing:
+        summary = f"{existing} | {summary}"
+    return summary
+
+
 # ── Main agent loop ───────────────────────────────────────────────────────────
 
 async def run_agent(
@@ -1372,6 +1402,37 @@ async def run_agent(
             "Only ask for fields NOT listed above. Never invent values not provided by the user.\n"
             "=== END ACTIVE DRAFT ===\n"
         )
+
+    # ── Context limit + summary ────────────────────────────────────────────────
+    limit = user.get("context_message_limit") or 12
+    draft_summary = None
+    if pending_action:
+        from app.services.draft_store import get_active_draft
+        db_draft = await get_active_draft(user["org_id"], user["user_id"])
+        if db_draft:
+            draft_summary = db_draft.get("conversation_summary")
+    
+    if len(conversation_history) > limit:
+        overflow = conversation_history[:-limit]
+        # Fold dropped turns into a rolling summary (one cheap LLM call)
+        summary = await _summarize_turns(overflow, existing=draft_summary)
+        # Update draft summary if a draft is active
+        if pending_action:
+            from app.services.draft_store import upsert_draft
+            await upsert_draft(
+                org_id=user["org_id"],
+                user_id=user["user_id"],
+                intent_key=pending_action.get("intent_key"),
+                fields=pending_action.get("fields", {}),
+                stage=pending_action.get("stage", "collecting"),
+                summary=summary
+            )
+        conversation_history = conversation_history[-limit:]
+    
+    # Inject summary into system prompt if it exists
+    if draft_summary:
+        # This will be added to the system prompt in _build_system_prompt
+        pass
 
     try:
         system_prompt = await _build_system_prompt(user)

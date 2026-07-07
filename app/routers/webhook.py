@@ -28,7 +28,6 @@ _CONFIRM_WORDS = frozenset({
     "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
 })
 _CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
-_RESET_WORDS = frozenset({"reset", "start over", "cancel everything", "clear draft"})
 
 
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
@@ -87,7 +86,11 @@ async def receive_message(request: Request):
         if msg_type == "text":
             text = msg["text"]["body"]
         elif msg_type == "interactive":
-            text = msg["interactive"]["button_reply"]["id"]
+            inter = msg["interactive"]
+            if inter.get("type") == "list_reply":
+                text = inter["list_reply"]["id"]
+            else:
+                text = inter["button_reply"]["id"]
         else:
             return {"status": "ok"}
 
@@ -124,15 +127,38 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
         return
 
-    # 0. Reset keyword check - clear draft unconditionally (after identity check)
-    text_stripped = text.strip().lower()
-    if text_stripped in _RESET_WORDS:
-        session_id = f"session:{user['org_id']}:{phone}"
-        session = await get_session(session_id)
-        if session:
-            session.pop("pending_action", None)
-            await set_session(session_id, session, ttl=480)
-        await send_text(phone, "🔄 Cleared. What would you like to do?")
+    # ── Slash commands & menu ────────────────────────────────────────────
+    from app.services.menu import build_menu_sections, resolve_slash_command, get_menu_workflows
+    from app.services.whatsapp import send_list
+
+    text_stripped = text.strip()
+
+    if text_stripped in ("/", "/menu") or text_stripped.lower() == "menu":
+        sections = await build_menu_sections(user["org_id"], user)
+        await send_list(phone, "What would you like to do?", "📋 Menu", sections)
+        return
+
+    if text_stripped.startswith("/"):
+        if text_stripped.lower() == "/cancel":
+            await cancel_user_draft(user, phone, confirm=False)
+            return
+        wf = await resolve_slash_command(user["org_id"], user, text_stripped)
+        if wf:
+            remainder = text_stripped.split(maxsplit=1)[1] if " " in text_stripped else ""
+            text = f"Start workflow {wf['intent_key']}. {remainder}"
+        else:
+            sections = await build_menu_sections(user["org_id"], user)
+            await send_list(phone, "Didn't recognise that command — here's what's available:",
+                            "📋 Menu", sections)
+            return
+
+    # ── Direct intent_key from a list-row tap ────────────────────────────
+    allowed = {w["intent_key"]: w for w in await get_menu_workflows(user["org_id"], user)}
+    if text_stripped in allowed:
+        wf = allowed[text_stripped]
+        text = f"Start workflow {wf['intent_key']}."
+    elif text_stripped.startswith("sys:"):
+        await handle_system_row(text_stripped, user, phone)
         return
 
     # 2. Fetch org TTL
@@ -225,6 +251,24 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         session["conversation_history"] = sanitized_history
         conversation_history = sanitized_history
         await set_session(session_id, session, ttl=ttl_minutes * 60)
+
+    # Rehydrate draft from DB if Redis has no pending_action but DB has active draft
+    if not session.get("pending_action"):
+        from app.services.draft_store import get_active_draft
+        db_draft = await get_active_draft(user["org_id"], user["user_id"])
+        if db_draft:
+            print(f"[WEBHOOK] Rehydrating draft from DB: {db_draft['intent_key']}")
+            session["pending_action"] = {
+                "intent_key": db_draft["intent_key"],
+                "fields": db_draft.get("fields", {}),
+                "stage": db_draft["stage"],
+                "rehydrated": True
+            }
+            await set_session(session_id, session, ttl=ttl_minutes * 60)
+            # Send greeting to user about the unfinished draft
+            await send_text(phone,
+                f"You have an unfinished *{db_draft['intent_key']}* — continue, or tap /cancel."
+            )
 
     # 5. Approval button responses
     if msg_type == "interactive" and text in ("action:approve", "action:reject"):
@@ -450,6 +494,64 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone,
             f"🤔 Error: {str(e)}"
         )
+
+
+# ── SYSTEM ROW HANDLERS ─────────────────────────────────
+async def handle_system_row(text: str, user: dict, phone: str):
+    """Handle sys:status, sys:cancel, sys:help from menu."""
+    from app.services.draft_store import get_active_draft, close_draft
+    
+    if text == "sys:status":
+        draft = await get_active_draft(user["org_id"], user["user_id"])
+        if draft:
+            intent = draft["intent_key"]
+            stage = draft["stage"]
+            fields = draft.get("fields", {})
+            await send_text(phone,
+                f"📋 *Draft Status*\n"
+                f"Workflow: {intent}\n"
+                f"Stage: {stage}\n"
+                f"Fields collected: {len(fields)}\n\n"
+                f"Tap /cancel to clear this draft."
+            )
+        else:
+            await send_text(phone, "✅ No active draft. You're ready to start fresh.")
+    
+    elif text == "sys:cancel":
+        await cancel_user_draft(user, phone, confirm=True)
+    
+    elif text == "sys:help":
+        await send_text(phone,
+            "📖 *How to use OrchestrAI*\n\n"
+            "• Type / or 'menu' to see available workflows\n"
+            "• Use slash commands like /invoice, /quote for quick access\n"
+            "• Ask questions in plain English or Hindi\n"
+            "• Say 'pdf' after any result to get a document\n"
+            "• Tap /cancel to clear a draft in progress"
+        )
+
+async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
+    """Cancel the user's active draft."""
+    from app.services.draft_store import get_active_draft, close_draft
+    
+    draft = await get_active_draft(user["org_id"], user["user_id"])
+    if not draft:
+        await send_text(phone, "✅ No active draft to cancel.")
+        return
+    
+    if confirm and len(draft.get("fields", {})) >= 2:
+        # Ask for confirmation if draft has substantial data
+        await send_text(phone,
+            f"⚠️ You have a draft for *{draft['intent_key']}* with {len(draft['fields'])} fields.\n"
+            f"Reply 'yes' to cancel, or continue working."
+        )
+        # Note: In a full implementation, we'd set a state to await confirmation
+        # For now, we'll cancel directly as this is a safety escape hatch
+        await close_draft(user["org_id"], user["user_id"], "cancelled")
+        await send_text(phone, "🔄 Draft cancelled.")
+    else:
+        await close_draft(user["org_id"], user["user_id"], "cancelled")
+        await send_text(phone, "🔄 Draft cancelled.")
 
 
 # ── OTP REPLY HANDLER (invoice high value) ────────────

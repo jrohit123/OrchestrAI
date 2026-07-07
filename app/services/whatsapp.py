@@ -88,3 +88,21 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
         resp.raise_for_status()
     return resp.json()
+
+
+async def send_list(to: str, body: str, button_label: str, sections: list[dict]):
+    """Interactive list message. Max 10 rows total across sections."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body},
+            "action": {"button": button_label[:20], "sections": sections},
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        resp.raise_for_status()
+    return resp.json()

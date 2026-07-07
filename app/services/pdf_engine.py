@@ -213,6 +213,28 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
 {_build_doctype_instructions(doc_type, risk_mode, extra_context, today_long, org_name, primary, light_bg)}
 """
 
+    # Build canonical totals block — explicit values to prevent the LLM from
+    # guessing or recalculating amounts that are already correct
+    canonical_keys  = ("subtotal", "gst_amount", "total_amount", "grand_total", "amount",
+                       "metal_cost", "making_charges")
+    canonical_lines = [
+        f"  {k} = {extra_context[k]}"
+        for k in canonical_keys
+        if extra_context.get(k) is not None
+    ]
+    if canonical_lines:
+        canonical_block = (
+            "===== CANONICAL TOTALS — use these EXACT values verbatim, never recalculate =====\n"
+            + "\n".join(canonical_lines)
+            + "\n===== END CANONICAL TOTALS ====="
+        )
+    else:
+        canonical_block = (
+            "===== NOTE: no pre-computed total fields supplied. "
+            "Derive totals ONLY by summing the per-row values in DATA above — "
+            "do not assume a tax rate or invent a formula. ====="
+        )
+
     prompt = f"""You are generating a professional PDF document for a business using WeasyPrint.
 WeasyPrint supports full CSS3 including flexbox, border-radius, and proper Unicode.
 
@@ -230,6 +252,8 @@ Total Rows    : {len(rows)}{trunc_note}
 ===== PRE-COMPUTED CONTEXT =====
 (Use these values directly. Do NOT recalculate from the rows above.)
 {ctx_json}
+
+{canonical_block}
 
 ===== FONTS AND COLORS =====
 <style>

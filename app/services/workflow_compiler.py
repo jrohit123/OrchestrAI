@@ -140,6 +140,10 @@ RULE 13 — calc_rules (action workflows with computed fields):
   aggregate_rules: top-level expressions (e.g. sum of items).
   Available functions: round(x,n), abs(x), min(a,b), max(a,b), sum_field(items,'field'), count_field(items).
   CRITICAL: Every field produced here MUST have "computed":true in entity_schema.
+  CRITICAL: NEVER hardcode tax rates as decimals (0.03, 0.1). ALWAYS use org column names
+  from the orgs table — for GST use "gst_rate" which is the actual column name:
+    CORRECT: "round(unit_price * qty * gst_rate / 100, 2)"
+    WRONG:   "round(unit_price * qty * 0.03, 2)"
   Example for GST invoice:
   {{
     "item_rules": {{
@@ -166,6 +170,20 @@ RULE 14 — steps (action workflows — this IS the execution logic):
     db.upsert_row   — {{"table","values":{{...}},"conflict_columns":["col1","col2"]}}
     pdf.generate    — {{"subtitle":""}}
     notify.whatsapp — {{"attach_pdf":true}}
+
+  CRITICAL DB INSERT RULES:
+  - status values MUST be lowercase: "pending" NOT "PENDING", "sent" NOT "SENT"
+  - For due dates use the special literal "TODAY+30" (30 days from today) or "TODAY"
+    NEVER use SQL expressions like "NOW() + INTERVAL '30 days'" — they don't work as string literals
+  - Never include columns that have DB defaults (created_at, updated_at) — let the DB handle them
+
+  Example invoice insert:
+  {{"op":"db.insert_row","params":{{"table":"invoices","values":{{
+    "org_id":"$org_id","customer_id":"$customer.id","created_by":"$user.user_id",
+    "items":"$fields.items","amount":"$computed.total_amount",
+    "status":"pending","due_date":"TODAY+30"
+  }},"sequence":{{"field":"invoice_number","prefix":"INV-","start":100}}}}}}
+
   Typical pipeline for invoice/quotation:
     resolve_entity → compute → otp_gate → approval_gate → db.insert_row → pdf.generate → notify.whatsapp
   For status update: resolve_entity → db.update_row → notify.whatsapp
@@ -264,6 +282,40 @@ Return ONLY this JSON, no markdown:
                 entity_schema["items"] = items_def
 
             spec["entity_schema"] = entity_schema
+
+            # Passthrough: if PDF was uploaded, use extractor's render_instructions verbatim
+            # Never let the compiler rewrite what the extractor already got right
+            pdf_analysis = _parse(draft.get("pdf_sample_analysis"), None) if isinstance(draft, dict) else None
+            if pdf_analysis and isinstance(pdf_analysis, dict):
+                spec["pdf_config"] = {
+                    **(spec.get("pdf_config") or {}),
+                    "doc_type": (
+                        pdf_analysis.get("doc_type_guess")
+                        or (spec.get("pdf_config") or {}).get("doc_type", "report")
+                    ),
+                    "theme": (
+                        pdf_analysis.get("theme")
+                        or (spec.get("pdf_config") or {}).get("theme")
+                    ),
+                    "render_instructions": pdf_analysis.get("render_instructions"),
+                }
+
+            # Override OTP/approval thresholds from structured draft columns
+            # These were captured precisely when the admin stated them — always win over LLM guesses
+            if isinstance(draft, dict):
+                if draft.get("otp_threshold") is not None:
+                    spec["otp_required"] = True
+                    spec["otp_threshold"] = float(draft["otp_threshold"])
+                if draft.get("approval_threshold") is not None:
+                    spec["approval_threshold"] = float(draft["approval_threshold"])
+
+            # Validate consistency before accepting this attempt
+            from app.services.workflow_validator import validate_workflow_config
+            problems = validate_workflow_config(spec)
+            if problems:
+                last_error = f"Attempt {attempt+1}: " + "; ".join(problems)
+                print(f"[COMPILER] Validation failed — retrying: {last_error}")
+                continue
 
             # Validate mandatory fields
             if not spec.get("training_phrases") or len(spec["training_phrases"]) < 5:

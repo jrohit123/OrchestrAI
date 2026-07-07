@@ -586,6 +586,10 @@ async def update_workflow(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
 
+    existing = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
     allowed = [
         "name", "description", "is_active", "otp_required", "otp_threshold",
         "approval_threshold", "training_phrases", "entity_schema", "calc_rules",
@@ -597,6 +601,21 @@ async def update_workflow(workflow_id: str, request: Request):
         "training_phrases", "entity_schema", "calc_rules", "steps",
         "sql_params_order", "business_glossary", "pdf_config"
     }
+
+    # Merge incoming changes with existing row so validation sees the full picture
+    merged = dict(existing)
+    for field in allowed:
+        if field in body:
+            merged[field] = body[field]
+
+    # Validate merged config before writing anything
+    from app.services.workflow_validator import validate_workflow_config
+    problems = validate_workflow_config(merged)
+    if problems:
+        raise HTTPException(status_code=400, detail={
+            "error": "Config is inconsistent — not saved.",
+            "problems": problems
+        })
 
     sets, vals = [], []
     for field in allowed:
@@ -626,13 +645,41 @@ async def delete_workflow(workflow_id: str, request: Request):
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    # Remove from roles permissions
     await execute("""
         UPDATE roles SET permissions = array_remove(permissions, $1)
         WHERE org_id = $2
     """, row["intent_key"], row["org_id"])
     await execute("DELETE FROM workflows WHERE id = $1", workflow_id)
     return {"success": True, "deleted": row["intent_key"]}
+
+
+@router.post("/admin/api/workflow/validate")
+async def validate_workflow_endpoint(request: Request):
+    """Lint a workflow config without saving — used by the Edit modal Validate button."""
+    _check_token(request)
+    body = await request.json()
+    from app.services.workflow_validator import validate_workflow_config
+    problems = validate_workflow_config(body)
+    return {"valid": len(problems) == 0, "problems": problems}
+
+
+@router.get("/admin/api/workflow-builder/preview-pdf/{draft_id}")
+async def preview_workflow_pdf(draft_id: str, request: Request):
+    """Generate a sample PDF from a compiled draft using placeholder data."""
+    _check_token(request)
+    from fastapi.responses import Response as FastAPIResponse
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    if not draft or not draft.get("pdf_config"):
+        raise HTTPException(status_code=404, detail="Nothing to preview yet — compile first")
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org")
+    from app.services.workflow_previewer import generate_preview_pdf
+    try:
+        pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
+    return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")
 
 
 @router.post("/admin/api/workflow-builder/chat")
