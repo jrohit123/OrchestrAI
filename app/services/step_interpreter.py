@@ -137,6 +137,7 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
         user_email=user["email"],
         user_name=user["user_name"],
         org_name=user["org_name"],
+        org_id=user["org_id"],
         action_context={"type": "action_otp", "intent_key": ctx["workflow"]["intent_key"]}
     )
     if not sent:

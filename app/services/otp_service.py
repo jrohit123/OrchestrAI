@@ -26,6 +26,7 @@ async def generate_and_send_otp(
     user_email: str,
     user_name: str,
     org_name: str,
+    org_id: str,
     action_context: dict
 ) -> bool:
     """
@@ -44,9 +45,9 @@ async def generate_and_send_otp(
 
     # Save new OTP record
     await execute("""
-        INSERT INTO otp_tokens (user_id, otp_hash, action_context, expires_at, used)
-        VALUES ($1, $2, $3, $4, false)
-    """, user_id, otp_hash, json.dumps(action_context), expiry)
+        INSERT INTO otp_tokens (user_id, otp_hash, action_context, expires_at, used, org_id)
+        VALUES ($1, $2, $3, $4, false, $5)
+    """, user_id, otp_hash, json.dumps(action_context), expiry, org_id)
 
     # Send via Brevo — raw OTP only lives here
     success = await _send_brevo_email(

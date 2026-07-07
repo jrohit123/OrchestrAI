@@ -203,6 +203,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             user_email=user["email"],
             user_name=user["user_name"],
             org_name=user["org_name"],
+            org_id=user["org_id"],
             action_context={"type": "security_auth"}
         )
         if sent:
