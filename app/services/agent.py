@@ -1377,6 +1377,40 @@ async def run_agent(
                            {"role": "assistant", "content": help_text}]
         return help_text, history_to_save, {}
     
+    # ── Fast-path: direct workflow execution by intent_key ─────────────────
+    # If message is exactly a workflow intent_key the user has permission for, execute it
+    from app.db import fetch_all as _fetch_all
+    perms = set(user.get("permissions", []))
+    workflows = await _fetch_all(
+        "SELECT intent_key, name, workflow_type, sql_template, entity_schema, "
+        "sql_params_order, response_format, business_glossary, llm_system_prompt, "
+        "pdf_config, response_template, otp_required, otp_threshold, approval_threshold, "
+        "steps, calc_rules "
+        "FROM workflows WHERE org_id = $1 AND is_active = true",
+        user["org_id"]
+    )
+    workflow_map = {w["intent_key"]: dict(w) for w in workflows if w["intent_key"] in perms}
+    
+    if msg_stripped in workflow_map:
+        wf = workflow_map[msg_stripped]
+        print(f"[AGENT] Direct workflow execution: {wf['intent_key']}")
+        # Execute read workflow directly (no entities)
+        if wf["workflow_type"] == "read" and not wf.get("entity_schema"):
+            from app.services.query_engine import execute_query
+            result = await execute_query(
+                sql=wf["sql_template"],
+                params=[user["org_id"]],
+                user=user,
+                response_format=wf.get("response_format", "generic"),
+                business_glossary=wf.get("business_glossary", {})
+            )
+            history_to_save = [{"role": "user", "content": message}]
+            return result, history_to_save, {}
+        else:
+            # For workflows with entities or action workflows, let agent handle it
+            # Prepend a clear instruction
+            message = f"Execute the {wf['name']} workflow."
+    
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
     if conversation_history:
