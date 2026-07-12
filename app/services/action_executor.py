@@ -7,6 +7,7 @@ Adding a new workflow requires zero changes to this file.
 """
 from app.db import fetch_one
 from app.services.step_interpreter import run_workflow_steps
+from app.services.draft_store import close_draft
 
 
 async def execute_pending_action(
@@ -57,6 +58,8 @@ async def execute_pending_action(
     )
 
     if result["status"] == "done":
+        # Clear the draft after successful execution
+        await close_draft(user["org_id"], user["id"], "done")
         return {
             "success":   True,
             "message":   result["message"],
