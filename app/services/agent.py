@@ -1798,7 +1798,6 @@ async def run_agent(
                     old_fields = current_draft.get("fields", {})
                     # Ensure old_fields is a dict (might be JSON string from DB)
                     if isinstance(old_fields, str):
-                        import json
                         try:
                             old_fields = json.loads(old_fields)
                         except:
