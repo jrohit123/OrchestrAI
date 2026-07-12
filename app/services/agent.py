@@ -1796,6 +1796,13 @@ async def run_agent(
                     # Build pending_action from result
                     current_draft = pending_action or {}
                     old_fields = current_draft.get("fields", {})
+                    # Ensure old_fields is a dict (might be JSON string from DB)
+                    if isinstance(old_fields, str):
+                        import json
+                        try:
+                            old_fields = json.loads(old_fields)
+                        except:
+                            old_fields = {}
                     new_fields = result.get("fields", {})
 
                     # Deep-merge items array: if the correction only contains partial
