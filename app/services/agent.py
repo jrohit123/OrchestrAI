@@ -1033,6 +1033,9 @@ async def _execute_tool(
 
             return json.dumps(clean, default=str)
 
+        except Exception as e:
+            return f"ERROR: {str(e)}"
+
     elif tool_name == "query_sheet":
         from app.services.sheets_client import sheet_fetch_filtered
         tab     = tool_input.get("tab", "")
