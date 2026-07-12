@@ -59,7 +59,7 @@ async def execute_pending_action(
 
     if result["status"] == "done":
         # Clear the draft after successful execution
-        await close_draft(user["org_id"], user["id"], "done")
+        await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "done")
         return {
             "success":   True,
             "message":   result["message"],
