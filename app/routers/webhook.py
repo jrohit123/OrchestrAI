@@ -288,7 +288,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     if not session.get("pending_action"):
         from app.services.draft_store import get_active_draft
         db_draft = await get_active_draft(user["org_id"], user["user_id"])
-        if db_draft:
+        if db_draft and db_draft.get("intent_key"):
             print(f"[WEBHOOK] Rehydrating draft from DB: {db_draft['intent_key']}")
             session["pending_action"] = {
                 "intent_key": db_draft["intent_key"],
