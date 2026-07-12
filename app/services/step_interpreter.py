@@ -81,17 +81,22 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     if not name_val:
         raise StepError(f"resolve_entity: no value at '{name_path}'")
 
-    rows = await fetch_all(
-        f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col} ILIKE $2 LIMIT 5",
-        ctx["org_id"], f"%{name_val}%"
-    )
+    # NEW: table="sheet:TabName" routes to Google Sheets instead of Postgres
+    if table.startswith("sheet:"):
+        from app.services.sheets_client import sheet_fetch_filtered
+        tab = table.split(":", 1)[1]
+        rows = await sheet_fetch_filtered(tab, {match_col: name_val})
+    else:
+        raw_rows = await fetch_all(
+            f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col} ILIKE $2 LIMIT 5",
+            ctx["org_id"], f"%{name_val}%"
+        )
+        rows = [dict(r) for r in raw_rows]
 
     if len(rows) == 0:
         raise StepError(f"No {table} record found matching '{name_val}'")
     if len(rows) > 1:
-        raise StepError(
-            f"AMBIGUOUS:{table}:{json.dumps([dict(r) for r in rows], default=str)}"
-        )
+        raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
 
     resolved = dict(rows[0])
     ctx[into] = resolved
@@ -225,7 +230,40 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     table  = params["table"]
     values = _resolve_values(params.get("values", {}), ctx)
 
-    # Generate document number if sequence is configured
+    # Resolve special date literals
+    import datetime as _dt
+    for k, v in list(values.items()):
+        if v == "TODAY+30":
+            values[k] = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
+        elif v == "TODAY+7":
+            values[k] = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
+        elif v == "TODAY":
+            values[k] = _dt.date.today().isoformat()
+        elif v == "NOW()":
+            values[k] = _dt.datetime.now(_dt.timezone.utc)
+
+    # NEW: sheet-backed insert
+    if table.startswith("sheet:"):
+        from app.services.sheets_client import sheet_insert_row, sheet_count_rows
+        tab = table.split(":", 1)[1]
+
+        if "sequence" in params:
+            seq = params["sequence"]
+            count = await sheet_count_rows(tab)
+            doc_number = seq["prefix"] + str(seq.get("start", 1000) + count)
+            values[seq["field"]] = doc_number
+            ctx.setdefault("generated", {})[seq["field"]] = doc_number
+
+        # Serialize lists/dicts same as Postgres path, for consistency
+        for k, v in list(values.items()):
+            if isinstance(v, (list, dict)):
+                values[k] = json.dumps(v)
+
+        await sheet_insert_row(tab, values)
+        ctx.setdefault("inserted", {})[tab] = values
+        return ctx
+
+    # ── existing Postgres path (unchanged below this line) ──
     if "sequence" in params:
         seq       = params["sequence"]
         count_row = await fetch_one(
@@ -236,17 +274,6 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         values[seq["field"]] = doc_number
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 
-    # Resolve special date literals
-    import datetime as _dt
-    for k, v in list(values.items()):
-        if v == "TODAY+30":
-            values[k] = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
-        elif v == "TODAY":
-            values[k] = _dt.date.today().isoformat()
-        elif v == "NOW()":
-            values[k] = _dt.datetime.now(_dt.timezone.utc)
-
-    # Serialize lists/dicts to JSON for DB storage
     cols        = list(values.keys())
     sql_values  = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
     placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
@@ -330,15 +357,23 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     set_vals    = _resolve_values(params.get("set", {}), ctx)
     where_vals  = _resolve_values(params.get("where", {}), ctx)
 
-    # Resolve NOW() string to actual Python datetime
     def _resolve_now(v):
-        if v == "NOW()":
-            return _dt.datetime.now(_dt.timezone.utc)
-        return v
+        return _dt.datetime.now(_dt.timezone.utc) if v == "NOW()" else v
 
     set_vals   = {k: _resolve_now(v) for k, v in set_vals.items()}
     where_vals = {k: _resolve_now(v) for k, v in where_vals.items()}
 
+    # NEW: sheet-backed update
+    if table.startswith("sheet:"):
+        from app.services.sheets_client import sheet_update_row
+        tab = table.split(":", 1)[1]
+        updated = await sheet_update_row(tab, where_vals, set_vals)
+        if not updated:
+            raise StepError(f"db.update_row: no matching row in sheet '{tab}'")
+        ctx.setdefault("updated", {})[tab] = updated
+        return ctx
+
+    # ── existing Postgres path (unchanged below this line) ──
     set_cols   = list(set_vals.keys())
     where_cols = list(where_vals.keys())
 
@@ -356,6 +391,33 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     if not row:
         raise StepError(f"db.update_row: no matching row in {table}")
     ctx.setdefault("updated", {})[table] = dict(row)
+    return ctx
+
+
+async def _op_delete_row(params: dict, ctx: dict) -> dict:
+    """
+    Delete one row matching `where`. Supports table="sheet:TabName" and
+    plain Postgres tables. NEW primitive — not in the original set.
+    """
+    table      = params["table"]
+    where_vals = _resolve_values(params.get("where", {}), ctx)
+
+    if table.startswith("sheet:"):
+        from app.services.sheets_client import sheet_delete_row
+        tab = table.split(":", 1)[1]
+        ok = await sheet_delete_row(tab, where_vals)
+        if not ok:
+            raise StepError(f"db.delete_row: no matching row in sheet '{tab}'")
+        ctx.setdefault("deleted", {})[tab] = where_vals
+        return ctx
+
+    where_cols   = list(where_vals.keys())
+    where_clause = " AND ".join(f"{c} = ${i+1}" for i, c in enumerate(where_cols))
+    sql = f"DELETE FROM {table} WHERE {where_clause} RETURNING *"
+    row = await fetch_one(sql, *where_vals.values())
+    if not row:
+        raise StepError(f"db.delete_row: no matching row in {table}")
+    ctx.setdefault("deleted", {})[table] = dict(row)
     return ctx
 
 
@@ -424,15 +486,19 @@ async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
 # ── Op registry — adding a new op never requires changing action_executor.py ─
 
 PRIMITIVES = {
-    "resolve_entity":   _op_resolve_entity,
-    "compute":          _op_compute,
-    "otp_gate":         _op_otp_gate,
-    "approval_gate":    _op_approval_gate,
-    "db.insert_row":    _op_insert_row,
-    "db.update_row":    _op_update_row,
-    "db.upsert_row":    _op_upsert_row,
-    "pdf.generate":     _op_generate_pdf,
-    "notify.whatsapp":  _op_notify_whatsapp,
+    "resolve_entity":    _op_resolve_entity,
+    "compute":           _op_compute,
+    "otp_gate":          _op_otp_gate,
+    "approval_gate":     _op_approval_gate,
+    "db.insert_row":     _op_insert_row,
+    "db.update_row":     _op_update_row,
+    "db.upsert_row":     _op_upsert_row,
+    "db.delete_row":     _op_delete_row,    # NEW
+    "sheets.insert_row": _op_insert_row,    # NEW — alias, dispatches on "sheet:" prefix
+    "sheets.update_row": _op_update_row,    # NEW — alias
+    "sheets.delete_row": _op_delete_row,    # NEW — alias
+    "pdf.generate":      _op_generate_pdf,
+    "notify.whatsapp":   _op_notify_whatsapp,
 }
 
 

@@ -219,17 +219,31 @@ async def _get_schema(org_id: str) -> str:
 
     # NOTE: Sample rows removed to prevent hallucination
     # Schema samples were causing LLM to use example data (Jain Gold Works, etc.)
-    # as if it were user input. Column types only are sufficient for query building.
+    parts = [f"- {t}: {', '.join(cols)}" for t, cols in table_cols.items()]
+    _schema_cache[org_id] = "\n".join(parts)
+    return _schema_cache[org_id]
 
-    schema_parts = []
-    for table, columns in sorted(table_cols.items()):
-        schema_parts.append(
-            f"- {table}: {', '.join(columns)}"
-        )
 
-    result = "\n".join(schema_parts)
-    _schema_cache[org_id] = result
-    return result
+_sheets_schema_cache: str | None = None
+
+async def _get_sheets_schema() -> str:
+    """Cached tab/column listing for the Sheets side — same idea as
+    _get_schema() but for Google Sheets instead of Postgres."""
+    global _sheets_schema_cache
+    if _sheets_schema_cache is not None:
+        return _sheets_schema_cache
+    if not os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID"):
+        _sheets_schema_cache = ""
+        return ""
+    from app.services.sheets_client import get_all_tab_headers
+    try:
+        tabs = await get_all_tab_headers()
+    except Exception as e:
+        print(f"[AGENT] Could not load Sheets schema: {e}")
+        return ""
+    parts = [f"- {tab} (Google Sheets tab): {', '.join(cols)}" for tab, cols in tabs.items()]
+    _sheets_schema_cache = "\n".join(parts)
+    return _sheets_schema_cache
 
 
 def invalidate_schema_cache(org_id: str):
@@ -264,6 +278,35 @@ TOOLS = [
                     }
                 },
                 "required": ["sql"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_sheet",
+            "description": (
+                "Read rows from a Google Sheets tab. Use this ONLY for tabs listed under "
+                "'GOOGLE SHEETS DATA' in the system prompt — this is a SEPARATE data source "
+                "from Postgres (query_database). Never use query_database for these tabs, "
+                "and never use query_sheet for customers/invoices/orders/inventory (those "
+                "are Postgres — use query_database).\n\n"
+                "filters does a case-insensitive PARTIAL match on each column given — "
+                "similar to ILIKE '%value%'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "string",
+                        "description": "Exact tab name, e.g. 'Suppliers', 'RawMaterialStock', 'PurchaseOrders'"
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Column:value pairs to filter rows by (partial match). Omit to fetch all rows."
+                    }
+                },
+                "required": ["tab"]
             }
         }
     },
@@ -574,6 +617,7 @@ TOOLS = [
 
 async def _build_system_prompt(user: dict) -> str:
     schema = await _get_schema(user["org_id"])
+    sheets_schema = await _get_sheets_schema()
     today = __import__("datetime").date.today().strftime("%d %b %Y")
 
     # Load org record for industry/slug
@@ -682,6 +726,16 @@ TODAY: {today}
 
 DATABASE SCHEMA (for reference only - use the table/column list above):
 {schema}
+
+GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):
+{sheets_schema if sheets_schema else "(none configured)"}
+
+RULE S1 — Sheets vs Postgres: PurchaseOrders/Suppliers/RawMaterialStock live in Google
+Sheets. Everything else (customers, invoices, orders, inventory) lives in Postgres.
+Pick the right tool by which schema block the tab/table name appears under.
+
+RULE S2 — Sheet reads use query_sheet(tab, filters). filters values do partial,
+case-insensitive matching automatically — do not add wildcard characters yourself.
 
 {workflow_schema_text}
 
@@ -979,6 +1033,15 @@ async def _execute_tool(
 
             return json.dumps(clean, default=str)
 
+    elif tool_name == "query_sheet":
+        from app.services.sheets_client import sheet_fetch_filtered
+        tab     = tool_input.get("tab", "")
+        filters = tool_input.get("filters", {}) or {}
+        try:
+            rows = await sheet_fetch_filtered(tab, filters)
+            if not rows:
+                return "EMPTY: No rows returned"
+            return json.dumps(rows[:50], default=str)
         except Exception as e:
             return f"ERROR: {str(e)}"
 
