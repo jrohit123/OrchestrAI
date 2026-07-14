@@ -1591,11 +1591,18 @@ async def run_agent(
         # Update draft summary if a draft is active
         if pending_action:
             from app.services.draft_store import upsert_draft
+            # Parse fields if it's a JSON string from DB
+            fields = pending_action.get("fields", {})
+            if isinstance(fields, str):
+                try:
+                    fields = json.loads(fields)
+                except:
+                    fields = {}
             await upsert_draft(
                 org_id=user["org_id"],
                 user_id=user["user_id"],
                 intent_key=pending_action.get("intent_key"),
-                fields=pending_action.get("fields", {}),
+                fields=fields,
                 stage=pending_action.get("stage", "collecting"),
                 summary=summary
             )
