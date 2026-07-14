@@ -1207,6 +1207,19 @@ async def _execute_tool(
         fields = tool_input.get("fields", {})
         stage = tool_input.get("stage", "collecting")
 
+        # Guard: the LLM must always pass an object. A malformed call (e.g.
+        # passing an items array directly as `fields`) corrupts the stored
+        # draft via Postgres jsonb's `||` operator, which crashes every
+        # subsequent turn with "'list' object is not a mapping". Reject
+        # instead of storing it.
+        if not isinstance(fields, dict):
+            print(f"[AGENT] update_draft called with non-dict fields ({type(fields).__name__}) — rejecting: {fields}")
+            return (
+                "ERROR: fields must be a JSON object mapping field names to values "
+                "(e.g. {\"items\": [...]}), not a bare list. Re-call update_draft "
+                "with the correct shape."
+            )
+
         # Log draft fields for debugging
         print(f"[AGENT] update_draft: intent_key={intent_key}, fields={fields}, stage={stage}")
 
@@ -1800,12 +1813,15 @@ async def run_agent(
                     # Build pending_action from result
                     current_draft = pending_action or {}
                     old_fields = current_draft.get("fields", {})
-                    # Ensure old_fields is a dict (might be JSON string from DB)
+                    # Ensure old_fields is a dict (might be JSON string from DB or corrupted list)
                     if isinstance(old_fields, str):
                         try:
                             old_fields = json.loads(old_fields)
                         except:
                             old_fields = {}
+                    if not isinstance(old_fields, dict):
+                        print(f"[AGENT] Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting")
+                        old_fields = {}
                     new_fields = result.get("fields", {})
 
                     # Deep-merge items array: if the correction only contains partial

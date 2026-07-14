@@ -579,7 +579,30 @@ async def run_workflow_steps(
                 raise StepError(f"Unknown step op: '{op_name}'")
 
             print(f"[STEP_INTERP] Step {i+1}/{len(steps)}: {op_name}")
-            ctx = await op_fn(step.get("params", {}), ctx)
+
+            try:
+                ctx = await op_fn(step.get("params", {}), ctx)
+            except (VerificationError, StepError):
+                raise
+            except Exception as e:
+                # A record may already be safely written by this point —
+                # don't tell the user the whole thing failed if only
+                # delivery (PDF/WhatsApp) broke after the DB write succeeded.
+                if op_name in ("pdf.generate", "notify.whatsapp") and ctx.get("inserted"):
+                    print(f"[STEP_INTERP] Non-fatal failure in '{op_name}' after successful insert: {e}")
+                    doc_number = next(iter(ctx.get("generated", {}).values()), None)
+                    return {
+                        "status": "done",
+                        "message": (
+                            f"✅ {workflow.get('name', 'Document')} "
+                            f"*{doc_number or ''}* was created and saved, but I couldn't "
+                            f"send the PDF/notification just now. Ask me to resend it as a PDF."
+                        ),
+                        "pdf_bytes": None,
+                        "generated": ctx.get("generated", {}),
+                        "inserted":  ctx.get("inserted", {}),
+                    }
+                raise StepError(f"Unexpected failure in step '{op_name}': {e}")
 
             if ctx.get("_halt"):
                 return {

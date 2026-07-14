@@ -11,6 +11,8 @@ async def get_active_draft(org_id: str, user_id: str) -> dict | None:
 
 async def upsert_draft(org_id, user_id, intent_key, fields: dict,
                        stage="collecting", summary: str | None = None):
+    if not isinstance(fields, dict):
+        raise TypeError(f"upsert_draft: fields must be a dict, got {type(fields).__name__}")
     await execute("""
         INSERT INTO user_drafts (org_id, user_id, intent_key, fields, stage, conversation_summary)
         VALUES ($1,$2,$3,$4::jsonb,$5,$6)

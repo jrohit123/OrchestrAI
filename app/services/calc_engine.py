@@ -4,6 +4,14 @@ calc_engine.py — Deterministic, sandboxed expression evaluator for workflow ca
 No eval(). No domain knowledge. No hardcoded field names.
 Works for any industry — gst_rate, commission_pct, discount_pct, whatever.
 The workflow's calc_rules reference whatever columns this org's orgs table has.
+
+IMPORTANT: calc_rules dicts are read back from a Postgres `jsonb` column.
+jsonb does NOT preserve object key order (this is documented Postgres
+behaviour, not a bug in this file) — so "gst" can come back before
+"line_subtotal" even though gst's expression references it. Every
+evaluation function below is therefore order-independent: it retries
+unresolved rules across multiple passes until nothing is left, rather
+than assuming the rules are already in dependency order.
 """
 from simpleeval import EvalWithCompoundTypes, InvalidExpression
 
@@ -27,6 +35,37 @@ def _eval(expr: str, names: dict):
     return ev.eval(expr)
 
 
+def _resolve_multipass(rules: dict, names: dict, out: dict, label: str, error_suffix: str) -> dict:
+    """
+    Evaluate `rules` (field_name -> expression string) against `names`,
+    without assuming any particular order between rules. Rules may
+    reference fields produced by other rules in the same dict — this
+    keeps retrying whatever hasn't resolved yet until either everything
+    succeeds or a full pass makes no progress at all (which then means a
+    *real* problem — a missing input like `weight`, not just bad ordering).
+    """
+    pending = dict(rules)
+    last_error = None
+    while pending:
+        made_progress = False
+        for field, expr in list(pending.items()):
+            try:
+                result = _eval(expr, names)
+            except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
+                last_error = (field, expr, e)
+                continue
+            out[field] = round(result, 2) if isinstance(result, float) else result
+            names[field] = out[field]
+            del pending[field]
+            made_progress = True
+
+        if not made_progress:
+            field, expr, e = last_error
+            raise CalcError(f"{label}[{field}] '{expr}' failed {error_suffix}: {e}")
+
+    return out
+
+
 def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     """
     Apply per-line-item calc_rules to a single item dict.
@@ -37,14 +76,7 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
         return dict(item)
     names = {**context, **{k: v for k, v in item.items() if v is not None}}
     out = dict(item)
-    for field, expr in item_rules.items():
-        try:
-            result = _eval(expr, names)
-            out[field] = round(result, 2) if isinstance(result, float) else result
-            names[field] = out[field]
-        except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
-            raise CalcError(f"item_rules[{field}] '{expr}' failed on item {item}: {e}")
-    return out
+    return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
 
 def compute_aggregate_rules(aggregate_rules: dict, fields: dict, context: dict) -> dict:
@@ -55,14 +87,7 @@ def compute_aggregate_rules(aggregate_rules: dict, fields: dict, context: dict) 
         return {}
     names = {**context, **{k: v for k, v in fields.items() if v is not None}}
     out = {}
-    for field, expr in aggregate_rules.items():
-        try:
-            result = _eval(expr, names)
-            out[field] = round(result, 2) if isinstance(result, float) else result
-            names[field] = out[field]
-        except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
-            raise CalcError(f"aggregate_rules[{field}] '{expr}' failed: {e}")
-    return out
+    return _resolve_multipass(aggregate_rules, names, out, "aggregate_rules", "")
 
 
 def compute_draft(calc_rules: dict, fields: dict, context: dict) -> dict:
