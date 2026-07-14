@@ -1258,7 +1258,8 @@ async def _execute_tool(
         return {
             "type": "confirm_pending",
             "action_description": action_desc,
-            "details": details
+            "details": details,
+            "stage": "awaiting_confirmation"
         }
 
     elif tool_name == "manage_schedule":
