@@ -1882,6 +1882,12 @@ async def run_agent(
             # If confirm_action was called, pause and return the prompt
             if tool_call.function.name == "confirm_action":
                 if isinstance(result, dict) and result.get("type") == "confirm_pending":
+                    # Update session patch with stage from confirm_action result
+                    if result.get("stage"):
+                        if not session_patch.get("pending_action"):
+                            session_patch["pending_action"] = pending_action or {}
+                        session_patch["pending_action"]["stage"] = result["stage"]
+                    
                     # Validate draft is complete before allowing confirmation
                     draft = session_patch.get("pending_action") or pending_action or {}
 
