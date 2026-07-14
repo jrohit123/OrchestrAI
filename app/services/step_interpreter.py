@@ -265,12 +265,14 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
 
     # ── existing Postgres path (unchanged below this line) ──
     if "sequence" in params:
-        seq       = params["sequence"]
-        count_row = await fetch_one(
-            f"SELECT COUNT(*) as cnt FROM {table} WHERE org_id = $1",
-            ctx["org_id"]
+        seq = params["sequence"]
+        max_row = await fetch_one(
+            f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::int) AS max_num
+                FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2""",
+            ctx["org_id"], f"{seq['prefix']}%"
         )
-        doc_number = seq["prefix"] + str(seq.get("start", 100) + int(count_row["cnt"]))
+        next_num = max(int(max_row["max_num"] or 0) + 1, seq.get("start", 100))
+        doc_number = seq["prefix"] + str(next_num)
         values[seq["field"]] = doc_number
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 
@@ -421,6 +423,38 @@ async def _op_delete_row(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+async def _op_ai_price_interpret(params: dict, ctx: dict) -> dict:
+    """
+    Dual-LLM (Gemini + OpenAI) price interpretation for items carrying a raw
+    `rate_text` instead of an already-resolved `unit_price`. Runs BEFORE
+    `compute` — once unit_price is settled here, calc_engine (never an LLM)
+    does all the arithmetic downstream. See llm_qa_reviewer.py.
+    """
+    from app.services.llm_qa_reviewer import dual_verify_price
+
+    items = ctx["fields"].get("items", [])
+    resolved_items = []
+    for item in items:
+        if item.get("unit_price") is not None or not item.get("rate_text"):
+            resolved_items.append(item)
+            continue
+
+        result = await dual_verify_price(
+            rate_text=item["rate_text"],
+            weight=float(item.get("weight") or 1),
+            qty=float(item.get("qty") or 1),
+        )
+        if not result["agreed"]:
+            raise StepError(f"PRICE_AMBIGUOUS:{result['message']}")
+
+        item = {**item, "unit_price": result["unit_price"]}
+        item.pop("rate_text", None)
+        resolved_items.append(item)
+
+    ctx["fields"]["items"] = resolved_items
+    return ctx
+
+
 async def _op_upsert_row(params: dict, ctx: dict) -> dict:
     """
     Generic INSERT ... ON CONFLICT DO UPDATE.
@@ -486,19 +520,20 @@ async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
 # ── Op registry — adding a new op never requires changing action_executor.py ─
 
 PRIMITIVES = {
-    "resolve_entity":    _op_resolve_entity,
-    "compute":           _op_compute,
-    "otp_gate":          _op_otp_gate,
-    "approval_gate":     _op_approval_gate,
-    "db.insert_row":     _op_insert_row,
-    "db.update_row":     _op_update_row,
-    "db.upsert_row":     _op_upsert_row,
-    "db.delete_row":     _op_delete_row,    # NEW
-    "sheets.insert_row": _op_insert_row,    # NEW — alias, dispatches on "sheet:" prefix
-    "sheets.update_row": _op_update_row,    # NEW — alias
-    "sheets.delete_row": _op_delete_row,    # NEW — alias
-    "pdf.generate":      _op_generate_pdf,
-    "notify.whatsapp":   _op_notify_whatsapp,
+    "resolve_entity":     _op_resolve_entity,
+    "ai_price_interpret": _op_ai_price_interpret,
+    "compute":            _op_compute,
+    "otp_gate":           _op_otp_gate,
+    "approval_gate":      _op_approval_gate,
+    "db.insert_row":      _op_insert_row,
+    "db.update_row":      _op_update_row,
+    "db.upsert_row":      _op_upsert_row,
+    "db.delete_row":      _op_delete_row,    # NEW
+    "sheets.insert_row":  _op_insert_row,    # NEW — alias, dispatches on "sheet:" prefix
+    "sheets.update_row":  _op_update_row,    # NEW — alias
+    "sheets.delete_row":  _op_delete_row,    # NEW — alias
+    "pdf.generate":       _op_generate_pdf,
+    "notify.whatsapp":    _op_notify_whatsapp,
 }
 
 
@@ -570,6 +605,9 @@ async def run_workflow_steps(
                 "table":      table,
                 "candidates": json.loads(candidates_json),
             }
+        if msg.startswith("PRICE_AMBIGUOUS:"):
+            _, message = msg.split(":", 1)
+            return {"status": "error", "message": message}
         return {"status": "error", "message": msg}
 
     # Build final success message from workflow's response_template

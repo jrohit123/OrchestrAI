@@ -146,11 +146,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     text_stripped = text.strip()
 
-    if text_stripped in ("/", "/menu") or text_stripped.lower() == "menu":
-        sections = await build_menu_sections(user["org_id"], user)
-        await send_list(phone, "What would you like to do?", "📋 Menu", sections)
-        return
-
     if text_stripped.startswith("/"):
         if text_stripped.lower() == "/cancel":
             await cancel_user_draft(user, phone, confirm=False)

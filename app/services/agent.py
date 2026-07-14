@@ -622,7 +622,7 @@ async def _build_system_prompt(user: dict) -> str:
 
     # Load org record for industry/slug
     org_row = await fetch_one(
-        "SELECT name, industry, slug FROM orgs WHERE id = $1",
+        "SELECT name, industry, slug, gst_rate, default_making_charge_pct FROM orgs WHERE id = $1",
         user["org_id"]
     )
 
@@ -723,6 +723,10 @@ CURRENT USER:
 - Permissions: {", ".join(user.get("permissions", [])[:15])}
 
 TODAY: {today}
+
+ORG DEFAULTS: GST rate {org_row['gst_rate']}% | Standard making charges {org_row.get('default_making_charge_pct', 12)}%
+(Use the making-charge default ONLY when the customer/admin does not explicitly state a making charge themselves.
+If they say "making charges 5000" or "8% making", use their number instead — never override an explicit value.)
 
 DATABASE SCHEMA (for reference only - use the table/column list above):
 {schema}
