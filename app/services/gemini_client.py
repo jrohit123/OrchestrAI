@@ -1,5 +1,5 @@
 """
-gemini_client.py — Gemini-side price interpretation.
+cerebras_client.py — Cerebras-side price interpretation.
 
 This is the "generator" half of the dual-LLM QA pipeline. It is NEVER
 trusted alone — see llm_qa_reviewer.py, which cross-checks this against
@@ -7,14 +7,16 @@ an independent OpenAI interpretation before either number is used.
 """
 import os
 import json
-import google.generativeai as genai
+from openai import AsyncOpenAI
 
-_api_key = os.getenv("GEMINI_API_KEY")
+_api_key = os.getenv("CEREBRAS_API_KEY")
 if not _api_key:
-    raise ValueError("GEMINI_API_KEY environment variable not set")
+    raise ValueError("CEREBRAS_API_KEY environment variable not set")
 
-genai.configure(api_key=_api_key)
-_model = genai.GenerativeModel("gemini-2.0-flash")
+_client = AsyncOpenAI(
+    api_key=_api_key,
+    base_url="https://api.cerebras.ai/v1"
+)
 
 
 async def interpret_price(rate_text: str, weight: float, qty: int) -> dict:
@@ -35,8 +37,13 @@ price for ONE unit of this item). Common patterns:
 Return ONLY this JSON, no markdown, no explanation:
 {{"unit_price": <number>, "reasoning": "<one sentence>"}}"""
 
-    response = await _model.generate_content_async(prompt)
-    text = response.text.strip()
+    response = await _client.chat.completions.create(
+        model="llama3.1-70b",
+        max_tokens=200,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    text = response.choices[0].message.content.strip()
     if "```" in text:
         text = text[text.find("{"):text.rfind("}") + 1]
     return json.loads(text)

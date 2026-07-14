@@ -1,8 +1,8 @@
 """
 llm_qa_reviewer.py — Dual-model price interpretation cross-check.
 
-Gemini interprets the user's raw pricing statement first (gemini_client.py).
-OpenAI independently interprets the SAME raw statement, blind to Gemini's
+Cerebras interprets the user's raw pricing statement first (cerebras_client.py).
+OpenAI independently interprets the SAME raw statement, blind to Cerebras's
 answer. If both agree (within tolerance) the price is accepted; if they
 disagree, we surface a clarification instead of guessing.
 
@@ -16,7 +16,7 @@ import os
 import json
 from openai import AsyncOpenAI
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 _TOLERANCE_PCT = 0.5  # 0.5% relative difference counts as "agreement"
 
@@ -29,7 +29,7 @@ Item weight: {weight} grams. Quantity: {qty}.
 Interpret this into a single unit_price in Rupees (ex-GST, ex-making-charges,
 price for ONE unit). Return ONLY JSON, no markdown: {{"unit_price": <number>}}"""
 
-    resp = await _client.chat.completions.create(
+    resp = await _openai_client.chat.completions.create(
         model="gpt-4o",
         max_tokens=200,
         temperature=0,
@@ -48,10 +48,10 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
     or:
       {"agreed": False, "message": "<what to tell the user>"}
     """
-    from app.services.gemini_client import interpret_price as _gemini_interpret
+    from app.services.gemini_client import interpret_price as _cerebras_interpret
 
     try:
-        gemini_result = await _gemini_interpret(rate_text, weight, qty)
+        cerebras_result = await _cerebras_interpret(rate_text, weight, qty)
         openai_result = await _openai_interpret_price(rate_text, weight, qty)
     except (json.JSONDecodeError, KeyError) as e:
         return {
@@ -62,10 +62,10 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
             )
         }
 
-    g_price = float(gemini_result.get("unit_price", 0))
+    c_price = float(cerebras_result.get("unit_price", 0))
     o_price = float(openai_result.get("unit_price", 0))
 
-    if g_price <= 0 or o_price <= 0:
+    if c_price <= 0 or o_price <= 0:
         return {
             "agreed": False,
             "message": (
@@ -74,14 +74,14 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
             )
         }
 
-    diff_pct = abs(g_price - o_price) / max(g_price, o_price) * 100
+    diff_pct = abs(c_price - o_price) / max(c_price, o_price) * 100
     if diff_pct <= _TOLERANCE_PCT:
-        return {"agreed": True, "unit_price": round((g_price + o_price) / 2, 2)}
+        return {"agreed": True, "unit_price": round((c_price + o_price) / 2, 2)}
 
     return {
         "agreed": False,
         "message": (
-            f"I got two different readings of that price — Rs.{g_price:,.0f} vs "
+            f"I got two different readings of that price — Rs.{c_price:,.0f} vs "
             f"Rs.{o_price:,.0f} per unit. Could you state it more explicitly? "
             f"e.g. 'Rs.45,000 per gram' or 'Rs.11,25,000 total'."
         )
