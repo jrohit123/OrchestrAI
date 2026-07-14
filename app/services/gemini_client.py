@@ -7,6 +7,7 @@ an independent OpenAI interpretation before either number is used.
 """
 import os
 import json
+import asyncio
 from openai import AsyncOpenAI
 
 _api_key = os.getenv("CEREBRAS_API_KEY")
@@ -38,13 +39,32 @@ price for ONE unit of this item). Common patterns:
 Return ONLY this JSON, no markdown, no explanation:
 {{"unit_price": <number>, "reasoning": "<one sentence>"}}"""
 
-    response = await _client.chat.completions.create(
-        model="gpt-oss-120b",
-        max_tokens=200,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    text = response.choices[0].message.content.strip()
-    if "```" in text:
-        text = text[text.find("{"):text.rfind("}") + 1]
-    return json.loads(text)
+    max_retries = 3
+    base_delay = 2.0  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            response = await _client.chat.completions.create(
+                model="gpt-oss-120b",
+                max_tokens=200,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = response.choices[0].message.content.strip()
+            if "```" in text:
+                text = text[text.find("{"):text.rfind("}") + 1]
+            return json.loads(text)
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "too_many_requests" in error_str or "queue_exceeded" in error_str:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # exponential backoff
+                    print(f"[CEREBRAS] Rate limited (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    raise Exception(f"Cerebras API rate limited after {max_retries} retries: {e}")
+            else:
+                raise
+    
+    raise Exception("Cerebras API failed after retries")

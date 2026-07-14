@@ -50,11 +50,28 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
       {"agreed": True, "unit_price": <float>}
     or:
       {"agreed": False, "message": "<what to tell the user>"}
+    
+    Strategy:
+    1. Try Cerebras first
+    2. If Cerebras fails, fall back to OpenAI immediately (no QA check)
+    3. If Cerebras succeeds, try OpenAI and compare
+    4. If both agree, use average
+    5. If both disagree, ask for clarification
     """
     from app.services.gemini_client import interpret_price as _cerebras_interpret
 
+    cerebras_result = None
+    cerebras_failed = False
+    
+    # Try Cerebras first
     try:
         cerebras_result = await _cerebras_interpret(rate_text, weight, qty)
+    except Exception as e:
+        cerebras_failed = True
+        print(f"[LLM_QA] Cerebras failed, falling back to OpenAI: {e}")
+    
+    # Try OpenAI (always)
+    try:
         openai_result = await _openai_interpret_price(rate_text, weight, qty)
     except (json.JSONDecodeError, KeyError) as e:
         return {
@@ -64,10 +81,34 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
                 "explicitly, e.g. 'Rs.45,000 per gram' or 'Rs.11,25,000 total'."
             )
         }
-
-    c_price = float(cerebras_result.get("unit_price", 0))
+    except Exception as e:
+        print(f"[LLM_QA] OpenAI failed: {e}")
+        return {
+            "agreed": False,
+            "message": (
+                "I couldn't confidently interpret that price. Please state it "
+                "explicitly, e.g. 'Rs.45,000 per gram' or 'Rs.11,25,000 total'."
+            )
+        }
+    
     o_price = float(openai_result.get("unit_price", 0))
-
+    
+    # If Cerebras failed, use OpenAI directly (no QA check)
+    if cerebras_failed:
+        if o_price <= 0:
+            return {
+                "agreed": False,
+                "message": (
+                    "I couldn't confidently interpret that price. Please state it "
+                    "explicitly, e.g. 'Rs.45,000 per gram' or 'Rs.11,25,000 total'."
+                )
+            }
+        print(f"[LLM_QA] Using OpenAI result (Cerebras failed): {o_price}")
+        return {"agreed": True, "unit_price": round(o_price, 2)}
+    
+    # Both succeeded - do QA check
+    c_price = float(cerebras_result.get("unit_price", 0))
+    
     if c_price <= 0 or o_price <= 0:
         return {
             "agreed": False,
