@@ -16,7 +16,10 @@ import os
 import json
 from openai import AsyncOpenAI
 
-_openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_openai_client = AsyncOpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=30.0
+)
 
 _TOLERANCE_PCT = 0.5  # 0.5% relative difference counts as "agreement"
 

@@ -15,7 +15,8 @@ if not _api_key:
 
 _client = AsyncOpenAI(
     api_key=_api_key,
-    base_url="https://api.cerebras.ai/v1"
+    base_url="https://api.cerebras.ai/v1",
+    timeout=30.0
 )
 
 
