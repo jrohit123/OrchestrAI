@@ -74,8 +74,10 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     """
     if not item_rules:
         return dict(item)
-    names = {**context, **{k: v for k, v in item.items() if v is not None}}
-    out = dict(item)
+    # Ensure qty defaults to 1 if not present
+    item_with_qty = {**item, "qty": item.get("qty", 1)}
+    names = {**context, **{k: v for k, v in item_with_qty.items() if v is not None}}
+    out = dict(item_with_qty)
     return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
 
