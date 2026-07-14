@@ -38,7 +38,7 @@ Return ONLY this JSON, no markdown, no explanation:
 {{"unit_price": <number>, "reasoning": "<one sentence>"}}"""
 
     response = await _client.chat.completions.create(
-        model="llama3.1-70b",
+        model="gpt-oss-120b",
         max_tokens=200,
         temperature=0,
         messages=[{"role": "user", "content": prompt}]
