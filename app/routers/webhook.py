@@ -285,9 +285,16 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         db_draft = await get_active_draft(user["org_id"], user["user_id"])
         if db_draft and db_draft.get("intent_key"):
             print(f"[WEBHOOK] Rehydrating draft from DB: {db_draft['intent_key']}")
+            # Parse fields if it's a JSON string from DB
+            fields = db_draft.get("fields", {})
+            if isinstance(fields, str):
+                try:
+                    fields = json.loads(fields)
+                except:
+                    fields = {}
             session["pending_action"] = {
                 "intent_key": db_draft["intent_key"],
-                "fields": db_draft.get("fields", {}),
+                "fields": fields,
                 "stage": db_draft["stage"],
                 "rehydrated": True
             }
