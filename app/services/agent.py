@@ -1233,6 +1233,15 @@ async def _execute_tool(
         # Log draft fields for debugging
         print(f"[AGENT] update_draft: intent_key={intent_key}, fields={fields}, stage={stage}")
 
+        # Server-side guardrail: auto-correct misclassified making charges
+        # If making_charge_pct > 100, it's almost certainly a flat Rupee amount misclassified as percentage
+        for item in (fields.get("items") or []):
+            pct = item.get("making_charge_pct")
+            if pct is not None and pct > 100:
+                item["making_charges_flat"] = pct
+                item.pop("making_charge_pct", None)
+                print(f"[AGENT] Auto-corrected making_charge_pct={pct} → making_charges_flat (flat) — value was implausible as a percentage")
+
         # Validate draft against workflow schema
         validation = await _validate_draft(intent_key, fields, user["org_id"])
 

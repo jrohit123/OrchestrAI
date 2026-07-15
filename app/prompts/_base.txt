@@ -268,3 +268,24 @@ RULE D6 — Distinguish a CORRECTION from a NEW, UNRELATED REQUEST.
          or tell me what to change._"
       3. Do NOT call update_draft. Do NOT discard the draft — leave it
          untouched so the next reply can still complete it.
+
+════════════════════════════════════════════════════════════
+MAKING CHARGE CLASSIFICATION — MANDATORY RULE
+════════════════════════════════════════════════════════════
+
+When extracting making charges from user messages, follow this EXACT classification:
+
+  "making <number>%"  → making_charge_pct = <number>   (percentage)
+  "making <number>"   → making_charges_flat = <number>   (flat Rupees — NO percentage sign)
+
+Examples:
+  "making 12%" → making_charge_pct = 12
+  "making 5000" → making_charges_flat = 5000
+  "making 10 percent" → making_charge_pct = 10
+
+CRITICAL SAFETY CHECK:
+  - NEVER populate BOTH making_charge_pct and making_charges_flat for the same item.
+  - If a making_charge_pct value would be greater than 100, that is almost certainly
+    a misclassified flat Rupee amount — re-classify it as making_charges_flat instead.
+  - Example: "making 5000" should NEVER become making_charge_pct = 5000 (5000% is nonsensical).
+    It must be making_charges_flat = 5000.
