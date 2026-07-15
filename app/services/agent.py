@@ -671,7 +671,8 @@ async def _build_system_prompt(user: dict) -> str:
                     required   = "REQUIRED" if field_def.get("required") else "optional"
                     field_type = field_def.get("type", "string")
                     computed   = " [COMPUTED — do not fill, system calculates this]" if field_def.get("computed") else ""
-                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}\n"
+                    description = f" — {field_def.get('description', '')}" if field_def.get("description") else ""
+                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}\n"
 
                 # Add note about computed fields if any exist
                 has_computed = any(v.get("computed") for v in entity_schema.values())
