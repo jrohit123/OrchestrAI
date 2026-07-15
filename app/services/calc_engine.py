@@ -75,9 +75,14 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     if not item_rules:
         return dict(item)
     # Ensure qty defaults to 1 if not present
-    item_with_qty = {**item, "qty": item.get("qty", 1)}
-    names = {**context, **{k: v for k, v in item_with_qty.items() if v is not None}}
-    out = dict(item_with_qty)
+    # Ensure making_charge_pct defaults to org's default if not present
+    item_with_defaults = {
+        **item,
+        "qty": item.get("qty", 1),
+        "making_charge_pct": item.get("making_charge_pct", context.get("default_making_charge_pct", 12))
+    }
+    names = {**context, **{k: v for k, v in item_with_defaults.items() if v is not None}}
+    out = dict(item_with_defaults)
     return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
 
