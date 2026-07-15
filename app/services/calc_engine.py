@@ -76,6 +76,7 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
         return dict(item)
     # Ensure qty defaults to 1 if not present
     # Ensure making_charge_pct defaults to org's default if not present
+    # making_charges can be flat (direct value) or percentage-based
     item_with_defaults = {
         **item,
         "qty": item.get("qty", 1),
