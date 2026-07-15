@@ -87,8 +87,13 @@ async def execute_pending_action(
             "message": f"🤔 Multiple matches found:\n{opts}\nPlease be more specific.",
         }
 
-    # status == "error"
+    # status == "error" - close draft and show friendly message
+    await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled")
     return {
         "success": False,
-        "message": result.get("message", "❌ Action failed. Please try again."),
+        "message": (
+            "❌ I couldn't complete that — there was a calculation or data issue on my "
+            "end. Your draft has been cleared so you can start fresh. Please resend your "
+            "request, e.g. *\"quote Mehta Enterprises: 22kt gold ring 12g rate 6500 per gram\"*."
+        ),
     }

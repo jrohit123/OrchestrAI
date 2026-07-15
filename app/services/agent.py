@@ -1893,7 +1893,7 @@ async def run_agent(
 
                     # QA verification: validate + recompute via calc_rules
                     # This catches missing fields AND silently corrects LLM arithmetic
-                    from app.services.qa_verifier import verify_draft, VerificationError, diff_for_audit
+                    from app.services.qa_verifier import verify_draft, VerificationError, diff_for_audit, _validate_schema
                     workflow_row = await fetch_one(
                         "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
                         draft.get("intent_key"), user["org_id"]
@@ -1904,20 +1904,39 @@ async def run_agent(
                         })
                         break
 
-                    try:
-                        verified_fields = await verify_draft(
-                            dict(workflow_row), draft.get("fields", {}), user["org_id"]
-                        )
-                    except VerificationError as e:
-                        missing_str = ", ".join(e.missing_fields + e.invalid_fields)
-                        tool_results[-1]["content"] = json.dumps({
-                            "error": (
-                                f"Draft incomplete/invalid. Missing: {e.missing_fields}. "
-                                f"Invalid: {e.invalid_fields}. "
-                                f"Ask the user for: {missing_str} before calling confirm_action again."
+                    # Check if workflow has ai_price_interpret step
+                    steps = _parse_jsonb(workflow_row.get("steps"), []) or []
+                    has_price_interp = any(
+                        (json.loads(s) if isinstance(s, str) else s).get("op") == "ai_price_interpret"
+                        for s in steps
+                    )
+
+                    if has_price_interp:
+                        # Only validate presence of raw required fields (customer_name, items[].description,
+                        # items[].weight, etc.) — skip calc_rules entirely; unit_price isn't resolved yet.
+                        entity_schema = _parse_jsonb(workflow_row.get("entity_schema"), {})
+                        missing, invalid = _validate_schema(entity_schema, draft.get("fields", {}))
+                        if missing or invalid:
+                            tool_results[-1]["content"] = json.dumps({
+                                "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
+                            })
+                            break
+                        verified_fields = draft.get("fields", {})   # unresolved rate_text stays as-is; resolved at execution time
+                    else:
+                        try:
+                            verified_fields = await verify_draft(
+                                dict(workflow_row), draft.get("fields", {}), user["org_id"]
                             )
-                        })
-                        break
+                        except VerificationError as e:
+                            missing_str = ", ".join(e.missing_fields + e.invalid_fields)
+                            tool_results[-1]["content"] = json.dumps({
+                                "error": (
+                                    f"Draft incomplete/invalid. Missing: {e.missing_fields}. "
+                                    f"Invalid: {e.invalid_fields}. "
+                                    f"Ask the user for: {missing_str} before calling confirm_action again."
+                                )
+                            })
+                            break
 
                     # Log any corrections the QA layer made
                     mismatches = diff_for_audit(draft.get("fields", {}), verified_fields)

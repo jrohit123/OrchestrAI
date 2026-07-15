@@ -234,11 +234,11 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     import datetime as _dt
     for k, v in list(values.items()):
         if v == "TODAY+30":
-            values[k] = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
+            values[k] = _dt.date.today() + _dt.timedelta(days=30)
         elif v == "TODAY+7":
-            values[k] = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
+            values[k] = _dt.date.today() + _dt.timedelta(days=7)
         elif v == "TODAY":
-            values[k] = _dt.date.today().isoformat()
+            values[k] = _dt.date.today()
         elif v == "NOW()":
             values[k] = _dt.datetime.now(_dt.timezone.utc)
 
@@ -359,11 +359,19 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     set_vals    = _resolve_values(params.get("set", {}), ctx)
     where_vals  = _resolve_values(params.get("where", {}), ctx)
 
-    def _resolve_now(v):
-        return _dt.datetime.now(_dt.timezone.utc) if v == "NOW()" else v
+    def _resolve_literals(v):
+        if v == "NOW()":
+            return _dt.datetime.now(_dt.timezone.utc)
+        elif v == "TODAY+30":
+            return _dt.date.today() + _dt.timedelta(days=30)
+        elif v == "TODAY+7":
+            return _dt.date.today() + _dt.timedelta(days=7)
+        elif v == "TODAY":
+            return _dt.date.today()
+        return v
 
-    set_vals   = {k: _resolve_now(v) for k, v in set_vals.items()}
-    where_vals = {k: _resolve_now(v) for k, v in where_vals.items()}
+    set_vals   = {k: _resolve_literals(v) for k, v in set_vals.items()}
+    where_vals = {k: _resolve_literals(v) for k, v in where_vals.items()}
 
     # NEW: sheet-backed update
     if table.startswith("sheet:"):
@@ -582,6 +590,16 @@ async def run_workflow_steps(
 
             try:
                 ctx = await op_fn(step.get("params", {}), ctx)
+                # Persist unit_price to draft immediately after ai_price_interpret
+                if op_name == "ai_price_interpret":
+                    from app.services.draft_store import upsert_draft
+                    await upsert_draft(
+                        org_id=ctx["org_id"],
+                        user_id=ctx["user"]["user_id"],
+                        intent_key=workflow["intent_key"],
+                        fields=ctx["fields"],
+                        stage="awaiting_confirmation",
+                    )
             except (VerificationError, StepError):
                 raise
             except Exception as e:
