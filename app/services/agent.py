@@ -14,6 +14,15 @@ from app.services.prompt_loader import load_prompt
 
 _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+def _parse_jsonb(val, default=None):
+    """Parse JSONB values from Postgres (may be string or already parsed)."""
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except:
+            return default
+    return val if val is not None else default
+
 # ── IST timezone for greetings ────────────────────────────────────────────────
 try:
     import zoneinfo
