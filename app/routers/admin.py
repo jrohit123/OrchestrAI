@@ -797,7 +797,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         raise HTTPException(409, f"Command '/{cmd}' is already in use")
     
     # Atomic transaction: insert workflow + grant permissions + mark draft published
-    async with get_pool().acquire() as conn:
+    async with (await get_pool()).acquire() as conn:
         async with conn.transaction():
             # Insert workflow
             wf_id = await conn.fetchval("""
