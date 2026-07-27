@@ -11,7 +11,7 @@ _pool = None
 async def init_db():
     global _pool
     _pool = await asyncpg.create_pool(
-        dsn=os.getenv("DATABASE_URL"),
+        dsn=os.getenv("BAANGANGA_DATABASE_URL") or os.getenv("DATABASE_URL"),
         min_size=2,
         max_size=10,
         init=_set_timezone,

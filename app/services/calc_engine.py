@@ -77,12 +77,15 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     # Ensure qty defaults to 1 if not present
     # Ensure making_charge_pct defaults to org's default if not present
     # making_charges can be flat (direct value) or percentage-based
+    # Keep making_charges_flat in context even if None (for calc rule fallback check)
     item_with_defaults = {
         **item,
         "qty": item.get("qty", 1),
-        "making_charge_pct": item.get("making_charge_pct", context.get("default_making_charge_pct", 12))
+        "making_charge_pct": item.get("making_charge_pct", context.get("default_making_charge_pct", 12)),
+        "making_charges_flat": item.get("making_charges_flat"),
     }
-    names = {**context, **{k: v for k, v in item_with_defaults.items() if v is not None}}
+    # Filter out None values EXCEPT for making_charges_flat (needed for fallback logic)
+    names = {**context, **{k: v for k, v in item_with_defaults.items() if v is not None or k == "making_charges_flat"}}
     out = dict(item_with_defaults)
     return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
