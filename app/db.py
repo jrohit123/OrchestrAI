@@ -71,19 +71,19 @@ async def get_all_source_keys() -> list[str]:
 # ── Existing call sites everywhere else (identity.py, draft_store.py, menu.py,
 # agent.py, step_interpreter.py, etc.) keep working completely unchanged —
 # they default to "platform", which resolves to Baanganga's Neon DB, same as today.
-async def fetch_one(query: str, *args, source_key: str):
+async def fetch_one(query: str, *args, source_key: str = "platform"):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
 
 
-async def fetch_all(query: str, *args, source_key: str):
+async def fetch_all(query: str, *args, source_key: str = "platform"):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
 
-async def execute(query: str, *args, source_key: str):
+async def execute(query: str, *args, source_key: str = "platform"):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)
