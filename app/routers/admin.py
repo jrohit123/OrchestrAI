@@ -4,7 +4,7 @@ import re
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from app.db import fetch_all, fetch_one, execute, get_pool
+from app.db import fetch_all, fetch_one, execute, get_pool, get_default_source_key
 from openai import AsyncOpenAI
 
 router = APIRouter()
@@ -39,8 +39,9 @@ async def admin_page(request: Request):
 @router.get("/admin/api/data")
 async def admin_data(request: Request):
     _check_token(request)
+    source_key = await get_default_source_key()
 
-    org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1")
+    org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         return {"error": "No active org found"}
 
@@ -51,7 +52,7 @@ async def admin_data(request: Request):
                otp_threshold, approval_threshold, last_run
         FROM workflows WHERE org_id = $1
         ORDER BY created_at
-    """, org_id)
+    """, org_id, source_key=source_key)
 
     stats = await fetch_one("""
         SELECT
@@ -60,12 +61,12 @@ async def admin_data(request: Request):
             COUNT(*) FILTER (WHERE status = 'pending') AS pending_invoices,
             (SELECT COUNT(*) FROM customers WHERE org_id = $1) AS total_customers
         FROM invoices WHERE org_id = $1
-    """, org_id)
+    """, org_id, source_key=source_key)
 
     low_stock = await fetch_all("""
         SELECT name, qty, reorder_level FROM inventory
         WHERE org_id = $1 AND qty <= reorder_level
-    """, org_id)
+    """, org_id, source_key=source_key)
 
     recent_logs = await fetch_all("""
         SELECT a.intent_key, a.outcome, a.otp_used,
@@ -74,7 +75,7 @@ async def admin_data(request: Request):
         LEFT JOIN users u ON u.id = a.user_id
         WHERE a.org_id = $1
         ORDER BY a.created_at DESC LIMIT 8
-    """, org_id)
+    """, org_id, source_key=source_key)
 
     return {
         "org": dict(org),
@@ -88,15 +89,16 @@ async def admin_data(request: Request):
 @router.post("/admin/api/workflow/{workflow_id}/toggle")
 async def toggle_otp(workflow_id: str, request: Request):
     _check_token(request)
+    source_key = await get_default_source_key()
     row = await fetch_one(
-        "SELECT otp_required, org_id FROM workflows WHERE id = $1", workflow_id
+        "SELECT otp_required, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     new_val = not row["otp_required"]
     await execute(
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
-        new_val, workflow_id
+        new_val, workflow_id, source_key=source_key
     )
     return {"otp_required": new_val}
 
@@ -106,9 +108,10 @@ async def update_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
     threshold = float(body.get("threshold", 50000))
+    source_key = await get_default_source_key()
     await execute(
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
-        threshold, workflow_id
+        threshold, workflow_id, source_key=source_key
     )
     return {"otp_threshold": threshold}
 
@@ -118,9 +121,10 @@ async def update_approval_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
     threshold = float(body.get("threshold", 100000))
+    source_key = await get_default_source_key()
     await execute(
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
-        threshold, workflow_id
+        threshold, workflow_id, source_key=source_key
     )
     return {"approval_threshold": threshold}
 
@@ -128,15 +132,17 @@ async def update_approval_threshold(workflow_id: str, request: Request):
 @router.get("/admin/api/roles")
 async def get_roles(request: Request):
     _check_token(request)
-    roles = await fetch_all("SELECT name FROM roles ORDER BY name")
+    source_key = await get_default_source_key()
+    roles = await fetch_all("SELECT name FROM roles ORDER BY name", source_key=source_key)
     return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
 
 
 @router.get("/admin/api/security")
 async def get_security_settings(request: Request):
     _check_token(request)
+    source_key = await get_default_source_key()
     org = await fetch_one(
-        "SELECT session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1"
+        "SELECT session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
     )
     return {"session_ttl_minutes": org["session_ttl_minutes"] or 480}
 
@@ -148,8 +154,9 @@ async def update_session_ttl(request: Request):
     minutes = int(body.get("minutes", 480))
     if minutes < 5 or minutes > 10080:  # 5 min to 7 days
         raise HTTPException(status_code=400, detail="TTL must be between 5 and 10080 minutes")
+    source_key = await get_default_source_key()
     await execute(
-        "UPDATE orgs SET session_ttl_minutes = $1 WHERE is_active = true", minutes
+        "UPDATE orgs SET session_ttl_minutes = $1 WHERE is_active = true", minutes, source_key=source_key
     )
     return {"session_ttl_minutes": minutes}
 
@@ -158,7 +165,8 @@ async def update_session_ttl(request: Request):
 async def admin_clear_sessions(request: Request):
     _check_token(request)
     from app.redis_client import clear_all_sessions
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    source_key = await get_default_source_key()
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     await clear_all_sessions(str(org["id"]))
     return {"cleared": True, "message": "All sessions cleared"}
 
@@ -168,6 +176,7 @@ async def generate_workflow_config(request: Request):
     _check_token(request)
     body = await request.json()
     description = body.get("description", "").strip()
+    source_key = await get_default_source_key()
 
     if not description:
         raise HTTPException(status_code=400, detail="Description is required")
@@ -180,7 +189,7 @@ async def generate_workflow_config(request: Request):
           AND table_name IN ('customers','inventory','invoices','orders',
                               'quotations','users','roles')
         ORDER BY table_name, ordinal_position
-    """)
+    """, source_key=source_key)
 
     # Build compact schema
     table_cols: dict = {}
@@ -484,15 +493,16 @@ Return ONLY this JSON, no markdown, no explanation:
 async def save_generated_workflow(request: Request):
     _check_token(request)
     body = await request.json()
+    source_key = await get_default_source_key()
 
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
     org_id = str(org["id"])
 
     existing = await fetch_one(
         "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, body.get("intent_key")
+        org_id, body.get("intent_key"), source_key=source_key
     )
     if existing:
         raise HTTPException(status_code=400, detail="Intent key already exists")
@@ -554,6 +564,7 @@ async def save_generated_workflow(request: Request):
             json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,
             body.get("response_template"),
             json.dumps(body.get("calc_rules", {})),
+            source_key=source_key
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
@@ -565,7 +576,7 @@ async def save_generated_workflow(request: Request):
             UPDATE roles
             SET permissions = array_append(permissions, $1)
             WHERE name = $2 AND NOT $1 = ANY(permissions)
-        """, intent_key, role_name)
+        """, intent_key, role_name, source_key=source_key)
 
     return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
@@ -575,8 +586,9 @@ async def update_gst_rate(request: Request):
     _check_token(request)
     body = await request.json()
     gst = float(body.get("gst_rate", 3.0))
+    source_key = await get_default_source_key()
     await execute(
-        "UPDATE orgs SET gst_rate = $1 WHERE is_active = true", gst
+        "UPDATE orgs SET gst_rate = $1 WHERE is_active = true", gst, source_key=source_key
     )
     return {"gst_rate": gst}
 
@@ -586,7 +598,8 @@ async def update_gst_rate(request: Request):
 @router.get("/admin/api/workflow/{workflow_id}/detail")
 async def get_workflow_detail(workflow_id: str, request: Request):
     _check_token(request)
-    row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id)
+    source_key = await get_default_source_key()
+    row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return dict(row)
@@ -596,8 +609,9 @@ async def get_workflow_detail(workflow_id: str, request: Request):
 async def update_workflow(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
+    source_key = await get_default_source_key()
 
-    existing = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id)
+    existing = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -643,7 +657,7 @@ async def update_workflow(workflow_id: str, request: Request):
 
     await execute(
         f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
-        workflow_id, *vals
+        workflow_id, *vals, source_key=source_key
     )
     return {"success": True}
 
@@ -651,16 +665,17 @@ async def update_workflow(workflow_id: str, request: Request):
 @router.delete("/admin/api/workflow/{workflow_id}")
 async def delete_workflow(workflow_id: str, request: Request):
     _check_token(request)
+    source_key = await get_default_source_key()
     row = await fetch_one(
-        "SELECT intent_key, org_id FROM workflows WHERE id = $1", workflow_id
+        "SELECT intent_key, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     await execute("""
         UPDATE roles SET permissions = array_remove(permissions, $1)
         WHERE org_id = $2
-    """, row["intent_key"], row["org_id"])
-    await execute("DELETE FROM workflows WHERE id = $1", workflow_id)
+    """, row["intent_key"], row["org_id"], source_key=source_key)
+    await execute("DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     return {"success": True, "deleted": row["intent_key"]}
 
 
@@ -679,10 +694,11 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
     """Generate a sample PDF from a compiled draft using placeholder data."""
     _check_token(request)
     from fastapi.responses import Response as FastAPIResponse
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    source_key = await get_default_source_key()
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft or not draft.get("pdf_config"):
         raise HTTPException(status_code=404, detail="Nothing to preview yet — compile first")
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
     from app.services.workflow_previewer import generate_preview_pdf
@@ -697,7 +713,8 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
 async def workflow_builder_chat(request: Request):
     _check_token(request)
     body = await request.json()
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    source_key = await get_default_source_key()
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
     org_id = str(org["id"])
@@ -734,15 +751,16 @@ async def extract_pdf_template_endpoint(request: Request):
 async def get_draft_publish_info(draft_id: str, request: Request):
     """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
     _check_token(request)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    source_key = await get_default_source_key()
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1")
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
     
-    roles = await fetch_all("SELECT name FROM roles WHERE org_id = $1 ORDER BY name", str(org["id"]))
+    roles = await fetch_all("SELECT name FROM roles WHERE org_id = $1 ORDER BY name", str(org["id"]), source_key=source_key)
     
     # Suggest command from intent_key if not set
     suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
@@ -766,14 +784,15 @@ async def get_draft_publish_info(draft_id: str, request: Request):
 async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request: Request):
     """Publish a draft to live workflows with structured governance settings."""
     _check_token(request)
+    source_key = await get_default_source_key()
     
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft or draft["status"] != "ready_for_review":
         raise HTTPException(status_code=409, detail="Draft is not ready for review")
     
     # Server-side validation
     valid_roles = {r["name"] for r in await fetch_all(
-        "SELECT name FROM roles WHERE org_id = $1", draft["org_id"]
+        "SELECT name FROM roles WHERE org_id = $1", draft["org_id"], source_key=source_key
     )}
     if not body.roles or not set(body.roles) <= valid_roles:
         raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
@@ -791,13 +810,13 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
     # Check command uniqueness
     existing = await fetch_one(
         "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true",
-        draft["org_id"], cmd
+        draft["org_id"], cmd, source_key=source_key
     )
     if existing:
         raise HTTPException(409, f"Command '/{cmd}' is already in use")
     
     # Atomic transaction: insert workflow + grant permissions + mark draft published
-    async with (await get_pool()).acquire() as conn:
+    async with (await get_pool(source_key)).acquire() as conn:
         async with conn.transaction():
             # Insert workflow
             wf_id = await conn.fetchval("""

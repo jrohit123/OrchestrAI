@@ -68,22 +68,31 @@ async def get_all_source_keys() -> list[str]:
     return [r["source_key"] for r in rows]
 
 
+async def get_default_source_key() -> str:
+    """For single-tenant callers (e.g. the admin panel) that don't know
+    their source_key. Returns the first configured data source."""
+    keys = await get_all_source_keys()
+    if not keys:
+        raise RuntimeError("No data_sources rows found in routing DB")
+    return keys[0]
+
+
 # ── Existing call sites everywhere else (identity.py, draft_store.py, menu.py,
 # agent.py, step_interpreter.py, etc.) keep working completely unchanged —
 # they default to "platform", which resolves to Baanganga's Neon DB, same as today.
-async def fetch_one(query: str, *args, source_key: str = "platform"):
+async def fetch_one(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
 
 
-async def fetch_all(query: str, *args, source_key: str = "platform"):
+async def fetch_all(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
 
-async def execute(query: str, *args, source_key: str = "platform"):
+async def execute(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)
