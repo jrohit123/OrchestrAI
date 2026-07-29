@@ -85,29 +85,40 @@ async def run_scheduled_reports():
     Fires every minute. Finds all active scheduled_reports whose next_run_at
     is <= now, runs each via run_agent, delivers result, updates next_run_at.
     """
+    from app.db import get_all_source_keys
     now = datetime.datetime.now(datetime.timezone.utc)
     print(f"[SCHEDULER] Tick at {now.strftime('%H:%M:%S')} UTC")
 
-    due = await fetch_all("""
-        SELECT sr.*, u.name as user_name, u.role_id,
-               o.name as org_name, o.gst_rate,
-               r.permissions
-        FROM scheduled_reports sr
-        JOIN users u ON u.id = sr.user_id
-        JOIN orgs  o ON o.id = sr.org_id
-        JOIN roles r ON r.id = u.role_id
-        WHERE sr.is_active = true
-          AND sr.next_run_at <= $1
-    """, now)
+    # Get all source keys and query each one
+    source_keys = get_all_source_keys()
+    all_due = []
 
-    if not due:
+    for source_key in source_keys:
+        due = await fetch_all("""
+            SELECT sr.*, u.name as user_name, u.role_id,
+                   o.name as org_name, o.gst_rate,
+                   r.permissions
+            FROM scheduled_reports sr
+            JOIN users u ON u.id = sr.user_id
+            JOIN orgs  o ON o.id = sr.org_id
+            JOIN roles r ON r.id = u.role_id
+            WHERE sr.is_active = true
+              AND sr.next_run_at <= $1
+        """, now, source_key=source_key)
+        
+        # Add source_key to each row for later use
+        for row in due:
+            row["source_key"] = source_key
+        all_due.extend(due)
+
+    if not all_due:
         return
 
-    print(f"[SCHEDULER] {len(due)} report(s) due")
+    print(f"[SCHEDULER] {len(all_due)} report(s) due")
 
     from app.services.agent import run_agent
 
-    for row in due:
+    for row in all_due:
         report_id  = str(row["id"])
         phone      = row["phone"]
         query_text = row["query_text"]
