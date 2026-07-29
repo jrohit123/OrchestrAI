@@ -1,54 +1,63 @@
-from app.db import fetch_one
+from app.db import fetch_one, get_all_source_keys
 
 
 async def resolve_identity(phone: str) -> dict | None:
     """
     Phone number → user record with org, role, permissions, email.
     Returns None if phone not registered.
+    Loops through all data sources to find the user.
     """
-    row = await fetch_one("""
-        SELECT
-            u.id          AS user_id,
-            u.name        AS user_name,
-            u.email       AS email,
-            u.phone       AS phone,
-            u.is_active   AS is_active,
-            u.role_id     AS role_id,
-            r.name        AS role,
-            r.permissions AS permissions,
-            r.readable_tables AS readable_tables,
-            o.id          AS org_id,
-            o.name        AS org_name,
-            o.slug        AS org_slug,
-            o.is_active   AS org_active,
-            o.context_message_limit AS context_message_limit,
-            o.settings    AS org_settings
-        FROM users u
-        JOIN roles r ON r.id = u.role_id
-        JOIN orgs  o ON o.id = u.org_id
-        WHERE u.phone = $1
-    """, phone)
+    source_keys = await get_all_source_keys()
+    
+    for source_key in source_keys:
+        try:
+            row = await fetch_one("""
+                SELECT
+                    u.id          AS user_id,
+                    u.name        AS user_name,
+                    u.email       AS email,
+                    u.phone       AS phone,
+                    u.is_active   AS is_active,
+                    u.role_id     AS role_id,
+                    r.name        AS role,
+                    r.permissions AS permissions,
+                    r.readable_tables AS readable_tables,
+                    o.id          AS org_id,
+                    o.name        AS org_name,
+                    o.slug        AS org_slug,
+                    o.is_active   AS org_active,
+                    o.context_message_limit AS context_message_limit,
+                    o.settings    AS org_settings
+                FROM users u
+                JOIN roles r ON r.id = u.role_id
+                JOIN orgs  o ON o.id = u.org_id
+                WHERE u.phone = $1
+            """, phone, source_key=source_key)
+            
+            if row:
+                return {
+                    "user_id":    str(row["user_id"]),
+                    "user_name":  row["user_name"],
+                    "email":      row["email"],
+                    "phone":      row["phone"],
+                    "is_active":  row["is_active"],
+                    "role_id":    str(row["role_id"]),
+                    "role":       row["role"],
+                    "permissions": list(row["permissions"]) if row["permissions"] else [],
+                    "readable_tables": list(row["readable_tables"]) if row["readable_tables"] else [],
+                    "org_id":     str(row["org_id"]),
+                    "org_name":   row["org_name"],
+                    "org_slug":   row["org_slug"],
+                    "org_active": row["org_active"],
+                    "context_message_limit": row.get("context_message_limit", 12),
+                    "org_settings": row.get("org_settings", {}),
+                    "source_key": source_key,
+                }
+        except Exception:
+            # Source key may not have the users table or connection failed, try next
+            continue
 
-    if not row:
-        return None
-
-    return {
-        "user_id":    str(row["user_id"]),
-        "user_name":  row["user_name"],
-        "email":      row["email"],
-        "phone":      row["phone"],
-        "is_active":  row["is_active"],
-        "role_id":    str(row["role_id"]),
-        "role":       row["role"],
-        "permissions": list(row["permissions"]) if row["permissions"] else [],
-        "readable_tables": list(row["readable_tables"]) if row["readable_tables"] else [],
-        "org_id":     str(row["org_id"]),
-        "org_name":   row["org_name"],
-        "org_slug":   row["org_slug"],
-        "org_active": row["org_active"],
-        "context_message_limit": row.get("context_message_limit", 12),
-        "org_settings": row.get("org_settings", {}),
-    }
+    return None
 
 
 def check_permission(user: dict, intent: str) -> bool:

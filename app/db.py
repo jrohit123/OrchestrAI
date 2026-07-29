@@ -19,7 +19,13 @@ async def init_db():
         statement_cache_size=0
     )
     print("Routing DB connected")
-    await get_pool("platform")   # pre-warm the one every request needs
+    # Pre-warm all known data sources
+    rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
+    for row in rows:
+        try:
+            await get_pool(row["source_key"])
+        except Exception as e:
+            print(f"[WARN] Could not pre-warm '{row['source_key']}': {e}")
 
 
 async def _set_timezone(conn):
@@ -57,33 +63,27 @@ async def get_pool(source_key: str = "platform"):
     return pool
 
 
-async def get_pool_for_org(org_id: str, kind: str = "business"):
-    """kind = 'platform' or 'business'."""
-    row = await _routing_pool.fetchrow(
-        "SELECT platform_source, business_source FROM org_routing WHERE org_id = $1", org_id
-    )
-    if not row:
-        raise RuntimeError(f"No org_routing row for org_id='{org_id}'")
-    source_key = row["platform_source"] if kind == "platform" else row["business_source"]
-    return await get_pool(source_key)
+async def get_all_source_keys() -> list[str]:
+    rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
+    return [r["source_key"] for r in rows]
 
 
 # ── Existing call sites everywhere else (identity.py, draft_store.py, menu.py,
 # agent.py, step_interpreter.py, etc.) keep working completely unchanged —
 # they default to "platform", which resolves to Baanganga's Neon DB, same as today.
-async def fetch_one(query: str, *args, source_key: str = "platform"):
+async def fetch_one(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
 
 
-async def fetch_all(query: str, *args, source_key: str = "platform"):
+async def fetch_all(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
 
-async def execute(query: str, *args, source_key: str = "platform"):
+async def execute(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)

@@ -49,7 +49,7 @@ async def handle_approval_response(phone: str, action: str, user: dict):
         FROM pending_approvals
         WHERE org_id = $1 AND status = 'pending'
         ORDER BY created_at DESC LIMIT 1
-    """, org_id)
+    """, org_id, source_key=user["source_key"])
 
     if not approval:
         await send_text(phone, "No pending approvals found.")
@@ -67,7 +67,8 @@ async def handle_approval_response(phone: str, action: str, user: dict):
     """,
         "approved" if action == "action:approve" else "rejected",
         user["user_id"],
-        approval["id"]
+        approval["id"],
+        source_key=user["source_key"]
     )
 
     requester_phone = ctx.get("requester_phone", "")
@@ -102,6 +103,7 @@ async def handle_approval_response(phone: str, action: str, user: dict):
             "phone":      requester_phone,
             "is_active":  True,
             "org_active": True,
+            "source_key": user["source_key"],
         },
         phone=requester_phone,
         approved=True,

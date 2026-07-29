@@ -36,13 +36,13 @@ def _parse_jsonb(val, default):
     return val if val is not None else default
 
 
-async def _build_context(org_id: str) -> dict:
+async def _build_context(org_id: str, source_key: str) -> dict:
     """
     Return ALL org-level columns generically — not hardcoded to any business concept.
     Whatever calc_rules reference (gst_rate, commission_pct, exchange_rate…) is
     available here because it's just a column on orgs. The engine never special-cases any.
     """
-    org = await fetch_one("SELECT * FROM orgs WHERE id = $1", org_id)
+    org = await fetch_one("SELECT * FROM orgs WHERE id = $1", org_id, source_key=source_key)
     if not org:
         return {}
     return {
@@ -96,7 +96,7 @@ def _validate_schema(entity_schema: dict, fields: dict) -> tuple[list, list]:
     return missing, invalid
 
 
-async def verify_draft(workflow: dict, fields: dict, org_id: str) -> dict:
+async def verify_draft(workflow: dict, fields: dict, org_id: str, source_key: str) -> dict:
     """
     Validate and recompute a draft's fields.
 
@@ -119,7 +119,7 @@ async def verify_draft(workflow: dict, fields: dict, org_id: str) -> dict:
     if not calc_rules:
         return dict(fields)
 
-    context = await _build_context(org_id)
+    context = await _build_context(org_id, source_key)
     try:
         return compute_draft(calc_rules, fields, context)
     except CalcError as e:

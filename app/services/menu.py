@@ -15,7 +15,7 @@ async def get_menu_workflows(org_id: str, user: dict) -> list[dict]:
         FROM workflows
         WHERE org_id = $1 AND is_active = true
         ORDER BY menu_section, name
-    """, org_id)
+    """, org_id, source_key=user["source_key"])
     perms = set(user.get("permissions", []))
     return [dict(r) for r in rows if r["intent_key"] in perms]
 

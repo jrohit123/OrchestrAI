@@ -162,7 +162,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
         if text_stripped.lower() in ("/status", "/mystatus", "/s"):
             from app.services.draft_store import get_active_draft
-            draft = await get_active_draft(user["org_id"], user["user_id"])
+            draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
             if draft:
                 intent = draft["intent_key"]
                 stage = draft["stage"]
@@ -190,7 +190,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 2. Fetch org TTL
     org_row = await fetch_one(
         "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
-        user["org_id"]
+        user["org_id"], source_key=user["source_key"]
     )
     ttl_minutes = org_row["session_ttl_minutes"] if org_row else 480
 
@@ -203,7 +203,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         if pre_session.get("state") == "awaiting_security_otp":
             # User is replying with security OTP
-            result = await verify_otp(user["user_id"], text.strip())
+            result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
             if result["valid"]:
                 await set_auth_token(user["org_id"], phone, ttl_minutes)
                 pending_text = pre_session.get("pending_text", "")
@@ -230,7 +230,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             user_name=user["user_name"],
             org_name=user["org_name"],
             org_id=user["org_id"],
-            action_context={"type": "security_auth"}
+            action_context={"type": "security_auth"},
+            source_key=user["source_key"]
         )
         if sent:
             await set_session(sec_session_id, {
@@ -282,7 +283,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # Rehydrate draft from DB if Redis has no pending_action but DB has active draft
     if not session.get("pending_action"):
         from app.services.draft_store import get_active_draft
-        db_draft = await get_active_draft(user["org_id"], user["user_id"])
+        db_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
         if db_draft and db_draft.get("intent_key"):
             print(f"[WEBHOOK] Rehydrating draft from DB: {db_draft['intent_key']}")
             # Parse fields if it's a JSON string from DB
@@ -430,7 +431,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_text(phone, "🔄 Session cleared. Please resend your original request.")
             return
 
-        otp_result = await verify_otp(user["user_id"], text.strip())
+        otp_result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
 
         if otp_result["valid"]:
             try:
@@ -535,13 +536,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await execute("""
                 INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
                 VALUES ($1, $2, 'agent', $3, 'success')
-            """, user["org_id"], user["user_id"], text)
+            """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
         else:
             # Log to audit_log for menu responses too
             await execute("""
                 INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
                 VALUES ($1, $2, 'menu', $3, 'success')
-            """, user["org_id"], user["user_id"], text)
+            """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
 
     except Exception as e:
         print(f"[AGENT] Error: {e}")
@@ -558,7 +559,7 @@ async def handle_system_row(text: str, user: dict, phone: str):
     from app.services.draft_store import get_active_draft, close_draft
     
     if text == "sys:status":
-        draft = await get_active_draft(user["org_id"], user["user_id"])
+        draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
         if draft:
             intent = draft["intent_key"]
             stage = draft["stage"]
@@ -590,7 +591,7 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
     """Cancel the user's active draft."""
     from app.services.draft_store import get_active_draft, close_draft
     
-    draft = await get_active_draft(user["org_id"], user["user_id"])
+    draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
     if not draft:
         await send_text(phone, "✅ No active draft to cancel.")
         return
@@ -603,10 +604,10 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
         )
         # Note: In a full implementation, we'd set a state to await confirmation
         # For now, we'll cancel directly as this is a safety escape hatch
-        await close_draft(user["org_id"], user["user_id"], "cancelled")
+        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
         await send_text(phone, "🔄 Draft cancelled.")
     else:
-        await close_draft(user["org_id"], user["user_id"], "cancelled")
+        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
         await send_text(phone, "🔄 Draft cancelled.")
 
 
@@ -617,12 +618,12 @@ async def _handle_otp_reply(phone, text, user, session, session_id):
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return
 
-    result = await verify_otp(user["user_id"], text.strip())
+    result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
 
     if result["valid"]:
         # Refresh auth token on successful OTP
         org_row = await fetch_one(
-            "SELECT session_ttl_minutes FROM orgs WHERE id = $1", user["org_id"]
+            "SELECT session_ttl_minutes FROM orgs WHERE id = $1", user["org_id"], source_key=user["source_key"]
         )
         ttl = org_row["session_ttl_minutes"] if org_row else 480
         await set_auth_token(user["org_id"], phone, ttl)

@@ -129,6 +129,7 @@ async def run_scheduled_reports():
                 "email":      row.get("email") or "",
                 "org_active": True,
                 "is_active":  True,
+                "source_key": row.get("source_key", "platform"),
             }
 
             if delivery == "email":
@@ -157,7 +158,7 @@ async def run_scheduled_reports():
                     next_run_at = $2,
                     run_count   = run_count + 1
                 WHERE id = $3
-            """, now, next_run, report_id)
+            """, now, next_run, report_id, source_key=row.get("source_key", "platform"))
 
             print(f"[SCHEDULER] ✅ '{label}' done. Next: {next_run.astimezone(_IST).strftime('%d %b %H:%M IST')}")
 
@@ -169,7 +170,7 @@ async def run_scheduled_reports():
                 next_run = compute_next_run(dict(row), from_dt=now)
                 await execute(
                     "UPDATE scheduled_reports SET next_run_at = $1 WHERE id = $2",
-                    next_run, report_id
+                    next_run, report_id, source_key=row.get("source_key", "platform")
                 )
             except Exception:
                 pass
@@ -181,6 +182,7 @@ async def create_scheduled_report(
     org_id, user_id, phone, email, query_text, report_label,
     schedule_type, delivery="whatsapp", interval_minutes=None,
     hour=None, minute=0, day_of_week=None, day_of_month=None,
+    source_key="platform",
 ) -> dict:
     row = {
         "schedule_type": schedule_type, "interval_minutes": interval_minutes,
@@ -192,38 +194,38 @@ async def create_scheduled_report(
         INSERT INTO scheduled_reports (
             org_id, user_id, phone, email, query_text, report_label,
             schedule_type, interval_minutes, hour, minute,
-            day_of_week, day_of_month, delivery, is_active, next_run_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14)
+            day_of_week, day_of_month, delivery, is_active, next_run_at, source_key
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14,$15)
         RETURNING id, next_run_at
     """, org_id, user_id, phone, email or "", query_text, report_label,
         schedule_type, interval_minutes, hour, minute,
-        day_of_week, day_of_month, delivery, next_run)
+        day_of_week, day_of_month, delivery, next_run, source_key)
     return {"id": str(rec["id"]), "next_run_at": rec["next_run_at"]}
 
 
-async def list_scheduled_reports(user_id: str) -> list:
+async def list_scheduled_reports(user_id: str, source_key: str = "platform") -> list:
     rows = await fetch_all("""
         SELECT id, report_label, schedule_type, interval_minutes,
                hour, minute, day_of_week, day_of_month,
                delivery, is_active, next_run_at, last_run_at, run_count
         FROM scheduled_reports WHERE user_id = $1 ORDER BY created_at DESC
-    """, user_id)
+    """, user_id, source_key=source_key)
     return [dict(r) for r in rows]
 
 
-async def pause_scheduled_report(report_id: str, user_id: str) -> bool:
+async def pause_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
     result = await fetch_one("""
         UPDATE scheduled_reports SET is_active = false
         WHERE id = $1 AND user_id = $2 RETURNING id
-    """, report_id, user_id)
+    """, report_id, user_id, source_key=source_key)
     return result is not None
 
 
-async def resume_scheduled_report(report_id: str, user_id: str) -> bool:
+async def resume_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
     now = datetime.datetime.now(datetime.timezone.utc)
     row = await fetch_one(
         "SELECT * FROM scheduled_reports WHERE id = $1 AND user_id = $2",
-        report_id, user_id
+        report_id, user_id, source_key=source_key
     )
     if not row:
         return False
@@ -231,14 +233,14 @@ async def resume_scheduled_report(report_id: str, user_id: str) -> bool:
     await execute("""
         UPDATE scheduled_reports SET is_active = true, next_run_at = $1
         WHERE id = $2 AND user_id = $3
-    """, next_run, report_id, user_id)
+    """, next_run, report_id, user_id, source_key=source_key)
     return True
 
 
-async def delete_scheduled_report(report_id: str, user_id: str) -> bool:
+async def delete_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
     result = await fetch_one("""
         DELETE FROM scheduled_reports WHERE id = $1 AND user_id = $2 RETURNING id
-    """, report_id, user_id)
+    """, report_id, user_id, source_key=source_key)
     return result is not None
 
 

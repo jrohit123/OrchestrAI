@@ -36,7 +36,7 @@ async def execute_pending_action(
 
     workflow = await fetch_one(
         "SELECT * FROM workflows WHERE intent_key = $1 AND org_id = $2 AND is_active = true",
-        intent_key, user["org_id"]
+        intent_key, user["org_id"], source_key=user["source_key"]
     )
     if not workflow:
         return {
@@ -59,7 +59,7 @@ async def execute_pending_action(
 
     if result["status"] == "done":
         # Clear the draft after successful execution
-        await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "done")
+        await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "done", source_key=user["source_key"])
         return {
             "success":   True,
             "message":   result["message"],
@@ -88,7 +88,7 @@ async def execute_pending_action(
         }
 
     # status == "error" - close draft and show friendly message
-    await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled")
+    await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled", source_key=user["source_key"])
     return {
         "success": False,
         "message": (

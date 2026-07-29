@@ -27,7 +27,8 @@ async def generate_and_send_otp(
     user_name: str,
     org_name: str,
     org_id: str,
-    action_context: dict
+    action_context: dict,
+    source_key: str
 ) -> bool:
     """
     Generates OTP, saves hash to DB, sends email via Brevo.
@@ -40,14 +41,15 @@ async def generate_and_send_otp(
     # Invalidate any previous unused OTPs for this user
     await execute(
         "UPDATE otp_tokens SET used = true WHERE user_id = $1 AND used = false",
-        user_id
+        user_id,
+        source_key=source_key
     )
 
     # Save new OTP record
     await execute("""
         INSERT INTO otp_tokens (user_id, otp_hash, action_context, expires_at, used, org_id)
         VALUES ($1, $2, $3, $4, false, $5)
-    """, user_id, otp_hash, json.dumps(action_context), expiry, org_id)
+    """, user_id, otp_hash, json.dumps(action_context), expiry, org_id, source_key=source_key)
 
     # Send via Brevo — raw OTP only lives here
     success = await _send_brevo_email(
@@ -62,7 +64,7 @@ async def generate_and_send_otp(
     return success
 
 
-async def verify_otp(user_id: str, entered_otp: str) -> dict:
+async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     """
     Verifies OTP. Returns {"valid": True/False, "action_context": dict, "reason": str}
     """
@@ -76,14 +78,14 @@ async def verify_otp(user_id: str, entered_otp: str) -> dict:
           AND used = false
         ORDER BY created_at DESC
         LIMIT 1
-    """, user_id)
+    """, user_id, source_key=source_key)
 
     if not row:
         return {"valid": False, "reason": "No active OTP found. Reply 'retry' to get a new code."}
 
     # Check attempts
     if row["attempts"] >= MAX_ATTEMPTS:
-        await execute("UPDATE otp_tokens SET used = true WHERE id = $1", row["id"])
+        await execute("UPDATE otp_tokens SET used = true WHERE id = $1", row["id"], source_key=source_key)
         return {"valid": False, "reason": "Too many attempts. Reply 'retry' to get a new code."}
 
     # Check expiry
@@ -94,14 +96,15 @@ async def verify_otp(user_id: str, entered_otp: str) -> dict:
     if row["attempts"] is not None:
         await execute(
             "UPDATE otp_tokens SET attempts = attempts + 1 WHERE id = $1",
-            row["id"]
+            row["id"],
+            source_key=source_key
         )
 
     # Re-fetch to check hash properly
     valid_row = await fetch_one("""
         SELECT id, action_context FROM otp_tokens
         WHERE id = $1 AND otp_hash = $2 AND used = false
-    """, row["id"], entered_hash)
+    """, row["id"], entered_hash, source_key=source_key)
 
     if not valid_row:
         remaining = MAX_ATTEMPTS - (row["attempts"] + 1)
@@ -111,7 +114,7 @@ async def verify_otp(user_id: str, entered_otp: str) -> dict:
         }
 
     # Mark used immediately — single use enforced
-    await execute("UPDATE otp_tokens SET used = true WHERE id = $1", valid_row["id"])
+    await execute("UPDATE otp_tokens SET used = true WHERE id = $1", valid_row["id"], source_key=source_key)
 
     return {
         "valid": True,

@@ -101,7 +101,7 @@ async def _build_greeting_response(user: dict, message: str) -> str:
     perms = set(user.get("permissions", []))
     workflows = await _fetch_all(
         "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"]
+        user["org_id"], source_key=user["source_key"]
     )
     capability_lines = []
     seen = set()
@@ -163,7 +163,7 @@ async def _build_help_response(user: dict) -> str:
 
     workflows = await _fetch_all(
         "SELECT intent_key, name, description, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"]
+        user["org_id"], source_key=user["source_key"]
     )
 
     read_caps, action_caps = [], []
@@ -198,7 +198,7 @@ async def _build_help_response(user: dict) -> str:
     )
 
 
-async def _get_schema(org_id: str) -> str:
+async def _get_schema(org_id: str, source_key: str = "platform") -> str:
     """
     Read information_schema at runtime for this org's database.
     Returns a compact schema string + 2 sample rows per table.
@@ -217,7 +217,7 @@ async def _get_schema(org_id: str) -> str:
               'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
           )
         ORDER BY table_name, ordinal_position
-    """)
+    """, source_key=source_key)
 
     table_cols: dict[str, list] = {}
     for c in cols:
@@ -625,14 +625,14 @@ TOOLS = [
 # ── System prompt builder — reads from DB, zero hardcoding ───────────────────
 
 async def _build_system_prompt(user: dict) -> str:
-    schema = await _get_schema(user["org_id"])
+    schema = await _get_schema(user["org_id"], user["source_key"])
     sheets_schema = await _get_sheets_schema()
     today = __import__("datetime").date.today().strftime("%d %b %Y")
 
     # Load org record for industry/slug
     org_row = await fetch_one(
         "SELECT name, industry, slug, gst_rate, default_making_charge_pct FROM orgs WHERE id = $1",
-        user["org_id"]
+        user["org_id"], source_key=user["source_key"]
     )
 
     # Load workflows entity_schema for slot-filling guidance
@@ -640,7 +640,7 @@ async def _build_system_prompt(user: dict) -> str:
         SELECT intent_key, entity_schema, business_glossary, llm_system_prompt
         FROM workflows
         WHERE org_id = $1 AND is_active = true
-    """, user["org_id"])
+    """, user["org_id"], source_key=user["source_key"])
 
     # Build workflow schema guidance
     workflow_schema_text = ""
@@ -975,17 +975,17 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
     except Exception:
         return False
 
-async def _validate_draft(intent_key: str, fields: dict, org_id: str) -> dict:
+async def _validate_draft(intent_key: str, fields: dict, org_id: str, source_key: str) -> dict:
     """Validate draft fields. Thin wrapper over qa_verifier for backward compatibility."""
     from app.services.qa_verifier import verify_draft, VerificationError
     wf = await fetch_one(
         "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-        intent_key, org_id
+        intent_key, org_id, source_key=source_key
     )
     if not wf:
         return {"missing_fields": [], "complete": True}
     try:
-        await verify_draft(dict(wf), fields, org_id)
+        await verify_draft(dict(wf), fields, org_id, source_key)
         return {"missing_fields": [], "complete": True}
     except VerificationError as e:
         return {"missing_fields": e.missing_fields + e.invalid_fields, "complete": False}
@@ -1029,7 +1029,7 @@ async def _execute_tool(
             full_params = [user["org_id"]] + list(params)
             print(f"[AGENT] Executing SQL: {sql}")
             print(f"[AGENT] SQL params: {full_params}")
-            rows = await fetch_all(sql, *full_params)
+            rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
 
             # Strip sensitive columns
             clean = []
@@ -1147,7 +1147,7 @@ async def _execute_tool(
         # ──────────────────────────────────────────────────────────────────────
 
         try:
-            org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"])
+            org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"], source_key=user["source_key"])
             org_name = org_row["name"] if org_row else user["org_name"]
 
             pdf_bytes = await _gen_pdf(
@@ -1243,7 +1243,7 @@ async def _execute_tool(
                 print(f"[AGENT] Auto-corrected making_charge_pct={pct} → making_charges_flat (flat) — value was implausible as a percentage")
 
         # Validate draft against workflow schema
-        validation = await _validate_draft(intent_key, fields, user["org_id"])
+        validation = await _validate_draft(intent_key, fields, user["org_id"], user["source_key"])
 
         # Persist to database (write-through cache)
         from app.services.draft_store import upsert_draft
@@ -1252,7 +1252,8 @@ async def _execute_tool(
             user_id=user["user_id"],
             intent_key=intent_key,
             fields=fields,
-            stage=stage
+            stage=stage,
+            source_key=user["source_key"],
         )
 
         # Return session patch for webhook to persist
@@ -1319,6 +1320,7 @@ async def _execute_tool(
                 minute=minute,
                 day_of_week=day_of_week,
                 day_of_month=day_of_month,
+                source_key=user["source_key"],
             )
             next_run_ist = result["next_run_at"].astimezone(
                 _dt.timezone(  # type: ignore
@@ -1391,17 +1393,17 @@ async def _execute_tool(
                     if action == "pause":
                         await execute(
                             "UPDATE scheduled_reports SET is_active = false WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"]
+                            report_id, user["org_id"], source_key=user["source_key"]
                         )
                     elif action == "resume":
                         await execute(
                             "UPDATE scheduled_reports SET is_active = true WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"]
+                            report_id, user["org_id"], source_key=user["source_key"]
                         )
                     else:
                         await execute(
                             "DELETE FROM scheduled_reports WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"]
+                            report_id, user["org_id"], source_key=user["source_key"]
                         )
                     ok = True
                 except Exception:
@@ -1423,7 +1425,7 @@ async def _execute_tool(
         # Validate phone against users table — prevents wrong numbers from context bleed
         valid = await fetch_one(
             "SELECT name, phone FROM users WHERE org_id = $1 AND phone = $2",
-            user["org_id"], recipient_phone
+            user["org_id"], recipient_phone, source_key=user["source_key"]
         )
         if not valid:
             return (
@@ -1516,7 +1518,7 @@ async def run_agent(
         "pdf_config, response_template, otp_required, otp_threshold, approval_threshold, "
         "steps, calc_rules "
         "FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"]
+        user["org_id"], source_key=user["source_key"]
     )
     workflow_map = {w["intent_key"]: dict(w) for w in workflows if w["intent_key"] in perms}
     
@@ -1599,7 +1601,7 @@ async def run_agent(
     draft_summary = None
     if pending_action:
         from app.services.draft_store import get_active_draft
-        db_draft = await get_active_draft(user["org_id"], user["user_id"])
+        db_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
         if db_draft:
             draft_summary = db_draft.get("conversation_summary")
     
@@ -1623,7 +1625,8 @@ async def run_agent(
                 intent_key=pending_action.get("intent_key"),
                 fields=fields,
                 stage=pending_action.get("stage", "collecting"),
-                summary=summary
+                summary=summary,
+                source_key=user["source_key"],
             )
         conversation_history = conversation_history[-limit:]
     
@@ -1915,7 +1918,7 @@ async def run_agent(
                     from app.services.qa_verifier import verify_draft, VerificationError, diff_for_audit, _validate_schema
                     workflow_row = await fetch_one(
                         "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-                        draft.get("intent_key"), user["org_id"]
+                        draft.get("intent_key"), user["org_id"], source_key=user["source_key"]
                     )
                     if not workflow_row:
                         tool_results[-1]["content"] = json.dumps({
@@ -1944,7 +1947,7 @@ async def run_agent(
                     else:
                         try:
                             verified_fields = await verify_draft(
-                                dict(workflow_row), draft.get("fields", {}), user["org_id"]
+                                dict(workflow_row), draft.get("fields", {}), user["org_id"], user["source_key"]
                             )
                         except VerificationError as e:
                             missing_str = ", ".join(e.missing_fields + e.invalid_fields)

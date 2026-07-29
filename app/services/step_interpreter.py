@@ -89,7 +89,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     else:
         raw_rows = await fetch_all(
             f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col} ILIKE $2 LIMIT 5",
-            ctx["org_id"], f"%{name_val}%"
+            ctx["org_id"], f"%{name_val}%", source_key=ctx["source_key"]
         )
         rows = [dict(r) for r in raw_rows]
 
@@ -115,7 +115,7 @@ async def _op_compute(params: dict, ctx: dict) -> dict:
     Overwrites ctx['fields'] with verified values.
     Computed values also stored in ctx['computed'] for downstream $computed.x references.
     """
-    verified = await verify_draft(ctx["workflow"], ctx["fields"], ctx["org_id"])
+    verified = await verify_draft(ctx["workflow"], ctx["fields"], ctx["org_id"], ctx["source_key"])
     ctx["fields"]   = verified
     ctx["computed"] = verified
     return ctx
@@ -143,7 +143,8 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
         user_name=user["user_name"],
         org_name=user["org_name"],
         org_id=user["org_id"],
-        action_context={"type": "action_otp", "intent_key": ctx["workflow"]["intent_key"]}
+        action_context={"type": "action_otp", "intent_key": ctx["workflow"]["intent_key"]},
+        source_key=ctx["source_key"]
     )
     if not sent:
         raise StepError("Could not send OTP email")
@@ -181,7 +182,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
         WHERE u.org_id = $1 AND r.id = $2
           AND u.is_active = true AND u.phone IS NOT NULL
         LIMIT 1
-    """, org_id, owner_role_id)
+    """, org_id, owner_role_id, source_key=ctx["source_key"])
 
     if owner:
         from app.services.whatsapp import send_buttons as _send_buttons
@@ -200,7 +201,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
             (org_id, requester_id, approver_role, intent_key, context, status)
             VALUES ($1, $2, 'owner', $3, $4::jsonb, 'pending')
         """, org_id, user["user_id"],
-            ctx["workflow"]["intent_key"], json.dumps(approval_context))
+            ctx["workflow"]["intent_key"], json.dumps(approval_context), source_key=ctx["source_key"])
 
         await _send_buttons(
             to=owner["phone"],
@@ -269,7 +270,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         max_row = await fetch_one(
             f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::int) AS max_num
                 FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2""",
-            ctx["org_id"], f"{seq['prefix']}%"
+            ctx["org_id"], f"{seq['prefix']}%", source_key=ctx["source_key"]
         )
         next_num = max(int(max_row["max_num"] or 0) + 1, seq.get("start", 100))
         doc_number = seq["prefix"] + str(next_num)
@@ -281,7 +282,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
     sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING *"
 
-    row = await fetch_one(sql, *sql_values)
+    row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
     ctx.setdefault("inserted", {})[table] = dict(row)
     return ctx
 
@@ -397,7 +398,7 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     )
     sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause} RETURNING *"
 
-    row = await fetch_one(sql, *sql_values)
+    row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
     if not row:
         raise StepError(f"db.update_row: no matching row in {table}")
     ctx.setdefault("updated", {})[table] = dict(row)
@@ -424,7 +425,7 @@ async def _op_delete_row(params: dict, ctx: dict) -> dict:
     where_cols   = list(where_vals.keys())
     where_clause = " AND ".join(f"{c} = ${i+1}" for i, c in enumerate(where_cols))
     sql = f"DELETE FROM {table} WHERE {where_clause} RETURNING *"
-    row = await fetch_one(sql, *where_vals.values())
+    row = await fetch_one(sql, *where_vals.values(), source_key=ctx["source_key"])
     if not row:
         raise StepError(f"db.delete_row: no matching row in {table}")
     ctx.setdefault("deleted", {})[table] = dict(row)
@@ -494,7 +495,7 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
         f"RETURNING *"
     )
 
-    row = await fetch_one(sql, *sql_values)
+    row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
     ctx.setdefault("upserted", {})[table] = dict(row) if row else {}
     return ctx
 
@@ -571,6 +572,7 @@ async def run_workflow_steps(
         "workflow":     workflow,
         "otp_verified": otp_verified,
         "approved":     approved,
+        "source_key":   user["source_key"],
     }
 
     steps = _parse_jsonb(workflow.get("steps"), []) or []
@@ -599,6 +601,7 @@ async def run_workflow_steps(
                         intent_key=workflow["intent_key"],
                         fields=ctx["fields"],
                         stage="awaiting_confirmation",
+                        source_key=ctx["source_key"],
                     )
             except (VerificationError, StepError):
                 raise
