@@ -202,6 +202,31 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         pre_session = await get_session(sec_session_id)
 
         if pre_session.get("state") == "awaiting_security_otp":
+            # Handle explicit retry — generate a fresh OTP instead of re-checking the stale one
+            if text.strip().lower() == "retry":
+                pending_text = pre_session.get("pending_text", "")
+                sent = await generate_and_send_otp(
+                    user_id=user["user_id"],
+                    user_email=user["email"],
+                    user_name=user["user_name"],
+                    org_name=user["org_name"],
+                    org_id=user["org_id"],
+                    action_context={"type": "security_auth"},
+                    source_key=user["source_key"]
+                )
+                if sent:
+                    await set_session(sec_session_id, {
+                        "state": "awaiting_security_otp",
+                        "pending_text": pending_text
+                    }, ttl=180)
+                    await send_text(phone,
+                        f"🔐 A new verification code has been sent to *{user['email']}*.\n"
+                        f"Reply with the code to continue."
+                    )
+                else:
+                    await send_text(phone, "❌ Could not send verification email. Contact admin.")
+                return
+
             # User is replying with security OTP
             result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
             if result["valid"]:
@@ -237,7 +262,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await set_session(sec_session_id, {
                 "state": "awaiting_security_otp",
                 "pending_text": text
-            }, ttl=300)
+            }, ttl=180)
             hours   = ttl_minutes // 60
             mins    = ttl_minutes % 60
             ttl_str = f"{hours} hours" if not mins else f"{hours}h {mins}m"
