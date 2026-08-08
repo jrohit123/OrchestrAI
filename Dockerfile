@@ -19,7 +19,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project
-COPY . .
+# Create non-root user
+RUN useradd -m -u 1000 appuser
+USER appuser
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Copy the entire project
+COPY --chown=appuser:appuser . .
+
+# Use PORT from environment (Railway sets this)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "${PORT}"]

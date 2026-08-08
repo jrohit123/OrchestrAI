@@ -14,7 +14,9 @@ from app.db import fetch_all, fetch_one, execute
 from app.services.workflow_compiler import compile_workflow_spec
 from app.services.workflow_publisher import publish_draft
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from app.config import required
+
+_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 _SYSTEM_PROMPT = """You are helping a non-technical business owner describe a business process
 so it becomes a working WhatsApp workflow. They think in plain terms — not schemas, not JSON, not code.
@@ -465,7 +467,7 @@ async def run_builder_agent(
         if isinstance(raw_fields, str):
             try:
                 raw_fields = json.loads(raw_fields)
-            except:
+            except (json.JSONDecodeError, TypeError):
                 raw_fields = []
         draft_context += f"Fields to collect: {', '.join(raw_fields) if raw_fields else 'none'}\n"
     if draft.get("otp_threshold"):

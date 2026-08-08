@@ -1,5 +1,6 @@
-import asyncpg
 import os
+import asyncpg
+from app.config import required
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,7 +13,7 @@ async def init_db():
     """Boot-time: connect ONLY to the routing DB. Everything else resolved lazily."""
     global _routing_pool
     _routing_pool = await asyncpg.create_pool(
-        dsn=os.getenv("ROUTING_DATABASE_URL") or os.getenv("BAANGANGA_DATABASE_URL") or os.getenv("DATABASE_URL"),
+        dsn=required("ROUTING_DATABASE_URL"),
         min_size=1,
         max_size=5,
         init=_set_timezone,

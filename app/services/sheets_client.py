@@ -17,6 +17,7 @@ from functools import lru_cache
 
 import gspread
 from google.oauth2.service_account import Credentials
+from app.config import required
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",

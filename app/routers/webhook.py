@@ -1,7 +1,11 @@
 import os
+import json
+import hmac
+import hashlib
 from fastapi import APIRouter, Request, Response
 from dotenv import load_dotenv
 
+from app.config import required
 from app.services.identity import resolve_identity, check_permission, check_route_permission
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
@@ -20,7 +24,8 @@ load_dotenv()
 
 router = APIRouter()
 
-VERIFY_TOKEN      = os.getenv("WHATSAPP_VERIFY_TOKEN", "orchestrai_verify_2024")
+VERIFY_TOKEN      = required("WHATSAPP_VERIFY_TOKEN")
+APP_SECRET        = required("WHATSAPP_APP_SECRET")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 
 _CONFIRM_WORDS = frozenset({
@@ -28,6 +33,14 @@ _CONFIRM_WORDS = frozenset({
     "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
 })
 _CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
+
+
+def verify_signature(raw: bytes, header: str | None) -> bool:
+    """Verify WhatsApp webhook signature using HMAC-SHA256."""
+    if not header or not header.startswith('sha256='):
+        return False
+    expected = hmac.new(APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header.split('=', 1)[1])
 
 
 # ── META WEBHOOK VERIFICATION (GET) ──────────────────
@@ -38,7 +51,7 @@ async def verify_webhook(request: Request):
     token     = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
 
-    if mode == "subscribe" and token == VERIFY_TOKEN:
+    if mode == "subscribe" and hmac.compare_digest(token or "", VERIFY_TOKEN):
         return Response(content=challenge, media_type="text/plain")
     return Response(content="Forbidden", status_code=403)
 
@@ -46,7 +59,12 @@ async def verify_webhook(request: Request):
 # ── INBOUND MESSAGES (POST) ───────────────────────────
 @router.post("/webhook/whatsapp")
 async def receive_message(request: Request):
-    body = await request.json()
+    # Verify signature first - fail-closed
+    raw = await request.body()
+    if not verify_signature(raw, request.headers.get("X-Hub-Signature-256")):
+        return Response(status_code=403)
+    
+    body = json.loads(raw)
 
     try:
         entry   = body["entry"][0]
@@ -85,27 +103,17 @@ async def receive_message(request: Request):
         else:
             return {"status": "ok"}
 
-        # ── Deduplication: use both message ID and phone+text for reliability ──
+        # ── Deduplication: atomic check-and-set using message ID ──
         redis = get_redis()
         
-        # Check message ID first
+        # Single atomic operation: set only if key doesn't exist
         msg_dedup_key = f"msg_processed:{msg_id}"
-        already_processed = await redis.get(msg_dedup_key)
-        if already_processed:
+        was_set = await redis.set(msg_dedup_key, "1", ex=300, nx=True)
+        if not was_set:
             print(f"[WEBHOOK] Duplicate msg_id {msg_id} — skipping")
             return {"status": "ok"}
         
-        # Also check phone+text combination (catches duplicates with different IDs)
-        text_dedup_key = f"msg_text:{phone}:{text}"
-        text_already_processed = await redis.get(text_dedup_key)
-        if text_already_processed:
-            print(f"[WEBHOOK] Duplicate text from {phone} ('{text}') — skipping")
-            return {"status": "ok"}
-        
-        # Set both keys atomically
-        await redis.setex(msg_dedup_key, 300, "1")
-        await redis.setex(text_dedup_key, 10, "1")  # Text dedup only 10 seconds
-        print(f"[WEBHOOK] Deduplication keys set: {msg_dedup_key}, {text_dedup_key}")
+        print(f"[WEBHOOK] Deduplication key set: {msg_dedup_key}")
 
         print(f"[WEBHOOK] From: {phone} | Message: {text}")
         try:
@@ -316,7 +324,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             if isinstance(fields, str):
                 try:
                     fields = json.loads(fields)
-                except:
+                except (json.JSONDecodeError, TypeError) as e:
+                    print(f"[WEBHOOK] Failed to parse draft fields: {e}")
                     fields = {}
             session["pending_action"] = {
                 "intent_key": db_draft["intent_key"],
@@ -331,8 +340,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             )
 
     # 5. Approval button responses
-    if msg_type == "interactive" and text in ("action:approve", "action:reject"):
-        await handle_approval_response(phone, text, user)
+    if msg_type == "interactive" and (text.startswith("action:approve:") or text.startswith("action:reject:")):
+        parts = text.split(":")
+        if len(parts) == 3:
+            action = f"{parts[0]}:{parts[1]}"
+            approval_id = parts[2]
+            await handle_approval_response(phone, action, approval_id, user)
         return
 
     # 6. Disambiguation state (customer selection) - handled by agent clarify tool

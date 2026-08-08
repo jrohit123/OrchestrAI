@@ -13,7 +13,9 @@ import json
 import os
 from openai import AsyncOpenAI
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from app.config import required
+
+_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 
 def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:

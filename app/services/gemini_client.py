@@ -10,9 +10,9 @@ import json
 import asyncio
 from openai import AsyncOpenAI
 
-_api_key = os.getenv("CEREBRAS_API_KEY")
-if not _api_key:
-    raise ValueError("CEREBRAS_API_KEY environment variable not set")
+from app.config import required
+
+_api_key = required("CEREBRAS_API_KEY")
 
 _client = AsyncOpenAI(
     api_key=_api_key,

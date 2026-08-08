@@ -196,12 +196,14 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
             "requester_name":    user.get("user_name", ""),
             "requester_email":   user.get("email", ""),
         }
-        await execute("""
+        approval_row = await execute("""
             INSERT INTO pending_approvals
             (org_id, requester_id, approver_role, intent_key, context, status)
             VALUES ($1, $2, 'owner', $3, $4::jsonb, 'pending')
+            RETURNING id
         """, org_id, user["user_id"],
             ctx["workflow"]["intent_key"], json.dumps(approval_context), source_key=ctx["source_key"])
+        approval_id = approval_row[0]["id"]
 
         await _send_buttons(
             to=owner["phone"],
@@ -213,8 +215,8 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
                 f"Please approve or reject:"
             ),
             buttons=[
-                {"id": "action:approve", "title": "✅ Approve"},
-                {"id": "action:reject",  "title": "❌ Reject"}
+                {"id": f"action:approve:{approval_id}", "title": "✅ Approve"},
+                {"id": f"action:reject:{approval_id}",  "title": "❌ Reject"}
             ]
         )
 

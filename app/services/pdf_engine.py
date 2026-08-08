@@ -11,7 +11,9 @@ from io import BytesIO
 from datetime import datetime
 from openai import AsyncOpenAI
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from app.config import required
+
+_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 BRAND_BLUE   = "#185FA5"
 BRAND_LIGHT  = "#EEF4FB"

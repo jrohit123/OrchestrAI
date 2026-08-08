@@ -119,7 +119,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
         if isinstance(granted_roles, str):
             try:
                 granted_roles = json.loads(granted_roles)
-            except:
+            except (json.JSONDecodeError, TypeError):
                 granted_roles = []
         if granted_roles:
             await execute("""

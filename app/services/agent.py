@@ -9,17 +9,17 @@ import re
 import datetime as _dt
 from openai import AsyncOpenAI
 from app.db import fetch_all, fetch_one
-from app.services.query_engine import _safe, SENSITIVE_COLS
+from app.config import required
 from app.services.prompt_loader import load_prompt
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 def _parse_jsonb(val, default=None):
     """Parse JSONB values from Postgres (may be string or already parsed)."""
     if isinstance(val, str):
         try:
             return json.loads(val)
-        except:
+        except (json.JSONDecodeError, TypeError):
             return default
     return val if val is not None else default
 
@@ -656,12 +656,12 @@ async def _build_system_prompt(user: dict) -> str:
             if isinstance(entity_schema, str):
                 try:
                     entity_schema = json.loads(entity_schema)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     entity_schema = {}
             if isinstance(business_glossary, str):
                 try:
                     business_glossary = json.loads(business_glossary)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     business_glossary = {}
 
             if entity_schema:
@@ -1617,7 +1617,7 @@ async def run_agent(
             if isinstance(fields, str):
                 try:
                     fields = json.loads(fields)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     fields = {}
             await upsert_draft(
                 org_id=user["org_id"],
@@ -1847,7 +1847,7 @@ async def run_agent(
                     if isinstance(old_fields, str):
                         try:
                             old_fields = json.loads(old_fields)
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             old_fields = {}
                     if not isinstance(old_fields, dict):
                         print(f"[AGENT] Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting")

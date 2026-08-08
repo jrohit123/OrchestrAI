@@ -6,3 +6,7 @@ __pycache__/
 venv/
 .venv/
 orchestrai-sheets-*.json
+sheets_creds_b64.txt
+*.png
+*.pdf
+*.html

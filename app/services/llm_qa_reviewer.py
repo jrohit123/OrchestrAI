@@ -16,8 +16,10 @@ import os
 import json
 from openai import AsyncOpenAI
 
+from app.config import required
+
 _openai_client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
+    api_key=required("OPENAI_API_KEY"),
     timeout=30.0
 )
 

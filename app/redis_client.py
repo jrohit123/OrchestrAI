@@ -1,4 +1,5 @@
-import redis.asyncio as aioredis
+import aioredis
+from app.config import required
 import os
 import json
 from dotenv import load_dotenv
@@ -11,7 +12,7 @@ _redis = None
 async def init_redis():
     global _redis
     _redis = await aioredis.from_url(
-        os.getenv("REDIS_URL"),
+        required("REDIS_URL"),
         decode_responses=True
     )
     print("Redis connected")

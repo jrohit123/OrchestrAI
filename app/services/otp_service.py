@@ -8,9 +8,11 @@ import httpx
 from dotenv import load_dotenv
 from app.db import fetch_one, execute
 
+from app.config import required
+
 load_dotenv()
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+BREVO_API_KEY = required("BREVO_API_KEY")
 SENDER_EMAIL  = "sales@aitamate.com"
 SENDER_NAME   = "OrchestrAI | Baanganga Gold"
 OTP_EXPIRY_MINUTES = 3

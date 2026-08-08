@@ -1,16 +1,19 @@
 import os
 import json
 import re
+import hmac
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from app.config import required
 from app.db import fetch_all, fetch_one, execute, get_pool, get_default_source_key
 from openai import AsyncOpenAI
 
 router = APIRouter()
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "orchestrai_admin_2024")
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+ADMIN_TOKEN = required("ADMIN_TOKEN")
+OPENAI_API_KEY = required("OPENAI_API_KEY")
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 class PublishRequest(BaseModel):
@@ -23,17 +26,15 @@ class PublishRequest(BaseModel):
 
 
 def _check_token(request: Request):
-    token = request.query_params.get("token") or \
-            request.headers.get("X-Admin-Token")
-    if token != ADMIN_TOKEN:
+    token = request.headers.get("X-Admin-Token")
+    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
-    _check_token(request)
-    token = request.query_params.get("token", "")
-    return HTMLResponse(content=_build_html(token))
+    # Serve page unauthenticated - JavaScript will prompt for token
+    return HTMLResponse(content=_build_html())
 
 
 @router.get("/admin/api/data")
@@ -880,8 +881,8 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
 
 
 
-def _build_html(token: str) -> str:
-    return f"""<!DOCTYPE html>
+def _build_html() -> str:
+    return """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1090,11 +1091,32 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 </div>
 
 <script>
-const TOKEN = "{token}";
-const API  = path => `/admin/api${{path}}?token=${{TOKEN}}`;
+let adminToken = null;
+const API = path => `/admin/api${{path}}`;
 let chatDraftId = null;
 let chatTyping  = false;
 let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
+
+// ── Security: Prompt for token on first API call ─────────────────────
+async function ensureToken() {{
+  if (adminToken) return true;
+  adminToken = prompt('🔐 Enter Admin Token:');
+  return adminToken !== null;
+}}
+
+async function authenticatedFetch(url, options = {{}}) {{
+  if (!await ensureToken()) return null;
+  const headers = options.headers || {{}};
+  headers['X-Admin-Token'] = adminToken;
+  options.headers = headers;
+  const res = await fetch(url, options);
+  if (res.status === 401) {{
+    alert('❌ Invalid token. Please try again.');
+    adminToken = null;
+    return null;
+  }}
+  return res;
+}}
 
 // ── Utility ───────────────────────────────────────────────────────
 function closeModal(id) {{ document.getElementById(id).classList.remove('open'); }}
@@ -1107,13 +1129,13 @@ async function saveTTL() {{
   const val = parseInt(document.getElementById('ttl_value').value);
   const unit = document.getElementById('ttl_unit').value;
   const mins = unit === 'hours' ? val * 60 : val;
-  await fetch(API('/security/ttl'), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{minutes:mins}})}});
-  alert('✅ Session timeout updated');
+  const res = await authenticatedFetch(API('/security/ttl'), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{minutes:mins}})}});
+  if (res && res.ok) alert('✅ Session timeout updated');
 }}
 async function clearSessions() {{
   if (!confirm('⚠️ Log out ALL users immediately?')) return;
-  await fetch(API('/sessions/clear'), {{method:'POST'}});
-  alert('🔒 All sessions cleared');
+  const res = await authenticatedFetch(API('/sessions/clear'), {{method:'POST'}});
+  if (res && res.ok) alert('🔒 All sessions cleared');
 }}
 
 // ── Workflow List ─────────────────────────────────────────────────
@@ -1150,30 +1172,33 @@ function renderWorkflows(workflows) {{
 }}
 
 async function toggleActive(id, active) {{
-  await fetch(API(`/workflow/${{id}}/toggle`), {{method:'POST'}});
+  await authenticatedFetch(API(`/workflow/${{id}}/toggle`), {{method:'POST'}});
 }}
 async function saveOtp(id) {{
   const val = document.getElementById('otp_' + id).value;
-  await fetch(API(`/workflow/${{id}}/threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
-  alert('✅ OTP threshold saved');
+  const res = await authenticatedFetch(API(`/workflow/${{id}}/threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
+  if (res && res.ok) alert('✅ OTP threshold saved');
 }}
 async function saveApr(id) {{
   const val = document.getElementById('apr_' + id).value;
-  await fetch(API(`/workflow/${{id}}/approval_threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
-  alert('✅ Approval threshold saved');
+  const res = await authenticatedFetch(API(`/workflow/${{id}}/approval_threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
+  if (res && res.ok) alert('✅ Approval threshold saved');
 }}
 
 async function deleteWorkflow(id, name) {{
   if (!confirm(`Delete workflow "${{name}}"?\\nThis cannot be undone.`)) return;
-  const r = await fetch(API(`/workflow/${{id}}`), {{method:'DELETE'}});
-  const d = await r.json();
-  if (d.success) {{ alert('✅ Deleted'); loadData(); }}
-  else alert('Error: ' + (d.detail || 'unknown'));
+  const r = await authenticatedFetch(API(`/workflow/${{id}}`), {{method:'DELETE'}});
+  if (r) {{
+    const d = await r.json();
+    if (d.success) {{ alert('✅ Deleted'); loadData(); }}
+    else alert('Error: ' + (d.detail || 'unknown'));
+  }}
 }}
 
 // ── Edit Modal ────────────────────────────────────────────────────
 async function openEdit(id) {{
-  const r = await fetch(API(`/workflow/${{id}}/detail`));
+  const r = await authenticatedFetch(API(`/workflow/${{id}}/detail`));
+  if (!r) return;
   const w = await r.json();
   document.getElementById('editId').value = id;
   document.getElementById('editName').value = w.name || '';
@@ -1212,12 +1237,14 @@ async function saveWorkflowEdit() {{
     steps, calc_rules: calcRules, entity_schema: entitySchema, pdf_config: pdfConfig,
     response_template:   document.getElementById('editResponseTemplate').value || null,
   }};
-  const r = await fetch(API(`/workflow/${{id}}`), {{
+  const r = await authenticatedFetch(API(`/workflow/${{id}}`), {{
     method:'PUT', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)
   }});
-  const d = await r.json();
-  if (d.success) {{ alert('✅ Saved'); closeModal('editModal'); loadData(); }}
-  else alert('Error: ' + (d.detail || JSON.stringify(d)));
+  if (r) {{
+    const d = await r.json();
+    if (d.success) {{ alert('✅ Saved'); closeModal('editModal'); loadData(); }}
+    else alert('Error: ' + (d.detail || JSON.stringify(d)));
+  }}
 }}
 
 // ── Chat Builder ─────────────────────────────────────────────────
@@ -1242,8 +1269,8 @@ async function onPdfSelected(input) {{
     const fd = new FormData();
     fd.append('pdf_file', file);
     fd.append('doc_type_hint', 'invoice');
-    const resp = await fetch(API('/workflow-builder/pdf-extract'), {{method:'POST', body:fd}});
-    if (resp.ok) {{
+    const resp = await authenticatedFetch(API('/workflow-builder/pdf-extract'), {{method:'POST', body:fd}});
+    if (resp && resp.ok) {{
       chatPdfAnalysis = await resp.json();
       document.getElementById('builderStatus').textContent = '✅ PDF layout extracted — send your message to continue.';
     }} else {{
@@ -1299,11 +1326,15 @@ async function sendChatMsg() {{
     document.getElementById('attachLabel').textContent = '';
     document.getElementById('chatAttachment').value = '';
 
-    const resp = await fetch(API('/workflow-builder/chat'), {{
+    const resp = await authenticatedFetch(API('/workflow-builder/chat'), {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(body)
     }});
+    if (!resp) {{
+      chatTyping = false;
+      return;
+    }}
     const data = await resp.json();
     chatDraftId = data.draft_id;
 
@@ -1311,7 +1342,7 @@ async function sendChatMsg() {{
     if (data.reply) appendBotMsg(data.reply);
 
     if (data.published) {{
-      document.getElementById('builderStatus').textContent = '✅ Workflow published!';
+      document.getElementById('builderStatus').textContent = ' Workflow published!';
       setTimeout(() => {{ closeModal('builderModal'); loadData(); }}, 2000);
     }} else {{
       document.getElementById('builderStatus').textContent = '';
@@ -1325,21 +1356,23 @@ async function sendChatMsg() {{
 
 // ── Load Data ─────────────────────────────────────────────────────
 async function loadData() {{
-  try {{
-    const resp = await fetch(API('/data'));
-    const data = await resp.json();
+  const resp = await authenticatedFetch(API('/data'));
+  if (!resp) return;
+  const data = await resp.json();
 
     document.getElementById('orgName').textContent = data.org.name;
 
     try {{
-      const sec = await fetch(API('/security')).then(r => r.json());
-      const mins = sec.session_ttl_minutes || 480;
-      if (mins >= 60 && mins % 60 === 0) {{
-        document.getElementById('ttl_value').value = mins / 60;
-        document.getElementById('ttl_unit').value = 'hours';
-      }} else {{
-        document.getElementById('ttl_value').value = mins;
-        document.getElementById('ttl_unit').value = 'minutes';
+      const sec = await authenticatedFetch(API('/security'));
+      if (sec) {{
+        const mins = (await sec.json()).session_ttl_minutes || 480;
+        if (mins >= 60 && mins % 60 === 0) {{
+          document.getElementById('ttl_value').value = mins / 60;
+          document.getElementById('ttl_unit').value = 'hours';
+        }} else {{
+          document.getElementById('ttl_value').value = mins;
+          document.getElementById('ttl_unit').value = 'minutes';
+        }}
       }}
     }} catch(e) {{}}
 

@@ -10,7 +10,9 @@ import os
 from openai import AsyncOpenAI
 from app.db import fetch_all
 
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from app.config import required
+
+_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 
 def _parse(val, default):

@@ -90,7 +90,7 @@ async def run_scheduled_reports():
     print(f"[SCHEDULER] Tick at {now.strftime('%H:%M:%S')} UTC")
 
     # Get all source keys and query each one
-    source_keys = get_all_source_keys()
+    source_keys = await get_all_source_keys()
     all_due = []
 
     for source_key in source_keys:
