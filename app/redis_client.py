@@ -1,4 +1,4 @@
-import aioredis
+import redis.asyncio as aioredis
 from app.config import required
 import os
 import json
