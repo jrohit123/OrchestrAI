@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from app.db import fetch_all, fetch_one
 from app.config import required
 from app.services.prompt_loader import load_prompt
-from app.services.query_engine import _safe
+from app.services.query_engine import _safe, SENSITIVE_COLS
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
