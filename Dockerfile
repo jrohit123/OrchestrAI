@@ -30,5 +30,5 @@ USER appuser
 # Copy the entire project
 COPY --chown=appuser:appuser . .
 
-# Use PORT from environment (Railway sets this)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "${PORT}"]
+# Use PORT from environment (Railway sets this), default to 8080
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
