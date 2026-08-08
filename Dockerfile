@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 # Install WeasyPrint system dependencies via apt
 # These land in /usr/lib/... which cffi/dlopen can find
