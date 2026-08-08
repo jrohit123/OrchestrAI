@@ -108,8 +108,9 @@ async def run_scheduled_reports():
         
         # Add source_key to each row for later use
         for row in due:
-            row["source_key"] = source_key
-        all_due.extend(due)
+            row_dict = dict(row)
+            row_dict["source_key"] = source_key
+            all_due.append(row_dict)
 
     if not all_due:
         return
