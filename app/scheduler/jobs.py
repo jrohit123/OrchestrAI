@@ -94,17 +94,23 @@ async def run_scheduled_reports():
     all_due = []
 
     for source_key in source_keys:
-        due = await fetch_all("""
-            SELECT sr.*, u.name as user_name, u.role_id,
-                   o.name as org_name, o.gst_rate,
-                   r.permissions
-            FROM scheduled_reports sr
-            JOIN users u ON u.id = sr.user_id
-            JOIN orgs  o ON o.id = sr.org_id
-            JOIN roles r ON r.id = u.role_id
-            WHERE sr.is_active = true
-              AND sr.next_run_at <= $1
-        """, now, source_key=source_key)
+        try:
+            due = await fetch_all("""
+                SELECT sr.*, u.name as user_name, u.role_id,
+                       o.name as org_name, o.gst_rate,
+                       r.permissions
+                FROM scheduled_reports sr
+                JOIN users u ON u.id = sr.user_id
+                JOIN orgs  o ON o.id = sr.org_id
+                JOIN roles r ON r.id = u.role_id
+                WHERE sr.is_active = true
+                  AND sr.next_run_at <= $1
+            """, now, source_key=source_key)
+        except Exception as e:
+            # Table might not exist in some databases
+            if "scheduled_reports" in str(e):
+                continue
+            raise
         
         # Add source_key to each row for later use
         for row in due:
