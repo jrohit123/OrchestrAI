@@ -3,6 +3,10 @@ FROM python:3.13-slim
 # Install WeasyPrint system dependencies via apt
 # These land in /usr/lib/... which cffi/dlopen can find
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    make \
+    gcc \
+    g++ \
     libglib2.0-0 \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
