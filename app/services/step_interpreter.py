@@ -233,6 +233,9 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     table  = params["table"]
     values = _resolve_values(params.get("values", {}), ctx)
 
+    # Force org_id to prevent cross-tenant writes (AP-10)
+    values['org_id'] = ctx['org_id']
+
     # Resolve special date literals
     import datetime as _dt
     for k, v in list(values.items()):
@@ -376,6 +379,9 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     set_vals   = {k: _resolve_literals(v) for k, v in set_vals.items()}
     where_vals = {k: _resolve_literals(v) for k, v in where_vals.items()}
 
+    # Force org_id in WHERE clause to prevent cross-tenant updates (AP-10)
+    where_vals['org_id'] = ctx['org_id']
+
     # NEW: sheet-backed update
     if table.startswith("sheet:"):
         from app.services.sheets_client import sheet_update_row
@@ -414,6 +420,9 @@ async def _op_delete_row(params: dict, ctx: dict) -> dict:
     """
     table      = params["table"]
     where_vals = _resolve_values(params.get("where", {}), ctx)
+
+    # Force org_id in WHERE clause to prevent cross-tenant deletes (AP-10)
+    where_vals['org_id'] = ctx['org_id']
 
     if table.startswith("sheet:"):
         from app.services.sheets_client import sheet_delete_row
@@ -482,6 +491,13 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
         return v
 
     values = {k: _resolve_now(v) for k, v in raw_values.items()}
+
+    # Force org_id to prevent cross-tenant writes (AP-10)
+    values['org_id'] = ctx['org_id']
+
+    # Add org_id to conflict columns if not already present
+    if 'org_id' not in conflict_cols:
+        conflict_cols.append('org_id')
 
     cols         = list(values.keys())
     placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
