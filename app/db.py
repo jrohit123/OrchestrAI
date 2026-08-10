@@ -1,5 +1,6 @@
 import os
 import asyncpg
+import traceback
 from app.config import required
 from dotenv import load_dotenv
 
@@ -82,18 +83,30 @@ async def get_default_source_key() -> str:
 # agent.py, step_interpreter.py, etc.) keep working completely unchanged —
 # they default to "platform", which resolves to Baanganga's Neon DB, same as today.
 async def fetch_one(query: str, *args, source_key: str):
+    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
+    if source_key == "platform":
+        caller = traceback.extract_stack()[-2]
+        print(f"[AP-07 WARNING] fetch_one using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
 
 
 async def fetch_all(query: str, *args, source_key: str):
+    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
+    if source_key == "platform":
+        caller = traceback.extract_stack()[-2]
+        print(f"[AP-07 WARNING] fetch_all using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
 
 async def execute(query: str, *args, source_key: str):
+    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
+    if source_key == "platform":
+        caller = traceback.extract_stack()[-2]
+        print(f"[AP-07 WARNING] execute using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)
