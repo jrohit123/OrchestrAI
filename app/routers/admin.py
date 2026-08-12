@@ -1372,7 +1372,7 @@ function appendUserMsg(text) {
 function appendSummaryCard(text) {
   const el = document.createElement('div');
   el.className = 'summary-card';
-  el.innerHTML = '\uD83D\uDCCB <strong>Summary</strong><br><br>' + text.split('\n').join('<br>');
+  el.innerHTML = '&#x1F4CB; <strong>Summary</strong><br><br>' + text.split('\n').join('<br>');
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
 }
