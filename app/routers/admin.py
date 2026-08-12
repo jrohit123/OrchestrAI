@@ -474,7 +474,7 @@ Return ONLY this JSON, no markdown, no explanation:
             if gemini_client:
                 try:
                     response = await gemini_client.chat.completions.create(
-                        model="gemini-1.5-flash",
+                        model="gemini-2.0-flash",
                         max_tokens=4000,
                         temperature=0.1 + (attempt * 0.1),
                         messages=[{"role": "user", "content": prompt}]

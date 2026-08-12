@@ -1734,7 +1734,7 @@ async def run_agent(
         if _gemini_client:
             try:
                 response = await _gemini_client.chat.completions.create(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.0-flash",
                     max_tokens=4096,
                     messages=messages,
                     tools=TOOLS,

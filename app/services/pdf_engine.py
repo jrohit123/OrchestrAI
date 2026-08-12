@@ -329,7 +329,7 @@ No markdown fences. No explanation. No preamble.
     if _gemini_client:
         try:
             response = await _gemini_client.chat.completions.create(
-                model="gemini-1.5-flash",
+                model="gemini-2.0-flash",
                 max_tokens=4096,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
@@ -389,18 +389,12 @@ def _html_to_pdf(html: str) -> bytes:
     from urllib.parse import urlparse
     
     def custom_url_fetcher(url):
-        """Custom URL fetcher that only allows safe resources."""
-        parsed = urlparse(url)
-        # Only allow HTTPS from trusted domains (Google Fonts)
-        if parsed.scheme == 'https' and parsed.netloc in ['fonts.googleapis.com', 'fonts.gstatic.com']:
-            from weasyprint.default_url_fetcher import default_url_fetcher
-            return default_url_fetcher(url)
-        # Block all other requests (file://, http://, other domains)
-        raise ValueError(f"Blocked URL: {url}")
-    
+        """Block all external URLs — fonts are inlined, no external fetching needed."""
+        raise ValueError(f"Blocked external URL: {url}")
+
     try:
         buf = BytesIO()
-        HTML(string=html, url_fetcher=custom_url_fetcher).write_pdf(buf)
+        HTML(string=html, base_url=None).write_pdf(buf)
         return buf.getvalue()
     except Exception as e:
         raise ValueError(f"WeasyPrint conversion failed: {e}")
