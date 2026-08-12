@@ -329,7 +329,7 @@ No markdown fences. No explanation. No preamble.
     if _gemini_client:
         try:
             response = await _gemini_client.chat.completions.create(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 max_tokens=4096,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
