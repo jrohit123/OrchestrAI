@@ -50,7 +50,7 @@ def _check_token(request: Request):
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     # Serve page unauthenticated - JavaScript will prompt for token
-    return HTMLResponse(content=_build_html())
+    return HTMLResponse(content=_build_html(), media_type="text/html; charset=utf-8")
 
 
 @router.get("/admin/api/data")
