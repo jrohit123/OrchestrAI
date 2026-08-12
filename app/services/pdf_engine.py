@@ -18,7 +18,21 @@ logger = get_context_logger(__name__)
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
-# Fallback Cerebras client (if configured)
+# Gemini client via OpenAI-compatible endpoint (primary)
+_gemini_client = None
+try:
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        _gemini_client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=30.0
+        )
+        logger.info("Gemini client initialized for PDF engine (primary)")
+except Exception as e:
+    logger.warning(f"Failed to initialize Gemini client for PDF engine: {e}")
+
+# Cerebras client (fallback 1)
 _cerebras_client = None
 try:
     cerebras_key = os.getenv("CEREBRAS_API_KEY")
@@ -28,7 +42,7 @@ try:
             base_url="https://api.cerebras.ai/v1",
             timeout=30.0
         )
-        logger.info("Cerebras fallback client initialized for PDF engine")
+        logger.info("Cerebras client initialized for PDF engine (fallback 1)")
 except Exception as e:
     logger.warning(f"Failed to initialize Cerebras client for PDF engine: {e}")
 
@@ -305,12 +319,29 @@ Return ONLY complete HTML starting with <!DOCTYPE html>.
 No markdown fences. No explanation. No preamble.
 """
 
-    # Try Cerebras first, then OpenAI as fallback
+    # Try Gemini → Cerebras → OpenAI
     response = None
     used_provider = None
-    
-    # Try Cerebras first
-    if _cerebras_client:
+    gemini_err = None
+    cerebras_err = None
+
+    # 1. Try Gemini first
+    if _gemini_client:
+        try:
+            response = await _gemini_client.chat.completions.create(
+                model="gemini-1.5-flash",
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            used_provider = "Gemini"
+            logger.debug(f"Gemini response received for PDF generation")
+        except Exception as e:
+            gemini_err = str(e)
+            logger.warning(f"Gemini failed in PDF generation: {e}. Falling back to Cerebras...")
+
+    # 2. Try Cerebras
+    if not response and _cerebras_client:
         try:
             response = await _cerebras_client.chat.completions.create(
                 model="gpt-oss-120b",
@@ -321,9 +352,10 @@ No markdown fences. No explanation. No preamble.
             used_provider = "Cerebras"
             logger.debug(f"Cerebras response received for PDF generation")
         except Exception as e:
+            cerebras_err = str(e)
             logger.warning(f"Cerebras failed in PDF generation: {e}. Falling back to OpenAI...")
-    
-    # Fallback to OpenAI if Cerebras failed or not configured
+
+    # 3. Fallback to OpenAI
     if not response:
         try:
             response = await _client.chat.completions.create(
@@ -335,8 +367,8 @@ No markdown fences. No explanation. No preamble.
             used_provider = "OpenAI"
             logger.debug(f"OpenAI response received for PDF generation")
         except Exception as e:
-            logger.error(f"OpenAI also failed in PDF generation: {e}")
-            raise e
+            logger.error(f"All providers failed for PDF. Gemini: {gemini_err}, Cerebras: {cerebras_err}, OpenAI: {e}")
+            raise Exception(f"All LLM providers failed for PDF generation. Gemini: {gemini_err}, Cerebras: {cerebras_err}, OpenAI: {str(e)}")
 
     if not response:
         raise Exception("No response from any LLM provider for PDF generation")

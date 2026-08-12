@@ -19,7 +19,21 @@ logger = get_context_logger(__name__)
 # Primary OpenAI client
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
-# Fallback Cerebras client (if configured)
+# Gemini client via OpenAI-compatible endpoint (primary)
+_gemini_client = None
+try:
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        _gemini_client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=30.0
+        )
+        logger.info("Gemini client initialized (primary)")
+except Exception as e:
+    logger.warning(f"Failed to initialize Gemini client: {e}")
+
+# Cerebras client (fallback 1)
 _cerebras_client = None
 try:
     cerebras_key = os.getenv("CEREBRAS_API_KEY")
@@ -29,7 +43,7 @@ try:
             base_url="https://api.cerebras.ai/v1",
             timeout=30.0
         )
-        logger.info("Cerebras fallback client initialized")
+        logger.info("Cerebras client initialized (fallback 1)")
 except Exception as e:
     logger.warning(f"Failed to initialize Cerebras client: {e}")
 
@@ -1710,12 +1724,30 @@ async def run_agent(
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
         
-        # Try Cerebras first, then OpenAI as fallback
+        # Try Gemini → Cerebras → OpenAI
         response = None
         used_provider = None
-        
-        # Try Cerebras first
-        if _cerebras_client:
+        cerebras_err = None
+        gemini_err = None
+
+        # 1. Try Gemini first
+        if _gemini_client:
+            try:
+                response = await _gemini_client.chat.completions.create(
+                    model="gemini-1.5-flash",
+                    max_tokens=4096,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                )
+                used_provider = "Gemini"
+                logger.debug(f"Gemini response received, stop_reason: {response.choices[0].finish_reason}")
+            except Exception as e:
+                gemini_err = str(e)
+                logger.warning(f"Gemini failed: {e}. Falling back to Cerebras...")
+
+        # 2. Try Cerebras
+        if not response and _cerebras_client:
             try:
                 response = await _cerebras_client.chat.completions.create(
                     model="gpt-oss-120b",
@@ -1728,9 +1760,10 @@ async def run_agent(
                 used_provider = "Cerebras"
                 logger.debug(f"Cerebras response received, stop_reason: {response.choices[0].finish_reason}")
             except Exception as e:
+                cerebras_err = str(e)
                 logger.warning(f"Cerebras failed: {e}. Falling back to OpenAI...")
-        
-        # Fallback to OpenAI if Cerebras failed or not configured
+
+        # 3. Fallback to OpenAI
         if not response:
             try:
                 response = await _client.chat.completions.create(
@@ -1744,8 +1777,8 @@ async def run_agent(
                 used_provider = "OpenAI"
                 logger.debug(f"OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
             except Exception as e:
-                logger.error(f"OpenAI also failed: {e}", exc_info=True)
-                return f"All LLM providers failed. Cerebras error: {str(e) if not response else 'N/A'}, OpenAI error: {str(e)}", [], {}
+                logger.error(f"All LLM providers failed. Gemini: {gemini_err}, Cerebras: {cerebras_err}, OpenAI: {e}", exc_info=True)
+                return f"All LLM providers failed. Gemini error: {gemini_err}, Cerebras error: {cerebras_err}, OpenAI error: {str(e)}", [], {}
         
         if not response:
             logger.error("No response received from any LLM provider")

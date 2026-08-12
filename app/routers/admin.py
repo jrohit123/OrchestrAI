@@ -17,7 +17,21 @@ ADMIN_TOKEN = required("ADMIN_TOKEN")
 OPENAI_API_KEY = required("OPENAI_API_KEY")
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Fallback Cerebras client (if configured)
+# Gemini client via OpenAI-compatible endpoint (primary)
+gemini_client = None
+try:
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        gemini_client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=30.0
+        )
+        logger.info("Gemini client initialized for admin (primary)")
+except Exception as e:
+    logger.warning(f"Failed to initialize Gemini client for admin: {e}")
+
+# Cerebras client (fallback 1)
 cerebras_client = None
 try:
     cerebras_key = os.getenv("CEREBRAS_API_KEY")
@@ -27,7 +41,7 @@ try:
             base_url="https://api.cerebras.ai/v1",
             timeout=30.0
         )
-        logger.info("Cerebras fallback client initialized for admin")
+        logger.info("Cerebras client initialized for admin (fallback 1)")
 except Exception as e:
     logger.warning(f"Failed to initialize Cerebras client for admin: {e}")
 
@@ -450,12 +464,29 @@ Return ONLY this JSON, no markdown, no explanation:
     last_error = "Unknown error"
     for attempt in range(3):
         try:
-            # Try Cerebras first, then OpenAI as fallback
+            # Try Gemini → Cerebras → OpenAI
             response = None
             used_provider = None
-            
-            # Try Cerebras first
-            if cerebras_client:
+            gemini_err = None
+            cerebras_err = None
+
+            # 1. Try Gemini first
+            if gemini_client:
+                try:
+                    response = await gemini_client.chat.completions.create(
+                        model="gemini-1.5-flash",
+                        max_tokens=4000,
+                        temperature=0.1 + (attempt * 0.1),
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    used_provider = "Gemini"
+                    logger.debug(f"Gemini response received in admin workflow")
+                except Exception as e:
+                    gemini_err = str(e)
+                    logger.warning(f"Gemini failed in admin: {e}. Falling back to Cerebras...")
+
+            # 2. Try Cerebras
+            if not response and cerebras_client:
                 try:
                     response = await cerebras_client.chat.completions.create(
                         model="gpt-oss-120b",
@@ -466,9 +497,10 @@ Return ONLY this JSON, no markdown, no explanation:
                     used_provider = "Cerebras"
                     logger.debug(f"Cerebras response received in admin workflow")
                 except Exception as e:
+                    cerebras_err = str(e)
                     logger.warning(f"Cerebras failed in admin: {e}. Falling back to OpenAI...")
-            
-            # Fallback to OpenAI if Cerebras failed or not configured
+
+            # 3. Fallback to OpenAI
             if not response:
                 try:
                     response = await openai_client.chat.completions.create(
@@ -480,8 +512,9 @@ Return ONLY this JSON, no markdown, no explanation:
                     used_provider = "OpenAI"
                     logger.debug(f"OpenAI response received in admin workflow")
                 except Exception as e:
-                    logger.error(f"OpenAI also failed in admin: {e}")
-                    raise e
+                    last_error = f"All providers failed. Gemini: {gemini_err}, Cerebras: {cerebras_err}, OpenAI: {str(e)}"
+                    logger.error(last_error)
+                    raise Exception(last_error)
 
             if not response:
                 raise Exception("No response from any LLM provider")
