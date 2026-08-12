@@ -1354,7 +1354,7 @@ function appendBotMsg(text) {
   el.className = 'chat-msg bot';
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble';
-  bubble.innerHTML = text.split('\n').join('<br>');
+  bubble.innerHTML = text.split('\\n').join('<br>');
   el.appendChild(bubble);
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
@@ -1372,7 +1372,7 @@ function appendUserMsg(text) {
 function appendSummaryCard(text) {
   const el = document.createElement('div');
   el.className = 'summary-card';
-  el.innerHTML = '&#x1F4CB; <strong>Summary</strong><br><br>' + text.split('\n').join('<br>');
+  el.innerHTML = '&#x1F4CB; <strong>Summary</strong><br><br>' + text.split('\\n').join('<br>');
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
 }
