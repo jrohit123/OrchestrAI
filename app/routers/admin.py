@@ -29,7 +29,7 @@ try:
         )
         logger.info("Cerebras fallback client initialized for admin")
 except Exception as e:
-    logger.warning(f"Failed to initialize Cerebras client for admin: {{e}")
+    logger.warning(f"Failed to initialize Cerebras client for admin: {e}")
 
 
 class PublishRequest(BaseModel):
@@ -60,7 +60,7 @@ async def admin_data(request: Request):
 
     org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
-        return {{"error": "No active org found"}
+        return {"error": "No active org found"}
 
     org_id = str(org["id"])
 
@@ -94,16 +94,16 @@ async def admin_data(request: Request):
         ORDER BY a.created_at DESC LIMIT 8
     """, org_id, source_key=source_key)
 
-    return {{
+    return {
         "org": dict(org),
         "workflows": [dict(w) for w in workflows],
-        "stats": dict(stats) if stats else {{"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
+        "stats": dict(stats) if stats else {"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
         "low_stock": [dict(r) for r in low_stock],
         "recent_logs": [dict(r) for r in recent_logs]
     }
 
 
-@router.post("/admin/api/workflow/{{workflow_id}/toggle")
+@router.post("/admin/api/workflow/{workflow_id}/toggle")
 async def toggle_otp(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -117,10 +117,10 @@ async def toggle_otp(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
         new_val, workflow_id, source_key=source_key
     )
-    return {{"otp_required": new_val}
+    return {"otp_required": new_val}
 
 
-@router.post("/admin/api/workflow/{{workflow_id}/threshold")
+@router.post("/admin/api/workflow/{workflow_id}/threshold")
 async def update_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -130,10 +130,10 @@ async def update_threshold(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
     )
-    return {{"otp_threshold": threshold}
+    return {"otp_threshold": threshold}
 
 
-@router.post("/admin/api/workflow/{{workflow_id}/approval_threshold")
+@router.post("/admin/api/workflow/{workflow_id}/approval_threshold")
 async def update_approval_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -143,7 +143,7 @@ async def update_approval_threshold(workflow_id: str, request: Request):
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
     )
-    return {{"approval_threshold": threshold}
+    return {"approval_threshold": threshold}
 
 
 @router.get("/admin/api/roles")
@@ -151,7 +151,7 @@ async def get_roles(request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
     roles = await fetch_all("SELECT name FROM roles ORDER BY name", source_key=source_key)
-    return [{{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
+    return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
 
 
 @router.get("/admin/api/security")
@@ -161,7 +161,7 @@ async def get_security_settings(request: Request):
     org = await fetch_one(
         "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
     )
-    return {{"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
+    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
 
 
 @router.post("/admin/api/security/ttl")
@@ -178,7 +178,7 @@ async def update_session_ttl(request: Request):
     await execute(
         "UPDATE orgs SET session_ttl_minutes = $1 WHERE id = $2", minutes, org_id, source_key=source_key
     )
-    return {{"session_ttl_minutes": minutes}
+    return {"session_ttl_minutes": minutes}
 
 
 @router.post("/admin/api/sessions/clear")
@@ -188,7 +188,7 @@ async def admin_clear_sessions(request: Request):
     source_key = await get_default_source_key()
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     await clear_all_sessions(str(org["id"]))
-    return {{"cleared": True, "message": "All sessions cleared"}
+    return {"cleared": True, "message": "All sessions cleared"}
 
 
 @router.post("/admin/api/workflow/generate")
@@ -212,11 +212,11 @@ async def generate_workflow_config(request: Request):
     """, source_key=source_key)
 
     # Build compact schema
-    table_cols: dict = {{}
+    table_cols: dict = {}
     for r in schema_rows:
         table_cols.setdefault(r["table_name"], []).append(r["column_name"])
     schema_text = "\n".join(
-        f"  {{t}: {{', '.join(cs)}" for t, cs in sorted(table_cols.items())
+        f"  {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())
     )
 
     # Detect if this is read or action
@@ -229,10 +229,10 @@ async def generate_workflow_config(request: Request):
 The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
 
 ADMIN DESCRIPTION:
-"{{description}"
+"{description}"
 
 DATABASE SCHEMA (available tables):
-{{schema_text}
+{schema_text}
 
 WORKFLOW TYPES:
 - "read": Query the DB and return data. Use when the intent is to VIEW/CHECK/GET/SHOW/LIST/REPORT information.
@@ -461,12 +461,12 @@ Return ONLY this JSON, no markdown, no explanation:
                         model="gpt-oss-120b",
                         max_tokens=4000,
                         temperature=0.1 + (attempt * 0.1),
-                        messages=[{{"role": "user", "content": prompt}]
+                        messages=[{"role": "user", "content": prompt}]
                     )
                     used_provider = "Cerebras"
                     logger.debug(f"Cerebras response received in admin workflow")
                 except Exception as e:
-                    logger.warning(f"Cerebras failed in admin: {{e}. Falling back to OpenAI...")
+                    logger.warning(f"Cerebras failed in admin: {e}. Falling back to OpenAI...")
             
             # Fallback to OpenAI if Cerebras failed or not configured
             if not response:
@@ -475,12 +475,12 @@ Return ONLY this JSON, no markdown, no explanation:
                         model="gpt-4o",
                         max_tokens=4000,
                         temperature=0.1 + (attempt * 0.1),
-                        messages=[{{"role": "user", "content": prompt}]
+                        messages=[{"role": "user", "content": prompt}]
                     )
                     used_provider = "OpenAI"
                     logger.debug(f"OpenAI response received in admin workflow")
                 except Exception as e:
-                    logger.error(f"OpenAI also failed in admin: {{e}")
+                    logger.error(f"OpenAI also failed in admin: {e}")
                     raise e
 
             if not response:
@@ -488,7 +488,7 @@ Return ONLY this JSON, no markdown, no explanation:
 
             content = response.choices[0].message.content.strip()
             if "```" in content:
-                start = content.find("{{")
+                start = content.find("{")
                 end   = content.rfind("}") + 1
                 content = content[start:end]
 
@@ -503,38 +503,38 @@ Return ONLY this JSON, no markdown, no explanation:
             # Validate — if any field is missing, retry instead of crashing
             phrases = config.get("training_phrases", [])
             if not phrases or len(phrases) < 5:
-                last_error = f"Attempt {{attempt+1}: only {{len(phrases)} training_phrases (need ≥5)"
-                logger.warning(f"{{last_error} — retrying")
+                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need ≥5)"
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("entity_schema"):
-                last_error = f"Attempt {{attempt+1}: empty entity_schema"
-                logger.warning(f"{{last_error} — retrying")
+                last_error = f"Attempt {attempt+1}: empty entity_schema"
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("business_glossary"):
-                last_error = f"Attempt {{attempt+1}: empty business_glossary"
-                logger.warning(f"{{last_error} — retrying")
+                last_error = f"Attempt {attempt+1}: empty business_glossary"
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("llm_system_prompt"):
-                last_error = f"Attempt {{attempt+1}: empty llm_system_prompt"
-                logger.warning(f"{{last_error} — retrying")
+                last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
+                logger.warning(f"{last_error} — retrying")
                 continue
             # Action workflows must have steps[]
             if config.get("workflow_type") == "action" and not config.get("steps"):
-                last_error = f"Attempt {{attempt+1}: action workflow missing steps[]"
-                logger.warning(f"{{last_error} — retrying")
+                last_error = f"Attempt {attempt+1}: action workflow missing steps[]"
+                logger.warning(f"{last_error} — retrying")
                 continue
 
-            logger.info(f"Workflow generation succeeded on attempt {{attempt+1}")
+            logger.info(f"Workflow generation succeeded on attempt {attempt+1}")
             return config
 
         except json.JSONDecodeError as e:
-            last_error = f"Attempt {{attempt+1}: invalid JSON — {{e}"
-            logger.warning(f"{{last_error} — retrying")
+            last_error = f"Attempt {attempt+1}: invalid JSON — {e}"
+            logger.warning(f"{last_error} — retrying")
             continue
 
     raise HTTPException(
         status_code=500,
-        detail=f"Failed after 3 attempts. Last error: {{last_error}"
+        detail=f"Failed after 3 attempts. Last error: {last_error}"
     )
 
 
@@ -558,8 +558,8 @@ async def save_generated_workflow(request: Request):
 
     # Validate mandatory fields are not empty
     training_phrases = body.get("training_phrases", [])
-    entity_schema = body.get("entity_schema", {{})
-    business_glossary = body.get("business_glossary", {{})
+    entity_schema = body.get("entity_schema", {})
+    business_glossary = body.get("business_glossary", {})
     llm_system_prompt = body.get("llm_system_prompt")
 
     if not training_phrases or len(training_phrases) < 5:
@@ -599,11 +599,11 @@ async def save_generated_workflow(request: Request):
             body.get("description"),
             body.get("workflow_type", "action"),
             json.dumps(body.get("training_phrases", [])),
-            json.dumps(body.get("entity_schema", {{})),
+            json.dumps(body.get("entity_schema", {})),
             body.get("sql_template"),
             json.dumps(body.get("sql_params_order", [])),
             body.get("response_format") or "generic",
-            json.dumps(body.get("business_glossary", {{})),
+            json.dumps(body.get("business_glossary", {})),
             body.get("llm_system_prompt"),
             body.get("adapter_method") or "generic",
             body.get("otp_required", False),
@@ -612,11 +612,11 @@ async def save_generated_workflow(request: Request):
             json.dumps(body.get("steps", [])),
             json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,
             body.get("response_template"),
-            json.dumps(body.get("calc_rules", {{})),
+            json.dumps(body.get("calc_rules", {})),
             source_key=source_key
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {{e}")
+        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
 
     # Grant permissions to selected roles
     intent_key = body.get("intent_key")
@@ -630,7 +630,7 @@ async def save_generated_workflow(request: Request):
             WHERE org_id = $2 AND name = $3 AND NOT $1 = ANY(permissions)
         """, intent_key, org_id, role_name, source_key=source_key)
 
-    return {{"success": True, "message": f"Workflow '{{body.get('name')}' created successfully"}
+    return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
 
 @router.post("/admin/api/gst-rate")
@@ -645,12 +645,12 @@ async def update_gst_rate(request: Request):
     await execute(
         "UPDATE orgs SET gst_rate = $1 WHERE id = $2", gst, org_id, source_key=source_key
     )
-    return {{"gst_rate": gst}
+    return {"gst_rate": gst}
 
 
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-@router.get("/admin/api/workflow/{{workflow_id}/detail")
+@router.get("/admin/api/workflow/{workflow_id}/detail")
 async def get_workflow_detail(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -660,7 +660,7 @@ async def get_workflow_detail(workflow_id: str, request: Request):
     return dict(row)
 
 
-@router.put("/admin/api/workflow/{{workflow_id}")
+@router.put("/admin/api/workflow/{workflow_id}")
 async def update_workflow(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -677,7 +677,7 @@ async def update_workflow(workflow_id: str, request: Request):
         "business_glossary", "llm_system_prompt", "pdf_config",
         "response_template", "workflow_type"
     ]
-    jsonb_fields = {{
+    jsonb_fields = {
         "training_phrases", "entity_schema", "calc_rules", "steps",
         "sql_params_order", "business_glossary", "pdf_config"
     }
@@ -692,7 +692,7 @@ async def update_workflow(workflow_id: str, request: Request):
     from app.services.workflow_validator import validate_workflow_config
     problems = validate_workflow_config(merged)
     if problems:
-        raise HTTPException(status_code=400, detail={{
+        raise HTTPException(status_code=400, detail={
             "error": "Config is inconsistent — not saved.",
             "problems": problems
         })
@@ -700,24 +700,24 @@ async def update_workflow(workflow_id: str, request: Request):
     sets, vals = [], []
     for field in allowed:
         if field in body:
-            sets.append(f"{{field} = ${{len(vals)+2}")
+            sets.append(f"{field} = ${len(vals)+2}")
             val = body[field]
             if field in jsonb_fields:
                 val = json.dumps(val) if not isinstance(val, str) else val
-                sets[-1] = f"{{field} = ${{len(vals)+2}::jsonb"
+                sets[-1] = f"{field} = ${len(vals)+2}::jsonb"
             vals.append(val)
 
     if not sets:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     await execute(
-        f"UPDATE workflows SET {{', '.join(sets)} WHERE id = $1",
+        f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
         workflow_id, *vals, source_key=source_key
     )
-    return {{"success": True}
+    return {"success": True}
 
 
-@router.delete("/admin/api/workflow/{{workflow_id}")
+@router.delete("/admin/api/workflow/{workflow_id}")
 async def delete_workflow(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -731,7 +731,7 @@ async def delete_workflow(workflow_id: str, request: Request):
         WHERE org_id = $2
     """, row["intent_key"], row["org_id"], source_key=source_key)
     await execute("DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
-    return {{"success": True, "deleted": row["intent_key"]}
+    return {"success": True, "deleted": row["intent_key"]}
 
 
 @router.post("/admin/api/workflow/validate")
@@ -741,10 +741,10 @@ async def validate_workflow_endpoint(request: Request):
     body = await request.json()
     from app.services.workflow_validator import validate_workflow_config
     problems = validate_workflow_config(body)
-    return {{"valid": len(problems) == 0, "problems": problems}
+    return {"valid": len(problems) == 0, "problems": problems}
 
 
-@router.get("/admin/api/workflow-builder/preview-pdf/{{draft_id}")
+@router.get("/admin/api/workflow-builder/preview-pdf/{draft_id}")
 async def preview_workflow_pdf(draft_id: str, request: Request):
     """Generate a sample PDF from a compiled draft using placeholder data."""
     _check_token(request)
@@ -760,7 +760,7 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
     try:
         pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Preview failed: {{e}")
+        raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
     return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")
 
 
@@ -798,11 +798,11 @@ async def extract_pdf_template_endpoint(request: Request):
     try:
         spec = await extract_pdf_template(pdf_bytes, doc_type_hint)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not analyze PDF: {{e}")
+        raise HTTPException(status_code=500, detail=f"Could not analyze PDF: {e}")
     return spec
 
 
-@router.get("/admin/api/workflow-builder/draft/{{draft_id}/publish-info")
+@router.get("/admin/api/workflow-builder/draft/{draft_id}/publish-info")
 async def get_draft_publish_info(draft_id: str, request: Request):
     """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
     _check_token(request)
@@ -820,13 +820,13 @@ async def get_draft_publish_info(draft_id: str, request: Request):
     # Suggest command from intent_key if not set
     suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
     
-    return {{
+    return {
         "draft_id": str(draft["id"]),
         "summary": draft.get("plain_english_summary"),
         "intent_key": draft.get("intent_key"),
         "workflow_type": draft.get("workflow_type"),
         "roles": [r["name"] for r in roles],
-        "prefill": {{
+        "prefill": {
             "otp_required": draft.get("otp_required", False),
             "otp_threshold": draft.get("otp_threshold"),
             "approval_threshold": draft.get("approval_threshold"),
@@ -835,7 +835,7 @@ async def get_draft_publish_info(draft_id: str, request: Request):
     }
 
 
-@router.post("/admin/api/workflow-builder/publish/{{draft_id}")
+@router.post("/admin/api/workflow-builder/publish/{draft_id}")
 async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request: Request):
     """Publish a draft to live workflows with structured governance settings."""
     _check_token(request)
@@ -846,11 +846,11 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         raise HTTPException(status_code=409, detail="Draft is not ready for review")
     
     # Server-side validation
-    valid_roles = {{r["name"] for r in await fetch_all(
+    valid_roles = {r["name"] for r in await fetch_all(
         "SELECT name FROM roles WHERE org_id = $1", draft["org_id"], source_key=source_key
     )}
     if not body.roles or not set(body.roles) <= valid_roles:
-        raise HTTPException(422, f"Roles must be a non-empty subset of {{sorted(valid_roles)}")
+        raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
     
     if draft["workflow_type"] == "read" and (body.otp_required or body.approval_required):
         raise HTTPException(422, "OTP/approval don't apply to read workflows")
@@ -859,7 +859,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         raise HTTPException(422, "OTP enabled but no threshold given")
     
     cmd = body.slash_command.strip().lstrip("/").lower()
-    if not re.fullmatch(r"[a-z0-9_]{{2,32}", cmd):
+    if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
         raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
     
     # Check command uniqueness
@@ -868,7 +868,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         draft["org_id"], cmd, source_key=source_key
     )
     if existing:
-        raise HTTPException(409, f"Command '/{{cmd}' is already in use")
+        raise HTTPException(409, f"Command '/{cmd}' is already in use")
     
     # Atomic transaction: insert workflow + grant permissions + mark draft published
     async with (await get_pool(source_key)).acquire() as conn:
@@ -899,13 +899,13 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
                 draft.get("description", ""),
                 draft.get("workflow_type") or "action",
                 draft.get("training_phrases", "[]"),
-                draft.get("entity_schema", "{{}"),
-                draft.get("calc_rules", "{{}"),
+                draft.get("entity_schema", "{}"),
+                draft.get("calc_rules", "{}"),
                 draft.get("steps", "[]"),
                 draft.get("sql_template"),
                 draft.get("sql_params_order", "[]"),
                 draft.get("response_format") or "generic",
-                draft.get("business_glossary", "{{}"),
+                draft.get("business_glossary", "{}"),
                 draft.get("llm_system_prompt"),
                 draft.get("pdf_config"),
                 draft.get("response_template"),
@@ -930,7 +930,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
                 WHERE id = $1
             """, draft_id, wf_id)
     
-    return {{"ok": True, "workflow_id": str(wf_id)}
+    return {"ok": True, "workflow_id": str(wf_id)}
 
 
 
