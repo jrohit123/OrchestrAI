@@ -29,7 +29,7 @@ try:
         )
         logger.info("Cerebras fallback client initialized for admin")
 except Exception as e:
-    logger.warning(f"Failed to initialize Cerebras client for admin: {e}")
+    logger.warning(f"Failed to initialize Cerebras client for admin: {{e}")
 
 
 class PublishRequest(BaseModel):
@@ -60,7 +60,7 @@ async def admin_data(request: Request):
 
     org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
-        return {"error": "No active org found"}
+        return {{"error": "No active org found"}
 
     org_id = str(org["id"])
 
@@ -94,16 +94,16 @@ async def admin_data(request: Request):
         ORDER BY a.created_at DESC LIMIT 8
     """, org_id, source_key=source_key)
 
-    return {
+    return {{
         "org": dict(org),
         "workflows": [dict(w) for w in workflows],
-        "stats": dict(stats) if stats else {"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
+        "stats": dict(stats) if stats else {{"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
         "low_stock": [dict(r) for r in low_stock],
         "recent_logs": [dict(r) for r in recent_logs]
     }
 
 
-@router.post("/admin/api/workflow/{workflow_id}/toggle")
+@router.post("/admin/api/workflow/{{workflow_id}/toggle")
 async def toggle_otp(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -117,10 +117,10 @@ async def toggle_otp(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
         new_val, workflow_id, source_key=source_key
     )
-    return {"otp_required": new_val}
+    return {{"otp_required": new_val}
 
 
-@router.post("/admin/api/workflow/{workflow_id}/threshold")
+@router.post("/admin/api/workflow/{{workflow_id}/threshold")
 async def update_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -130,10 +130,10 @@ async def update_threshold(workflow_id: str, request: Request):
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
     )
-    return {"otp_threshold": threshold}
+    return {{"otp_threshold": threshold}
 
 
-@router.post("/admin/api/workflow/{workflow_id}/approval_threshold")
+@router.post("/admin/api/workflow/{{workflow_id}/approval_threshold")
 async def update_approval_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -143,7 +143,7 @@ async def update_approval_threshold(workflow_id: str, request: Request):
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
     )
-    return {"approval_threshold": threshold}
+    return {{"approval_threshold": threshold}
 
 
 @router.get("/admin/api/roles")
@@ -151,7 +151,7 @@ async def get_roles(request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
     roles = await fetch_all("SELECT name FROM roles ORDER BY name", source_key=source_key)
-    return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
+    return [{{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
 
 
 @router.get("/admin/api/security")
@@ -161,7 +161,7 @@ async def get_security_settings(request: Request):
     org = await fetch_one(
         "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
     )
-    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
+    return {{"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
 
 
 @router.post("/admin/api/security/ttl")
@@ -178,7 +178,7 @@ async def update_session_ttl(request: Request):
     await execute(
         "UPDATE orgs SET session_ttl_minutes = $1 WHERE id = $2", minutes, org_id, source_key=source_key
     )
-    return {"session_ttl_minutes": minutes}
+    return {{"session_ttl_minutes": minutes}
 
 
 @router.post("/admin/api/sessions/clear")
@@ -188,7 +188,7 @@ async def admin_clear_sessions(request: Request):
     source_key = await get_default_source_key()
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     await clear_all_sessions(str(org["id"]))
-    return {"cleared": True, "message": "All sessions cleared"}
+    return {{"cleared": True, "message": "All sessions cleared"}
 
 
 @router.post("/admin/api/workflow/generate")
@@ -212,11 +212,11 @@ async def generate_workflow_config(request: Request):
     """, source_key=source_key)
 
     # Build compact schema
-    table_cols: dict = {}
+    table_cols: dict = {{}
     for r in schema_rows:
         table_cols.setdefault(r["table_name"], []).append(r["column_name"])
     schema_text = "\n".join(
-        f"  {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())
+        f"  {{t}: {{', '.join(cs)}" for t, cs in sorted(table_cols.items())
     )
 
     # Detect if this is read or action
@@ -229,10 +229,10 @@ async def generate_workflow_config(request: Request):
 The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
 
 ADMIN DESCRIPTION:
-"{description}"
+"{{description}"
 
 DATABASE SCHEMA (available tables):
-{schema_text}
+{{schema_text}
 
 WORKFLOW TYPES:
 - "read": Query the DB and return data. Use when the intent is to VIEW/CHECK/GET/SHOW/LIST/REPORT information.
@@ -461,12 +461,12 @@ Return ONLY this JSON, no markdown, no explanation:
                         model="gpt-oss-120b",
                         max_tokens=4000,
                         temperature=0.1 + (attempt * 0.1),
-                        messages=[{"role": "user", "content": prompt}]
+                        messages=[{{"role": "user", "content": prompt}]
                     )
                     used_provider = "Cerebras"
                     logger.debug(f"Cerebras response received in admin workflow")
                 except Exception as e:
-                    logger.warning(f"Cerebras failed in admin: {e}. Falling back to OpenAI...")
+                    logger.warning(f"Cerebras failed in admin: {{e}. Falling back to OpenAI...")
             
             # Fallback to OpenAI if Cerebras failed or not configured
             if not response:
@@ -475,12 +475,12 @@ Return ONLY this JSON, no markdown, no explanation:
                         model="gpt-4o",
                         max_tokens=4000,
                         temperature=0.1 + (attempt * 0.1),
-                        messages=[{"role": "user", "content": prompt}]
+                        messages=[{{"role": "user", "content": prompt}]
                     )
                     used_provider = "OpenAI"
                     logger.debug(f"OpenAI response received in admin workflow")
                 except Exception as e:
-                    logger.error(f"OpenAI also failed in admin: {e}")
+                    logger.error(f"OpenAI also failed in admin: {{e}")
                     raise e
 
             if not response:
@@ -488,7 +488,7 @@ Return ONLY this JSON, no markdown, no explanation:
 
             content = response.choices[0].message.content.strip()
             if "```" in content:
-                start = content.find("{")
+                start = content.find("{{")
                 end   = content.rfind("}") + 1
                 content = content[start:end]
 
@@ -503,38 +503,38 @@ Return ONLY this JSON, no markdown, no explanation:
             # Validate — if any field is missing, retry instead of crashing
             phrases = config.get("training_phrases", [])
             if not phrases or len(phrases) < 5:
-                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need ≥5)"
-                logger.warning(f"{last_error} — retrying")
+                last_error = f"Attempt {{attempt+1}: only {{len(phrases)} training_phrases (need ≥5)"
+                logger.warning(f"{{last_error} — retrying")
                 continue
             if not config.get("entity_schema"):
-                last_error = f"Attempt {attempt+1}: empty entity_schema"
-                logger.warning(f"{last_error} — retrying")
+                last_error = f"Attempt {{attempt+1}: empty entity_schema"
+                logger.warning(f"{{last_error} — retrying")
                 continue
             if not config.get("business_glossary"):
-                last_error = f"Attempt {attempt+1}: empty business_glossary"
-                logger.warning(f"{last_error} — retrying")
+                last_error = f"Attempt {{attempt+1}: empty business_glossary"
+                logger.warning(f"{{last_error} — retrying")
                 continue
             if not config.get("llm_system_prompt"):
-                last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
-                logger.warning(f"{last_error} — retrying")
+                last_error = f"Attempt {{attempt+1}: empty llm_system_prompt"
+                logger.warning(f"{{last_error} — retrying")
                 continue
             # Action workflows must have steps[]
             if config.get("workflow_type") == "action" and not config.get("steps"):
-                last_error = f"Attempt {attempt+1}: action workflow missing steps[]"
-                logger.warning(f"{last_error} — retrying")
+                last_error = f"Attempt {{attempt+1}: action workflow missing steps[]"
+                logger.warning(f"{{last_error} — retrying")
                 continue
 
-            logger.info(f"Workflow generation succeeded on attempt {attempt+1}")
+            logger.info(f"Workflow generation succeeded on attempt {{attempt+1}")
             return config
 
         except json.JSONDecodeError as e:
-            last_error = f"Attempt {attempt+1}: invalid JSON — {e}"
-            logger.warning(f"{last_error} — retrying")
+            last_error = f"Attempt {{attempt+1}: invalid JSON — {{e}"
+            logger.warning(f"{{last_error} — retrying")
             continue
 
     raise HTTPException(
         status_code=500,
-        detail=f"Failed after 3 attempts. Last error: {last_error}"
+        detail=f"Failed after 3 attempts. Last error: {{last_error}"
     )
 
 
@@ -558,8 +558,8 @@ async def save_generated_workflow(request: Request):
 
     # Validate mandatory fields are not empty
     training_phrases = body.get("training_phrases", [])
-    entity_schema = body.get("entity_schema", {})
-    business_glossary = body.get("business_glossary", {})
+    entity_schema = body.get("entity_schema", {{})
+    business_glossary = body.get("business_glossary", {{})
     llm_system_prompt = body.get("llm_system_prompt")
 
     if not training_phrases or len(training_phrases) < 5:
@@ -599,11 +599,11 @@ async def save_generated_workflow(request: Request):
             body.get("description"),
             body.get("workflow_type", "action"),
             json.dumps(body.get("training_phrases", [])),
-            json.dumps(body.get("entity_schema", {})),
+            json.dumps(body.get("entity_schema", {{})),
             body.get("sql_template"),
             json.dumps(body.get("sql_params_order", [])),
             body.get("response_format") or "generic",
-            json.dumps(body.get("business_glossary", {})),
+            json.dumps(body.get("business_glossary", {{})),
             body.get("llm_system_prompt"),
             body.get("adapter_method") or "generic",
             body.get("otp_required", False),
@@ -612,11 +612,11 @@ async def save_generated_workflow(request: Request):
             json.dumps(body.get("steps", [])),
             json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,
             body.get("response_template"),
-            json.dumps(body.get("calc_rules", {})),
+            json.dumps(body.get("calc_rules", {{})),
             source_key=source_key
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
+        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {{e}")
 
     # Grant permissions to selected roles
     intent_key = body.get("intent_key")
@@ -630,7 +630,7 @@ async def save_generated_workflow(request: Request):
             WHERE org_id = $2 AND name = $3 AND NOT $1 = ANY(permissions)
         """, intent_key, org_id, role_name, source_key=source_key)
 
-    return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
+    return {{"success": True, "message": f"Workflow '{{body.get('name')}' created successfully"}
 
 
 @router.post("/admin/api/gst-rate")
@@ -645,12 +645,12 @@ async def update_gst_rate(request: Request):
     await execute(
         "UPDATE orgs SET gst_rate = $1 WHERE id = $2", gst, org_id, source_key=source_key
     )
-    return {"gst_rate": gst}
+    return {{"gst_rate": gst}
 
 
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-@router.get("/admin/api/workflow/{workflow_id}/detail")
+@router.get("/admin/api/workflow/{{workflow_id}/detail")
 async def get_workflow_detail(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -660,7 +660,7 @@ async def get_workflow_detail(workflow_id: str, request: Request):
     return dict(row)
 
 
-@router.put("/admin/api/workflow/{workflow_id}")
+@router.put("/admin/api/workflow/{{workflow_id}")
 async def update_workflow(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
@@ -677,7 +677,7 @@ async def update_workflow(workflow_id: str, request: Request):
         "business_glossary", "llm_system_prompt", "pdf_config",
         "response_template", "workflow_type"
     ]
-    jsonb_fields = {
+    jsonb_fields = {{
         "training_phrases", "entity_schema", "calc_rules", "steps",
         "sql_params_order", "business_glossary", "pdf_config"
     }
@@ -692,7 +692,7 @@ async def update_workflow(workflow_id: str, request: Request):
     from app.services.workflow_validator import validate_workflow_config
     problems = validate_workflow_config(merged)
     if problems:
-        raise HTTPException(status_code=400, detail={
+        raise HTTPException(status_code=400, detail={{
             "error": "Config is inconsistent — not saved.",
             "problems": problems
         })
@@ -700,24 +700,24 @@ async def update_workflow(workflow_id: str, request: Request):
     sets, vals = [], []
     for field in allowed:
         if field in body:
-            sets.append(f"{field} = ${len(vals)+2}")
+            sets.append(f"{{field} = ${{len(vals)+2}")
             val = body[field]
             if field in jsonb_fields:
                 val = json.dumps(val) if not isinstance(val, str) else val
-                sets[-1] = f"{field} = ${len(vals)+2}::jsonb"
+                sets[-1] = f"{{field} = ${{len(vals)+2}::jsonb"
             vals.append(val)
 
     if not sets:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     await execute(
-        f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
+        f"UPDATE workflows SET {{', '.join(sets)} WHERE id = $1",
         workflow_id, *vals, source_key=source_key
     )
-    return {"success": True}
+    return {{"success": True}
 
 
-@router.delete("/admin/api/workflow/{workflow_id}")
+@router.delete("/admin/api/workflow/{{workflow_id}")
 async def delete_workflow(workflow_id: str, request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
@@ -731,7 +731,7 @@ async def delete_workflow(workflow_id: str, request: Request):
         WHERE org_id = $2
     """, row["intent_key"], row["org_id"], source_key=source_key)
     await execute("DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
-    return {"success": True, "deleted": row["intent_key"]}
+    return {{"success": True, "deleted": row["intent_key"]}
 
 
 @router.post("/admin/api/workflow/validate")
@@ -741,10 +741,10 @@ async def validate_workflow_endpoint(request: Request):
     body = await request.json()
     from app.services.workflow_validator import validate_workflow_config
     problems = validate_workflow_config(body)
-    return {"valid": len(problems) == 0, "problems": problems}
+    return {{"valid": len(problems) == 0, "problems": problems}
 
 
-@router.get("/admin/api/workflow-builder/preview-pdf/{draft_id}")
+@router.get("/admin/api/workflow-builder/preview-pdf/{{draft_id}")
 async def preview_workflow_pdf(draft_id: str, request: Request):
     """Generate a sample PDF from a compiled draft using placeholder data."""
     _check_token(request)
@@ -760,7 +760,7 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
     try:
         pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Preview failed: {{e}")
     return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")
 
 
@@ -798,11 +798,11 @@ async def extract_pdf_template_endpoint(request: Request):
     try:
         spec = await extract_pdf_template(pdf_bytes, doc_type_hint)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not analyze PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not analyze PDF: {{e}")
     return spec
 
 
-@router.get("/admin/api/workflow-builder/draft/{draft_id}/publish-info")
+@router.get("/admin/api/workflow-builder/draft/{{draft_id}/publish-info")
 async def get_draft_publish_info(draft_id: str, request: Request):
     """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
     _check_token(request)
@@ -820,13 +820,13 @@ async def get_draft_publish_info(draft_id: str, request: Request):
     # Suggest command from intent_key if not set
     suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
     
-    return {
+    return {{
         "draft_id": str(draft["id"]),
         "summary": draft.get("plain_english_summary"),
         "intent_key": draft.get("intent_key"),
         "workflow_type": draft.get("workflow_type"),
         "roles": [r["name"] for r in roles],
-        "prefill": {
+        "prefill": {{
             "otp_required": draft.get("otp_required", False),
             "otp_threshold": draft.get("otp_threshold"),
             "approval_threshold": draft.get("approval_threshold"),
@@ -835,7 +835,7 @@ async def get_draft_publish_info(draft_id: str, request: Request):
     }
 
 
-@router.post("/admin/api/workflow-builder/publish/{draft_id}")
+@router.post("/admin/api/workflow-builder/publish/{{draft_id}")
 async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request: Request):
     """Publish a draft to live workflows with structured governance settings."""
     _check_token(request)
@@ -846,11 +846,11 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         raise HTTPException(status_code=409, detail="Draft is not ready for review")
     
     # Server-side validation
-    valid_roles = {r["name"] for r in await fetch_all(
+    valid_roles = {{r["name"] for r in await fetch_all(
         "SELECT name FROM roles WHERE org_id = $1", draft["org_id"], source_key=source_key
     )}
     if not body.roles or not set(body.roles) <= valid_roles:
-        raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
+        raise HTTPException(422, f"Roles must be a non-empty subset of {{sorted(valid_roles)}")
     
     if draft["workflow_type"] == "read" and (body.otp_required or body.approval_required):
         raise HTTPException(422, "OTP/approval don't apply to read workflows")
@@ -859,7 +859,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         raise HTTPException(422, "OTP enabled but no threshold given")
     
     cmd = body.slash_command.strip().lstrip("/").lower()
-    if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
+    if not re.fullmatch(r"[a-z0-9_]{{2,32}", cmd):
         raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
     
     # Check command uniqueness
@@ -868,7 +868,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
         draft["org_id"], cmd, source_key=source_key
     )
     if existing:
-        raise HTTPException(409, f"Command '/{cmd}' is already in use")
+        raise HTTPException(409, f"Command '/{{cmd}' is already in use")
     
     # Atomic transaction: insert workflow + grant permissions + mark draft published
     async with (await get_pool(source_key)).acquire() as conn:
@@ -899,13 +899,13 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
                 draft.get("description", ""),
                 draft.get("workflow_type") or "action",
                 draft.get("training_phrases", "[]"),
-                draft.get("entity_schema", "{}"),
-                draft.get("calc_rules", "{}"),
+                draft.get("entity_schema", "{{}"),
+                draft.get("calc_rules", "{{}"),
                 draft.get("steps", "[]"),
                 draft.get("sql_template"),
                 draft.get("sql_params_order", "[]"),
                 draft.get("response_format") or "generic",
-                draft.get("business_glossary", "{}"),
+                draft.get("business_glossary", "{{}"),
                 draft.get("llm_system_prompt"),
                 draft.get("pdf_config"),
                 draft.get("response_template"),
@@ -930,7 +930,7 @@ async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request
                 WHERE id = $1
             """, draft_id, wf_id)
     
-    return {"ok": True, "workflow_id": str(wf_id)}
+    return {{"ok": True, "workflow_id": str(wf_id)}
 
 
 
@@ -943,61 +943,61 @@ def _build_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OrchestrAI Admin</title>
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;color:#1a1a2e;font-size:14px}}
-.header{{background:#185FA5;color:#fff;padding:16px 28px;display:flex;justify-content:space-between;align-items:center}}
-.header h1{{font-size:20px;font-weight:600}}
-.container{{max-width:1200px;margin:0 auto;padding:24px 20px}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}}
-.stat-card{{background:#fff;border-radius:10px;padding:18px 20px;border-left:4px solid #185FA5;box-shadow:0 1px 4px rgba(0,0,0,0.08)}}
-.stat-label{{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px}}
-.stat-value{{font-size:26px;font-weight:600;color:#185FA5}}
-.stat-sub{{font-size:11px;color:#aaa;margin-top:3px}}
-.card{{background:#fff;border-radius:10px;padding:20px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,0.08)}}
-.card-title{{font-size:14px;font-weight:600;color:#185FA5;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #e8edf5}}
-table{{width:100%;border-collapse:collapse}}
-th{{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:#888;padding:0 0 10px 0;font-weight:500}}
-td{{padding:10px 0;border-bottom:1px solid #f0f4f8;font-size:13px;vertical-align:middle}}
-tr:last-child td{{border-bottom:none}}
-.badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}}
-.badge-active{{background:#dcfce7;color:#16a34a}}
-.badge-inactive{{background:#fee2e2;color:#dc2626}}
-.badge-read{{background:#dbeafe;color:#185FA5}}
-.badge-action{{background:#fef3c7;color:#d97706}}
-.toggle{{position:relative;width:42px;height:24px;display:inline-block}}
-.toggle input{{opacity:0;width:0;height:0}}
-.slider{{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#ccc;border-radius:24px;transition:.3s}}
-.slider:before{{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.3s}}
-input:checked+.slider{{background:#185FA5}}
-input:checked+.slider:before{{transform:translateX(18px)}}
-.threshold-input{{border:1px solid #e8edf5;border-radius:6px;padding:4px 8px;font-size:12px;color:#1a1a2e}}
-.threshold-input:focus{{outline:none;border-color:#185FA5}}
-.btn{{border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:500}}
-.btn-primary{{background:#185FA5;color:#fff}}
-.btn-purple{{background:#8b5cf6;color:#fff}}
-.btn-danger{{background:#dc2626;color:#fff}}
-.btn-gray{{background:#e5e7eb;color:#374151}}
-.btn:hover{{opacity:0.88}}
-.loading{{text-align:center;padding:40px;color:#888}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;color:#1a1a2e;font-size:14px}
+.header{background:#185FA5;color:#fff;padding:16px 28px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:20px;font-weight:600}
+.container{max-width:1200px;margin:0 auto;padding:24px 20px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:10px;padding:18px 20px;border-left:4px solid #185FA5;box-shadow:0 1px 4px rgba(0,0,0,0.08)}
+.stat-label{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px}
+.stat-value{font-size:26px;font-weight:600;color:#185FA5}
+.stat-sub{font-size:11px;color:#aaa;margin-top:3px}
+.card{background:#fff;border-radius:10px;padding:20px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,0.08)}
+.card-title{font-size:14px;font-weight:600;color:#185FA5;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #e8edf5}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:#888;padding:0 0 10px 0;font-weight:500}
+td{padding:10px 0;border-bottom:1px solid #f0f4f8;font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+.badge-active{background:#dcfce7;color:#16a34a}
+.badge-inactive{background:#fee2e2;color:#dc2626}
+.badge-read{background:#dbeafe;color:#185FA5}
+.badge-action{background:#fef3c7;color:#d97706}
+.toggle{position:relative;width:42px;height:24px;display:inline-block}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#ccc;border-radius:24px;transition:.3s}
+.slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.3s}
+input:checked+.slider{background:#185FA5}
+input:checked+.slider:before{transform:translateX(18px)}
+.threshold-input{border:1px solid #e8edf5;border-radius:6px;padding:4px 8px;font-size:12px;color:#1a1a2e}
+.threshold-input:focus{outline:none;border-color:#185FA5}
+.btn{border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:500}
+.btn-primary{background:#185FA5;color:#fff}
+.btn-purple{background:#8b5cf6;color:#fff}
+.btn-danger{background:#dc2626;color:#fff}
+.btn-gray{background:#e5e7eb;color:#374151}
+.btn:hover{opacity:0.88}
+.loading{text-align:center;padding:40px;color:#888}
 /* Modal */
-.modal-bg{{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center}}
-.modal-bg.open{{display:flex}}
-.modal{{background:#fff;border-radius:12px;padding:24px;width:90%;max-width:800px;max-height:90vh;overflow-y:auto}}
-.modal-title{{font-size:16px;font-weight:600;margin-bottom:16px;color:#185FA5}}
-.field-row{{margin-bottom:12px}}
-.field-label{{font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px}}
-.field-input{{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}}
-.field-input:focus{{outline:none;border-color:#8b5cf6}}
-.json-editor{{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:12px;font-family:monospace;min-height:120px;resize:vertical}}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:12px;padding:24px;width:90%;max-width:800px;max-height:90vh;overflow-y:auto}
+.modal-title{font-size:16px;font-weight:600;margin-bottom:16px;color:#185FA5}
+.field-row{margin-bottom:12px}
+.field-label{font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px}
+.field-input{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}
+.field-input:focus{outline:none;border-color:#8b5cf6}
+.json-editor{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:12px;font-family:monospace;min-height:120px;resize:vertical}
 /* Chat builder */
-.chat-messages{{height:320px;overflow-y:auto;border:1px solid #e8edf5;border-radius:8px;padding:12px;background:#fafbfc;margin-bottom:10px}}
-.chat-msg{{margin-bottom:10px;display:flex}}
-.chat-msg.user{{justify-content:flex-end}}
-.chat-bubble{{max-width:80%;padding:9px 13px;border-radius:10px;font-size:13px;white-space:pre-wrap;line-height:1.5}}
-.chat-msg.user .chat-bubble{{background:#8b5cf6;color:#fff}}
-.chat-msg.bot .chat-bubble{{background:#fff;border:1px solid #e8edf5;color:#1a1a2e}}
-.summary-card{{background:#f0fdf4;border:2px solid #16a34a;border-radius:8px;padding:14px;margin:10px 0;font-size:13px;line-height:1.6}}
-.chat-input-row{{display:flex;gap:8px}}
+.chat-messages{height:320px;overflow-y:auto;border:1px solid #e8edf5;border-radius:8px;padding:12px;background:#fafbfc;margin-bottom:10px}
+.chat-msg{margin-bottom:10px;display:flex}
+.chat-msg.user{justify-content:flex-end}
+.chat-bubble{max-width:80%;padding:9px 13px;border-radius:10px;font-size:13px;white-space:pre-wrap;line-height:1.5}
+.chat-msg.user .chat-bubble{background:#8b5cf6;color:#fff}
+.chat-msg.bot .chat-bubble{background:#fff;border:1px solid #e8edf5;color:#1a1a2e}
+.summary-card{background:#f0fdf4;border:2px solid #16a34a;border-radius:8px;padding:14px;margin:10px 0;font-size:13px;line-height:1.6}
+.chat-input-row{display:flex;gap:8px}
 </style>
 </head>
 <body>
@@ -1006,7 +1006,12 @@ input:checked+.slider:before{{transform:translateX(18px)}}
   <span id="orgName">Loading...</span>
 </div>
 <div class="container">
-  <div id="loading" class="loading">Loading...</div>
+  <div id="loading" class="loading">
+    Loading...
+    <div style="margin-top:16px">
+      <button class="btn btn-primary" onclick="loadData()">🔄 Retry</button>
+    </div>
+  </div>
   <div id="content" style="display:none">
 
     <div class="stats" id="statsGrid"></div>
@@ -1146,7 +1151,7 @@ input:checked+.slider:before{{transform:translateX(18px)}}
       <button class="btn btn-gray" onclick="document.getElementById('chatAttachment').click()" title="Attach sample PDF">📎</button>
       <span id="attachLabel" style="font-size:11px;color:#888;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
       <input id="chatInput" class="field-input" placeholder="Describe your workflow..."
-             style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendChatMsg()}}">
+             style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMsg()}">
       <button class="btn btn-purple" onclick="sendChatMsg()">Send</button>
     </div>
     <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
@@ -1155,112 +1160,112 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 
 <script>
 let adminToken = null;
-const API = path => `/admin/api${{path}}`;
+const API = path => `/admin/api${path}`;
 let chatDraftId = null;
 let chatTyping  = false;
 let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
 
 // ── Security: Prompt for token on first API call ─────────────────────
-async function ensureToken() {{
+async function ensureToken() {
   if (adminToken) return true;
   adminToken = prompt('🔐 Enter Admin Token:');
   return adminToken !== null;
-}}
+}
 
-async function authenticatedFetch(url, options = {{}}) {{
+async function authenticatedFetch(url, options = {}) {
   if (!await ensureToken()) return null;
-  const headers = options.headers || {{}};
+  const headers = options.headers || {};
   headers['X-Admin-Token'] = adminToken;
   options.headers = headers;
   const res = await fetch(url, options);
-  if (res.status === 401) {{
+  if (res.status === 401) {
     alert('❌ Invalid token. Please try again.');
     adminToken = null;
     return null;
-  }}
+  }
   return res;
-}}
+}
 
 // ── Utility ───────────────────────────────────────────────────────
-function closeModal(id) {{ document.getElementById(id).classList.remove('open'); }}
-function openModal(id)  {{ document.getElementById(id).classList.add('open'); }}
-function fmtRs(v) {{ return v ? 'Rs.' + Number(v).toLocaleString('en-IN') : '—'; }}
-function fmtDate(d) {{ return d ? new Date(d).toLocaleString('en-IN',{{dateStyle:'medium',timeStyle:'short'}}) : '—'; }}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function fmtRs(v) { return v ? 'Rs.' + Number(v).toLocaleString('en-IN') : '—'; }
+function fmtDate(d) { return d ? new Date(d).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}) : '—'; }
 
 // ── Security ──────────────────────────────────────────────────────
-async function saveTTL() {{
+async function saveTTL() {
   const val = parseInt(document.getElementById('ttl_value').value);
   const unit = document.getElementById('ttl_unit').value;
   const mins = unit === 'hours' ? val * 60 : val;
-  const res = await authenticatedFetch(API('/security/ttl'), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{minutes:mins}})}});
+  const res = await authenticatedFetch(API('/security/ttl'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({minutes:mins})});
   if (res && res.ok) alert('✅ Session timeout updated');
-}}
-async function clearSessions() {{
+}
+async function clearSessions() {
   if (!confirm('⚠️ Log out ALL users immediately?')) return;
-  const res = await authenticatedFetch(API('/sessions/clear'), {{method:'POST'}});
+  const res = await authenticatedFetch(API('/sessions/clear'), {method:'POST'});
   if (res && res.ok) alert('🔒 All sessions cleared');
-}}
+}
 
 // ── Workflow List ─────────────────────────────────────────────────
-function renderWorkflows(workflows) {{
+function renderWorkflows(workflows) {
   const tbody = document.getElementById('workflowsTable');
-  if (!workflows.length) {{
+  if (!workflows.length) {
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
     return;
-  }}
+  }
   tbody.innerHTML = workflows.map(w => `
     <tr>
-      <td><strong>${{w.name}}</strong><br><span style="font-size:11px;color:#888">${{w.intent_key}}</span></td>
-      <td><span class="badge badge-${{w.workflow_type}}">${{w.workflow_type}}</span></td>
+      <td><strong>${w.name}</strong><br><span style="font-size:11px;color:#888">${w.intent_key}</span></td>
+      <td><span class="badge badge-${w.workflow_type}">${w.workflow_type}</span></td>
       <td>
         <label class="toggle">
-          <input type="checkbox" ${{w.is_active ? 'checked' : ''}} onchange="toggleActive('${{w.id}}',this.checked)">
+          <input type="checkbox" ${w.is_active ? 'checked' : ''} onchange="toggleActive('${w.id}',this.checked)">
           <span class="slider"></span>
         </label>
       </td>
       <td>
-        <input class="threshold-input" id="otp_${{w.id}}" type="number" value="${{w.otp_threshold||''}}" style="width:90px">
-        <button class="btn btn-primary" style="margin-left:4px" onclick="saveOtp('${{w.id}}')">Save</button>
+        <input class="threshold-input" id="otp_${w.id}" type="number" value="${w.otp_threshold||''}" style="width:90px">
+        <button class="btn btn-primary" style="margin-left:4px" onclick="saveOtp('${w.id}')">Save</button>
       </td>
       <td>
-        <input class="threshold-input" id="apr_${{w.id}}" type="number" value="${{w.approval_threshold||''}}" style="width:90px">
-        <button class="btn btn-primary" style="margin-left:4px" onclick="saveApr('${{w.id}}')">Save</button>
+        <input class="threshold-input" id="apr_${w.id}" type="number" value="${w.approval_threshold||''}" style="width:90px">
+        <button class="btn btn-primary" style="margin-left:4px" onclick="saveApr('${w.id}')">Save</button>
       </td>
       <td style="white-space:nowrap">
-        <button class="btn btn-gray" onclick="openEdit('${{w.id}}')" style="margin-right:4px">✏️ Edit</button>
-        <button class="btn btn-danger" onclick="deleteWorkflow('${{w.id}}','${{w.name}}')">🗑️</button>
+        <button class="btn btn-gray" onclick="openEdit('${w.id}')" style="margin-right:4px">✏️ Edit</button>
+        <button class="btn btn-danger" onclick="deleteWorkflow('${w.id}','${w.name}')">🗑️</button>
       </td>
     </tr>
   `).join('');
-}}
+}
 
-async function toggleActive(id, active) {{
-  await authenticatedFetch(API(`/workflow/${{id}}/toggle`), {{method:'POST'}});
-}}
-async function saveOtp(id) {{
+async function toggleActive(id, active) {
+  await authenticatedFetch(API(`/workflow/${id}/toggle`), {method:'POST'});
+}
+async function saveOtp(id) {
   const val = document.getElementById('otp_' + id).value;
-  const res = await authenticatedFetch(API(`/workflow/${{id}}/threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
+  const res = await authenticatedFetch(API(`/workflow/${id}/threshold`), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold:parseFloat(val)})});
   if (res && res.ok) alert('✅ OTP threshold saved');
-}}
-async function saveApr(id) {{
+}
+async function saveApr(id) {
   const val = document.getElementById('apr_' + id).value;
-  const res = await authenticatedFetch(API(`/workflow/${{id}}/approval_threshold`), {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{threshold:parseFloat(val)}})}});
+  const res = await authenticatedFetch(API(`/workflow/${id}/approval_threshold`), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold:parseFloat(val)})});
   if (res && res.ok) alert('✅ Approval threshold saved');
-}}
+}
 
-async function deleteWorkflow(id, name) {{
-  if (!confirm(`Delete workflow "${{name}}"?\\nThis cannot be undone.`)) return;
-  const r = await authenticatedFetch(API(`/workflow/${{id}}`), {{method:'DELETE'}});
-  if (r) {{
+async function deleteWorkflow(id, name) {
+  if (!confirm(`Delete workflow "${name}"?\nThis cannot be undone.`)) return;
+  const r = await authenticatedFetch(API(`/workflow/${id}`), {method:'DELETE'});
+  if (r) {
     const d = await r.json();
-    if (d.success) {{ alert('✅ Deleted'); loadData(); }}
+    if (d.success) { alert('✅ Deleted'); loadData(); }
     else alert('Error: ' + (d.detail || 'unknown'));
-  }}
-}}
+  }
+}
 
 // ── Edit Modal ────────────────────────────────────────────────────
-async function openEdit(id) {{
-  const r = await authenticatedFetch(API(`/workflow/${{id}}/detail`));
+async function openEdit(id) {
+  const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
   if (!r) return;
   const w = await r.json();
   document.getElementById('editId').value = id;
@@ -1271,27 +1276,27 @@ async function openEdit(id) {{
   document.getElementById('editOtpThreshold').value = w.otp_threshold || '';
   document.getElementById('editApprovalThreshold').value = w.approval_threshold || '';
   document.getElementById('editSteps').value = JSON.stringify(w.steps || [], null, 2);
-  document.getElementById('editCalcRules').value = JSON.stringify(w.calc_rules || {{}}, null, 2);
-  document.getElementById('editEntitySchema').value = JSON.stringify(w.entity_schema || {{}}, null, 2);
+  document.getElementById('editCalcRules').value = JSON.stringify(w.calc_rules || {}, null, 2);
+  document.getElementById('editEntitySchema').value = JSON.stringify(w.entity_schema || {}, null, 2);
   document.getElementById('editPdfConfig').value = w.pdf_config ? JSON.stringify(w.pdf_config, null, 2) : '';
   document.getElementById('editResponseTemplate').value = w.response_template || '';
   openModal('editModal');
-}}
+}
 
-async function saveWorkflowEdit() {{
+async function saveWorkflowEdit() {
   const id = document.getElementById('editId').value;
   let steps, calcRules, entitySchema, pdfConfig;
-  try {{
+  try {
     steps        = JSON.parse(document.getElementById('editSteps').value || '[]');
-    calcRules    = JSON.parse(document.getElementById('editCalcRules').value || '{{}}');
-    entitySchema = JSON.parse(document.getElementById('editEntitySchema').value || '{{}}');
+    calcRules    = JSON.parse(document.getElementById('editCalcRules').value || '{}');
+    entitySchema = JSON.parse(document.getElementById('editEntitySchema').value || '{}');
     const pdfRaw = document.getElementById('editPdfConfig').value.trim();
     pdfConfig    = pdfRaw ? JSON.parse(pdfRaw) : null;
-  }} catch(e) {{
+  } catch(e) {
     alert('JSON parse error: ' + e.message);
     return;
-  }}
-  const body = {{
+  }
+  const body = {
     name:                document.getElementById('editName').value,
     description:         document.getElementById('editDescription').value,
     workflow_type:       document.getElementById('editType').value,
@@ -1299,19 +1304,19 @@ async function saveWorkflowEdit() {{
     approval_threshold:  parseFloat(document.getElementById('editApprovalThreshold').value) || null,
     steps, calc_rules: calcRules, entity_schema: entitySchema, pdf_config: pdfConfig,
     response_template:   document.getElementById('editResponseTemplate').value || null,
-  }};
-  const r = await authenticatedFetch(API(`/workflow/${{id}}`), {{
-    method:'PUT', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)
-  }});
-  if (r) {{
+  };
+  const r = await authenticatedFetch(API(`/workflow/${id}`), {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  if (r) {
     const d = await r.json();
-    if (d.success) {{ alert('✅ Saved'); closeModal('editModal'); loadData(); }}
+    if (d.success) { alert('✅ Saved'); closeModal('editModal'); loadData(); }
     else alert('Error: ' + (d.detail || JSON.stringify(d)));
-  }}
-}}
+  }
+}
 
 // ── Chat Builder ─────────────────────────────────────────────────
-function openBuilderChat() {{
+function openBuilderChat() {
   chatDraftId = null;
   chatPdfAnalysis = null;
   document.getElementById('chatMessages').innerHTML = '';
@@ -1320,53 +1325,53 @@ function openBuilderChat() {{
   document.getElementById('builderStatus').textContent = '';
   openModal('builderModal');
   appendBotMsg('Hi! Tell me about the workflow you want to build — what should it do?');
-}}
+}
 
-async function onPdfSelected(input) {{
+async function onPdfSelected(input) {
   if (!input.files.length) return;
   const file = input.files[0];
   document.getElementById('attachLabel').textContent = file.name;
   document.getElementById('builderStatus').textContent = '⏳ Analyzing PDF layout...';
 
-  try {{
+  try {
     const fd = new FormData();
     fd.append('pdf_file', file);
     fd.append('doc_type_hint', 'invoice');
-    const resp = await authenticatedFetch(API('/workflow-builder/pdf-extract'), {{method:'POST', body:fd}});
-    if (resp && resp.ok) {{
+    const resp = await authenticatedFetch(API('/workflow-builder/pdf-extract'), {method:'POST', body:fd});
+    if (resp && resp.ok) {
       chatPdfAnalysis = await resp.json();
       document.getElementById('builderStatus').textContent = '✅ PDF layout extracted — send your message to continue.';
-    }} else {{
+    } else {
       document.getElementById('builderStatus').textContent = '⚠️ Could not analyze PDF — will proceed without it.';
-    }}
-  }} catch(e) {{
+    }
+  } catch(e) {
     document.getElementById('builderStatus').textContent = '⚠️ PDF analysis failed — will proceed without it.';
-  }}
-}}
+  }
+}
 
-function appendBotMsg(text) {{
+function appendBotMsg(text) {
   const el = document.createElement('div');
   el.className = 'chat-msg bot';
-  el.innerHTML = `<div class="chat-bubble">${{text.replace(/\\n/g,'<br>')}}</div>`;
+  el.innerHTML = `<div class="chat-bubble">${text.replace(/\n/g,'<br>')}</div>`;
   document.getElementById('chatMessages').appendChild(el);
-  el.scrollIntoView({{behavior:'smooth'}});
-}}
-function appendUserMsg(text) {{
+  el.scrollIntoView({behavior:'smooth'});
+}
+function appendUserMsg(text) {
   const el = document.createElement('div');
   el.className = 'chat-msg user';
-  el.innerHTML = `<div class="chat-bubble">${{text}}</div>`;
+  el.innerHTML = `<div class="chat-bubble">${text}</div>`;
   document.getElementById('chatMessages').appendChild(el);
-  el.scrollIntoView({{behavior:'smooth'}});
-}}
-function appendSummaryCard(text) {{
+  el.scrollIntoView({behavior:'smooth'});
+}
+function appendSummaryCard(text) {
   const el = document.createElement('div');
   el.className = 'summary-card';
-  el.innerHTML = '📋 <strong>Summary</strong><br><br>' + text.replace(/\\n/g,'<br>');
+  el.innerHTML = '📋 <strong>Summary</strong><br><br>' + text.replace(/\n/g,'<br>');
   document.getElementById('chatMessages').appendChild(el);
-  el.scrollIntoView({{behavior:'smooth'}});
-}}
+  el.scrollIntoView({behavior:'smooth'});
+}
 
-async function sendChatMsg() {{
+async function sendChatMsg() {
   if (chatTyping) return;
   const input = document.getElementById('chatInput');
   const msg   = input.value.trim();
@@ -1378,115 +1383,123 @@ async function sendChatMsg() {{
   chatTyping = true;
   document.getElementById('builderStatus').textContent = 'Thinking...';
 
-  try {{
-    const body = {{
+  try {
+    const body = {
       message:      msg,
       draft_id:     chatDraftId,
       pdf_analysis: chatPdfAnalysis  // pre-extracted, null if no PDF
-    }};
+    };
     // Clear pdf analysis after sending so it's not re-sent on every turn
     chatPdfAnalysis = null;
     document.getElementById('attachLabel').textContent = '';
     document.getElementById('chatAttachment').value = '';
 
-    const resp = await authenticatedFetch(API('/workflow-builder/chat'), {{
+    const resp = await authenticatedFetch(API('/workflow-builder/chat'), {
       method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
-    }});
-    if (!resp) {{
+    });
+    if (!resp) {
       chatTyping = false;
       return;
-    }}
+    }
     const data = await resp.json();
     chatDraftId = data.draft_id;
 
     if (data.summary_card) appendSummaryCard(data.summary_card);
     if (data.reply) appendBotMsg(data.reply);
 
-    if (data.published) {{
-      document.getElementById('builderStatus').textContent = ' Workflow published!';
-      setTimeout(() => {{ closeModal('builderModal'); loadData(); }}, 2000);
-    }} else {{
+    if (data.published) {
+      document.getElementById('builderStatus').textContent = '✅ Workflow published!';
+      setTimeout(() => { closeModal('builderModal'); loadData(); }, 2000);
+    } else {
       document.getElementById('builderStatus').textContent = '';
-    }}
-  }} catch(e) {{
+    }
+  } catch(e) {
     appendBotMsg('Something went wrong — please try again.');
     document.getElementById('builderStatus').textContent = '';
-  }}
+  }
   chatTyping = false;
-}}
+}
 
 // ── Load Data ─────────────────────────────────────────────────────
-async function loadData() {{
+async function loadData() {
   const resp = await authenticatedFetch(API('/data'));
-  if (!resp) return;
+  if (!resp) {
+    document.getElementById('loading').textContent = '⚠️ Authentication required. Please enter your admin token.';
+    return;
+  }
   const data = await resp.json();
+
+  if (data.error) {
+    document.getElementById('loading').textContent = '❌ ' + data.error;
+    return;
+  }
 
     document.getElementById('orgName').textContent = data.org.name;
 
-    try {{
+    try {
       const sec = await authenticatedFetch(API('/security'));
-      if (sec) {{
+      if (sec) {
         const mins = (await sec.json()).session_ttl_minutes || 480;
-        if (mins >= 60 && mins % 60 === 0) {{
+        if (mins >= 60 && mins % 60 === 0) {
           document.getElementById('ttl_value').value = mins / 60;
           document.getElementById('ttl_unit').value = 'hours';
-        }} else {{
+        } else {
           document.getElementById('ttl_value').value = mins;
           document.getElementById('ttl_unit').value = 'minutes';
-        }}
-      }}
-    }} catch(e) {{}}
+        }
+      }
+    } catch(e) {}
 
     const s = data.stats;
     document.getElementById('statsGrid').innerHTML = `
       <div class="stat-card"><div class="stat-label">Paid Invoices</div>
-        <div class="stat-value">${{s.total_invoices||0}}</div></div>
+        <div class="stat-value">${s.total_invoices||0}</div></div>
       <div class="stat-card" style="border-color:#16a34a">
         <div class="stat-label">Total Revenue</div>
-        <div class="stat-value" style="color:#16a34a;font-size:20px">Rs.${{Number(s.total_amount||0).toLocaleString('en-IN')}}</div></div>
+        <div class="stat-value" style="color:#16a34a;font-size:20px">Rs.${Number(s.total_amount||0).toLocaleString('en-IN')}</div></div>
       <div class="stat-card" style="border-color:#f59e0b">
         <div class="stat-label">Pending Invoices</div>
-        <div class="stat-value" style="color:#f59e0b">${{s.pending_invoices||0}}</div></div>
+        <div class="stat-value" style="color:#f59e0b">${s.pending_invoices||0}</div></div>
       <div class="stat-card" style="border-color:#3b82f6">
         <div class="stat-label">Customers</div>
-        <div class="stat-value" style="color:#3b82f6">${{s.total_customers||0}}</div></div>
+        <div class="stat-value" style="color:#3b82f6">${s.total_customers||0}</div></div>
     `;
 
     renderWorkflows(data.workflows || []);
 
     // Low stock alert
     const lowStock = data.low_stock || [];
-    if (lowStock.length > 0) {{
+    if (lowStock.length > 0) {
       document.getElementById('lowStockCard').style.display = 'block';
       document.getElementById('lowStockTable').innerHTML = lowStock.map(item => `
         <tr>
-          <td><strong>${{item.name}}</strong></td>
-          <td style="color:#f59e0b;font-weight:600">${{item.qty}}</td>
-          <td>${{item.reorder_level}}</td>
+          <td><strong>${item.name}</strong></td>
+          <td style="color:#f59e0b;font-weight:600">${item.qty}</td>
+          <td>${item.reorder_level}</td>
         </tr>
       `).join('');
-    }} else {{
+    } else {
       document.getElementById('lowStockCard').style.display = 'none';
-    }}
+    }
 
     const logs = data.recent_logs || [];
     document.getElementById('activityTable').innerHTML = logs.map(l => `
       <tr>
-        <td>${{l.user_name || '—'}}</td>
-        <td>${{l.intent_key}}</td>
-        <td style="color:#888;font-size:12px">${{fmtDate(l.created_at)}}</td>
-        <td><span class="badge ${{l.outcome==='success'?'badge-active':l.outcome==='pending'?'badge-inactive':'badge-inactive'}}">${{l.outcome}}</span></td>
+        <td>${l.user_name || '—'}</td>
+        <td>${l.intent_key}</td>
+        <td style="color:#888;font-size:12px">${fmtDate(l.created_at)}</td>
+        <td><span class="badge ${l.outcome==='success'?'badge-active':l.outcome==='pending'?'badge-inactive':'badge-inactive'}">${l.outcome}</span></td>
       </tr>
     `).join('') || '<tr><td colspan="4" style="color:#aaa">No recent activity</td></tr>';
 
     document.getElementById('loading').style.display = 'none';
     document.getElementById('content').style.display = 'block';
-  }} catch(e) {{
+  } catch(e) {
     document.getElementById('loading').textContent = 'Error loading data: ' + e.message;
-  }}
-}}
+  }
+}
 
 loadData();
 setInterval(loadData, 30000);
