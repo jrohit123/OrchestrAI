@@ -1352,21 +1352,27 @@ async function onPdfSelected(input) {
 function appendBotMsg(text) {
   const el = document.createElement('div');
   el.className = 'chat-msg bot';
-  el.innerHTML = `<div class="chat-bubble">${text.replace(/\n/g,'<br>')}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.innerHTML = text.split('\n').join('<br>');
+  el.appendChild(bubble);
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
 }
 function appendUserMsg(text) {
   const el = document.createElement('div');
   el.className = 'chat-msg user';
-  el.innerHTML = `<div class="chat-bubble">${text}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = text;
+  el.appendChild(bubble);
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
 }
 function appendSummaryCard(text) {
   const el = document.createElement('div');
   el.className = 'summary-card';
-  el.innerHTML = '📋 <strong>Summary</strong><br><br>' + text.replace(/\n/g,'<br>');
+  el.innerHTML = '\uD83D\uDCCB <strong>Summary</strong><br><br>' + text.split('\n').join('<br>');
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth'});
 }
