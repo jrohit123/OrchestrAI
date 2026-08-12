@@ -1429,12 +1429,13 @@ async function loadData() {
     document.getElementById('loading').textContent = '⚠️ Authentication required. Please enter your admin token.';
     return;
   }
-  const data = await resp.json();
+  try {
+    const data = await resp.json();
 
-  if (data.error) {
-    document.getElementById('loading').textContent = '❌ ' + data.error;
-    return;
-  }
+    if (data.error) {
+      document.getElementById('loading').textContent = '❌ ' + data.error;
+      return;
+    }
 
     document.getElementById('orgName').textContent = data.org.name;
 
