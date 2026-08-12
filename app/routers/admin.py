@@ -66,7 +66,7 @@ async def admin_data(request: Request):
 
     workflows = await fetch_all("""
         SELECT id, name, intent_key, is_active, otp_required,
-               otp_threshold, approval_threshold, last_run
+               otp_threshold, approval_threshold, last_run, workflow_type
         FROM workflows WHERE org_id = $1
         ORDER BY created_at
     """, org_id, source_key=source_key)
@@ -97,7 +97,7 @@ async def admin_data(request: Request):
     return {
         "org": dict(org),
         "workflows": [dict(w) for w in workflows],
-        "stats": dict(stats),
+        "stats": dict(stats) if stats else {"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
         "low_stock": [dict(r) for r in low_stock],
         "recent_logs": [dict(r) for r in recent_logs]
     }
@@ -1011,6 +1011,15 @@ input:checked+.slider:before{{transform:translateX(18px)}}
 
     <div class="stats" id="statsGrid"></div>
 
+    <!-- ── LOW STOCK ALERT ───────────────────────────────────────── -->
+    <div class="card" id="lowStockCard" style="display:none;border-left:4px solid #f59e0b">
+      <div class="card-title" style="color:#f59e0b">⚠️ Low Stock Alert</div>
+      <table>
+        <thead><tr><th>Item</th><th>Current Qty</th><th>Reorder Level</th></tr></thead>
+        <tbody id="lowStockTable"></tbody>
+      </table>
+    </div>
+
     <!-- ── WORKFLOW LIST ─────────────────────────────────────────── -->
     <div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -1446,6 +1455,21 @@ async function loadData() {{
     `;
 
     renderWorkflows(data.workflows || []);
+
+    // Low stock alert
+    const lowStock = data.low_stock || [];
+    if (lowStock.length > 0) {{
+      document.getElementById('lowStockCard').style.display = 'block';
+      document.getElementById('lowStockTable').innerHTML = lowStock.map(item => `
+        <tr>
+          <td><strong>${{item.name}}</strong></td>
+          <td style="color:#f59e0b;font-weight:600">${{item.qty}}</td>
+          <td>${{item.reorder_level}}</td>
+        </tr>
+      `).join('');
+    }} else {{
+      document.getElementById('lowStockCard').style.display = 'none';
+    }}
 
     const logs = data.recent_logs || [];
     document.getElementById('activityTable').innerHTML = logs.map(l => `
