@@ -1710,46 +1710,42 @@ async def run_agent(
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
         
-        # Try OpenAI first, then fallback to Cerebras if configured
+        # Try Cerebras first, then OpenAI as fallback
         response = None
-        used_fallback = False
+        used_provider = None
         
-        try:
-            response = await _client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=4096,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                parallel_tool_calls=False
-            )
-            logger.debug(f"OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
-        except Exception as e:
-            error_str = str(e).lower()
-            # Check if it's a quota/rate limit error that warrants fallback
-            if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
-                logger.warning(f"OpenAI quota/rate limit error: {e}. Attempting fallback to Cerebras...")
-                if _cerebras_client:
-                    try:
-                        response = await _cerebras_client.chat.completions.create(
-                            model="gpt-oss-120b",
-                            max_tokens=4096,
-                            messages=messages,
-                            tools=TOOLS,
-                            tool_choice="auto",
-                            parallel_tool_calls=False
-                        )
-                        used_fallback = True
-                        logger.info(f"Cerebras fallback succeeded, stop_reason: {response.choices[0].finish_reason}")
-                    except Exception as fallback_error:
-                        logger.error(f"Cerebras fallback also failed: {fallback_error}", exc_info=True)
-                        return f"OpenAI API error: {str(e)}. Cerebras fallback also failed: {str(fallback_error)}", [], {}
-                else:
-                    logger.error(f"OpenAI API error: {e}. No Cerebras fallback configured.", exc_info=True)
-                    return f"OpenAI API error: {str(e)}", [], {}
-            else:
-                logger.error(f"OpenAI API error: {e}", exc_info=True)
-                return f"OpenAI API error: {str(e)}", [], {}
+        # Try Cerebras first
+        if _cerebras_client:
+            try:
+                response = await _cerebras_client.chat.completions.create(
+                    model="gpt-oss-120b",
+                    max_tokens=4096,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    parallel_tool_calls=False
+                )
+                used_provider = "Cerebras"
+                logger.debug(f"Cerebras response received, stop_reason: {response.choices[0].finish_reason}")
+            except Exception as e:
+                logger.warning(f"Cerebras failed: {e}. Falling back to OpenAI...")
+        
+        # Fallback to OpenAI if Cerebras failed or not configured
+        if not response:
+            try:
+                response = await _client.chat.completions.create(
+                    model="gpt-4o",
+                    max_tokens=4096,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    parallel_tool_calls=False
+                )
+                used_provider = "OpenAI"
+                logger.debug(f"OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
+            except Exception as e:
+                logger.error(f"OpenAI also failed: {e}", exc_info=True)
+                return f"All LLM providers failed. Cerebras error: {str(e) if not response else 'N/A'}, OpenAI error: {str(e)}", [], {}
         
         if not response:
             logger.error("No response received from any LLM provider")

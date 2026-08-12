@@ -450,38 +450,37 @@ Return ONLY this JSON, no markdown, no explanation:
     last_error = "Unknown error"
     for attempt in range(3):
         try:
-            # Try OpenAI first, fallback to Cerebras on quota errors
+            # Try Cerebras first, then OpenAI as fallback
             response = None
-            used_fallback = False
+            used_provider = None
             
-            try:
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    max_tokens=4000,
-                    temperature=0.1 + (attempt * 0.1),
-                    messages=[{"role": "user", "content": prompt}]
-                )
-            except Exception as e:
-                error_str = str(e).lower()
-                # Check if it's a quota/rate limit error
-                if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
-                    logger.warning(f"OpenAI quota error in admin workflow: {e}. Attempting Cerebras fallback...")
-                    if cerebras_client:
-                        try:
-                            response = await cerebras_client.chat.completions.create(
-                                model="gpt-oss-120b",
-                                max_tokens=4000,
-                                temperature=0.1 + (attempt * 0.1),
-                                messages=[{"role": "user", "content": prompt}]
-                            )
-                            used_fallback = True
-                            logger.info("Cerebras fallback succeeded in admin workflow")
-                        except Exception as fallback_error:
-                            logger.error(f"Cerebras fallback failed in admin: {fallback_error}")
-                            raise e
-                    else:
-                        raise e
-                else:
+            # Try Cerebras first
+            if cerebras_client:
+                try:
+                    response = await cerebras_client.chat.completions.create(
+                        model="gpt-oss-120b",
+                        max_tokens=4000,
+                        temperature=0.1 + (attempt * 0.1),
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    used_provider = "Cerebras"
+                    logger.debug(f"Cerebras response received in admin workflow")
+                except Exception as e:
+                    logger.warning(f"Cerebras failed in admin: {e}. Falling back to OpenAI...")
+            
+            # Fallback to OpenAI if Cerebras failed or not configured
+            if not response:
+                try:
+                    response = await openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        max_tokens=4000,
+                        temperature=0.1 + (attempt * 0.1),
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    used_provider = "OpenAI"
+                    logger.debug(f"OpenAI response received in admin workflow")
+                except Exception as e:
+                    logger.error(f"OpenAI also failed in admin: {e}")
                     raise e
 
             if not response:

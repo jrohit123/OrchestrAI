@@ -305,35 +305,37 @@ Return ONLY complete HTML starting with <!DOCTYPE html>.
 No markdown fences. No explanation. No preamble.
 """
 
-    # Try OpenAI first, fallback to Cerebras on quota errors
+    # Try Cerebras first, then OpenAI as fallback
     response = None
-    try:
-        response = await _client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=4096,
-            temperature=0.1,
-            messages=[{"role": "user", "content": prompt}]
-        )
-    except Exception as e:
-        error_str = str(e).lower()
-        # Check if it's a quota/rate limit error
-        if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
-            logger.warning(f"OpenAI quota error in PDF generation: {e}. Attempting Cerebras fallback...")
-            if _cerebras_client:
-                try:
-                    response = await _cerebras_client.chat.completions.create(
-                        model="gpt-oss-120b",
-                        max_tokens=4096,
-                        temperature=0.1,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    logger.info("Cerebras fallback succeeded in PDF generation")
-                except Exception as fallback_error:
-                    logger.error(f"Cerebras fallback failed in PDF generation: {fallback_error}")
-                    raise e
-            else:
-                raise e
-        else:
+    used_provider = None
+    
+    # Try Cerebras first
+    if _cerebras_client:
+        try:
+            response = await _cerebras_client.chat.completions.create(
+                model="gpt-oss-120b",
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            used_provider = "Cerebras"
+            logger.debug(f"Cerebras response received for PDF generation")
+        except Exception as e:
+            logger.warning(f"Cerebras failed in PDF generation: {e}. Falling back to OpenAI...")
+    
+    # Fallback to OpenAI if Cerebras failed or not configured
+    if not response:
+        try:
+            response = await _client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            used_provider = "OpenAI"
+            logger.debug(f"OpenAI response received for PDF generation")
+        except Exception as e:
+            logger.error(f"OpenAI also failed in PDF generation: {e}")
             raise e
 
     if not response:
