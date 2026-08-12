@@ -469,7 +469,7 @@ Return ONLY this JSON, no markdown, no explanation:
                     if cerebras_client:
                         try:
                             response = await cerebras_client.chat.completions.create(
-                                model="llama3.1-70b",
+                                model="gpt-oss-120b",
                                 max_tokens=4000,
                                 temperature=0.1 + (attempt * 0.1),
                                 messages=[{"role": "user", "content": prompt}]

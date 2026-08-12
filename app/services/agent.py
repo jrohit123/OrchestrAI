@@ -1732,7 +1732,7 @@ async def run_agent(
                 if _cerebras_client:
                     try:
                         response = await _cerebras_client.chat.completions.create(
-                            model="llama3.1-70b",
+                            model="gpt-oss-120b",
                             max_tokens=4096,
                             messages=messages,
                             tools=TOOLS,

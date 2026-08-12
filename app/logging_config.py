@@ -45,13 +45,18 @@ class PIIRedactingFormatter(logging.Formatter):
         # Redact the message
         record.msg = redact_pii(record.msg)
         
+        # Ensure context variables exist (for external library logs)
+        if not hasattr(record, 'correlation_id'):
+            record.correlation_id = ''
+        if not hasattr(record, 'org_id'):
+            record.org_id = ''
+        if not hasattr(record, 'user_id'):
+            record.user_id = ''
+        
         # Redact extra fields
-        if hasattr(record, 'org_id'):
-            record.org_id = redact_pii(record.org_id)
-        if hasattr(record, 'user_id'):
-            record.user_id = redact_pii(record.user_id)
-        if hasattr(record, 'correlation_id'):
-            record.correlation_id = redact_pii(record.correlation_id)
+        record.correlation_id = redact_pii(record.correlation_id)
+        record.org_id = redact_pii(record.org_id)
+        record.user_id = redact_pii(record.user_id)
         
         return super().format(record)
 

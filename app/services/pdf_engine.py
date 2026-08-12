@@ -322,7 +322,7 @@ No markdown fences. No explanation. No preamble.
             if _cerebras_client:
                 try:
                     response = await _cerebras_client.chat.completions.create(
-                        model="llama3.1-70b",
+                        model="gpt-oss-120b",
                         max_tokens=4096,
                         temperature=0.1,
                         messages=[{"role": "user", "content": prompt}]
