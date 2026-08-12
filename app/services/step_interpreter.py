@@ -16,9 +16,70 @@ Available step ops:
   notify.whatsapp  — send PDF and/or text message to the user
 """
 import json
+import re
 from app.db import fetch_one, fetch_all, execute
 from app.services.qa_verifier import verify_draft, VerificationError
 from app.services.otp_service import generate_and_send_otp
+from app.logging_config import get_context_logger, bind_context
+
+logger = get_context_logger(__name__)
+
+# Strict regex for SQL identifiers (AP-10)
+# Only allows lowercase letters, numbers, underscores, must start with letter or underscore
+IDENTIFIER_PATTERN = re.compile(r'^[a-z_][a-z0-9_]*$')
+
+# Schema cache for identifier validation (AP-10)
+# Format: {source_key: {table: set(columns)}}
+_schema_allowlist: dict = {}
+
+
+async def _load_schema_allowlist(source_key: str) -> dict:
+    """Load table and column names from information_schema for validation."""
+    if source_key in _schema_allowlist:
+        return _schema_allowlist[source_key]
+    
+    rows = await fetch_all("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, column_name
+    """, source_key=source_key)
+    
+    allowlist = {}
+    for row in rows:
+        table = row["table_name"]
+        col = row["column_name"]
+        if table not in allowlist:
+            allowlist[table] = set()
+        allowlist[table].add(col)
+    
+    _schema_allowlist[source_key] = allowlist
+    return allowlist
+
+
+def _validate_identifier(name: str, identifier_type: str = "identifier") -> None:
+    """Validate an identifier against strict regex (AP-10)."""
+    if not isinstance(name, str):
+        raise StepError(f"{identifier_type} must be a string, got {type(name)}")
+    if not IDENTIFIER_PATTERN.match(name):
+        raise StepError(f"Invalid {identifier_type}: '{name}'. Must match ^[a-z_][a-z0-9_]*$")
+
+
+def _validate_table_and_columns(table: str, columns: set, source_key: str) -> None:
+    """Validate table and columns against information_schema allowlist (AP-10)."""
+    _validate_identifier(table, "table name")
+    
+    allowlist = _schema_allowlist.get(source_key)
+    if not allowlist:
+        raise StepError(f"Schema allowlist not loaded for source_key '{source_key}'")
+    
+    if table not in allowlist:
+        raise StepError(f"Table '{table}' not found in schema allowlist")
+    
+    for col in columns:
+        _validate_identifier(col, "column name")
+        if col not in allowlist[table]:
+            raise StepError(f"Column '{col}' not found in table '{table}'")
 
 
 class StepError(Exception):
@@ -87,9 +148,15 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
         tab = table.split(":", 1)[1]
         rows = await sheet_fetch_filtered(tab, {match_col: name_val})
     else:
+        # Validate table and column against allowlist (AP-10)
+        await _load_schema_allowlist(ctx["source_key"])
+        _validate_table_and_columns(table, {match_col}, ctx["source_key"])
+        
+        # Escape LIKE metacharacters to prevent injection (AP-10)
+        safe_name = name_val.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         raw_rows = await fetch_all(
             f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col} ILIKE $2 LIMIT 5",
-            ctx["org_id"], f"%{name_val}%", source_key=ctx["source_key"]
+            ctx["org_id"], f"%{safe_name}%", source_key=ctx["source_key"]
         )
         rows = [dict(r) for r in raw_rows]
 
@@ -233,6 +300,10 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     table  = params["table"]
     values = _resolve_values(params.get("values", {}), ctx)
 
+    # Validate table and columns against allowlist (AP-10)
+    await _load_schema_allowlist(ctx["source_key"])
+    _validate_table_and_columns(table, set(values.keys()), ctx["source_key"])
+
     # Force org_id to prevent cross-tenant writes (AP-10)
     values['org_id'] = ctx['org_id']
 
@@ -272,6 +343,17 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     # ── existing Postgres path (unchanged below this line) ──
     if "sequence" in params:
         seq = params["sequence"]
+        # Use advisory lock to prevent duplicate document numbers under concurrent requests
+        # Lock key: hash of org_id + table + field
+        lock_key = await fetch_one(
+            "SELECT hashtext($1 || $2 || $3) as key",
+            ctx["org_id"], table, seq["field"], source_key=ctx["source_key"]
+        )
+        await fetch_one(
+            "SELECT pg_advisory_xact_lock($1)",
+            lock_key["key"], source_key=ctx["source_key"]
+        )
+        
         max_row = await fetch_one(
             f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::int) AS max_num
                 FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2""",
@@ -365,6 +447,11 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     set_vals    = _resolve_values(params.get("set", {}), ctx)
     where_vals  = _resolve_values(params.get("where", {}), ctx)
 
+    # Validate table and columns against allowlist (AP-10)
+    await _load_schema_allowlist(ctx["source_key"])
+    all_columns = set(set_vals.keys()) | set(where_vals.keys())
+    _validate_table_and_columns(table, all_columns, ctx["source_key"])
+
     def _resolve_literals(v):
         if v == "NOW()":
             return _dt.datetime.now(_dt.timezone.utc)
@@ -420,6 +507,10 @@ async def _op_delete_row(params: dict, ctx: dict) -> dict:
     """
     table      = params["table"]
     where_vals = _resolve_values(params.get("where", {}), ctx)
+
+    # Validate table and columns against allowlist (AP-10)
+    await _load_schema_allowlist(ctx["source_key"])
+    _validate_table_and_columns(table, set(where_vals.keys()), ctx["source_key"])
 
     # Force org_id in WHERE clause to prevent cross-tenant deletes (AP-10)
     where_vals['org_id'] = ctx['org_id']
@@ -484,6 +575,11 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
     table          = params["table"]
     conflict_cols  = params.get("conflict_columns", [])
     raw_values     = _resolve_values(params.get("values", {}), ctx)
+
+    # Validate table and columns against allowlist (AP-10)
+    await _load_schema_allowlist(ctx["source_key"])
+    all_columns = set(raw_values.keys()) | set(conflict_cols)
+    _validate_table_and_columns(table, all_columns, ctx["source_key"])
 
     def _resolve_now(v):
         if v == "NOW()":
@@ -593,6 +689,9 @@ async def run_workflow_steps(
         "source_key":   user["source_key"],
     }
 
+    # Bind context for this workflow execution
+    bind_context(org_id_val=str(user["org_id"]), user_id_val=str(user["user_id"]))
+    
     steps = _parse_jsonb(workflow.get("steps"), []) or []
 
     try:
@@ -606,7 +705,7 @@ async def run_workflow_steps(
             if not op_fn:
                 raise StepError(f"Unknown step op: '{op_name}'")
 
-            print(f"[STEP_INTERP] Step {i+1}/{len(steps)}: {op_name}")
+            logger.info(f"Step {i+1}/{len(steps)}: {op_name}")
 
             try:
                 ctx = await op_fn(step.get("params", {}), ctx)

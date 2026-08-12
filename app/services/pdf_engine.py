@@ -12,8 +12,25 @@ from datetime import datetime
 from openai import AsyncOpenAI
 
 from app.config import required
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
+
+# Fallback Cerebras client (if configured)
+_cerebras_client = None
+try:
+    cerebras_key = os.getenv("CEREBRAS_API_KEY")
+    if cerebras_key:
+        _cerebras_client = AsyncOpenAI(
+            api_key=cerebras_key,
+            base_url="https://api.cerebras.ai/v1",
+            timeout=30.0
+        )
+        logger.info("Cerebras fallback client initialized for PDF engine")
+except Exception as e:
+    logger.warning(f"Failed to initialize Cerebras client for PDF engine: {e}")
 
 BRAND_BLUE   = "#185FA5"
 BRAND_LIGHT  = "#EEF4FB"
@@ -288,12 +305,39 @@ Return ONLY complete HTML starting with <!DOCTYPE html>.
 No markdown fences. No explanation. No preamble.
 """
 
-    response = await _client.chat.completions.create(
-        model="gpt-4o",
-        max_tokens=4096,
-        temperature=0.1,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Try OpenAI first, fallback to Cerebras on quota errors
+    response = None
+    try:
+        response = await _client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=4096,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except Exception as e:
+        error_str = str(e).lower()
+        # Check if it's a quota/rate limit error
+        if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
+            logger.warning(f"OpenAI quota error in PDF generation: {e}. Attempting Cerebras fallback...")
+            if _cerebras_client:
+                try:
+                    response = await _cerebras_client.chat.completions.create(
+                        model="llama3.1-70b",
+                        max_tokens=4096,
+                        temperature=0.1,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    logger.info("Cerebras fallback succeeded in PDF generation")
+                except Exception as fallback_error:
+                    logger.error(f"Cerebras fallback failed in PDF generation: {fallback_error}")
+                    raise e
+            else:
+                raise e
+        else:
+            raise e
+
+    if not response:
+        raise Exception("No response from any LLM provider for PDF generation")
 
     html = response.choices[0].message.content.strip()
     if html.startswith("```"):
@@ -308,9 +352,21 @@ No markdown fences. No explanation. No preamble.
 def _html_to_pdf(html: str) -> bytes:
     """WeasyPrint: HTML string → PDF bytes. Raises ValueError on failure."""
     from weasyprint import HTML
+    from urllib.parse import urlparse
+    
+    def custom_url_fetcher(url):
+        """Custom URL fetcher that only allows safe resources."""
+        parsed = urlparse(url)
+        # Only allow HTTPS from trusted domains (Google Fonts)
+        if parsed.scheme == 'https' and parsed.netloc in ['fonts.googleapis.com', 'fonts.gstatic.com']:
+            from weasyprint.default_url_fetcher import default_url_fetcher
+            return default_url_fetcher(url)
+        # Block all other requests (file://, http://, other domains)
+        raise ValueError(f"Blocked URL: {url}")
+    
     try:
         buf = BytesIO()
-        HTML(string=html).write_pdf(buf)
+        HTML(string=html, url_fetcher=custom_url_fetcher).write_pdf(buf)
         return buf.getvalue()
     except Exception as e:
         raise ValueError(f"WeasyPrint conversion failed: {e}")

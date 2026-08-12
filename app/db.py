@@ -2,9 +2,12 @@ import os
 import asyncpg
 import traceback
 from app.config import required
+from app.logging_config import get_context_logger
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = get_context_logger(__name__)
 
 _routing_pool = None
 _pools: dict[str, "asyncpg.Pool"] = {}   # source_key -> pool, cached
@@ -20,14 +23,14 @@ async def init_db():
         init=_set_timezone,
         statement_cache_size=0
     )
-    print("Routing DB connected")
+    logger.info("Routing DB connected")
     # Pre-warm all known data sources
     rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
     for row in rows:
         try:
             await get_pool(row["source_key"])
         except Exception as e:
-            print(f"[WARN] Could not pre-warm '{row['source_key']}': {e}")
+            logger.warning(f"Could not pre-warm '{row['source_key']}': {e}")
 
 
 async def _set_timezone(conn):
@@ -86,7 +89,7 @@ async def fetch_one(query: str, *args, source_key: str):
     # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
     if source_key == "platform":
         caller = traceback.extract_stack()[-2]
-        print(f"[AP-07 WARNING] fetch_one using default source_key='platform' at {caller.filename}:{caller.lineno}")
+        logger.warning(f"fetch_one using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
@@ -96,7 +99,7 @@ async def fetch_all(query: str, *args, source_key: str):
     # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
     if source_key == "platform":
         caller = traceback.extract_stack()[-2]
-        print(f"[AP-07 WARNING] fetch_all using default source_key='platform' at {caller.filename}:{caller.lineno}")
+        logger.warning(f"fetch_all using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
@@ -106,7 +109,7 @@ async def execute(query: str, *args, source_key: str):
     # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
     if source_key == "platform":
         caller = traceback.extract_stack()[-2]
-        print(f"[AP-07 WARNING] execute using default source_key='platform' at {caller.filename}:{caller.lineno}")
+        logger.warning(f"execute using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)

@@ -12,8 +12,26 @@ from app.db import fetch_all, fetch_one
 from app.config import required
 from app.services.prompt_loader import load_prompt
 from app.services.query_engine import _safe, SENSITIVE_COLS
+from app.logging_config import get_context_logger
 
+logger = get_context_logger(__name__)
+
+# Primary OpenAI client
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
+
+# Fallback Cerebras client (if configured)
+_cerebras_client = None
+try:
+    cerebras_key = os.getenv("CEREBRAS_API_KEY")
+    if cerebras_key:
+        _cerebras_client = AsyncOpenAI(
+            api_key=cerebras_key,
+            base_url="https://api.cerebras.ai/v1",
+            timeout=30.0
+        )
+        logger.info("Cerebras fallback client initialized")
+except Exception as e:
+    logger.warning(f"Failed to initialize Cerebras client: {e}")
 
 def _parse_jsonb(val, default=None):
     """Parse JSONB values from Postgres (may be string or already parsed)."""
@@ -199,14 +217,19 @@ async def _build_help_response(user: dict) -> str:
     )
 
 
-async def _get_schema(org_id: str, source_key: str = "platform") -> str:
+async def _get_schema(org_id: str, source_key: str = "platform", readable_tables: list = None) -> str:
     """
     Read information_schema at runtime for this org's database.
     Returns a compact schema string + 2 sample rows per table.
     Cached in memory. No hardcoding.
+    Filters by readable_tables if provided.
     """
-    if org_id in _schema_cache:
-        return _schema_cache[org_id]
+    if readable_tables is None:
+        readable_tables = []
+    
+    cache_key = f"{org_id}:{','.join(sorted(readable_tables))}"
+    if cache_key in _schema_cache:
+        return _schema_cache[cache_key]
 
     # Get column structure
     cols = await fetch_all("""
@@ -223,6 +246,9 @@ async def _get_schema(org_id: str, source_key: str = "platform") -> str:
     table_cols: dict[str, list] = {}
     for c in cols:
         t = c["table_name"]
+        # Filter by readable_tables if specified
+        if readable_tables and t not in readable_tables:
+            continue
         table_cols.setdefault(t, []).append(
             f"{c['column_name']} ({c['data_type']})"
         )
@@ -230,8 +256,8 @@ async def _get_schema(org_id: str, source_key: str = "platform") -> str:
     # NOTE: Sample rows removed to prevent hallucination
     # Schema samples were causing LLM to use example data (Jain Gold Works, etc.)
     parts = [f"- {t}: {', '.join(cols)}" for t, cols in table_cols.items()]
-    _schema_cache[org_id] = "\n".join(parts)
-    return _schema_cache[org_id]
+    _schema_cache[cache_key] = "\n".join(parts)
+    return _schema_cache[cache_key]
 
 
 _sheets_schema_cache: str | None = None
@@ -249,7 +275,7 @@ async def _get_sheets_schema() -> str:
     try:
         tabs = await get_all_tab_headers()
     except Exception as e:
-        print(f"[AGENT] Could not load Sheets schema: {e}")
+        logger.warning(f"Could not load Sheets schema: {e}")
         return ""
     parts = [f"- {tab} (Google Sheets tab): {', '.join(cols)}" for tab, cols in tabs.items()]
     _sheets_schema_cache = "\n".join(parts)
@@ -626,7 +652,7 @@ TOOLS = [
 # ── System prompt builder — reads from DB, zero hardcoding ───────────────────
 
 async def _build_system_prompt(user: dict) -> str:
-    schema = await _get_schema(user["org_id"], user["source_key"])
+    schema = await _get_schema(user["org_id"], user["source_key"], user.get("readable_tables", []))
     sheets_schema = await _get_sheets_schema()
     today = __import__("datetime").date.today().strftime("%d %b %Y")
 
@@ -1007,13 +1033,19 @@ async def _execute_tool(
         sql = tool_input.get("sql", "")
         params = tool_input.get("params", [])
 
-        # Validate SQL against live schema — check referenced tables actually exist.
-        # This replaces a hardcoded denylist with an always-correct schema check.
-        schema_text = await _get_schema(user["org_id"])
-        known_tables = set(re.findall(r'^- (\w+):', schema_text, re.MULTILINE))
+        # Check readable_tables permission
+        readable_tables = set(user.get("readable_tables", []))
         referenced_tables = set(re.findall(
             r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE
         ))
+        not_allowed = referenced_tables - readable_tables
+        if not_allowed:
+            return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
+
+        # Validate SQL against live schema — check referenced tables actually exist.
+        # This replaces a hardcoded denylist with an always-correct schema check.
+        schema_text = await _get_schema(user["org_id"], user["source_key"], list(readable_tables))
+        known_tables = set(re.findall(r'^- (\w+):', schema_text, re.MULTILINE))
         unknown_tables = referenced_tables - known_tables
         if unknown_tables:
             return (
@@ -1028,8 +1060,7 @@ async def _execute_tool(
 
         try:
             full_params = [user["org_id"]] + list(params)
-            print(f"[AGENT] Executing SQL: {sql}")
-            print(f"[AGENT] SQL params: {full_params}")
+            logger.info(f"Executing SQL query")
             rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
 
             # Strip sensitive columns
@@ -1209,8 +1240,7 @@ async def _execute_tool(
             return f"PDF_SENT: {title} ({len(rows)} rows) via {delivery_str}"
 
         except Exception as e:
-            print(f"[PDF_ENGINE] Error: {e}")
-            import traceback; traceback.print_exc()
+            logger.error(f"PDF generation error: {e}", exc_info=True)
             return f"ERROR generating PDF: {str(e)}"
 
     elif tool_name == "update_draft":
@@ -1224,15 +1254,15 @@ async def _execute_tool(
         # subsequent turn with "'list' object is not a mapping". Reject
         # instead of storing it.
         if not isinstance(fields, dict):
-            print(f"[AGENT] update_draft called with non-dict fields ({type(fields).__name__}) — rejecting: {fields}")
+            logger.warning(f"update_draft called with non-dict fields ({type(fields).__name__}) — rejecting")
             return (
                 "ERROR: fields must be a JSON object mapping field names to values "
                 "(e.g. {\"items\": [...]}), not a bare list. Re-call update_draft "
-                "with the correct shape."
+                "with the correct format."
             )
 
         # Log draft fields for debugging
-        print(f"[AGENT] update_draft: intent_key={intent_key}, fields={fields}, stage={stage}")
+        logger.debug(f"update_draft: intent_key={intent_key}, stage={stage}")
 
         # Server-side guardrail: auto-correct misclassified making charges
         # If making_charge_pct > 100, it's almost certainly a flat Rupee amount misclassified as percentage
@@ -1241,7 +1271,7 @@ async def _execute_tool(
             if pct is not None and pct > 100:
                 item["making_charges_flat"] = pct
                 item.pop("making_charge_pct", None)
-                print(f"[AGENT] Auto-corrected making_charge_pct={pct} → making_charges_flat (flat) — value was implausible as a percentage")
+                logger.debug(f"Auto-corrected making_charge_pct={pct} → making_charges_flat (flat)")
 
         # Validate draft against workflow schema
         validation = await _validate_draft(intent_key, fields, user["org_id"], user["source_key"])
@@ -1486,7 +1516,7 @@ async def run_agent(
     Returns: (reply_text, history_to_save, session_patch)
     session_patch is a dict of session updates (e.g., pending_action) for webhook to persist.
     """
-    print(f"[AGENT] Starting agent for: {message}")
+    logger.info(f"Starting agent for: {message[:100]}")
 
     session_patch = {}
 
@@ -1525,7 +1555,7 @@ async def run_agent(
     
     if msg_stripped in workflow_map:
         wf = workflow_map[msg_stripped]
-        print(f"[AGENT] Direct workflow execution: {wf['intent_key']}")
+        logger.info(f"Direct workflow execution: {wf['intent_key']}")
         # Execute read workflow directly (no entities)
         if wf["workflow_type"] == "read" and not wf.get("entity_schema"):
             from app.services.query_engine import execute_query
@@ -1638,16 +1668,14 @@ async def run_agent(
 
     try:
         system_prompt = await _build_system_prompt(user)
-        print(f"[AGENT] System prompt built, length: {len(system_prompt)}")
+        logger.debug(f"System prompt built, length: {len(system_prompt)}")
     except Exception as e:
-        print(f"[AGENT] Error building system prompt: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error building system prompt: {e}", exc_info=True)
         return f"Error building system prompt: {str(e)}", [], {}
 
     # Abandon stale collecting drafts — they belong to old conversations
     if _is_draft_stale(pending_action):
-        print(f"[AGENT] Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning")
+        logger.info(f"Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning")
         pending_action = None
         # Note: webhook will clean it up from session on next session_patch write
 
@@ -1680,7 +1708,12 @@ async def run_agent(
     messages.append({"role": "user", "content": message})
 
     for iteration in range(max_iterations):
-        print(f"[AGENT] Iteration {iteration + 1}/{max_iterations}")
+        logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
+        
+        # Try OpenAI first, then fallback to Cerebras if configured
+        response = None
+        used_fallback = False
+        
         try:
             response = await _client.chat.completions.create(
                 model="gpt-4o",
@@ -1690,22 +1723,47 @@ async def run_agent(
                 tool_choice="auto",
                 parallel_tool_calls=False
             )
-            print(f"[AGENT] OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
-
-            if response.choices[0].finish_reason == "length":
-                print(f"[AGENT] Response truncated (stop_reason=length) — aborting tool call")
-                history_to_save = _serialize_history(messages)
-                return (
-                    "⚠️ That request returned too much data to process in one go. "
-                    "Try narrowing it down — e.g. ask for a specific customer or date range.",
-                    history_to_save,
-                    {}
-                )
+            logger.debug(f"OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
         except Exception as e:
-            print(f"[AGENT] OpenAI API error: {e}")
-            import traceback
-            traceback.print_exc()
-            return f"OpenAI API error: {str(e)}", [], {}
+            error_str = str(e).lower()
+            # Check if it's a quota/rate limit error that warrants fallback
+            if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
+                logger.warning(f"OpenAI quota/rate limit error: {e}. Attempting fallback to Cerebras...")
+                if _cerebras_client:
+                    try:
+                        response = await _cerebras_client.chat.completions.create(
+                            model="llama3.1-70b",
+                            max_tokens=4096,
+                            messages=messages,
+                            tools=TOOLS,
+                            tool_choice="auto",
+                            parallel_tool_calls=False
+                        )
+                        used_fallback = True
+                        logger.info(f"Cerebras fallback succeeded, stop_reason: {response.choices[0].finish_reason}")
+                    except Exception as fallback_error:
+                        logger.error(f"Cerebras fallback also failed: {fallback_error}", exc_info=True)
+                        return f"OpenAI API error: {str(e)}. Cerebras fallback also failed: {str(fallback_error)}", [], {}
+                else:
+                    logger.error(f"OpenAI API error: {e}. No Cerebras fallback configured.", exc_info=True)
+                    return f"OpenAI API error: {str(e)}", [], {}
+            else:
+                logger.error(f"OpenAI API error: {e}", exc_info=True)
+                return f"OpenAI API error: {str(e)}", [], {}
+        
+        if not response:
+            logger.error("No response received from any LLM provider")
+            return "Failed to get a response from the AI service. Please try again.", [], {}
+
+        if response.choices[0].finish_reason == "length":
+            logger.warning(f"Response truncated (stop_reason=length) — aborting tool call")
+            history_to_save = _serialize_history(messages)
+            return (
+                "⚠️ That request returned too much data to process in one go. "
+                "Try narrowing it down — e.g. ask for a specific customer or date range.",
+                history_to_save,
+                {}
+            )
 
         assistant_message = response.choices[0].message
 
@@ -1721,7 +1779,7 @@ async def run_agent(
                 # Only intercept if there's a draft being collected
                 active_draft = session_patch.get("pending_action") or pending_action
                 if active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation"):
-                    print(f"[AGENT] Intercepted plain-text confirm block — forcing tool retry")
+                    logger.info(f"Intercepted plain-text confirm block — forcing tool retry")
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
@@ -1744,7 +1802,7 @@ async def run_agent(
                 not schedule_created_this_turn
                 and ("✅ Scheduled" in content or ("scheduled" in content.lower() and "first delivery" in content.lower()))
             ):
-                print(f"[AGENT] Intercepted plain-text schedule confirmation — forcing tool retry")
+                logger.info(f"Intercepted plain-text schedule confirmation — forcing tool retry")
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
@@ -1757,7 +1815,7 @@ async def run_agent(
                 })
                 continue  # retry this iteration
 
-            print(f"[AGENT] No tool calls, returning text response: {content[:200]}")
+            logger.debug(f"No tool calls, returning text response: {content[:200]}")
             history_to_save = _serialize_history(messages)
             return content.strip(), history_to_save, session_patch
 
@@ -1772,7 +1830,7 @@ async def run_agent(
         # Execute each tool call
         tool_results = []
         for tool_call in assistant_message.tool_calls:
-            print(f"[AGENT] Executing tool: {tool_call.function.name}")
+            logger.debug(f"Executing tool: {tool_call.function.name}")
             # Bug 12 fix: catch per-tool exceptions so a failing tool (e.g. generate_pdf
             # network error) doesn't propagate out of run_agent and lose session_patch
             # that was accumulated from earlier update_draft calls in the same turn.

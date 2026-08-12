@@ -1,10 +1,13 @@
 import redis.asyncio as aioredis
 from app.config import required
+from app.logging_config import get_context_logger
 import os
 import json
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = get_context_logger(__name__)
 
 _redis = None
 
@@ -15,13 +18,13 @@ async def init_redis():
         required("REDIS_URL"),
         decode_responses=True
     )
-    print("Redis connected")
+    logger.info("Redis connected")
 
 
 async def close_redis():
     global _redis
     if _redis:
-        await _redis.close()
+        await _redis.aclose()
 
 
 def get_redis():
@@ -62,4 +65,4 @@ async def clear_all_sessions(org_id: str):
         keys = await _redis.keys(pattern)
         if keys:
             await _redis.delete(*keys)
-    print(f"[SECURITY] All sessions cleared for org {org_id}")
+    logger.warning(f"All sessions cleared for org {org_id}")

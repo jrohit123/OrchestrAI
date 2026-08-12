@@ -7,13 +7,29 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from app.config import required
 from app.db import fetch_all, fetch_one, execute, get_pool, get_default_source_key
+from app.logging_config import get_context_logger
 from openai import AsyncOpenAI
 
+logger = get_context_logger(__name__)
 router = APIRouter()
 
 ADMIN_TOKEN = required("ADMIN_TOKEN")
 OPENAI_API_KEY = required("OPENAI_API_KEY")
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+# Fallback Cerebras client (if configured)
+cerebras_client = None
+try:
+    cerebras_key = os.getenv("CEREBRAS_API_KEY")
+    if cerebras_key:
+        cerebras_client = AsyncOpenAI(
+            api_key=cerebras_key,
+            base_url="https://api.cerebras.ai/v1",
+            timeout=30.0
+        )
+        logger.info("Cerebras fallback client initialized for admin")
+except Exception as e:
+    logger.warning(f"Failed to initialize Cerebras client for admin: {e}")
 
 
 class PublishRequest(BaseModel):
@@ -143,9 +159,9 @@ async def get_security_settings(request: Request):
     _check_token(request)
     source_key = await get_default_source_key()
     org = await fetch_one(
-        "SELECT session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+        "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
     )
-    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480}
+    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
 
 
 @router.post("/admin/api/security/ttl")
@@ -156,8 +172,11 @@ async def update_session_ttl(request: Request):
     if minutes < 5 or minutes > 10080:  # 5 min to 7 days
         raise HTTPException(status_code=400, detail="TTL must be between 5 and 10080 minutes")
     source_key = await get_default_source_key()
+    org_id = body.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id required")
     await execute(
-        "UPDATE orgs SET session_ttl_minutes = $1 WHERE is_active = true", minutes, source_key=source_key
+        "UPDATE orgs SET session_ttl_minutes = $1 WHERE id = $2", minutes, org_id, source_key=source_key
     )
     return {"session_ttl_minutes": minutes}
 
@@ -207,7 +226,7 @@ async def generate_workflow_config(request: Request):
 
     prompt = f"""You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
 
-The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query â€” no hardcoding anywhere in the codebase.
+The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
 
 ADMIN DESCRIPTION:
 "{description}"
@@ -221,13 +240,13 @@ WORKFLOW TYPES:
 
 YOUR TASK: Generate a complete workflow record as JSON. Follow these rules exactly.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• RULES â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+─────────────────────────────────────────────────────────────────────────────────────── RULES ───────────────────────────────────────────────────────────────────────────────────────
 
-RULE 1 â€” workflow_type:
+RULE 1 — workflow_type:
   Detect from the description: read or action.
   When uncertain, prefer "read".
 
-RULE 2 â€” training_phrases (CRITICAL â€” this is how users will trigger this workflow):
+RULE 2 — training_phrases (CRITICAL — this is how users will trigger this workflow):
   Generate 8-12 realistic user phrases in WhatsApp style.
   Include English, Hinglish, and abbreviated forms.
   Use {{slot_name}} for entity placeholders.
@@ -238,10 +257,10 @@ RULE 2 â€” training_phrases (CRITICAL â€” this is how users will trigg
     "{{customer_name}} ka kitna baaki hai", "balance {{customer_name}}",
     "{{customer_name}} owes how much"
   ]
-  Be realistic â€” think about how non-technical WhatsApp users actually type.
+  Be realistic — think about how non-technical WhatsApp users actually type.
   Include common abbreviations and short forms.
 
-RULE 3 â€” entity_schema:
+RULE 3 — entity_schema:
   Only include entities ACTUALLY needed to answer the query.
   For each entity:
     "table": which DB table it comes from (or null for computed values)
@@ -431,12 +450,42 @@ Return ONLY this JSON, no markdown, no explanation:
     last_error = "Unknown error"
     for attempt in range(3):
         try:
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=4000,
-                temperature=0.1 + (attempt * 0.1),   # slight temp bump on retry
-                messages=[{"role": "user", "content": prompt}]
-            )
+            # Try OpenAI first, fallback to Cerebras on quota errors
+            response = None
+            used_fallback = False
+            
+            try:
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    max_tokens=4000,
+                    temperature=0.1 + (attempt * 0.1),
+                    messages=[{"role": "user", "content": prompt}]
+                )
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check if it's a quota/rate limit error
+                if "429" in error_str or "credit" in error_str or "quota" in error_str or "insufficient" in error_str:
+                    logger.warning(f"OpenAI quota error in admin workflow: {e}. Attempting Cerebras fallback...")
+                    if cerebras_client:
+                        try:
+                            response = await cerebras_client.chat.completions.create(
+                                model="llama3.1-70b",
+                                max_tokens=4000,
+                                temperature=0.1 + (attempt * 0.1),
+                                messages=[{"role": "user", "content": prompt}]
+                            )
+                            used_fallback = True
+                            logger.info("Cerebras fallback succeeded in admin workflow")
+                        except Exception as fallback_error:
+                            logger.error(f"Cerebras fallback failed in admin: {fallback_error}")
+                            raise e
+                    else:
+                        raise e
+                else:
+                    raise e
+
+            if not response:
+                raise Exception("No response from any LLM provider")
 
             content = response.choices[0].message.content.strip()
             if "```" in content:
@@ -452,36 +501,36 @@ Return ONLY this JSON, no markdown, no explanation:
                 raw_steps = json.loads(raw_steps)
             config["steps"] = [s if isinstance(s, str) else json.dumps(s) for s in raw_steps]
 
-            # Validate â€” if any field is missing, retry instead of crashing
+            # Validate — if any field is missing, retry instead of crashing
             phrases = config.get("training_phrases", [])
             if not phrases or len(phrases) < 5:
-                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need â‰¥5)"
-                print(f"[GENERATE] {last_error} â€” retrying")
+                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need ≥5)"
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("entity_schema"):
                 last_error = f"Attempt {attempt+1}: empty entity_schema"
-                print(f"[GENERATE] {last_error} â€” retrying")
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("business_glossary"):
                 last_error = f"Attempt {attempt+1}: empty business_glossary"
-                print(f"[GENERATE] {last_error} â€” retrying")
+                logger.warning(f"{last_error} — retrying")
                 continue
             if not config.get("llm_system_prompt"):
                 last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
-                print(f"[GENERATE] {last_error} â€” retrying")
+                logger.warning(f"{last_error} — retrying")
                 continue
             # Action workflows must have steps[]
             if config.get("workflow_type") == "action" and not config.get("steps"):
                 last_error = f"Attempt {attempt+1}: action workflow missing steps[]"
-                print(f"[GENERATE] {last_error} â€” retrying")
+                logger.warning(f"{last_error} — retrying")
                 continue
 
-            print(f"[GENERATE] âœ… Succeeded on attempt {attempt+1}")
+            logger.info(f"Workflow generation succeeded on attempt {attempt+1}")
             return config
 
         except json.JSONDecodeError as e:
-            last_error = f"Attempt {attempt+1}: invalid JSON â€” {e}"
-            print(f"[GENERATE] {last_error} â€” retrying")
+            last_error = f"Attempt {attempt+1}: invalid JSON — {e}"
+            logger.warning(f"{last_error} — retrying")
             continue
 
     raise HTTPException(
@@ -572,12 +621,15 @@ async def save_generated_workflow(request: Request):
 
     # Grant permissions to selected roles
     intent_key = body.get("intent_key")
+    org_id = body.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id required")
     for role_name in body.get("roles", ["owner"]):
         await execute("""
             UPDATE roles
             SET permissions = array_append(permissions, $1)
-            WHERE name = $2 AND NOT $1 = ANY(permissions)
-        """, intent_key, role_name, source_key=source_key)
+            WHERE org_id = $2 AND name = $3 AND NOT $1 = ANY(permissions)
+        """, intent_key, org_id, role_name, source_key=source_key)
 
     return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
@@ -588,8 +640,11 @@ async def update_gst_rate(request: Request):
     body = await request.json()
     gst = float(body.get("gst_rate", 3.0))
     source_key = await get_default_source_key()
+    org_id = body.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id required")
     await execute(
-        "UPDATE orgs SET gst_rate = $1 WHERE is_active = true", gst, source_key=source_key
+        "UPDATE orgs SET gst_rate = $1 WHERE id = $2", gst, org_id, source_key=source_key
     )
     return {"gst_rate": gst}
 

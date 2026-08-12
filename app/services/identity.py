@@ -63,13 +63,14 @@ async def resolve_identity(phone: str) -> dict | None:
 def check_permission(user: dict, intent: str) -> bool:
     """
     Returns True if the user's role has permission for this intent.
-    Action intents (approve/reject/greet/menu) are always allowed.
-    Unknown intent is always allowed (will be handled gracefully).
+    Authorization defaults to deny - fail closed.
     """
+    # Action intents (approve/reject) are NOT always allowed - check permissions
     if intent.startswith("action:"):
-        return True
+        return intent in user.get("permissions", [])
+    # Unknown intent is NOT allowed - fail closed
     if intent == "unknown":
-        return True
+        return False
     if intent in ("general_read", "identity"):
         return "general_read" in user.get("permissions", [])
     return intent in user.get("permissions", [])
@@ -105,9 +106,6 @@ def check_route_permission(user: dict, analysis: dict) -> tuple[bool, str]:
 
     if route == "general_read":
         if "general_read" in user.get("permissions", []):
-            return True, ""
-        # Fallback: owner always allowed
-        if role == "owner":
             return True, ""
         return False, "general_read"
 

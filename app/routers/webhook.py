@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, Response
 from dotenv import load_dotenv
 
 from app.config import required
+from app.logging_config import get_context_logger, bind_context
 from app.services.identity import resolve_identity, check_permission, check_route_permission
 from app.services.whatsapp import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
@@ -18,6 +19,8 @@ from app.redis_client import (
     get_session, set_session, delete_session, get_redis,
     set_auth_token, check_auth_token
 )
+
+logger = get_context_logger(__name__)
 from app.db import fetch_one, execute
 
 load_dotenv()
@@ -110,25 +113,22 @@ async def receive_message(request: Request):
         msg_dedup_key = f"msg_processed:{msg_id}"
         was_set = await redis.set(msg_dedup_key, "1", ex=300, nx=True)
         if not was_set:
-            print(f"[WEBHOOK] Duplicate msg_id {msg_id} — skipping")
+            logger.info(f"Duplicate msg_id {msg_id} — skipping")
             return {"status": "ok"}
         
-        print(f"[WEBHOOK] Deduplication key set: {msg_dedup_key}")
-
-        print(f"[WEBHOOK] From: {phone} | Message: {text}")
+        logger.debug(f"Deduplication key set: {msg_dedup_key}")
+        logger.info(f"Message from {phone}: {text}")
         try:
             await handle_message(phone=phone, text=text, msg_type=msg_type)
         except Exception as e:
-            print(f"[WEBHOOK] handle_message error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"handle_message error: {e}", exc_info=True)
             try:
                 await send_text(phone, "❌ Something went wrong. Please try again.")
             except Exception:
                 pass
 
     except (KeyError, IndexError) as e:
-        print(f"[WEBHOOK] Parse error: {e}")
+        logger.warning(f"Parse error: {e}")
 
     return {"status": "ok"}
 
@@ -308,7 +308,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 sanitized_history.append(msg)
 
     if has_corrupted:
-        print(f"[WEBHOOK] Corrupted history detected, sanitizing session {session_id}")
+        logger.warning(f"Corrupted history detected, sanitizing session {session_id}")
         session["conversation_history"] = sanitized_history
         conversation_history = sanitized_history
         await set_session(session_id, session, ttl=ttl_minutes * 60)
@@ -318,14 +318,14 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         from app.services.draft_store import get_active_draft
         db_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
         if db_draft and db_draft.get("intent_key"):
-            print(f"[WEBHOOK] Rehydrating draft from DB: {db_draft['intent_key']}")
+            logger.info(f"Rehydrating draft from DB: {db_draft['intent_key']}")
             # Parse fields if it's a JSON string from DB
             fields = db_draft.get("fields", {})
             if isinstance(fields, str):
                 try:
                     fields = json.loads(fields)
                 except (json.JSONDecodeError, TypeError) as e:
-                    print(f"[WEBHOOK] Failed to parse draft fields: {e}")
+                    logger.warning(f"Failed to parse draft fields: {e}")
                     fields = {}
             session["pending_action"] = {
                 "intent_key": db_draft["intent_key"],
@@ -380,9 +380,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
-                print(f"[WEBHOOK] execute_pending_action error: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"execute_pending_action error: {e}", exc_info=True)
                 await send_text(phone, "❌ Something went wrong creating the document. Please try again.")
                 return
 
@@ -425,7 +423,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             if _is_draft_stale(pending_action):
                 # Confirmation window (10 min) has expired — drop the draft entirely
                 # and let the message fall through as a brand-new request.
-                print(f"[WEBHOOK] Stale awaiting_confirmation draft detected — clearing")
+                logger.info(f"Stale awaiting_confirmation draft detected — clearing")
                 session.pop("pending_action", None)
                 await set_session(session_id, session, ttl=session_ttl)
                 pending_action = None
@@ -440,7 +438,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 reprompt_count = pending_action.get("reprompt_count", 0) + 1
                 if reprompt_count >= _MAX_REPROMPT_COUNT:
                     # Cap hit — the user and the bot are going in circles. Force a clean restart.
-                    print(f"[WEBHOOK] Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+                    logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
                     session.pop("pending_action", None)
                     await set_session(session_id, session, ttl=session_ttl)
                     await send_text(phone,
@@ -475,9 +473,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             try:
                 exec_result = await execute_pending_action(pending_action, user, phone=phone, otp_verified=True)
             except Exception as e:
-                print(f"[WEBHOOK] execute_pending_action after OTP error: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"execute_pending_action after OTP error: {e}", exc_info=True)
                 await send_text(phone, "❌ Something went wrong after verification. Please try again.")
                 return
 
@@ -583,11 +579,15 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
 
     except Exception as e:
-        print(f"[AGENT] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"handle_message error: {e}", exc_info=True)
+        correlation_id = ""
+        try:
+            from app.logging_config import correlation_id as get_correlation_id
+            correlation_id = get_correlation_id.get()
+        except:
+            pass
         await send_text(phone,
-            f"🤔 Error: {str(e)}"
+            f"❌ Something went wrong. Error ID: {correlation_id}. Please try again or contact support."
         )
 
 

@@ -16,7 +16,7 @@ SENSITIVE_COLS = {
     'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id',
     'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
     'decided_by', 'requester_id', 'approver_role', 'workflow_id',
-    'otp_hash', 'config',
+    'otp_hash', 'config', 'phone', 'email',
 }
 
 
@@ -44,6 +44,19 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
     ok, reason = _safe(sql)
     if not ok:
         return f"ERROR: Query blocked — {reason}"
+
+    # Check readable_tables permission
+    readable_tables = set(user.get("readable_tables", []))
+    referenced_tables = set(re.findall(
+        r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE
+    ))
+    not_allowed = referenced_tables - readable_tables
+    if not_allowed:
+        return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
+
+    # Add LIMIT if not present (prevent runaway queries)
+    if "LIMIT" not in sql.upper():
+        sql = sql.rstrip(";") + " LIMIT 100"
 
     try:
         full_params = [user["org_id"]] + list(params)

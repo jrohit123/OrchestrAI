@@ -12,16 +12,25 @@ behaviour, not a bug in this file) — so "gst" can come back before
 evaluation function below is therefore order-independent: it retries
 unresolved rules across multiple passes until nothing is left, rather
 than assuming the rules are already in dependency order.
+
+MONEY HANDLING: All monetary values use Decimal for precision.
+Binary float rounding produces paisa drift that will not reconcile.
 """
+from decimal import Decimal, ROUND_HALF_UP
 from simpleeval import EvalWithCompoundTypes, InvalidExpression
 
+# Register Decimal with simpleeval
+from simpleeval import DEFAULT_FUNCTIONS
+DEFAULT_FUNCTIONS['Decimal'] = Decimal
+
 _ALLOWED_FUNCTIONS = {
-    "round":       round,
+    "round":       lambda x, d=2: round(x, d),
     "abs":         abs,
     "min":         min,
     "max":         max,
-    "sum_field":   lambda items, field: sum(float(i.get(field) or 0) for i in (items or [])),
+    "sum_field":   lambda items, field: sum(Decimal(i.get(field) or 0) for i in (items or [])),
     "count_field": lambda items: len(items or []),
+    "Decimal":     Decimal,
 }
 
 
@@ -54,7 +63,12 @@ def _resolve_multipass(rules: dict, names: dict, out: dict, label: str, error_su
             except (InvalidExpression, ZeroDivisionError, TypeError, KeyError) as e:
                 last_error = (field, expr, e)
                 continue
-            out[field] = round(result, 2) if isinstance(result, float) else result
+            # Convert to Decimal if it's a number, use ROUND_HALF_UP for Indian tax practice
+            if isinstance(result, float):
+                result = Decimal(str(result))
+            if isinstance(result, Decimal):
+                result = result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            out[field] = result
             names[field] = out[field]
             del pending[field]
             made_progress = True
