@@ -1567,10 +1567,12 @@ async def run_agent(
         wf = workflow_map[msg_stripped]
         logger.info(f"Direct workflow execution: {wf['intent_key']}")
         entity_schema = wf.get("entity_schema") or {}
-        # Direct execution (slash command / menu tap) supplies no user text to
-        # extract entities from. It's only safe to run sql_template directly
-        # if every declared field is optional — required fields genuinely
-        # need the LLM (or a follow-up question) to fill in.
+        if isinstance(entity_schema, str):
+            try:
+                entity_schema = json.loads(entity_schema)
+            except (json.JSONDecodeError, TypeError):
+                entity_schema = {}
+
         all_optional = all(
             not (spec.get("required")) for spec in entity_schema.values()
         ) if entity_schema else True
@@ -1583,23 +1585,61 @@ async def run_agent(
                     params_order = json.loads(params_order)
                 except (json.JSONDecodeError, TypeError):
                     params_order = []
-            # No filters were supplied on direct execution — pass NULL for
-            # each declared param; sql_template is expected to handle that
-            # (e.g. "$2::text IS NULL OR name ILIKE $2").
-            # execute_query will prepend org_id as $1 automatically
             params = [None for _ in params_order]
-            result = await execute_query(
+
+            raw_result = await execute_query(
                 sql=wf["sql_template"],
                 params=params,
                 user=user,
-                response_format=wf.get("response_format", "generic"),
+                response_format="generic",  # always JSON here — formatting happens below
                 business_glossary=wf.get("business_glossary", {})
             )
             history_to_save = [{"role": "user", "content": message}]
-            return result, history_to_save, {}
+
+            # Data is fetched deterministically above — the LLM's only job now
+            # is formatting real rows into a WhatsApp-friendly reply, not
+            # deciding whether/how to fetch. Removes the failure mode where
+            # the model skips the tool call entirely.
+            glossary = wf.get("business_glossary") or {}
+            if isinstance(glossary, str):
+                try:
+                    glossary = json.loads(glossary)
+                except (json.JSONDecodeError, TypeError):
+                    glossary = {}
+
+            format_prompt = f"""Format this data as a WhatsApp reply for a business ERP assistant.
+
+WORKFLOW: {wf['name']}
+BUSINESS GLOSSARY: {json.dumps(glossary)}
+
+RAW DATA (already fetched — this IS the current, correct data, do not question it):
+{raw_result}
+
+FORMATTING RULES:
+- *bold* for key names/values, _italic_ for notes/footers, no HTML
+- Indian comma format for money: Rs.1,45,000 (not Rs.145000, not ₹)
+- If 5+ rows: lead with a one-line summary before listing details
+- If data says "EMPTY: No rows returned": say so naturally, don't apologize about an error
+- If data says "No results found.": same as above
+- After listing, append: _📥 Reply *pdf* to get this as a downloadable document._
+- Never mention SQL, tables, columns, or JSON — this is a WhatsApp message to a business owner
+- Be concise — this is a chat message, not a report
+
+Return ONLY the WhatsApp message text, nothing else."""
+
+            try:
+                format_response = await _llm_chat(
+                    messages=[{"role": "user", "content": format_prompt}],
+                    max_tokens=1024,
+                    temperature=0.1,
+                )
+                formatted = format_response.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"Formatting LLM call failed: {e}")
+                formatted = raw_result  # fall back to raw JSON rather than losing the data entirely
+
+            return formatted, history_to_save, {}
         else:
-            # Action workflows, or read workflows with a required entity —
-            # let the agent handle it.
             message = f"Execute the {wf['name']} workflow."
     
     # ── Fast-path: clarify selection handling ────────────────────────────────
