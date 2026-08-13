@@ -15,12 +15,19 @@ BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 async def send_text(to: str, message: str):
     """Send a plain text Telegram message. `to` is the raw chat_id (no tg: prefix)."""
+    # Try with Markdown first, fall back to plain text if Telegram rejects it
     async with httpx.AsyncClient() as client:
         resp = await client.post(f"{BASE_URL}/sendMessage", json={
             "chat_id": to,
             "text": message,
             "parse_mode": "Markdown"
         })
+        if resp.status_code == 400:
+            # Markdown parsing failed — retry as plain text
+            resp = await client.post(f"{BASE_URL}/sendMessage", json={
+                "chat_id": to,
+                "text": message
+            })
         resp.raise_for_status()
     return resp.json()
 
@@ -38,6 +45,12 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
             "parse_mode": "Markdown",
             "reply_markup": {"inline_keyboard": keyboard}
         })
+        if resp.status_code == 400:
+            resp = await client.post(f"{BASE_URL}/sendMessage", json={
+                "chat_id": to,
+                "text": body,
+                "reply_markup": {"inline_keyboard": keyboard}
+            })
         resp.raise_for_status()
     return resp.json()
 
@@ -74,5 +87,11 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
             "parse_mode": "Markdown",
             "reply_markup": {"inline_keyboard": keyboard}
         })
+        if resp.status_code == 400:
+            resp = await client.post(f"{BASE_URL}/sendMessage", json={
+                "chat_id": to,
+                "text": body,
+                "reply_markup": {"inline_keyboard": keyboard}
+            })
         resp.raise_for_status()
     return resp.json()
