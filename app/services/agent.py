@@ -1049,16 +1049,24 @@ async def _execute_tool(
         placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
         max_placeholder = max(placeholder_nums, default=1)
 
-        if max_placeholder != len(full_params):
+        if max_placeholder > len(full_params):
+            # Genuine under-supply — the LLM must fix this, can't guess a value.
             msg = (
-                f"SQL uses up to ${max_placeholder} but {len(full_params)} param(s) were "
-                f"supplied ($1=org_id + {len(params)} from params[]). "
-                f"The params array must contain EXACTLY one value per placeholder "
-                f"from $2 onward — no more, no fewer. If the query only needs $1 "
-                f"(org_id), pass params: [] (empty array), not extra values. Fix and retry."
+                f"SQL references up to ${max_placeholder} but only {len(full_params)} "
+                f"param(s) were supplied ($1=org_id + {len(params)} from params[]). "
+                f"Add the missing value(s) to params and retry."
             )
-            logger.warning(f"query_database param mismatch: {msg}")
+            logger.warning(f"query_database param mismatch (under-supply): {msg}")
             return f"ERROR: {msg}"
+
+        if max_placeholder < len(full_params):
+            # Over-supply — harmless, the query just doesn't reference the extra
+            # value(s). Drop them rather than failing the whole request.
+            logger.warning(
+                f"query_database: {len(full_params)} params supplied but SQL only "
+                f"uses up to ${max_placeholder} — truncating extras instead of erroring"
+            )
+            full_params = full_params[:max_placeholder]
 
         try:
             logger.info(f"Executing SQL query: {sql[:200]}")
@@ -1081,7 +1089,7 @@ async def _execute_tool(
             return json.dumps(clean, default=str)
 
         except Exception as e:
-            logger.error(f"Database query failed: {str(e)}. SQL: {sql[:200]}", exc_info=True)
+            logger.error(f"query_database failed: {e}", exc_info=True)
             return f"ERROR: {str(e)}"
 
     elif tool_name == "query_sheet":
