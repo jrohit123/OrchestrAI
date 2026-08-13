@@ -1619,18 +1619,24 @@ FORMATTING RULES:
 - *bold* for key names/values, _italic_ for notes/footers, no HTML
 - Indian comma format for money: Rs.1,45,000 (not Rs.145000, not ₹)
 - If 5+ rows: lead with a one-line summary before listing details
+- CRITICAL: You MUST list EVERY row in the data above — never skip, truncate,
+  or summarize-only. Missing items is a serious error.
+- Keep each item to ONE compact line, not a multi-line block — e.g.:
+  *22kt Gold Ring* — 41 pcs — Rack B-3 (reorder at 50)
+  Do NOT put SKU, location, qty, price each on their own line per item —
+  that wastes space and will get truncated before all items are shown.
 - If data says "EMPTY: No rows returned": say so naturally, don't apologize about an error
 - If data says "No results found.": same as above
 - After listing, append: _📥 Reply *pdf* to get this as a downloadable document._
 - Never mention SQL, tables, columns, or JSON — this is a WhatsApp message to a business owner
-- Be concise — this is a chat message, not a report
+- Be concise per item, but complete across all items — do not drop any row
 
 Return ONLY the WhatsApp message text, nothing else."""
 
             try:
                 format_response = await _llm_chat(
                     messages=[{"role": "user", "content": format_prompt}],
-                    max_tokens=1024,
+                    max_tokens=4096,
                     temperature=0.1,
                 )
                 formatted = format_response.choices[0].message.content.strip()
