@@ -51,6 +51,25 @@ def root():
     return {"status": "OrchestrAI running"}
 
 
+@app.get("/debug/schema/{source_key}")
+async def debug_schema(source_key: str):
+    """Debug: show what tables are visible for a given source_key."""
+    try:
+        from app.db import fetch_all
+        rows = await fetch_all("""
+            SELECT table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            ORDER BY table_name, ordinal_position
+        """, source_key=source_key)
+        tables: dict = {}
+        for r in rows:
+            tables.setdefault(r["table_name"], []).append(r["column_name"])
+        return {"source_key": source_key, "tables": tables}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/health")
 async def health():
     """Health check with dependency status."""
