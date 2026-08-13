@@ -131,9 +131,8 @@ async def _build_greeting_response(user: dict, message: str) -> str:
         f"You're logged in as *{role}*.\n\n"
         f"*Here's what I can help you with:*\n"
         f"{caps_block}\n\n"
-        f"Just ask me in plain language — English, Hindi, or Hinglish, "
-        f"whatever is comfortable. 😊\n\n"
-        f"_Example: \"Mehta ka kitna baaki hai?\" or \"Show ready orders\"_"
+        f"Just ask me in plain language — English, Hindi, or any mix. 😊\n\n"
+        f"_Type *menu* to see all available options._"
     )
 
 
@@ -197,10 +196,9 @@ async def _build_help_response(user: dict) -> str:
         f"{body}\n\n"
         f"━━━━━━━━━━━━━━\n"
         f"*How to ask:*\n"
-        f"• English: \"Show Mehta Enterprises dues\"\n"
-        f"• Hinglish: \"Mehta ka kitna baaki hai?\"\n"
-        f"• Hindi: \"Sharma ka outstanding dikhao\"\n"
-        f"• Short: \"low stock\", \"ready orders\"\n\n"
+        f"• Type your question in plain English or Hindi\n"
+        f"• Use slash commands like /help, /cancel\n"
+        f"• Type *menu* to see all available options\n\n"
         f"Say *pdf* at the end to get any result as a document. 📄"
     )
 

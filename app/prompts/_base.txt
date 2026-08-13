@@ -107,8 +107,8 @@ ENTITY EXTRACTION — CRITICAL
 ════════════════════════════════════════════════════════════
 
 Extract the LONGEST possible entity name. Never truncate.
-"Mehta Enterprises 92000 invoice" → customer = "Mehta Enterprises"
-"Singh Bullion Mart ka baaki" → customer = "Singh Bullion Mart"
+"Mehta Enterprises complaint" → entity = "Mehta Enterprises"
+"Wing A stray dog case" → location = "Wing A", animal = "dog"
 
 TWO-PASS LOOKUP:
 Pass 1: ILIKE '%{full_name}%' → 1 match: proceed | 2+: clarify | 0: Pass 2
