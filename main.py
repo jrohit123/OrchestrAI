@@ -70,7 +70,7 @@ async def debug_schema(source_key: str):
         return {"error": str(e)}
 
 
-@app.post("/debug/clear-schema-cache")
+@app.get("/debug/clear-schema-cache")
 async def clear_schema_cache():
     """Force-clear the in-memory schema cache so next request re-reads from DB."""
     from app.services.agent import invalidate_schema_cache
