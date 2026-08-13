@@ -232,8 +232,9 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
     table_cols: dict[str, list] = {}
     for c in cols:
         t = c["table_name"]
-        # Filter by readable_tables if specified
-        if readable_tables and t not in readable_tables:
+        # FAIL CLOSED — must match the enforcement in _execute_tool's query_database.
+        # Empty readable_tables means "nothing granted yet", not "everything visible".
+        if t not in readable_tables:
             continue
         table_cols.setdefault(t, []).append(
             f"{c['column_name']} ({c['data_type']})"
@@ -1041,9 +1042,19 @@ async def _execute_tool(
         if not ok:
             return f"ERROR: Query blocked — {reason}"
 
+        # Pre-flight parameter count check
+        param_count = len(re.findall(r'\$\d+', sql))
+        max_param_num = max([int(m.group(1)) for m in re.finditer(r'\$(\d+)', sql)]) if param_count > 0 else 0
+        provided_params = len(params) + 1  # +1 for org_id which is $1
+        
+        if max_param_num > provided_params:
+            logger.error(f"Parameter mismatch: SQL references up to ${max_param_num} but only {provided_params} param(s) available. SQL: {sql[:200]}")
+            return f"ERROR: SQL references up to ${max_param_num} but only {provided_params} param(s) available"
+        
         try:
             full_params = [user["org_id"]] + list(params)
-            logger.info(f"Executing SQL query")
+            logger.info(f"Executing SQL query: {sql[:200]}")
+            logger.debug(f"Query params: {full_params}")
             rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
 
             # Strip sensitive columns
@@ -1063,6 +1074,7 @@ async def _execute_tool(
             return json.dumps(clean, default=str)
 
         except Exception as e:
+            logger.error(f"Database query failed: {str(e)}. SQL: {sql[:200]}", exc_info=True)
             return f"ERROR: {str(e)}"
 
     elif tool_name == "query_sheet":

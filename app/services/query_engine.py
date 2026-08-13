@@ -4,6 +4,9 @@ Used by the tool-calling agent in agent.py.
 """
 import re
 from app.db import fetch_all
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 _DANGEROUS = [
     r'\bDROP\b', r'\bDELETE\b', r'\bTRUNCATE\b', r'\bALTER\b',
@@ -60,6 +63,7 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
 
     try:
         full_params = [user["org_id"]] + list(params)
+        logger.info(f"execute_query running: {sql[:200]}")
         rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
 
         # Strip sensitive columns
@@ -92,5 +96,6 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
             return json.dumps(clean, default=str, indent=2)
 
     except Exception as e:
+        logger.error(f"execute_query failed: {e}", exc_info=True)
         return f"ERROR: {str(e)}"
 

@@ -48,6 +48,7 @@ app.include_router(telegram_router)
 
 @app.get("/")
 def root():
+    logger.info("ROOT HIT - Logs are flowing")
     return {"status": "OrchestrAI running"}
 
 
@@ -88,7 +89,9 @@ async def health():
     
     # Check database
     try:
-        pool = get_pool("platform")
+        from app.db import get_default_source_key
+        source_key = await get_default_source_key()
+        pool = get_pool(source_key)
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         status["dependencies"]["database"] = "ok"
