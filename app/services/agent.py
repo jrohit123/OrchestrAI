@@ -1566,12 +1566,31 @@ async def run_agent(
     if msg_stripped in workflow_map:
         wf = workflow_map[msg_stripped]
         logger.info(f"Direct workflow execution: {wf['intent_key']}")
-        # Execute read workflow directly (no entities)
-        if wf["workflow_type"] == "read" and not wf.get("entity_schema"):
+        entity_schema = wf.get("entity_schema") or {}
+        # Direct execution (slash command / menu tap) supplies no user text to
+        # extract entities from. It's only safe to run sql_template directly
+        # if every declared field is optional — required fields genuinely
+        # need the LLM (or a follow-up question) to fill in.
+        all_optional = all(
+            not (spec.get("required")) for spec in entity_schema.values()
+        ) if entity_schema else True
+
+        if wf["workflow_type"] == "read" and wf.get("sql_template") and all_optional:
             from app.services.query_engine import execute_query
+            params_order = wf.get("sql_params_order") or []
+            if isinstance(params_order, str):
+                try:
+                    params_order = json.loads(params_order)
+                except (json.JSONDecodeError, TypeError):
+                    params_order = []
+            # No filters were supplied on direct execution — pass NULL for
+            # each declared param; sql_template is expected to handle that
+            # (e.g. "$2::text IS NULL OR name ILIKE $2").
+            # execute_query will prepend org_id as $1 automatically
+            params = [None for _ in params_order]
             result = await execute_query(
                 sql=wf["sql_template"],
-                params=[user["org_id"]],
+                params=params,
                 user=user,
                 response_format=wf.get("response_format", "generic"),
                 business_glossary=wf.get("business_glossary", {})
@@ -1579,8 +1598,8 @@ async def run_agent(
             history_to_save = [{"role": "user", "content": message}]
             return result, history_to_save, {}
         else:
-            # For workflows with entities or action workflows, let agent handle it
-            # Prepend a clear instruction
+            # Action workflows, or read workflows with a required entity —
+            # let the agent handle it.
             message = f"Execute the {wf['name']} workflow."
     
     # ── Fast-path: clarify selection handling ────────────────────────────────
