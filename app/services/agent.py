@@ -290,7 +290,10 @@ TOOLS = [
                 "Run a SELECT query against the database. "
                 "Use this to fetch any data the user is asking about. "
                 "Always use $1 for org_id. Use $2, $3... for additional params. "
-                "ILIKE for name searches. LIMIT 50 max."
+                "ILIKE for name searches. LIMIT 50 max. "
+                "CRITICAL: params[] must contain EXACTLY one value per placeholder from $2 "
+                "onward, in order — nothing more. If the query has no filter (e.g. 'show all X'), "
+                "params must be an empty array []."
             ),
             "parameters": {
                 "type": "object",
@@ -1042,19 +1045,23 @@ async def _execute_tool(
         if not ok:
             return f"ERROR: Query blocked — {reason}"
 
-        # Pre-flight parameter count check
-        param_count = len(re.findall(r'\$\d+', sql))
-        max_param_num = max([int(m.group(1)) for m in re.finditer(r'\$(\d+)', sql)]) if param_count > 0 else 0
-        provided_params = len(params) + 1  # +1 for org_id which is $1
-        
-        if max_param_num > provided_params:
-            logger.error(f"Parameter mismatch: SQL references up to ${max_param_num} but only {provided_params} param(s) available. SQL: {sql[:200]}")
-            return f"ERROR: SQL references up to ${max_param_num} but only {provided_params} param(s) available"
-        
+        full_params = [user["org_id"]] + list(params)
+        placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
+        max_placeholder = max(placeholder_nums, default=1)
+
+        if max_placeholder != len(full_params):
+            msg = (
+                f"SQL uses up to ${max_placeholder} but {len(full_params)} param(s) were "
+                f"supplied ($1=org_id + {len(params)} from params[]). "
+                f"The params array must contain EXACTLY one value per placeholder "
+                f"from $2 onward — no more, no fewer. If the query only needs $1 "
+                f"(org_id), pass params: [] (empty array), not extra values. Fix and retry."
+            )
+            logger.warning(f"query_database param mismatch: {msg}")
+            return f"ERROR: {msg}"
+
         try:
-            full_params = [user["org_id"]] + list(params)
             logger.info(f"Executing SQL query: {sql[:200]}")
-            logger.debug(f"Query params: {full_params}")
             rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
 
             # Strip sensitive columns
