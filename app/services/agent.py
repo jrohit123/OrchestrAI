@@ -268,9 +268,14 @@ async def _get_sheets_schema() -> str:
     return _sheets_schema_cache
 
 
-def invalidate_schema_cache(org_id: str):
-    """Call this if schema changes at runtime."""
-    _schema_cache.pop(org_id, None)
+def invalidate_schema_cache(org_id: str = None):
+    """Call this if schema changes at runtime. Pass org_id to clear one org, or None to clear all."""
+    if org_id:
+        keys_to_delete = [k for k in _schema_cache if k.startswith(org_id)]
+        for k in keys_to_delete:
+            del _schema_cache[k]
+    else:
+        _schema_cache.clear()
 
 
 # ── Tool definitions — generic, zero domain knowledge ────────────────────────
