@@ -1755,6 +1755,28 @@ async def run_agent(
         if not assistant_message.tool_calls:
             content = assistant_message.content or ""
 
+            # NEW: catch the model fabricating a "fetch failed" apology instead of
+            # actually calling query_database. This has been observed with
+            # gemini-2.5-flash-lite on large system prompts.
+            fake_failure = (
+                iteration == 0
+                and re.search(r"(sorry|apolog).{0,40}(error|trouble|issue|couldn.?t|unable)", content, re.IGNORECASE)
+                and re.search(r"(fetch|retriev|data|load)", content, re.IGNORECASE)
+            )
+            if fake_failure:
+                logger.warning(f"Detected fabricated-failure response with no tool call — forcing retry: {content[:150]}")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You did not actually call any tool — no query was run, "
+                        "so there was no real error. If the user is asking for data, you MUST call "
+                        "query_database with a real SELECT query. Do not apologize about a fetch "
+                        "failure unless you actually called query_database and it returned an ERROR."
+                    )
+                })
+                continue  # retry this iteration
+
             # Intercept: LLM printed a ⚠️ Confirm block as plain text instead of
             # calling confirm_action tool. This happens when all info is given in one
             # message and the model skips tool-calling. Inject a corrective message
