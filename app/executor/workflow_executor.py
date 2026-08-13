@@ -14,7 +14,7 @@ Everything else that was here has been removed:
 """
 import json
 from app.db import fetch_one, execute
-from app.services.whatsapp import send_text, send_buttons
+from app.services.messaging import send_text, send_buttons
 from app.redis_client import set_session
 
 

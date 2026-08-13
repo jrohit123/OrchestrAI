@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tool-calling agent.
 Replaces the entire classifier + intent_matcher + intent_analyzer pipeline.
 Zero domain hardcoding. Works for any schema, any industry.
@@ -16,36 +16,10 @@ from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
-# Primary OpenAI client
+from app.services.llm_router import chat_completion as _llm_chat
+
+# Keep for any legacy direct usage
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
-
-# Gemini client via OpenAI-compatible endpoint (primary)
-_gemini_client = None
-try:
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        _gemini_client = AsyncOpenAI(
-            api_key=gemini_key,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            timeout=30.0
-        )
-        logger.info("Gemini client initialized (primary)")
-except Exception as e:
-    logger.warning(f"Failed to initialize Gemini client: {e}")
-
-# Cerebras client (fallback 1)
-_cerebras_client = None
-try:
-    cerebras_key = os.getenv("CEREBRAS_API_KEY")
-    if cerebras_key:
-        _cerebras_client = AsyncOpenAI(
-            api_key=cerebras_key,
-            base_url="https://api.cerebras.ai/v1",
-            timeout=30.0
-        )
-        logger.info("Cerebras client initialized (fallback 1)")
-except Exception as e:
-    logger.warning(f"Failed to initialize Cerebras client: {e}")
 
 def _parse_jsonb(val, default=None):
     """Parse JSONB values from Postgres (may be string or already parsed)."""
@@ -737,36 +711,33 @@ async def _build_system_prompt(user: dict) -> str:
     # Load layered domain prompt from files
     domain_prompt = load_prompt(dict(org_row) if org_row else {})
 
-    return f"""You are a WhatsApp ERP assistant for {user["org_name"]}.
+    # Build critical-tables block dynamically from the org's real schema
+    if schema and schema.strip():
+        critical_tables_block = (
+            "=== CRITICAL: ONLY USE THESE TABLES AND COLUMNS ===\n"
+            "YOU MUST ONLY USE THE FOLLOWING TABLES AND COLUMNS. NO OTHERS EXIST FOR THIS ORG.\n"
+            "Do NOT invent a table or column name not listed below. "
+            "If you need data not listed here, tell the user you cannot find that data.\n\n"
+            + schema
+            + "\n\n=== END OF CRITICAL CONSTRAINTS ==="
+        )
+    else:
+        critical_tables_block = ""
 
-=== CRITICAL: ONLY USE THESE TABLES AND COLUMNS ===
-YOU MUST ONLY USE THE FOLLOWING TABLES. NO OTHERS EXIST:
-- inventory: id, org_id, sku, name, qty, location, reorder_level, unit_price, updated_at
-- customers: id, org_id, name, phone, email, gst_number, city, credit_limit, created_at
-- invoices: id, org_id, invoice_number, customer_id, created_by, items, amount, status, due_date, paid_at, pdf_url, created_at
-- orders: id, org_id, order_number, quotation_id, customer_id, customer_name, description, metal_type, weight_estimate, estimated_amount, advance_paid, status, status_history, expected_delivery, notes, created_by, status_updated_at, created_at
-- quotations: id, org_id, quotation_number, customer_id, items, total_amount, status, valid_until, created_at, created_by
-- scheduled_reports: id, org_id, user_id, phone, query_text, report_label, schedule_type, interval_minutes, hour, minute, day_of_week, day_of_month, delivery, is_active, next_run_at, last_run_at, run_count, created_at
-- orgs: id, name, slug, industry, plan, is_active, created_at, session_ttl_minutes, gst_rate
-- users: id, org_id, role_id, name, phone, email, channel, is_active, created_at
-- roles: id, org_id, name, permissions, created_at
-- audit_log: id, org_id, user_id, intent_key, tier, input_text, outcome, otp_used, steps_taken, created_at, due_date, pdf_url
-- pending_approvals: id, org_id, workflow_id, requester_id, approver_role, intent_key, context, status, decided_by, decided_at, created_at
-- otp_tokens: id, user_id, otp_hash, action_context, expires_at, used, attempts, created_at
-- credentials: id, org_id, adapter_name, config, created_at
-- workflows: id, org_id, intent_key, name, steps, is_active, otp_required, otp_threshold, version, last_run, created_at, is_scheduled, schedule_cron, scheduled_by, approval_threshold, trigger_patterns, description, adapter_method, workflow_type, training_phrases, entity_schema, sql_template, sql_params_order, response_format, business_glossary, llm_system_prompt
+    # ORG DEFAULTS — only include fields actually set for this org
+    org_defaults_parts = []
+    if org_row and org_row.get("gst_rate") is not None:
+        org_defaults_parts.append(f"GST rate {org_row['gst_rate']}%")
+    if org_row and org_row.get("default_making_charge_pct") is not None:
+        org_defaults_parts.append(
+            f"Standard making charges {org_row['default_making_charge_pct']}%"
+            " (use ONLY when user does not state a making charge — never override an explicit value)"
+        )
+    org_defaults_line = ("ORG DEFAULTS: " + " | ".join(org_defaults_parts)) if org_defaults_parts else ""
 
-FORBIDDEN TABLE NAMES (DO NOT USE):
-- products, items, inventory_items, stock, stock_items, goods, merchandise, materials
-- locations, businesses, companies, organizations, firms
+    return f"""You are a messaging ERP assistant for {user["org_name"]}.
 
-FORBIDDEN COLUMN NAMES (USE THE CORRECT ONES):
-- inventory.qty (NOT: quantity, stock_quantity, stock_level, amount_on_hand)
-- inventory.reorder_level (NOT: threshold, min_stock, reorder_point)
-- invoices.status (NOT: invoice_status, payment_status)
-- customers.name (NOT: customer_name, client_name)
-
-=== END OF CRITICAL CONSTRAINTS ===
+{critical_tables_block}
 
 CURRENT USER:
 - Name: {user["user_name"]}
@@ -775,12 +746,7 @@ CURRENT USER:
 
 TODAY: {today}
 
-ORG DEFAULTS: GST rate {org_row['gst_rate']}% | Standard making charges {org_row.get('default_making_charge_pct', 12)}%
-(Use the making-charge default ONLY when the customer/admin does not explicitly state a making charge themselves.
-If they say "making charges 5000" or "8% making", use their number instead — never override an explicit value.)
-
-DATABASE SCHEMA (for reference only - use the table/column list above):
-{schema}
+{org_defaults_line}
 
 GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):
 {sheets_schema if sheets_schema else "(none configured)"}
@@ -1123,7 +1089,7 @@ async def _execute_tool(
 
     elif tool_name == "generate_pdf":
         from app.services.pdf_engine import generate_pdf as _gen_pdf
-        from app.services.whatsapp import send_document
+        from app.services.messaging import send_document
         from app.services.pdf_preprocessor import preprocess_rows
 
         rows          = tool_input.get("rows", [])
@@ -1458,7 +1424,7 @@ async def _execute_tool(
         return "ERROR: Unknown manage_schedule action"
 
     elif tool_name == "send_to_user":
-        from app.services.whatsapp import send_text as _send_text, send_document as _send_doc
+        from app.services.messaging import send_text as _send_text, send_document as _send_doc
         recipient_phone = tool_input.get("recipient_phone", "")
         recipient_name  = tool_input.get("recipient_name", "someone")
         message         = tool_input.get("message", "")
@@ -1724,61 +1690,20 @@ async def run_agent(
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
         
-        # Try Gemini → Cerebras → OpenAI
+        # Route through central LLM router (Gemini x3 → Groq → Cerebras → OpenAI)
         response = None
         used_provider = None
-        cerebras_err = None
-        gemini_err = None
-
-        # 1. Try Gemini first
-        if _gemini_client:
-            try:
-                response = await _gemini_client.chat.completions.create(
-                    model="gemini-2.5-flash",
-                    max_tokens=4096,
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                )
-                used_provider = "Gemini"
-                logger.debug(f"Gemini response received, stop_reason: {response.choices[0].finish_reason}")
-            except Exception as e:
-                gemini_err = str(e)
-                logger.warning(f"Gemini failed: {e}. Falling back to Cerebras...")
-
-        # 2. Try Cerebras
-        if not response and _cerebras_client:
-            try:
-                response = await _cerebras_client.chat.completions.create(
-                    model="gpt-oss-120b",
-                    max_tokens=4096,
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                    parallel_tool_calls=False
-                )
-                used_provider = "Cerebras"
-                logger.debug(f"Cerebras response received, stop_reason: {response.choices[0].finish_reason}")
-            except Exception as e:
-                cerebras_err = str(e)
-                logger.warning(f"Cerebras failed: {e}. Falling back to OpenAI...")
-
-        # 3. Fallback to OpenAI
-        if not response:
-            try:
-                response = await _client.chat.completions.create(
-                    model="gpt-4o",
-                    max_tokens=4096,
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                    parallel_tool_calls=False
-                )
-                used_provider = "OpenAI"
-                logger.debug(f"OpenAI response received, stop_reason: {response.choices[0].finish_reason}")
-            except Exception as e:
-                logger.error(f"All LLM providers failed. Gemini: {gemini_err}, Cerebras: {cerebras_err}, OpenAI: {e}", exc_info=True)
-                return f"All LLM providers failed. Gemini error: {gemini_err}, Cerebras error: {cerebras_err}, OpenAI error: {str(e)}", [], {}
+        try:
+            response = await _llm_chat(
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                max_tokens=4096,
+                temperature=0.1,
+            )
+        except Exception as e:
+            logger.error(f"All LLM providers failed: {e}", exc_info=True)
+            return str(e), [], {}
         
         if not response:
             logger.error("No response received from any LLM provider")

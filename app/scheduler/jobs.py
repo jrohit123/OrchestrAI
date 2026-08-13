@@ -12,7 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.db import fetch_all, execute, fetch_one
-from app.services.whatsapp import send_text
+from app.services.messaging import send_text
 
 scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 _IST = ZoneInfo("Asia/Kolkata")

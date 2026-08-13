@@ -4,6 +4,7 @@ from app.db import init_db, close_db, get_pool
 from app.redis_client import init_redis, close_redis, get_redis
 from app.routers.webhook import router as webhook_router
 from app.routers.admin import router as admin_router
+from app.routers.telegram_webhook import router as telegram_router
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 from app.logging_config import setup_logging, bind_context, get_context_logger
 from openai import AsyncOpenAI
@@ -42,6 +43,7 @@ async def add_correlation_id(request: Request, call_next):
 
 app.include_router(webhook_router)
 app.include_router(admin_router)
+app.include_router(telegram_router)
 
 
 @app.get("/")

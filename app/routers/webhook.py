@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from app.config import required
 from app.logging_config import get_context_logger, bind_context
 from app.services.identity import resolve_identity, check_permission, check_route_permission
-from app.services.whatsapp import send_text
+from app.services.messaging import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
 from app.services.agent import run_agent
 from app.services.action_executor import execute_pending_action
@@ -138,6 +138,34 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
+        # Telegram linking flow — unregistered tg: user can link by sending their email
+        if phone.startswith("tg:"):
+            import re as _re
+            chat_id = phone[3:]
+            if _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", text.strip()):
+                from app.services.identity import link_telegram_identity
+                user = await link_telegram_identity(chat_id, text.strip())
+                if user:
+                    await send_text(phone,
+                        f"✅ *Linked!* Welcome, {user['user_name']}.\n"
+                        f"Your Telegram account is now connected to OrchestrAI.\n"
+                        f"Send /help to see available commands."
+                    )
+                    return
+                else:
+                    await send_text(phone,
+                        "❌ No account found with that email. "
+                        "Contact your admin to get registered, then send your email here to link."
+                    )
+                    return
+            else:
+                await send_text(phone,
+                    "👋 Welcome to OrchestrAI!\n\n"
+                    "Your Telegram account isn't linked yet.\n"
+                    "Reply with your *registered email address* to link your account.\n\n"
+                    "_Example: john@example.com_"
+                )
+                return
         await send_text(phone,
             "👋 Your number isn't registered with OrchestrAI.\n"
             "Contact your admin to get access."
@@ -150,7 +178,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # ── Slash commands & menu ────────────────────────────────────────────
     from app.services.menu import build_menu_sections, resolve_slash_command
-    from app.services.whatsapp import send_list
+    from app.services.messaging import send_list
 
     text_stripped = text.strip()
 
@@ -362,7 +390,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     async def _send_action_pdf(exec_result: dict):
         if not exec_result.get("pdf_bytes"):
             return
-        from app.services.whatsapp import send_document
+        from app.services.messaging import send_document
         import re
         doc_id = exec_result.get("invoice_number") or exec_result.get("quotation_number") or "document"
         safe_filename = re.sub(r'[^\w\-]', '_', str(doc_id))[:50] + ".pdf"
@@ -536,7 +564,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         # Check if agent wants to send interactive menu
         if sent_menu:
-            from app.services.whatsapp import send_list
+            from app.services.messaging import send_list
             await send_list(phone, reply, session_patch["button_label"], session_patch["menu_sections"])
             # Remove menu flag from session_patch before saving
             session_patch.pop("_send_menu", None)

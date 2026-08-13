@@ -252,7 +252,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     """, org_id, owner_role_id, source_key=ctx["source_key"])
 
     if owner:
-        from app.services.whatsapp import send_buttons as _send_buttons
+        from app.services.messaging import send_buttons as _send_buttons
         # Store pending_action in approval context so it can be resumed
         approval_context = {
             "pending_action":    {**ctx["workflow"], "fields": ctx["fields"],
@@ -618,7 +618,7 @@ async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
     """
     Send PDF document and/or text message to the user's WhatsApp.
     """
-    from app.services.whatsapp import send_document, send_text
+    from app.services.messaging import send_document, send_text
 
     phone = ctx.get("phone") or ctx["user"].get("phone")
     if not phone:

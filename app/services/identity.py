@@ -60,6 +60,33 @@ async def resolve_identity(phone: str) -> dict | None:
     return None
 
 
+async def link_telegram_identity(chat_id: str, email_text: str) -> dict | None:
+    """
+    First-contact Telegram linking.
+    An unregistered Telegram user sends their registered email.
+    If it matches a pre-seeded users row with no phone yet, bind this chat_id.
+    Returns the updated user dict on success, None if no match found.
+    """
+    from app.db import execute as db_execute
+    source_keys = await get_all_source_keys()
+    tg_phone = f"tg:{chat_id}"
+
+    for source_key in source_keys:
+        try:
+            row = await fetch_one("""
+                UPDATE users SET phone = $1
+                WHERE LOWER(email) = LOWER($2) AND (phone IS NULL OR phone = '')
+                RETURNING id
+            """, tg_phone, email_text.strip(), source_key=source_key)
+            if row:
+                # Re-resolve with the newly bound phone
+                return await resolve_identity(tg_phone)
+        except Exception:
+            continue
+
+    return None
+
+
 def check_permission(user: dict, intent: str) -> bool:
     """
     Returns True if the user's role has permission for this intent.
