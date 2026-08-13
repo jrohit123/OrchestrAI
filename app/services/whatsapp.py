@@ -26,6 +26,8 @@ async def send_text(to: str, message: str):
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            print(f"[WHATSAPP] send_text failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -53,6 +55,8 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            print(f"[WHATSAPP] send_buttons failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -71,6 +75,8 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
             data={"messaging_product": "whatsapp"},
             files={"file": (filename, pdf_bytes, "application/pdf")}
         )
+        if upload_resp.status_code >= 400:
+            print(f"[WHATSAPP] upload_media failed ({upload_resp.status_code}): {upload_resp.text}")
         upload_resp.raise_for_status()
         media_id = upload_resp.json()["id"]
 
@@ -87,6 +93,8 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            print(f"[WHATSAPP] send_document failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -105,5 +113,7 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            print(f"[WHATSAPP] send_list failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
