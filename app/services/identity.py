@@ -72,7 +72,15 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
                 WHERE LOWER(u.email) = LOWER($1) AND (u.phone IS NULL OR u.phone = '')
             """, email, source_key=source_key)
             if row:
-                return {**dict(row), "source_key": source_key}
+                # Convert UUID to string for JSON serialization
+                return {
+                    "user_id": str(row["user_id"]),
+                    "user_name": row["user_name"],
+                    "email": row["email"],
+                    "org_id": str(row["org_id"]),
+                    "org_name": row["org_name"],
+                    "source_key": source_key
+                }
         except Exception:
             continue
     return None

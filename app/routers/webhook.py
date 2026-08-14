@@ -192,7 +192,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     if sent:
                         await set_session(link_session_id, {
                             "state": "awaiting_link_otp",
-                            "user_id": candidate["user_id"],
+                            "user_id": str(candidate["user_id"]),
                             "source_key": candidate["source_key"],
                         }, ttl=180)
                         await send_text(phone,
