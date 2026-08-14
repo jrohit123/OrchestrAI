@@ -17,6 +17,7 @@ MONEY HANDLING: All monetary values use Decimal for precision.
 Binary float rounding produces paisa drift that will not reconcile.
 """
 from decimal import Decimal, ROUND_HALF_UP
+import datetime as _dt
 from simpleeval import EvalWithCompoundTypes, InvalidExpression
 
 # Register Decimal with simpleeval
@@ -31,6 +32,11 @@ _ALLOWED_FUNCTIONS = {
     "sum_field":   lambda items, field: sum(Decimal(i.get(field) or 0) for i in (items or [])),
     "count_field": lambda items: len(items or []),
     "Decimal":     Decimal,
+    "due_from_tat": lambda value, unit: _dt.datetime.now(_dt.timezone.utc) + (
+        _dt.timedelta(minutes=value) if unit == "minutes" else
+        _dt.timedelta(hours=value)   if unit == "hours"   else
+        _dt.timedelta(days=value)
+    ),
 }
 
 

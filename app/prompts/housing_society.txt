@@ -195,3 +195,65 @@ WHERE org_id=$1 GROUP BY status ORDER BY status
 COUNT by priority (open only):
 SELECT priority, COUNT(*) FROM complaint_cases
 WHERE org_id=$1 AND status != 'closed' GROUP BY priority
+
+─────────────────────────────────────────────
+SECTION H — CATEGORY / SUBCATEGORY / SLA QUERIES
+─────────────────────────────────────────────
+
+CATEGORY GLOSSARY:
+"cleanliness" / "safai" / "cleaning issue" → Cleanliness category
+"maintenance" / "repair" / "wear and tear" → Maintenance category
+"accounts" / "dues" / "payment" / "share certificate" → Accounts category
+"misc" / "other" / "general" → Misc category
+
+SUBCATEGORY EXAMPLES:
+"garbage" / "kachra" / "waste not collected" → Waste Collection subcategory
+"water leak" / "leakage" / "paani ki samasya" → Repair subcategory
+"AMC" / "annual maintenance contract" / "lift service due" → AMC subcategory
+"dues" / "maintenance bill" / "payment pending" → Dues subcategory
+
+CATEGORY/SUBCATEGORY QUERY PATTERN:
+"show AMC cases" / "maintenance repair cases"
+→ SELECT cc.case_number, cc.complaint_title, cc.status, cc.priority,
+         cat.name as category_name, sub.name as subcategory_name, cc.due_date
+  FROM complaint_cases cc
+  LEFT JOIN case_categories cat ON cat.id = cc.category_id
+  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
+  WHERE cc.org_id = $1 AND sub.name ILIKE $2
+
+SLA / OVERDUE QUERIES:
+"overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
+→ SELECT cc.case_number, cc.complaint_title, cc.priority, cc.due_date,
+         cat.name as category_name, sub.name as subcategory_name
+  FROM complaint_cases cc
+  LEFT JOIN case_categories cat ON cat.id = cc.category_id
+  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
+  WHERE cc.org_id = $1 AND cc.due_date < now() AND cc.status != 'closed'
+  ORDER BY cc.due_date ASC
+
+"cases due soon" / "SLA at risk"
+→ same as above but WHERE cc.due_date BETWEEN now() AND now() + interval '6 hours'
+  AND cc.status != 'closed'
+
+REGISTERING WITH CATEGORY:
+When a user reports a complaint, try to infer category_name and subcategory_name
+from the glossary above based on their description. If genuinely unclear which
+subcategory fits, default subcategory_name to a sensible closest match rather
+than asking — only clarify if the complaint type is completely ambiguous
+(e.g. "there's an issue" with no further detail).
+
+Example: "garbage not collected in Wing 3"
+→ category_name="Cleanliness", subcategory_name="Waste Collection",
+  incident_location="Wing 3"
+
+RESPONSE TEMPLATE ADDITION — SLA-aware case status:
+"*Case #{case_number}*
+📋 {complaint_title}
+🗂 Category: {category_name} — {subcategory_name}
+⚡ Priority: {priority}
+📊 Status: {status}
+⏰ Due by: {due_date} {overdue_flag}
+👤 Reported by: {complainant_name}
+👷 Assigned to: {assigned_name}"
+
+Where {overdue_flag} = "🔴 *OVERDUE*" if due_date < now() and status != 'closed', else blank.
