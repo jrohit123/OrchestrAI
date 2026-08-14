@@ -24,10 +24,15 @@ async def send_text(to: str, message: str):
         })
         if resp.status_code == 400:
             # Markdown parsing failed — retry as plain text
+            logger.warning(f"Telegram Markdown parsing failed for chat_id {to}, retrying as plain text")
             resp = await client.post(f"{BASE_URL}/sendMessage", json={
                 "chat_id": to,
                 "text": message
             })
+        if resp.status_code != 200:
+            logger.error(f"Telegram API error: {resp.status_code} - {resp.text}")
+            logger.error(f"Message length: {len(message)} characters")
+            logger.error(f"Message preview: {message[:200]}...")
         resp.raise_for_status()
     return resp.json()
 
