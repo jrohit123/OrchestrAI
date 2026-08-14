@@ -13,8 +13,8 @@ from app.config import required
 load_dotenv()
 
 BREVO_API_KEY = required("BREVO_API_KEY")
-SENDER_EMAIL  = "sales@aitamate.com"
-SENDER_NAME   = "OrchestrAI | Baanganga Gold"
+SENDER_EMAIL  = required("SENDER_EMAIL")
+SENDER_NAME   = required("SENDER_NAME")
 OTP_EXPIRY_MINUTES = 3
 MAX_ATTEMPTS = 3
 
