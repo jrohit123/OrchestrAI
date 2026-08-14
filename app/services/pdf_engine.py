@@ -52,9 +52,7 @@ async def generate_pdf(
         extra_context=extra_context or {},
         pdf_config=pdf_config or {},
     )
-    logger.info(f"Generated HTML length: {len(html)} chars, doc_type={doc_type}, title={title}")
-    if len(html) < 800:
-        logger.warning(f"Suspiciously short HTML for '{title}' — likely to render blank. Preview: {html[:300]}")
+    logger.info(f"Final HTML for PDF: {len(html)} chars, title={title}")
     return _html_to_pdf(html)
 
 
@@ -208,6 +206,17 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
     data_json  = json.dumps(data_for_prompt, default=str, indent=2)
     ctx_json   = json.dumps(extra_context,   default=str, indent=2)
 
+    # Calculate column count for landscape/auto-layout
+    col_count = len(data_for_prompt[0].keys()) if data_for_prompt else 0
+    page_orientation = "A4 landscape" if col_count > 6 else "A4"
+    wide_table_note = ""
+    if col_count > 6:
+        wide_table_note = (
+            f"\n⚠️ WIDE TABLE ({col_count} columns): This page is already set to LANDSCAPE "
+            f"orientation to fit. Still use table-layout: fixed with explicit column widths "
+            f"(%) summing to 100%. Abbreviate long headers. Use 9pt font on table cells if needed."
+        )
+
     has_risk_buckets = any("risk_bucket" in r for r in data_for_prompt)
     has_days_overdue = any("days_overdue" in r for r in data_for_prompt)
     risk_mode = (has_risk_buckets or has_days_overdue) and doc_type not in ("invoice", "quotation")
@@ -268,7 +277,7 @@ Total Rows    : {len(rows)}{trunc_note}
 ===== FONTS AND COLORS =====
 <style>
   body {{ font-family: 'DejaVu Sans', 'Noto Sans', Arial, sans-serif; font-size: 11pt; color: {text_col}; }}
-  @page {{ size: A4; margin: 12mm 15mm 15mm 15mm; }}
+  @page {{ size: {page_orientation}; margin: 12mm 15mm 15mm 15mm; }}
 </style>
 Primary: {primary} | Light bg: {light_bg} | Text: {text_col} | Muted: {muted_col}
 
@@ -284,6 +293,8 @@ CRITICAL — Use ONLY "Rs." for currency, NOT the ₹ symbol.
 {layout_section}
 
 ===== WEASYPRINT COMPATIBILITY =====
+{wide_table_note}
+
 - Table-based layouts only — NO CSS float
 - width="100%" on all tables + explicit column widths
 - No position:fixed/absolute, no transform, no CSS variables (--name)
@@ -311,6 +322,30 @@ No markdown fences. No explanation. No preamble.
         start = 1 if lines[0].startswith("```") else 0
         end   = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
         html  = "\n".join(lines[start:end]).strip()
+
+    # ── Safety net: force wrapping/fixed layout regardless of what the LLM wrote ──
+    forced_css = """
+<style>
+  * { box-sizing: border-box; }
+  body { max-width: 100%; overflow-x: hidden; }
+  table { width: 100% !important; table-layout: fixed !important; border-collapse: collapse; }
+  th, td { word-break: break-word !important; overflow-wrap: break-word !important;
+           white-space: normal !important; padding: 5px 6px; }
+</style>
+"""
+    if "</head>" in html:
+        html = html.replace("</head>", forced_css + "</head>", 1)
+    else:
+        html = forced_css + html
+
+    # ── Debug logging so blank/cut-off PDFs are diagnosable, not guessed at ──
+    logger.info(f"Generated HTML: {len(html)} chars, doc_type={doc_type}, columns={col_count}")
+    if len(html) < 800:
+        logger.warning(f"Suspiciously short HTML for '{title}'. Preview: {html[:500]}")
+    import re as _re
+    big_px = [int(p) for p in _re.findall(r'width:\s*(\d{3,5})px', html) if int(p) > 750]
+    if big_px:
+        logger.warning(f"HTML contains oversized fixed-px widths {big_px} — likely overflow cause for '{title}'")
 
     return html
 

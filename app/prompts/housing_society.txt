@@ -224,10 +224,10 @@ CATEGORY/SUBCATEGORY QUERY PATTERN:
 SLA / OVERDUE QUERIES:
 "overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
 → SELECT cc.case_number, cc.complaint_title, cc.priority, cc.due_date,
-         cat.name as category_name, sub.name as subcategory_name
+         sub.name as subcategory_name, u2.name as assigned_name
   FROM complaint_cases cc
-  LEFT JOIN case_categories cat ON cat.id = cc.category_id
   LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
+  LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
   WHERE cc.org_id = $1 AND cc.due_date < now() AND cc.status != 'closed'
   ORDER BY cc.due_date ASC
 
