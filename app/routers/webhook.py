@@ -240,7 +240,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_text(phone,
                 "📖 *How to use OrchestrAI*\n\n"
                 "• Type / or 'menu' to see available workflows\n"
-                "• Use slash commands like /invoice, /quote for quick access\n"
+                "• Use slash commands for quick actions\n"
                 "• Ask questions in plain English or Hindi\n"
                 "• Say 'pdf' after any result to get a document\n"
                 "• Tap /cancel to clear a draft in progress"
@@ -697,7 +697,7 @@ async def handle_system_row(text: str, user: dict, phone: str):
         await send_text(phone,
             "📖 *How to use OrchestrAI*\n\n"
             "• Type / or 'menu' to see available workflows\n"
-            "• Use slash commands like /invoice, /quote for quick access\n"
+            "• Use slash commands for quick actions\n"
             "• Ask questions in plain English or Hindi\n"
             "• Say 'pdf' after any result to get a document\n"
             "• Tap /cancel to clear a draft in progress"
