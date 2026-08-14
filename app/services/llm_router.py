@@ -2,9 +2,9 @@
 llm_router.py — Centralised multi-provider LLM client with key rotation and fallback.
 
 Provider order:
-  1. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
-  2. Groq    (1 key, llama-3.3-70b-versatile — reliable tool-calling, but TPM-limited)
-  3. Cerebras (1 key, gpt-oss-120b)
+  1. Cerebras (1 key, gpt-oss-120b — handles large context better)
+  2. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
+  3. Groq    (1 key, llama-3.3-70b-versatile — reliable tool-calling, but TPM-limited)
   4. OpenAI  (1 key, gpt-4o-mini — last resort)
 
 Usage:
@@ -105,7 +105,7 @@ async def chat_completion(
     temperature: float = 0.1,
 ) -> object:
     """
-    Try providers in order: Gemini (all keys/models) → Groq → Cerebras → OpenAI.
+    Try providers in order: Cerebras → Gemini (all keys/models) → Groq → OpenAI.
     Raises Exception if all providers fail, with a combined error message.
     """
     errors: dict[str, str] = {}
@@ -118,7 +118,19 @@ async def chat_completion(
         # Cerebras / some providers require this disabled
         kwargs.setdefault("parallel_tool_calls", False)
 
-    # ── 1. Gemini (rotate keys, try each model per key) ───────────────────────
+    # ── 1. Cerebras (handles large context better) ─────────────────────────────
+    if _cerebras_client:
+        try:
+            response = await _cerebras_client.chat.completions.create(
+                model=CEREBRAS_MODEL, **kwargs
+            )
+            logger.info(f"LLM success: Cerebras model={CEREBRAS_MODEL}")
+            return response
+        except Exception as e:
+            errors["cerebras"] = str(e)
+            logger.warning(f"Cerebras failed: {e}. Falling back to Gemini...")
+
+    # ── 2. Gemini (rotate keys, try each model per key) ───────────────────────
     if _gemini_clients:
         n_keys = len(_gemini_clients)
         # Start from next key in round-robin
@@ -147,7 +159,7 @@ async def chat_completion(
                         logger.warning(f"Gemini key[{idx+1}] {model} failed: {e}")
                         continue
 
-    # ── 2. Groq (reliable tool-calling, but TPM-limited) ─────────────────────────
+    # ── 3. Groq (reliable tool-calling, but TPM-limited) ─────────────────────────
     if _groq_client:
         # Groq doesn't support parallel_tool_calls kwarg — strip it
         groq_kwargs = {k: v for k, v in kwargs.items() if k != "parallel_tool_calls"}
@@ -159,19 +171,7 @@ async def chat_completion(
             return response
         except Exception as e:
             errors["groq"] = str(e)
-            logger.warning(f"Groq failed: {e}. Falling back to Cerebras...")
-
-    # ── 3. Cerebras ───────────────────────────────────────────────────────────
-    if _cerebras_client:
-        try:
-            response = await _cerebras_client.chat.completions.create(
-                model=CEREBRAS_MODEL, **kwargs
-            )
-            logger.info(f"LLM success: Cerebras model={CEREBRAS_MODEL}")
-            return response
-        except Exception as e:
-            errors["cerebras"] = str(e)
-            logger.warning(f"Cerebras failed: {e}. Falling back to OpenAI...")
+            logger.warning(f"Groq failed: {e}. Falling back to OpenAI...")
 
     # ── 4. OpenAI (last resort) ───────────────────────────────────────────────
     if _openai_client:
