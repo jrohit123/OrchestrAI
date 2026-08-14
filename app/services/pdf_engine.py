@@ -52,6 +52,9 @@ async def generate_pdf(
         extra_context=extra_context or {},
         pdf_config=pdf_config or {},
     )
+    logger.info(f"Generated HTML length: {len(html)} chars, doc_type={doc_type}, title={title}")
+    if len(html) < 800:
+        logger.warning(f"Suspiciously short HTML for '{title}' — likely to render blank. Preview: {html[:300]}")
     return _html_to_pdf(html)
 
 
@@ -264,8 +267,7 @@ Total Rows    : {len(rows)}{trunc_note}
 
 ===== FONTS AND COLORS =====
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-  body {{ font-family: 'Inter', 'Noto Sans', 'DejaVu Sans', Arial, sans-serif; font-size: 11pt; color: {text_col}; }}
+  body {{ font-family: 'DejaVu Sans', 'Noto Sans', Arial, sans-serif; font-size: 11pt; color: {text_col}; }}
   @page {{ size: A4; margin: 12mm 15mm 15mm 15mm; }}
 </style>
 Primary: {primary} | Light bg: {light_bg} | Text: {text_col} | Muted: {muted_col}
@@ -317,14 +319,14 @@ def _html_to_pdf(html: str) -> bytes:
     """WeasyPrint: HTML string → PDF bytes. Raises ValueError on failure."""
     from weasyprint import HTML
     from urllib.parse import urlparse
-    
+
     def custom_url_fetcher(url):
         """Block all external URLs — fonts are inlined, no external fetching needed."""
         raise ValueError(f"Blocked external URL: {url}")
 
     try:
         buf = BytesIO()
-        HTML(string=html, base_url=None).write_pdf(buf)
+        HTML(string=html, base_url=None, url_fetcher=custom_url_fetcher).write_pdf(buf)
         return buf.getvalue()
     except Exception as e:
         raise ValueError(f"WeasyPrint conversion failed: {e}")
