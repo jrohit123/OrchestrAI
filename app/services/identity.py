@@ -60,30 +60,35 @@ async def resolve_identity(phone: str) -> dict | None:
     return None
 
 
-async def link_telegram_identity(chat_id: str, email_text: str) -> dict | None:
-    """
-    First-contact Telegram linking.
-    An unregistered Telegram user sends their registered email.
-    If it matches a pre-seeded users row with no phone yet, bind this chat_id.
-    Returns the updated user dict on success, None if no match found.
-    """
-    from app.db import execute as db_execute
+async def find_unlinked_user_by_email(email: str) -> dict | None:
+    """Find a user row with this email that has no chat_id bound yet."""
     source_keys = await get_all_source_keys()
-    tg_phone = f"tg:{chat_id}"
-
     for source_key in source_keys:
         try:
             row = await fetch_one("""
-                UPDATE users SET phone = $1
-                WHERE LOWER(email) = LOWER($2) AND (phone IS NULL OR phone = '')
-                RETURNING id
-            """, tg_phone, email_text.strip(), source_key=source_key)
+                SELECT u.id AS user_id, u.name AS user_name, u.email,
+                       o.id AS org_id, o.name AS org_name
+                FROM users u JOIN orgs o ON o.id = u.org_id
+                WHERE LOWER(u.email) = LOWER($1) AND (u.phone IS NULL OR u.phone = '')
+            """, email, source_key=source_key)
             if row:
-                # Re-resolve with the newly bound phone
-                return await resolve_identity(tg_phone)
+                return {**dict(row), "source_key": source_key}
         except Exception:
             continue
+    return None
 
+
+async def bind_telegram_phone(user_id: str, chat_id: str, source_key: str) -> dict | None:
+    """Bind chat_id to a user — call ONLY after OTP verification succeeds."""
+    from app.db import execute
+    tg_phone = f"tg:{chat_id}"
+    row = await fetch_one("""
+        UPDATE users SET phone = $1
+        WHERE id = $2 AND (phone IS NULL OR phone = '')
+        RETURNING id
+    """, tg_phone, user_id, source_key=source_key)
+    if row:
+        return await resolve_identity(tg_phone)
     return None
 
 

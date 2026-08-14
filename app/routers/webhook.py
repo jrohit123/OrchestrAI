@@ -138,34 +138,84 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
-        # Telegram linking flow — unregistered tg: user can link by sending their email
+        # Telegram linking flow — unregistered tg: user links via email + OTP
         if phone.startswith("tg:"):
             import re as _re
             chat_id = phone[3:]
-            if _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", text.strip()):
-                from app.services.identity import link_telegram_identity
-                user = await link_telegram_identity(chat_id, text.strip())
-                if user:
-                    await send_text(phone,
-                        f"✅ *Linked!* Welcome, {user['user_name']}.\n"
-                        f"Your Telegram account is now connected to OrchestrAI.\n"
-                        f"Send /help to see available commands."
-                    )
+            link_session_id = f"tglink:{phone}"
+            pending_link = await get_session(link_session_id)
+
+            # Step 2: user is replying with the OTP code
+            if pending_link.get("state") == "awaiting_link_otp":
+                if text.strip().lower() == "retry":
+                    await delete_session(link_session_id)
+                    await send_text(phone, "🔄 Cancelled. Please send your email again to restart linking.")
                     return
+
+                result = await verify_otp(
+                    pending_link["user_id"], text.strip(), pending_link["source_key"]
+                )
+                if result["valid"]:
+                    from app.services.identity import bind_telegram_phone
+                    linked_user = await bind_telegram_phone(
+                        user_id=pending_link["user_id"],
+                        chat_id=chat_id,
+                        source_key=pending_link["source_key"],
+                    )
+                    await delete_session(link_session_id)
+                    if linked_user:
+                        await send_text(phone,
+                            f"✅ *Linked!* Welcome, {linked_user['user_name']}.\n"
+                            f"Your Telegram account is now connected to OrchestrAI.\n"
+                            f"Send /help to see available commands."
+                        )
+                    else:
+                        await send_text(phone, "❌ Something went wrong linking your account. Please try again.")
+                else:
+                    await send_text(phone, f"❌ {result['reason']}")
+                return
+
+            # Step 1: user just sent an email
+            if _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", text.strip()):
+                from app.services.identity import find_unlinked_user_by_email
+                candidate = await find_unlinked_user_by_email(text.strip())
+                if candidate:
+                    sent = await generate_and_send_otp(
+                        user_id=candidate["user_id"],
+                        user_email=candidate["email"],
+                        user_name=candidate["user_name"],
+                        org_name=candidate["org_name"],
+                        org_id=candidate["org_id"],
+                        action_context={"type": "telegram_link"},
+                        source_key=candidate["source_key"],
+                    )
+                    if sent:
+                        await set_session(link_session_id, {
+                            "state": "awaiting_link_otp",
+                            "user_id": candidate["user_id"],
+                            "source_key": candidate["source_key"],
+                        }, ttl=180)
+                        await send_text(phone,
+                            f"🔐 A verification code has been sent to *{candidate['email']}*.\n"
+                            f"Reply with the code to link your Telegram account.\n\n"
+                            f"_Code expires in 3 minutes. Reply 'retry' to cancel and restart._"
+                        )
+                    else:
+                        await send_text(phone, "❌ Could not send verification email. Contact admin.")
                 else:
                     await send_text(phone,
                         "❌ No account found with that email. "
                         "Contact your admin to get registered, then send your email here to link."
                     )
-                    return
-            else:
-                await send_text(phone,
-                    "👋 Welcome to OrchestrAI!\n\n"
-                    "Your Telegram account isn't linked yet.\n"
-                    "Reply with your *registered email address* to link your account.\n\n"
-                    "_Example: john@example.com_"
-                )
                 return
+
+            await send_text(phone,
+                "👋 Welcome to OrchestrAI!\n\n"
+                "Your Telegram account isn't linked yet.\n"
+                "Reply with your *registered email address* to link your account.\n\n"
+                "_Example: john@example.com_"
+            )
+            return
         await send_text(phone,
             "👋 Your number isn't registered with OrchestrAI.\n"
             "Contact your admin to get access."
