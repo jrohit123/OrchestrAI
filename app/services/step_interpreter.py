@@ -223,8 +223,8 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
 async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     """
     Halt for approval if total amount >= workflow's approval_threshold
-    and the user is not the owner role.
-    Sends approval buttons to the org owner and creates a pending_approvals record.
+    and the user is not in an approver role.
+    Sends approval buttons to the org approver and creates a pending_approvals record.
     Skipped if already approved.
     """
     if ctx.get("approved"):
@@ -233,25 +233,34 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     amount_path        = params.get("amount_field", "$computed.total_amount")
     amount             = float(_resolve_path(ctx, amount_path) or 0)
     approval_threshold = float(_parse_jsonb(ctx["workflow"].get("approval_threshold"), 0) or 0)
-    owner_role_id      = "22220000-0000-0000-0000-000000000001"
 
     if approval_threshold <= 0 or amount < approval_threshold:
         return ctx
-    if ctx["user"].get("role_id") == owner_role_id:
+
+    # Get all approver role IDs for this org
+    org_id = ctx["org_id"]
+    approver_roles = await fetch_all("""
+        SELECT r.id, r.name FROM roles r
+        WHERE r.org_id = $1 AND r.is_approver = true
+    """, org_id, source_key=ctx["source_key"])
+    
+    approver_role_ids = {role["id"] for role in approver_roles}
+    
+    # Bypass if user is in an approver role
+    if ctx["user"].get("role_id") in approver_role_ids:
         return ctx
 
-    # Find the org owner to send approval request to
-    org_id = ctx["org_id"]
+    # Find an active approver user to send approval request to
     user   = ctx["user"]
-    owner  = await fetch_one("""
-        SELECT u.phone, u.name, u.id FROM users u
+    approver = await fetch_one("""
+        SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
         JOIN roles r ON r.id = u.role_id
-        WHERE u.org_id = $1 AND r.id = $2
+        WHERE u.org_id = $1 AND r.is_approver = true
           AND u.is_active = true AND u.phone IS NOT NULL
         LIMIT 1
-    """, org_id, owner_role_id, source_key=ctx["source_key"])
+    """, org_id, source_key=ctx["source_key"])
 
-    if owner:
+    if approver:
         from app.services.messaging import send_buttons as _send_buttons
         # Store pending_action in approval context so it can be resumed
         approval_context = {
@@ -263,17 +272,20 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
             "requester_name":    user.get("user_name", ""),
             "requester_email":   user.get("email", ""),
         }
+        # Use the actual resolved role name from the approver
+        approver_role_name = approver.get("role_name", "approver")
+        
         approval_row = await execute("""
             INSERT INTO pending_approvals
             (org_id, requester_id, approver_role, intent_key, context, status)
-            VALUES ($1, $2, 'owner', $3, $4::jsonb, 'pending')
+            VALUES ($1, $2, $3, $4, $5::jsonb, 'pending')
             RETURNING id
-        """, org_id, user["user_id"],
+        """, org_id, user["user_id"], approver_role_name,
             ctx["workflow"]["intent_key"], json.dumps(approval_context), source_key=ctx["source_key"])
         approval_id = approval_row[0]["id"]
 
         await _send_buttons(
-            to=owner["phone"],
+            to=approver["phone"],
             body=(
                 f"📋 *Approval Request*\n\n"
                 f"From: {user.get('user_name', 'Staff')} ({user.get('role', '')})\n"

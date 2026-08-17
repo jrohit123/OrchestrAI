@@ -190,6 +190,7 @@ async def _execute_tool(
     draft: dict,
     org_id: str,
     attachment_b64: str | None,
+    source_key: str = "platform",
 ) -> dict:
 
     if tool_name == "list_existing_workflows":
@@ -265,7 +266,7 @@ async def _execute_tool(
     if tool_name == "compile_and_summarize":
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
         try:
-            spec = await compile_workflow_spec(dict(fresh), org_id=org_id)
+            spec = await compile_workflow_spec(dict(fresh), org_id=org_id, source_key=source_key)
         except ValueError as e:
             return {"error": str(e)}
 
@@ -323,7 +324,7 @@ async def _execute_tool(
             draft["id"]
         )
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
-        return await _execute_tool("compile_and_summarize", {}, dict(fresh), org_id, attachment_b64)
+        return await _execute_tool("compile_and_summarize", {}, dict(fresh), org_id, attachment_b64, source_key)
 
     if tool_name == "mark_ready_for_review":
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
@@ -407,6 +408,7 @@ async def run_builder_agent(
     attachment_b64: str | None = None,
     pre_extracted_pdf: dict | None = None,
     max_iterations: int = 6,
+    source_key: str = "platform",
 ) -> dict:
     """
     Process one chat turn from the admin.
@@ -534,7 +536,7 @@ async def run_builder_agent(
             tool_input = json.loads(tc.function.arguments)
             try:
                 result = await _execute_tool(
-                    tc.function.name, tool_input, draft, org_id, attachment_b64
+                    tc.function.name, tool_input, draft, org_id, attachment_b64, source_key
                 )
             except Exception as e:
                 import logging

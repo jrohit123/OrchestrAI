@@ -1,5 +1,5 @@
 """
-cerebras_client.py — Cerebras-side price interpretation.
+gemini_client.py — Gemini-side price interpretation.
 
 This is the "generator" half of the dual-LLM QA pipeline. It is NEVER
 trusted alone — see llm_qa_reviewer.py, which cross-checks this against

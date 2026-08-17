@@ -188,23 +188,11 @@ async def generate_workflow_config(request: Request):
     if not description:
         raise HTTPException(status_code=400, detail="Description is required")
 
-    # Load schema for context
-    schema_rows = await fetch_all("""
-        SELECT table_name, column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name IN ('customers','inventory','invoices','orders',
-                              'quotations','users','roles')
-        ORDER BY table_name, ordinal_position
-    """, source_key=source_key)
-
-    # Build compact schema
-    table_cols: dict = {}
-    for r in schema_rows:
-        table_cols.setdefault(r["table_name"], []).append(r["column_name"])
-    schema_text = "\n".join(
-        f"  {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())
-    )
+    # Load schema for context using shared business schema function
+    from app.services.schema_utils import get_business_schema_with_types, format_schema_text
+    
+    table_cols = await get_business_schema_with_types(source_key=source_key)
+    schema_text = format_schema_text(table_cols, include_types=True)
 
     # Detect if this is read or action
     action_keywords = ["create", "update", "send", "generate", "delete", "set",
@@ -309,8 +297,9 @@ RULE 9 â€” adapter_method (ONLY for workflow_type = "action"):
 
 RULE 10 â€” intent_key:
   Must be unique, snake_case, descriptive.
-  For reads: describe the data (get_outstanding, check_stock, list_orders_by_status)
-  For actions: describe the action (create_invoice, update_order_status, send_dues_pdf)
+  For reads: describe the data (get_outstanding, check_stock, list_items_by_status)
+  For actions: describe the action (create_invoice, update_status, send_statement)
+  Use descriptive verbs (create, generate, update, get, set, delete) followed by the object.
 
 RULE 11 â€” pdf_config (for all workflows):
   How should PDFs look when generated from this workflow's data?
@@ -742,6 +731,7 @@ async def workflow_builder_chat(request: Request):
         draft_id=body.get("draft_id"),
         attachment_b64=body.get("attachment"),
         pre_extracted_pdf=body.get("pdf_analysis"),  # pre-extracted from browser
+        source_key=source_key,
     )
     return result
 

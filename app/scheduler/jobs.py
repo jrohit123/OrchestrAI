@@ -98,7 +98,7 @@ async def run_scheduled_reports():
             due = await fetch_all("""
                 SELECT sr.*, u.name as user_name, u.role_id,
                        o.name as org_name, o.gst_rate,
-                       r.permissions
+                       r.permissions, r.name as role_name
                 FROM scheduled_reports sr
                 JOIN users u ON u.id = sr.user_id
                 JOIN orgs  o ON o.id = sr.org_id
@@ -140,7 +140,7 @@ async def run_scheduled_reports():
                 "org_id":     str(row["org_id"]),
                 "user_name":  row["user_name"],
                 "org_name":   row["org_name"],
-                "role":       "owner",
+                "role":       row.get("role_name", "member"),
                 "role_id":    str(row["role_id"]),
                 "permissions": list(row["permissions"] or []),
                 "phone":      phone,

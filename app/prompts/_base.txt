@@ -107,7 +107,7 @@ ENTITY EXTRACTION — CRITICAL
 ════════════════════════════════════════════════════════════
 
 Extract the LONGEST possible entity name. Never truncate.
-"Mehta Enterprises complaint" → entity = "Mehta Enterprises"
+"ACME Corporation complaint" → entity = "ACME Corporation"
 "Wing A stray dog case" → location = "Wing A", animal = "dog"
 
 TWO-PASS LOOKUP:
@@ -149,9 +149,9 @@ EXAMPLES:
   → query_database for outstanding invoices
   → send_to_user(recipient_phone=Ravi's phone, message=formatted report)
 
-  "send Priya the low stock pdf"
+  "send Priya the inventory pdf"
   → query users for Priya → get phone
-  → query_database for low stock items
+  → query_database for inventory items
   → generate_pdf(rows=..., title=..., forward_to=Priya's phone, forward_to_name="Priya")
   → PDF goes directly to Priya, NOT to current user
 
@@ -239,7 +239,7 @@ RULE D2 — Only ask for MISSING fields.
 RULE D3 — Handle corrections gracefully.
   If the user says "actually 95000" or "change amount to 1 lakh", call
   update_draft with ONLY the corrected field. Do NOT touch other fields.
-  Example: draft has {customer_name: "Mehta Enterprises", items: [...]}
+  Example: draft has {customer_name: "ACME Corporation", items: [...]}
   User says: "actually make the amount 1,45,000"
   → Call update_draft with fields: {"items": [{...updated total...}]}
   → Do NOT clear customer_name or other fields.
@@ -257,7 +257,7 @@ RULE D5 — The draft owns the conversation until it's complete or cancelled.
 RULE D6 — Distinguish a CORRECTION from a NEW, UNRELATED REQUEST.
   When [ACTIVE DRAFT] is present and a correction_hint appears, first check:
   does the correction_hint actually relate to any field of the draft
-  (customer, amount, items, metal type, weight, design code)?
+  (customer, amount, items, type, quantity, description)?
 
   - If YES → call update_draft with only the relevant field(s), as before.
   - If NO — e.g., the correction_hint is a rate query, a stock check, a
@@ -270,22 +270,22 @@ RULE D6 — Distinguish a CORRECTION from a NEW, UNRELATED REQUEST.
          untouched so the next reply can still complete it.
 
 ════════════════════════════════════════════════════════════
-MAKING CHARGE CLASSIFICATION — MANDATORY RULE
+SERVICE CHARGE CLASSIFICATION — MANDATORY RULE
 ════════════════════════════════════════════════════════════
 
-When extracting making charges from user messages, follow this EXACT classification:
+When extracting service charges from user messages, follow this EXACT classification:
 
-  "making <number>%"  → making_charge_pct = <number>   (percentage)
-  "making <number>"   → making_charges_flat = <number>   (flat Rupees — NO percentage sign)
+  "charge <number>%"  → charge_pct = <number>   (percentage)
+  "charge <number>"   → charge_flat = <number>   (flat amount — NO percentage sign)
 
 Examples:
-  "making 12%" → making_charge_pct = 12
-  "making 5000" → making_charges_flat = 5000
-  "making 10 percent" → making_charge_pct = 10
+  "charge 12%" → charge_pct = 12
+  "charge 5000" → charge_flat = 5000
+  "charge 10 percent" → charge_pct = 10
 
 CRITICAL SAFETY CHECK:
-  - NEVER populate BOTH making_charge_pct and making_charges_flat for the same item.
-  - If a making_charge_pct value would be greater than 100, that is almost certainly
-    a misclassified flat Rupee amount — re-classify it as making_charges_flat instead.
-  - Example: "making 5000" should NEVER become making_charge_pct = 5000 (5000% is nonsensical).
-    It must be making_charges_flat = 5000.
+  - NEVER populate BOTH charge_pct and charge_flat for the same item.
+  - If a charge_pct value would be greater than 100, that is almost certainly
+    a misclassified flat amount — re-classify it as charge_flat instead.
+  - Example: "charge 5000" should NEVER become charge_pct = 5000 (5000% is nonsensical).
+    It must be charge_flat = 5000.

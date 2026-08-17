@@ -24,28 +24,18 @@ def _parse(val, default):
     return val if val is not None else default
 
 
-async def compile_workflow_spec(draft: dict, org_id: str) -> dict:
+async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "platform") -> dict:
     """
     Compile a workflow_drafts row (or legacy {"description":"..."} dict) into
     a full spec dict including plain_english_summary.
 
     Returns the spec dict. Raises ValueError if compilation fails after 3 attempts.
     """
-    # Load schema for context
-    schema_rows = await fetch_all("""
-        SELECT table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name IN ('customers','inventory','invoices','orders',
-                             'quotations','users','roles')
-        ORDER BY table_name, ordinal_position
-    """)
-    table_cols: dict = {}
-    for r in schema_rows:
-        table_cols.setdefault(r["table_name"], []).append(r["column_name"])
-    schema_text = "\n".join(
-        f"  {t}: {', '.join(cs)}" for t, cs in sorted(table_cols.items())
-    )
+    # Load schema for context using shared business schema function
+    from app.services.schema_utils import get_business_schema, format_schema_text
+    
+    table_cols = await get_business_schema(source_key=source_key)
+    schema_text = format_schema_text(table_cols)
 
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):
@@ -124,13 +114,10 @@ RULE 8 — llm_system_prompt: Under 300 words. What it does, tables involved, 3 
 
 RULE 9 — adapter_method: "generic" for all workflows (execution is driven by steps[]).
 
-RULE 10 — intent_key: unique snake_case. CRITICAL: Use EXACTLY these keys for standard workflows:
-  - Creating a sales invoice → "create_sales_invoice"
-  - Generating a price quotation → "generate_price_quotation"
-  - Updating order status → "update_order_status"
-  - Setting metal rates → "set_metal_rate"
-  - Customer dues statement → "get_customer_dues_statement"
-  For any other workflow, derive a clear snake_case key from the purpose.
+RULE 10 — intent_key: unique snake_case derived from the workflow purpose.
+  Use descriptive verbs (create, generate, update, get, set, delete) followed by the object.
+  Examples: create_complaint, generate_invoice, update_order_status, get_customer_dues.
+  Keep it short, clear, and domain-agnostic.
 
 RULE 11 — pdf_config: doc_type, title_template, aging_analysis, show_key_insights, insight_focus.
   For action workflows also add theme and render_instructions (RULE 15).

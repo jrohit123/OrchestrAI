@@ -118,17 +118,6 @@ def check_permission(user: dict, intent: str) -> bool:
 
 # ROLE_READ_ACCESS removed - now data-driven via roles.readable_tables column
 
-WORKFLOW_ACTIONS = {
-    "create_invoice":       "Create",
-    "create_quotation":     "Create",
-    "create_order":         "Create",
-    "send_invoice_pdf":     "Execute",
-    "send_dues_statement":  "Execute",
-    "set_metal_rate":       "Update",
-    "update_order_status":  "Update",
-}
-
-
 def check_route_permission(user: dict, analysis: dict) -> tuple[bool, str]:
     """
     Returns (allowed, reason).

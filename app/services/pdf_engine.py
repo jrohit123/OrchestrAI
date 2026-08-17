@@ -113,23 +113,23 @@ STRUCTURE:
 - BILL TO section (left): customer_name, city, GSTIN from extra_context
 - Invoice meta (right): Invoice #, Date, Due Date, STATUS from extra_context
   Status badge colours: paid=#16a34a, overdue=#dc2626, pending=#f59e0b
-- Items table: Description | Qty | Unit Price (ex-GST) | GST | Total
+- Items table: Description | Qty | Unit Price (ex-tax) | Tax | Total
 - Totals block (right-align, 40% width):
-    Subtotal  : use subtotal from extra_context if present; else = amount / 1.03 rounded
-    GST       : use gst_amount from extra_context if present; else = amount - subtotal
+    Subtotal  : use subtotal from extra_context if present
+    Tax       : use tax_amount from extra_context if present
     TOTAL     : use total_amount or amount from extra_context
-    CRITICAL: NEVER add GST on top of amount. amount IS the GST-inclusive total.
+    CRITICAL: Follow the tax calculation rules for this domain.
 - TOTAL in words (Indian number system)
-- Payment terms: "Payment due within 30 days."
+- Payment terms: domain-specific payment terms from extra_context or standard terms.
 """,
         "quotation": f"""
-── PRICE QUOTATION — GOLD/AMBER colour scheme ──
+── PRICE QUOTATION — PROFESSIONAL BLUE colour scheme ──
 
-COLOUR SCHEME: Primary #B8860B, Light bg #FFFBEB, Accent #C9A84C, Text #3B2800
-HEADER OVERRIDE: Use #B8860B for header rule and org name. Sub-label: "Price Quotation"
+COLOUR SCHEME: Primary #1E40AF, Light bg #EFF6FF, Accent #3B82F6, Text #1E3A8A
+HEADER OVERRIDE: Use #1E40AF for header rule and org name. Sub-label: "Price Quotation"
 
 BADGE (top right, PROMINENT):
-  background:#B8860B, white text, bold, font-size:13pt, letter-spacing:1px
+  background:#1E40AF, white text, bold, font-size:13pt, letter-spacing:1px
   Text: PRICE QUOTATION
 
 DOCUMENT META (two-column table):
@@ -138,27 +138,27 @@ DOCUMENT META (two-column table):
                Date: {today_long}
                Valid Until: extra_context valid_until (RED bold if within 2 days)
 
-DESIGN DETAILS CARD:
-  Full-width box, background #FFFBEB, border 2px solid #C9A84C, border-radius 8px:
-  Heading "DESIGN DETAILS" #B8860B bold.
-  Left: Design Code (monospace bold), Design Name (bold)
-  Right: Metal Type, Weight (grams)
+ITEM DETAILS CARD:
+  Full-width box, background #EFF6FF, border 2px solid #3B82F6, border-radius 8px:
+  Heading "ITEM DETAILS" #1E40AF bold.
+  Left: Item Code (monospace bold), Item Name (bold)
+  Right: Quantity, Unit Price, Additional Charges
 
 PRICING BREAKDOWN TABLE (right-aligned, width 55%):
-  Border: 1px solid #C9A84C
-  Row 1: Metal Cost      | Rs.X from extra_context metal_cost
-  Row 2: Making Charges  | Rs.X from extra_context making_charges
-         sub-note: making_charge_pct% of metal cost (muted 9pt)
+  Border: 1px solid #3B82F6
+  Row 1: Base Cost      | Rs.X from extra_context base_cost
+  Row 2: Additional Charges  | Rs.X from extra_context additional_charges
+         sub-note: any percentage breakdown muted 9pt
   Row 3: Subtotal        | Rs.X from extra_context subtotal
   Row 4: GST (gst_pct%)  | Rs.X from extra_context gst_amount
-  TOTAL ROW bold background:#B8860B white text 13pt | Rs.X from total_amount
+  TOTAL ROW bold background:#1E40AF white text 13pt | Rs.X from total_amount
 
 ALL values from extra_context. Do NOT recalculate. Indian comma formatting.
 
-VALIDITY BOX: background #FFF3CD, border-left 4px solid #B8860B
-  Warning about validity period and rate fluctuation.
+VALIDITY BOX: background #FFF3CD, border-left 4px solid #1E40AF
+  Warning about validity period and price/terms if applicable.
 
-TERMS: advance payment, weight variance +-5%, making charges fixed, GST as applicable.
+TERMS: payment terms, delivery conditions, any applicable taxes or fees.
 
 ACCEPTANCE SECTION: Customer signature + date (left), Authorised Signatory (right)
 FOOTER NOTE (red small): "This is a QUOTATION, not a Tax Invoice."
