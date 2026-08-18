@@ -66,7 +66,7 @@ if _groq_key:
     except Exception as e:
         logger.warning(f"Failed to init Groq client: {e}")
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "llama-3.1-70b-versatile"
 
 # ── Cerebras ─────────────────────────────────────────────────────────────────
 _cerebras_client: AsyncOpenAI | None = None
