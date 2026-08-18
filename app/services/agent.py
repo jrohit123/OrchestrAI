@@ -1654,8 +1654,13 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             # Final safety check: never return empty string
             if not formatted:
-                logger.error(f"Both formatting LLM and raw_result are empty, returning error message")
+                logger.error(f"Both formatting LLM and raw_result are empty, returning error message. raw_result length: {len(str(raw_result))}")
                 formatted = "❌ Sorry, I couldn't process that request. Please try again."
+
+            # Save both user message and assistant response to history for PDF generation context
+            history_to_save.append({"role": "assistant", "content": formatted})
+            # Also store raw data in a special field for PDF generation
+            history_to_save.append({"role": "system", "content": f"_RAW_DATA_FOR_PDF: {json.dumps(raw_result)}"})
 
             return formatted, history_to_save, {}
         else:
@@ -1839,7 +1844,7 @@ Return ONLY the WhatsApp message text, nothing else."""
             fake_failure = (
                 iteration == 0
                 and re.search(r"(sorry|apolog).{0,40}(error|trouble|issue|couldn.?t|unable)", content, re.IGNORECASE)
-                and re.search(r"(fetch|retriev|data|load|pdf|document|generat)", content, re.IGNORECASE)
+                and re.search(r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete)", content, re.IGNORECASE)
             )
             if fake_failure:
                 logger.warning(f"Detected fabricated-failure response with no tool call — forcing retry: {content[:150]}")
@@ -1901,12 +1906,12 @@ Return ONLY the WhatsApp message text, nothing else."""
                 })
                 continue  # retry this iteration
 
-            logger.debug(f"No tool calls, returning text response: {content[:200]}")
+            logger.info(f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}")
             history_to_save = _serialize_history(messages)
             # Safety check: never return empty string
             final_content = content.strip()
             if not final_content:
-                logger.error(f"LLM returned empty content, returning fallback message")
+                logger.error(f"LLM returned empty content, returning fallback message. Original content: '{content}'")
                 final_content = "❌ Sorry, I couldn't process that request. Please try again."
             return final_content, history_to_save, session_patch
 
