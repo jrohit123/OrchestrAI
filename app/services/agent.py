@@ -1640,8 +1640,12 @@ Return ONLY the WhatsApp message text, nothing else."""
                     temperature=0.1,
                 )
                 formatted = format_response.choices[0].message.content.strip()
+                # Safety check: catch truncated output before it reaches the user
+                if format_response.choices[0].finish_reason == "length":
+                    logger.warning(f"Formatting response truncated (finish_reason=length) — falling back to raw data")
+                    formatted = raw_result
                 # Safety check: if formatting LLM returns empty, fall back to raw data
-                if not formatted:
+                elif not formatted:
                     logger.warning(f"Formatting LLM returned empty response, falling back to raw data")
                     formatted = raw_result
             except Exception as e:
@@ -1835,7 +1839,7 @@ Return ONLY the WhatsApp message text, nothing else."""
             fake_failure = (
                 iteration == 0
                 and re.search(r"(sorry|apolog).{0,40}(error|trouble|issue|couldn.?t|unable)", content, re.IGNORECASE)
-                and re.search(r"(fetch|retriev|data|load)", content, re.IGNORECASE)
+                and re.search(r"(fetch|retriev|data|load|pdf|document|generat)", content, re.IGNORECASE)
             )
             if fake_failure:
                 logger.warning(f"Detected fabricated-failure response with no tool call — forcing retry: {content[:150]}")
@@ -1843,10 +1847,12 @@ Return ONLY the WhatsApp message text, nothing else."""
                 messages.append({
                     "role": "user",
                     "content": (
-                        "SYSTEM CORRECTION: You did not actually call any tool — no query was run, "
-                        "so there was no real error. If the user is asking for data, you MUST call "
-                        "query_database with a real SELECT query. Do not apologize about a fetch "
-                        "failure unless you actually called query_database and it returned an ERROR."
+                        "SYSTEM CORRECTION: You did not actually call any tool — no query or PDF "
+                        "generation was run, so there was no real error. If the user is asking for "
+                        "data, you MUST call query_database with a real SELECT query. If the user "
+                        "is asking for a PDF/document, you MUST call generate_pdf with real rows "
+                        "(re-run query_database first if needed to get the data). Do not apologize "
+                        "about a failure unless you actually called the tool and it returned an ERROR."
                     )
                 })
                 continue  # retry this iteration
