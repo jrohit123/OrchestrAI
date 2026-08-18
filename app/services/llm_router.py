@@ -2,8 +2,8 @@
 llm_router.py — Centralised multi-provider LLM client with key rotation and fallback.
 
 Provider order:
-  1. Groq    (1 key, llama-3.3-70b-versatile — free tier with daily reset, 128k context)
-  2. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
+  1. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
+  2. Groq    (1 key, llama-3.1-8b-instant — free tier with daily reset, 128k context)
   3. OpenAI  (1 key, gpt-4o-mini — paid tier)
   4. Cerebras (1 key, gpt-oss-120b — requires payment method after Aug 17, large context)
 
@@ -66,7 +66,7 @@ if _groq_key:
     except Exception as e:
         logger.warning(f"Failed to init Groq client: {e}")
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 # ── Cerebras ─────────────────────────────────────────────────────────────────
 _cerebras_client: AsyncOpenAI | None = None
@@ -105,7 +105,7 @@ async def chat_completion(
     temperature: float = 0.1,
 ) -> object:
     """
-    Try providers in order: Groq → Gemini (all keys/models) → OpenAI → Cerebras.
+    Try providers in order: Gemini (all keys/models) → Groq → OpenAI → Cerebras.
     Raises Exception if all providers fail, with a combined error message.
     """
     errors: dict[str, str] = {}
@@ -118,21 +118,7 @@ async def chat_completion(
         # Some providers require this disabled
         kwargs.setdefault("parallel_tool_calls", False)
 
-    # ── 1. Groq (free tier with daily reset, 128k context) ───────────────────────
-    if _groq_client:
-        # Groq doesn't support parallel_tool_calls kwarg — strip it
-        groq_kwargs = {k: v for k, v in kwargs.items() if k != "parallel_tool_calls"}
-        try:
-            response = await _groq_client.chat.completions.create(
-                model=GROQ_MODEL, **groq_kwargs
-            )
-            logger.info(f"LLM success: Groq model={GROQ_MODEL}")
-            return response
-        except Exception as e:
-            errors["groq"] = str(e)
-            logger.warning(f"Groq failed: {e}. Falling back to Gemini...")
-
-    # ── 2. Gemini (rotate keys, try each model per key) ───────────────────────
+    # ── 1. Gemini (rotate keys, try each model per key) ───────────────────────
     if _gemini_clients:
         n_keys = len(_gemini_clients)
         # Start from next key in round-robin
@@ -160,6 +146,20 @@ async def chat_completion(
                     else:
                         logger.warning(f"Gemini key[{idx+1}] {model} failed: {e}")
                         continue
+
+    # ── 2. Groq (free tier with daily reset, 128k context) ───────────────────────
+    if _groq_client:
+        # Groq doesn't support parallel_tool_calls kwarg — strip it
+        groq_kwargs = {k: v for k, v in kwargs.items() if k != "parallel_tool_calls"}
+        try:
+            response = await _groq_client.chat.completions.create(
+                model=GROQ_MODEL, **groq_kwargs
+            )
+            logger.info(f"LLM success: Groq model={GROQ_MODEL}")
+            return response
+        except Exception as e:
+            errors["groq"] = str(e)
+            logger.warning(f"Groq failed: {e}. Falling back to OpenAI...")
 
     # ── 3. OpenAI (paid tier) ───────────────────────────────────────────────────
     if _openai_client:

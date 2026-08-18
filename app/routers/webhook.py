@@ -493,8 +493,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
 
         if text_lower in _CANCEL_WORDS:
+            from app.services.draft_store import close_draft
             session.pop("pending_action", None)
             await set_session(session_id, session, ttl=session_ttl)
+            # Also clear from database
+            await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
             await send_text(phone, "❌ Action cancelled.")
             return
 
@@ -519,9 +522,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 text_lower_for_restart = text.strip().lower()
                 if any(word in text_lower_for_restart for word in _RESTART_WORDS):
                     # Clear existing draft and start fresh
+                    from app.services.draft_store import close_draft
                     logger.info(f"Intent restart detected — clearing draft")
                     session.pop("pending_action", None)
                     await set_session(session_id, session, ttl=session_ttl)
+                    # Also clear from database
+                    await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
                     await send_text(phone,
                         "_⏱️ Previous draft cleared. Starting fresh..._"
                     )
