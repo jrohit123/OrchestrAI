@@ -513,8 +513,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             else:
                 # Still fresh — treat as a correction to the existing draft.
                 # Downgrade stage so the agent re-enters collection mode.
-                reprompt_count = pending_action.get("reprompt_count", 0) + 1
-                if reprompt_count >= _MAX_REPROMPT_COUNT:
+                # NOTE: reprompt_count is incremented once, later, by the
+                # collecting-stage check further down — do NOT increment it
+                # here too, or corrections get double-counted and hit the
+                # cap in half the intended number of turns.
+                current_reprompt_count = pending_action.get("reprompt_count", 0)
+                if current_reprompt_count >= _MAX_REPROMPT_COUNT:
                     # Cap hit — the user and the bot are going in circles. Force a clean restart.
                     logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
                     session.pop("pending_action", None)
@@ -527,10 +531,9 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     return
                 pending_action["stage"] = "collecting"
                 pending_action["correction_hint"] = text
-                pending_action["reprompt_count"] = reprompt_count
                 session["pending_action"] = pending_action
                 await set_session(session_id, session, ttl=session_ttl)
-                # fall through to agent
+                # fall through to agent — step 10 below will increment reprompt_count once
         else:
             # No draft at all — just fall through
             pass
