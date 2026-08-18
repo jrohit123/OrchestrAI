@@ -36,6 +36,10 @@ _CONFIRM_WORDS = frozenset({
     "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
 })
 _CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
+_RESTART_WORDS = frozenset({
+    "restart", "start over", "new", "fresh", "cancel", "stop",
+    "register_complaint", "complaint", "case", "file", "register"
+})
 
 
 def verify_signature(raw: bytes, header: str | None) -> bool:
@@ -511,29 +515,42 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 )
                 # fall through to agent with pending_action=None
             else:
-                # Still fresh — treat as a correction to the existing draft.
-                # Downgrade stage so the agent re-enters collection mode.
-                # NOTE: reprompt_count is incremented once, later, by the
-                # collecting-stage check further down — do NOT increment it
-                # here too, or corrections get double-counted and hit the
-                # cap in half the intended number of turns.
-                current_reprompt_count = pending_action.get("reprompt_count", 0)
-                if current_reprompt_count >= _MAX_REPROMPT_COUNT:
-                    # Cap hit — the user and the bot are going in circles. Force a clean restart.
-                    logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+                # Check if user wants to restart with a new intent
+                text_lower_for_restart = text.strip().lower()
+                if any(word in text_lower_for_restart for word in _RESTART_WORDS):
+                    # Clear existing draft and start fresh
+                    logger.info(f"Intent restart detected — clearing draft")
                     session.pop("pending_action", None)
                     await set_session(session_id, session, ttl=session_ttl)
                     await send_text(phone,
-                        "🤔 I'm having trouble understanding the details for this request. "
-                        "Let's start fresh — please send your request again with all the details "
-                        "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+                        "_⏱️ Previous draft cleared. Starting fresh..._"
                     )
-                    return
-                pending_action["stage"] = "collecting"
-                pending_action["correction_hint"] = text
-                session["pending_action"] = pending_action
-                await set_session(session_id, session, ttl=session_ttl)
-                # fall through to agent — step 10 below will increment reprompt_count once
+                    # fall through to agent with pending_action=None
+                    pending_action = None
+                else:
+                    # Still fresh — treat as a correction to the existing draft.
+                    # Downgrade stage so the agent re-enters collection mode.
+                    # NOTE: reprompt_count is incremented once, later, by the
+                    # collecting-stage check further down — do NOT increment it
+                    # here too, or corrections get double-counted and hit the
+                    # cap in half the intended number of turns.
+                    current_reprompt_count = pending_action.get("reprompt_count", 0)
+                    if current_reprompt_count >= _MAX_REPROMPT_COUNT:
+                        # Cap hit — the user and the bot are going in circles. Force a clean restart.
+                        logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+                        session.pop("pending_action", None)
+                        await set_session(session_id, session, ttl=session_ttl)
+                        await send_text(phone,
+                            "🤔 I'm having trouble understanding the details for this request. "
+                            "Let's start fresh — please send your request again with all the details "
+                            "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+                        )
+                        return
+                    pending_action["stage"] = "collecting"
+                    pending_action["correction_hint"] = text
+                    session["pending_action"] = pending_action
+                    await set_session(session_id, session, ttl=session_ttl)
+                    # fall through to agent — step 10 below will increment reprompt_count once
         else:
             # No draft at all — just fall through
             pass

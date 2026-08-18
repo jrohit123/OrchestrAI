@@ -381,9 +381,17 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
     sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING *"
 
-    row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
-    ctx.setdefault("inserted", {})[table] = dict(row)
-    return ctx
+    try:
+        row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
+        if not row:
+            raise StepError(f"db.insert_row failed: INSERT returned no rows for table '{table}'")
+        ctx.setdefault("inserted", {})[table] = dict(row)
+        return ctx
+    except Exception as e:
+        logger.error(f"db.insert_row failed for table '{table}': {e}", exc_info=True)
+        logger.error(f"SQL: {sql}")
+        logger.error(f"Values: {sql_values}")
+        raise StepError(f"Failed to insert into {table}: {str(e)}")
 
 
 async def _op_generate_pdf(params: dict, ctx: dict) -> dict:

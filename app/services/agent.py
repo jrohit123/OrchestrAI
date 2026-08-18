@@ -1706,17 +1706,32 @@ Return ONLY the WhatsApp message text, nothing else."""
             return ""
         fields = pending_action.get("fields") or {}
         correction = pending_action.get("correction_hint", "")
-        correction_line = (
-            f"\nUser just said: \"{correction}\" — treat this as a correction to the draft above. "
-            "Update only the relevant field(s), keep everything else.\n"
-        ) if correction else ""
+        
+        # Detect correction patterns like "change priority to low", "make it urgent", etc.
+        correction_instruction = ""
+        if correction:
+            correction_lower = correction.lower()
+            # Pattern: "change X to Y" or "make it Y" or "set X to Y"
+            if re.search(r'(change|make|set)\s+\w+\s+(to|as)\s+\w+', correction_lower):
+                correction_instruction = (
+                    f"\nUser just said: \"{correction}\" — this is a FIELD UPDATE. "
+                    "Parse the pattern to identify which field to update and the new value. "
+                    "Call update_draft with ONLY the changed field. Keep all other fields intact.\n"
+                )
+            else:
+                correction_instruction = (
+                    f"\nUser just said: \"{correction}\" — treat this as a correction to the draft above. "
+                    "Update only the relevant field(s), keep everything else.\n"
+                )
+        
         return (
             "\n=== ACTIVE DRAFT (from this conversation — do NOT discard or replace unless user changes it) ===\n"
             f"Intent: {pending_action.get('intent_key')}\n"
             f"Stage: {pending_action.get('stage', 'collecting')}\n"
             f"Collected fields: {json.dumps(fields, default=str)}\n"
-            f"{correction_line}"
-            "Only ask for fields NOT listed above. Never invent values not provided by the user.\n"
+            f"{correction_instruction}"
+            "Only ask for fields NOT listed above. NEVER invent default values for missing optional fields — "
+            "explicitly ask the user if they don't provide a value.\n"
             "=== END ACTIVE DRAFT ===\n"
         )
 
@@ -1794,7 +1809,8 @@ Return ONLY the WhatsApp message text, nothing else."""
             f"[ACTIVE DRAFT — intent: {pending_action.get('intent_key')}, stage: {stage}]\n"
             f"Already collected: {json.dumps(fields, default=str)}\n"
             f"{correction_line}"
-            "Only ask for fields NOT listed above. Never re-ask for already-collected data."
+            "Only ask for fields NOT listed above. NEVER invent default values for missing optional fields — "
+            "explicitly ask the user if they don't provide a value. Never re-ask for already-collected data."
         )
         messages.append({"role": "assistant", "content": draft_msg})
 
