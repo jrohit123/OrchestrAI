@@ -1258,6 +1258,17 @@ async def _execute_tool(
         fields = tool_input.get("fields", {})
         stage = tool_input.get("stage", "collecting")
 
+        # If intent_key not provided, infer from existing draft
+        if not intent_key:
+            from app.services.draft_store import get_active_draft
+            existing_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+            if existing_draft:
+                intent_key = existing_draft.get("intent_key")
+                logger.debug(f"Inferred intent_key from existing draft: {intent_key}")
+            else:
+                logger.warning("update_draft called without intent_key and no existing draft found")
+                return "ERROR: No intent_key provided and no existing draft to infer from"
+
         # Guard: the LLM must always pass an object. A malformed call (e.g.
         # passing an items array directly as `fields`) corrupts the stored
         # draft via Postgres jsonb's `||` operator, which crashes every
