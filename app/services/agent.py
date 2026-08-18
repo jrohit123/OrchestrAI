@@ -1967,6 +1967,23 @@ Return ONLY the WhatsApp message text, nothing else."""
                     "button_label": "📋 Menu"
                 }
 
+            # If this was a generate_pdf call, return success message immediately
+            if tool_call.function.name == "generate_pdf":
+                # generate_pdf returns "PDF_SENT: title (rows) via delivery" on success
+                # or "ERROR generating PDF: ..." on failure
+                if isinstance(result, str) and result.startswith("PDF_SENT:"):
+                    # Extract the title from the result for a friendly message
+                    pdf_message = f"✅ PDF sent successfully! {result.replace('PDF_SENT:', '')}"
+                    history_to_save = _serialize_history(messages)
+                    history_to_save.append({"role": "assistant", "content": pdf_message})
+                    return pdf_message, history_to_save, session_patch
+                elif isinstance(result, str) and result.startswith("ERROR generating PDF:"):
+                    # Return the error message to the user
+                    error_message = f"❌ {result.replace('ERROR generating PDF: ', '')}"
+                    history_to_save = _serialize_history(messages)
+                    history_to_save.append({"role": "assistant", "content": error_message})
+                    return error_message, history_to_save, session_patch
+
             # If update_draft was called, capture session patch
             if tool_call.function.name == "update_draft":
                 if isinstance(result, dict) and result.get("type") == "draft_update":
