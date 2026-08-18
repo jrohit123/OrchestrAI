@@ -64,7 +64,7 @@ def build_sample_fields(entity_schema: dict) -> dict:
     return fields
 
 
-async def generate_preview_pdf(spec: dict, org_id: str) -> bytes:
+async def generate_preview_pdf(spec: dict, org_id: str, source_key: str) -> bytes:
     """
     Generate a preview PDF for a workflow spec using placeholder data.
     Returns PDF bytes.
@@ -77,7 +77,7 @@ async def generate_preview_pdf(spec: dict, org_id: str) -> bytes:
 
     # Run calc_engine with org context — same as production
     if calc_rules:
-        org = await fetch_one("SELECT * FROM orgs WHERE id = $1", org_id)
+        org = await fetch_one("SELECT * FROM orgs WHERE id = $1", org_id, source_key=source_key)
         context = {
             k: (float(v) if hasattr(v, '__float__') and not isinstance(v, (str, bool)) else v)
             for k, v in dict(org or {}).items()

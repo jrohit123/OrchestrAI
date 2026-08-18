@@ -168,18 +168,18 @@ _TOOLS = [
 ]
 
 
-async def _get_or_create_draft(org_id: str, draft_id: str | None) -> dict:
+async def _get_or_create_draft(org_id: str, draft_id: str | None, source_key: str) -> dict:
     if draft_id:
         row = await fetch_one(
             "SELECT * FROM workflow_drafts WHERE id = $1 AND org_id = $2",
-            draft_id, org_id
+            draft_id, org_id, source_key=source_key
         )
         if row:
             return dict(row)
     # Create a new draft
     row = await fetch_one(
         "INSERT INTO workflow_drafts (org_id, status) VALUES ($1, 'chatting') RETURNING *",
-        org_id
+        org_id, source_key=source_key
     )
     return dict(row)
 
@@ -196,14 +196,14 @@ async def _execute_tool(
     if tool_name == "list_existing_workflows":
         live = await fetch_all(
             "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 ORDER BY name",
-            org_id
+            org_id, source_key=source_key
         )
         drafts = await fetch_all("""
             SELECT id, name, purpose, status, updated_at
             FROM workflow_drafts
             WHERE org_id = $1 AND status = 'chatting' AND id != $2
             ORDER BY updated_at DESC LIMIT 5
-        """, org_id, draft["id"])
+        """, org_id, draft["id"], source_key=source_key)
         return {
             "live_workflows":    [dict(r) for r in live],
             "unfinished_drafts": [dict(r) for r in drafts],
@@ -240,7 +240,7 @@ async def _execute_tool(
             set_parts = [f"{k} = ${i+2}" for i, k in enumerate(updates)]
             await execute(
                 f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-                draft["id"], *updates.values()
+                draft["id"], *updates.values(), source_key=source_key
             )
             # Refresh local draft dict so subsequent tool calls in same turn see the updates
             for k, v in updates.items():
@@ -255,7 +255,7 @@ async def _execute_tool(
         spec = await extract_pdf_template(pdf_bytes, tool_input.get("doc_type_hint", ""))
         await execute(
             "UPDATE workflow_drafts SET pdf_sample_analysis = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(spec), draft["id"]
+            json.dumps(spec), draft["id"], source_key=source_key
         )
         return {
             "doc_type_guess": spec.get("doc_type_guess"),
@@ -264,7 +264,7 @@ async def _execute_tool(
         }
 
     if tool_name == "compile_and_summarize":
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
+        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
         try:
             spec = await compile_workflow_spec(dict(fresh), org_id=org_id, source_key=source_key)
         except ValueError as e:
@@ -306,7 +306,8 @@ async def _execute_tool(
             draft.get("slash_command"),
             draft.get("command_description"),
             draft.get("menu_section"),
-            draft["id"]
+            draft["id"],
+            source_key=source_key
         )
         return {
             "summary":              spec["plain_english_summary"],
@@ -321,20 +322,20 @@ async def _execute_tool(
         await execute(
             "UPDATE workflow_drafts SET business_rules = $1, status = 'chatting', updated_at = now() WHERE id = $2",
             f"{existing_rules}\nRequested change: {change}".strip(),
-            draft["id"]
+            draft["id"], source_key=source_key
         )
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
+        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
         return await _execute_tool("compile_and_summarize", {}, dict(fresh), org_id, attachment_b64, source_key)
 
     if tool_name == "mark_ready_for_review":
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"])
+        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
         if not fresh or fresh["status"] not in ("ready_for_review", "chatting"):
             return {"error": "Nothing compiled yet. Please describe the workflow first."}
         if not fresh.get("intent_key"):
             return {"error": "Workflow has no name yet — please compile first."}
         await execute(
             "UPDATE workflow_drafts SET status = 'ready_for_review', updated_at = now() WHERE id = $1",
-            draft["id"]
+            draft["id"], source_key=source_key
         )
         return {
             "_show_publish_panel": True,
@@ -346,7 +347,7 @@ async def _execute_tool(
         intent_key = tool_input.get("intent_key", "")
         wf = await fetch_one(
             "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
-            org_id, intent_key
+            org_id, intent_key, source_key=source_key
         )
         if not wf:
             return {"error": f"No workflow found with key '{intent_key}'. Check the name and try again."}
@@ -389,7 +390,8 @@ async def _execute_tool(
             wf.get("slash_command"),
             wf.get("command_description"),
             wf.get("menu_section"),
-            draft["id"]
+            draft["id"],
+            source_key=source_key
         )
         return {
             "loaded": True,
@@ -422,14 +424,14 @@ async def run_builder_agent(
             "published_intent_key": str|None,
         }
     """
-    draft = await _get_or_create_draft(org_id, draft_id)
+    draft = await _get_or_create_draft(org_id, draft_id, source_key)
 
     # If a pre-extracted PDF analysis was passed from the browser (extracted before this call),
     # save it to the draft immediately so compile_and_summarize can use it
     if pre_extracted_pdf and isinstance(pre_extracted_pdf, dict):
         await execute(
             "UPDATE workflow_drafts SET pdf_sample_analysis = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(pre_extracted_pdf), draft["id"]
+            json.dumps(pre_extracted_pdf), draft["id"], source_key=source_key
         )
         draft["pdf_sample_analysis"] = pre_extracted_pdf
         print(f"[BUILDER] Pre-extracted PDF analysis saved to draft {draft['id']}")
@@ -443,7 +445,7 @@ async def run_builder_agent(
         })
         await execute(
             "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(chat_history), draft["id"]
+            json.dumps(chat_history), draft["id"], source_key=source_key
         )
         draft["chat_history"] = chat_history
 
@@ -514,7 +516,7 @@ async def run_builder_agent(
             # Save updated chat history to DB
             await execute(
                 "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-                json.dumps(chat_history), draft["id"]
+                json.dumps(chat_history), draft["id"], source_key=source_key
             )
             return {
                 "reply":                reply,
@@ -562,7 +564,7 @@ async def run_builder_agent(
     chat_history.append({"role": "assistant", "content": reply})
     await execute(
         "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-        json.dumps(chat_history), draft["id"]
+        json.dumps(chat_history), draft["id"], source_key=source_key
     )
     return {
         "reply":                reply,

@@ -9,31 +9,31 @@ COMPLAINT / CASE STATUS:
 "meri complaint" / "mera case" / "status kya hai" / "kya hua"
 "open complaints" / "pending cases" / "active issues"
 "closed cases" / "resolved" / "band ho gaya"
-→ complaint_cases table, JOIN users for complainant/assignee names
+→ cases table, JOIN users for complainant/assignee names
 
 MY COMPLAINTS:
 "meri complaints" / "mere cases" / "maine jo report ki" / "my issues"
-→ complaint_cases WHERE complainant_id = <user_id>
+→ cases WHERE complainant_id = <user_id>
 
 ASSIGNED CASES (committee):
 "mujhe assign kya" / "mere paas kya hai" / "my assigned cases"
 "mujhe handle karna hai" / "my cases to resolve"
-→ complaint_cases WHERE assigned_to_id = <user_id>
+→ cases WHERE assigned_to_id = <user_id>
 
 ANIMAL TYPE QUERIES:
 "dog complaint" / "kutta" / "cat" / "billi" / "cow" / "gaay"
 "stray animals" / "awara janwar" / "animal issue"
-→ complaint_cases WHERE animal_type ILIKE '%<animal>%'
+→ cases WHERE custom_fields->>'animal_type' ILIKE '%<animal>%'
 
 LOCATION QUERIES:
 "wing A" / "B wing" / "parking" / "garden" / "gate" / "lobby"
 "flat 404 ke paas" / "basement mein"
-→ complaint_cases WHERE incident_location ILIKE '%<location>%'
+→ cases WHERE location ILIKE '%<location>%'
 
 PRIORITY QUERIES:
 "urgent" / "critical" / "high priority" / "emergency"
 "low priority" / "medium" / "normal"
-→ complaint_cases WHERE priority = '<priority>'
+→ cases WHERE priority = '<priority>'
 
 ─────────────────────────────────────────────
 SECTION B — ACTION INTENT GLOSSARY
@@ -42,22 +42,22 @@ SECTION B — ACTION INTENT GLOSSARY
 REGISTER COMPLAINT:
 "complaint register karo" / "case file karo" / "report karo"
 "shikayat darz karo" / "new complaint" / "issue report karo"
-→ register_complaint workflow → INSERT into complaint_cases
+→ register_complaint workflow → INSERT into cases
 
 ASSIGN CASE (committee only):
 "assign karo" / "de do" / "handle karne do" / "<name> ko assign karo"
 "<committee member> ko case do" / "transfer karo"
-→ assign_case workflow → UPDATE complaint_cases SET assigned_to_id
+→ assign_case workflow → UPDATE cases SET assigned_to_id
 
 ADD COMMENT:
 "comment daalo" / "note likho" / "update daalo" / "add note"
 "kuch likho case mein" / "remarks daalo"
-→ add_case_comment workflow → INSERT into case_comments
+→ add_case_comment workflow → INSERT into case_activity (activity_type='comment', payload={"text": "<note text>"}, actor_user_id=$user.user_id)
 
 CLOSE CASE:
 "case band karo" / "close karo" / "resolve mark karo"
 "solved ho gaya" / "issue fix ho gaya" / "close the case"
-→ close_case workflow → UPDATE complaint_cases SET status='closed', closed_at=now()
+→ close_case workflow → UPDATE cases SET status='closed', closed_at=now()
 
 ─────────────────────────────────────────────
 SECTION C — STATUS VALUES
@@ -78,9 +78,9 @@ SECTION D — RESPONSE TEMPLATES
 
 Case status query response:
 "*Case #{case_number}*
-📋 {complaint_title}
+📋 {title}
 🐾 Animal: {animal_type}
-📍 Location: {incident_location}
+📍 Location: {location}
 ⚡ Priority: {priority}
 📊 Status: {status}
 👤 Reported by: {complainant_name}
@@ -107,9 +107,9 @@ New complaint confirmation:
 "✅ *Complaint Registered*
 
 Case #: *{case_number}*
-Title: {complaint_title}
+Title: {title}
 Animal: {animal_type}
-Location: {incident_location}
+Location: {location}
 Priority: {priority}
 Status: reported
 
@@ -120,24 +120,24 @@ SECTION E — QUERY EXAMPLES
 ─────────────────────────────────────────────
 
 "wing B mein stray dog ka complaint karo"
-→ register_complaint: animal_type='dog', incident_location='Wing B',
-  complaint_title='Stray dog in Wing B'
+→ register_complaint: animal_type='dog', location='Wing B',
+  title='Stray dog in Wing B'
 
 "meri open complaints dikhao"
-→ SELECT cc.*, u.name as complainant_name FROM complaint_cases cc
+→ SELECT cc.*, u.name as complainant_name FROM cases cc
   JOIN users u ON u.id = cc.complainant_id
   WHERE cc.org_id=$1 AND cc.complainant_id=$2 AND cc.status != 'closed'
   ORDER BY cc.created_at DESC
 
 "CS-26-08-00001 ka status kya hai"
 → SELECT cc.*, c1.name as complainant_name, c2.name as assigned_name
-  FROM complaint_cases cc
+  FROM cases cc
   LEFT JOIN users c1 ON c1.id = cc.complainant_id
   LEFT JOIN users c2 ON c2.id = cc.assigned_to_id
   WHERE cc.org_id=$1 AND cc.case_number=$2
 
 "kitne critical cases open hain"
-→ SELECT COUNT(*) FROM complaint_cases
+→ SELECT COUNT(*) FROM cases
   WHERE org_id=$1 AND priority='critical' AND status != 'closed'
 
 "Ravi ko CS-26-08-00003 assign karo"
@@ -156,19 +156,19 @@ Example: CS-26-08-00001 (August 2026, first case)
 Generate with:
   SELECT 'CS-' || TO_CHAR(now(), 'YY-MM-') ||
          LPAD((COUNT(*)+1)::text, 5, '0') as case_number
-  FROM complaint_cases WHERE org_id = $1
+  FROM cases WHERE org_id = $1
 
 ─────────────────────────────────────────────
-SECTION G — COMPLAINT_CASES SQL PATTERNS
+SECTION G — CASES SQL PATTERNS
 ─────────────────────────────────────────────
 
 All cases for org with names:
-SELECT cc.id, cc.case_number, cc.complaint_title, cc.status, cc.priority,
-       cc.animal_type, cc.incident_location,
+SELECT cc.id, cc.case_number, cc.title, cc.status, cc.priority,
+       cc.custom_fields->>'animal_type' AS animal_type, cc.location,
        cc.created_at, cc.closed_at,
        u1.name as complainant_name,
        u2.name as assigned_name
-FROM complaint_cases cc
+FROM cases cc
 LEFT JOIN users u1 ON u1.id = cc.complainant_id
 LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
 WHERE cc.org_id = $1
@@ -189,11 +189,11 @@ ORDER BY CASE cc.priority
 END, cc.created_at ASC
 
 COUNT by status:
-SELECT status, COUNT(*) FROM complaint_cases
+SELECT status, COUNT(*) FROM cases
 WHERE org_id=$1 GROUP BY status ORDER BY status
 
 COUNT by priority (open only):
-SELECT priority, COUNT(*) FROM complaint_cases
+SELECT priority, COUNT(*) FROM cases
 WHERE org_id=$1 AND status != 'closed' GROUP BY priority
 
 ─────────────────────────────────────────────
@@ -214,18 +214,18 @@ SUBCATEGORY EXAMPLES:
 
 CATEGORY/SUBCATEGORY QUERY PATTERN:
 "show AMC cases" / "maintenance repair cases"
-→ SELECT cc.case_number, cc.complaint_title, cc.status, cc.priority,
+→ SELECT cc.case_number, cc.title, cc.status, cc.priority,
          cat.name as category_name, sub.name as subcategory_name, cc.due_date
-  FROM complaint_cases cc
+  FROM cases cc
   LEFT JOIN case_categories cat ON cat.id = cc.category_id
   LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
   WHERE cc.org_id = $1 AND sub.name ILIKE $2
 
 SLA / OVERDUE QUERIES:
 "overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
-→ SELECT cc.case_number, cc.complaint_title, cc.priority, cc.due_date,
+→ SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
          sub.name as subcategory_name, u2.name as assigned_name
-  FROM complaint_cases cc
+  FROM cases cc
   LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
   LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
   WHERE cc.org_id = $1 AND cc.due_date < now() AND cc.status != 'closed'
@@ -244,11 +244,11 @@ than asking — only clarify if the complaint type is completely ambiguous
 
 Example: "garbage not collected in Wing 3"
 → category_name="Cleanliness", subcategory_name="Waste Collection",
-  incident_location="Wing 3"
+  location="Wing 3"
 
 RESPONSE TEMPLATE ADDITION — SLA-aware case status:
 "*Case #{case_number}*
-📋 {complaint_title}
+📋 {title}
 🗂 Category: {category_name} — {subcategory_name}
 ⚡ Priority: {priority}
 📊 Status: {status}

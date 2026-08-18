@@ -46,7 +46,7 @@ async def close_db():
         await _routing_pool.close()
 
 
-async def get_pool(source_key: str = "platform"):
+async def get_pool(source_key: str) -> "asyncpg.Pool":
     """Return a cached pool for this data source, resolving its DSN from the routing DB on first use."""
     if source_key in _pools:
         return _pools[source_key]
@@ -82,34 +82,19 @@ async def get_default_source_key() -> str:
     return keys[0]
 
 
-# ── Existing call sites everywhere else (identity.py, draft_store.py, menu.py,
-# agent.py, step_interpreter.py, etc.) keep working completely unchanged —
-# they default to "platform", which resolves to Baanganga's Neon DB, same as today.
 async def fetch_one(query: str, *args, source_key: str):
-    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
-    if source_key == "platform":
-        caller = traceback.extract_stack()[-2]
-        logger.warning(f"fetch_one using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetchrow(query, *args)
 
 
 async def fetch_all(query: str, *args, source_key: str):
-    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
-    if source_key == "platform":
-        caller = traceback.extract_stack()[-2]
-        logger.warning(f"fetch_all using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.fetch(query, *args)
 
 
 async def execute(query: str, *args, source_key: str):
-    # AP-07: Warn when source_key is not explicitly passed (defaults to 'platform')
-    if source_key == "platform":
-        caller = traceback.extract_stack()[-2]
-        logger.warning(f"execute using default source_key='platform' at {caller.filename}:{caller.lineno}")
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
         return await conn.execute(query, *args)

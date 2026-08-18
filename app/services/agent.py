@@ -1377,7 +1377,7 @@ async def _execute_tool(
             }
 
         elif action == "list":
-            rows = await list_scheduled_reports(user["user_id"])
+            rows = await list_scheduled_reports(user["user_id"], source_key=user["source_key"])
             if not rows:
                 return {"type": "schedule_list", "schedules": [], "count": 0}
             schedules = []
@@ -1407,7 +1407,7 @@ async def _execute_tool(
             report_id = tool_input.get("report_id")
             if not report_id:
                 # No ID given — try to match by label from the list
-                rows = await list_scheduled_reports(user["user_id"])
+                rows = await list_scheduled_reports(user["user_id"], source_key=user["source_key"])
                 if not rows:
                     return f"ERROR: No schedules found for this user"
                 # Return the list so the LLM can pick the right one
@@ -1422,11 +1422,11 @@ async def _execute_tool(
                     "message": f"Multiple schedules found. Use the id field to {action} the correct one."
                 }
             if action == "pause":
-                ok = await pause_scheduled_report(report_id, user["user_id"])
+                ok = await pause_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
             elif action == "resume":
-                ok = await resume_scheduled_report(report_id, user["user_id"])
+                ok = await resume_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
             else:
-                ok = await delete_scheduled_report(report_id, user["user_id"])
+                ok = await delete_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
             if not ok:
                 # ID might be correct but user_id check failed — try without user check
                 # (could happen if scheduled by a different session)
@@ -1640,9 +1640,18 @@ Return ONLY the WhatsApp message text, nothing else."""
                     temperature=0.1,
                 )
                 formatted = format_response.choices[0].message.content.strip()
+                # Safety check: if formatting LLM returns empty, fall back to raw data
+                if not formatted:
+                    logger.warning(f"Formatting LLM returned empty response, falling back to raw data")
+                    formatted = raw_result
             except Exception as e:
                 logger.error(f"Formatting LLM call failed: {e}")
                 formatted = raw_result  # fall back to raw JSON rather than losing the data entirely
+
+            # Final safety check: never return empty string
+            if not formatted:
+                logger.error(f"Both formatting LLM and raw_result are empty, returning error message")
+                formatted = "❌ Sorry, I couldn't process that request. Please try again."
 
             return formatted, history_to_save, {}
         else:
@@ -1888,7 +1897,12 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             logger.debug(f"No tool calls, returning text response: {content[:200]}")
             history_to_save = _serialize_history(messages)
-            return content.strip(), history_to_save, session_patch
+            # Safety check: never return empty string
+            final_content = content.strip()
+            if not final_content:
+                logger.error(f"LLM returned empty content, returning fallback message")
+                final_content = "❌ Sorry, I couldn't process that request. Please try again."
+            return final_content, history_to_save, session_patch
 
         # LLM wants to call tools
         # Add assistant's response to message history
@@ -2132,7 +2146,9 @@ Return ONLY the WhatsApp message text, nothing else."""
         messages.extend(tool_results)
 
     history_to_save = _serialize_history(messages)
-    return "🤔 Something went wrong. Please try again.", history_to_save, session_patch
+    # Final safety check: ensure we never return empty string
+    fallback_message = "🤔 Something went wrong. Please try again."
+    return fallback_message, history_to_save, session_patch
 
 
 def _serialize_history(messages: list) -> list:

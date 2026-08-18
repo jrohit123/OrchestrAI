@@ -75,7 +75,7 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
         await send_text(phone, "You cannot approve your own request.")
         # Log rejection
         await execute("""
-            INSERT INTO audit_log (org_id, user_id, intent_key, outcome, details)
+            INSERT INTO audit_log (org_id, user_id, intent_key, outcome, steps_taken)
             VALUES ($1, $2, $3, 'rejected', $4::jsonb)
         """, org_id, user["user_id"], approval["intent_key"],
             json.dumps({"approval_id": approval_id, "reason": "self_approval_blocked"}),
@@ -104,7 +104,7 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
 
     # Log approval decision to audit_log
     await execute("""
-        INSERT INTO audit_log (org_id, user_id, intent_key, outcome, details)
+        INSERT INTO audit_log (org_id, user_id, intent_key, outcome, steps_taken)
         VALUES ($1, $2, $3, $4, $5::jsonb)
     """, org_id, user["user_id"], approval["intent_key"], new_status,
         json.dumps({

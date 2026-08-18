@@ -200,8 +200,10 @@ async def create_scheduled_report(
     org_id, user_id, phone, email, query_text, report_label,
     schedule_type, delivery="whatsapp", interval_minutes=None,
     hour=None, minute=0, day_of_week=None, day_of_month=None,
-    source_key="platform",
+    source_key=None,
 ) -> dict:
+    if not source_key:
+        raise ValueError("create_scheduled_report: source_key is required")
     row = {
         "schedule_type": schedule_type, "interval_minutes": interval_minutes,
         "hour": hour, "minute": minute,
@@ -212,16 +214,19 @@ async def create_scheduled_report(
         INSERT INTO scheduled_reports (
             org_id, user_id, phone, email, query_text, report_label,
             schedule_type, interval_minutes, hour, minute,
-            day_of_week, day_of_month, delivery, is_active, next_run_at, source_key
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14,$15)
+            day_of_week, day_of_month, delivery, is_active, next_run_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14)
         RETURNING id, next_run_at
     """, org_id, user_id, phone, email or "", query_text, report_label,
         schedule_type, interval_minutes, hour, minute,
-        day_of_week, day_of_month, delivery, next_run, source_key)
+        day_of_week, day_of_month, delivery, next_run,
+        source_key=source_key)
     return {"id": str(rec["id"]), "next_run_at": rec["next_run_at"]}
 
 
-async def list_scheduled_reports(user_id: str, source_key: str = "platform") -> list:
+async def list_scheduled_reports(user_id: str, source_key: str = None) -> list:
+    if not source_key:
+        raise ValueError("list_scheduled_reports: source_key is required")
     rows = await fetch_all("""
         SELECT id, report_label, schedule_type, interval_minutes,
                hour, minute, day_of_week, day_of_month,
@@ -231,7 +236,9 @@ async def list_scheduled_reports(user_id: str, source_key: str = "platform") -> 
     return [dict(r) for r in rows]
 
 
-async def pause_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
+async def pause_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+    if not source_key:
+        raise ValueError("pause_scheduled_report: source_key is required")
     result = await fetch_one("""
         UPDATE scheduled_reports SET is_active = false
         WHERE id = $1 AND user_id = $2 RETURNING id
@@ -239,7 +246,9 @@ async def pause_scheduled_report(report_id: str, user_id: str, source_key: str =
     return result is not None
 
 
-async def resume_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
+async def resume_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+    if not source_key:
+        raise ValueError("resume_scheduled_report: source_key is required")
     now = datetime.datetime.now(datetime.timezone.utc)
     row = await fetch_one(
         "SELECT * FROM scheduled_reports WHERE id = $1 AND user_id = $2",
@@ -255,7 +264,9 @@ async def resume_scheduled_report(report_id: str, user_id: str, source_key: str 
     return True
 
 
-async def delete_scheduled_report(report_id: str, user_id: str, source_key: str = "platform") -> bool:
+async def delete_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+    if not source_key:
+        raise ValueError("delete_scheduled_report: source_key is required")
     result = await fetch_one("""
         DELETE FROM scheduled_reports WHERE id = $1 AND user_id = $2 RETURNING id
     """, report_id, user_id, source_key=source_key)

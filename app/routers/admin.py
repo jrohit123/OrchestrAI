@@ -708,7 +708,7 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
         raise HTTPException(status_code=404, detail="No active org")
     from app.services.workflow_previewer import generate_preview_pdf
     try:
-        pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]))
+        pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]), source_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
     return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")

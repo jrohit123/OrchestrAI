@@ -10,7 +10,9 @@ async def get_active_draft(org_id: str, user_id: str, source_key: str) -> dict |
     return dict(row) if row else None
 
 async def upsert_draft(org_id, user_id, intent_key, fields: dict,
-                       stage="collecting", summary: str | None = None, source_key: str = "platform"):
+                       stage="collecting", summary: str | None = None, source_key: str = None):
+    if not source_key:
+        raise ValueError("upsert_draft: source_key is required")
     if not isinstance(fields, dict):
         raise TypeError(f"upsert_draft: fields must be a dict, got {type(fields).__name__}")
     await execute("""
