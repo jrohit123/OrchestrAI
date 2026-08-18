@@ -224,7 +224,7 @@ Return ONLY this JSON, no markdown:
         try:
             response = await _client.chat.completions.create(
                 model="gpt-4o",
-                max_tokens=4000,
+                max_tokens=8192,
                 temperature=0.1 + attempt * 0.1,
                 messages=[{"role": "user", "content": prompt}]
             )

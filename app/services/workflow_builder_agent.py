@@ -501,7 +501,7 @@ async def run_builder_agent(
     for _ in range(max_iterations):
         response = await _client.chat.completions.create(
             model="gpt-4o",
-            max_tokens=2048,
+            max_tokens=8192,
             messages=messages,
             tools=_TOOLS,
             tool_choice="auto",

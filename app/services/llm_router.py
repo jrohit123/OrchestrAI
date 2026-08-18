@@ -101,7 +101,7 @@ async def chat_completion(
     messages: list,
     tools: list | None = None,
     tool_choice=None,
-    max_tokens: int = 4096,
+    max_tokens: int = 8192,
     temperature: float = 0.1,
 ) -> object:
     """

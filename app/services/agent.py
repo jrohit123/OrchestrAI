@@ -1636,7 +1636,7 @@ Return ONLY the WhatsApp message text, nothing else."""
             try:
                 format_response = await _llm_chat(
                     messages=[{"role": "user", "content": format_prompt}],
-                    max_tokens=4096,
+                    max_tokens=8192,
                     temperature=0.1,
                 )
                 formatted = format_response.choices[0].message.content.strip()
@@ -1802,7 +1802,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0.1,
             )
         except Exception as e:

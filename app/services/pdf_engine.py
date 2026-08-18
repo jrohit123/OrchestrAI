@@ -309,7 +309,7 @@ No markdown fences. No explanation. No preamble.
     # Route through central LLM router (Gemini x3 → Groq → Cerebras → OpenAI)
     response = await _llm_chat(
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=4096,
+        max_tokens=8192,
         temperature=0.1,
     )
 
