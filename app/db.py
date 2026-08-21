@@ -25,6 +25,7 @@ async def init_db():
     )
     logger.info("Routing DB connected")
     # Pre-warm all known data sources
+    #Hi this is Kartik
     rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
     for row in rows:
         try:
