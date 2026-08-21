@@ -92,8 +92,7 @@ async def execute_pending_action(
     return {
         "success": False,
         "message": (
-            "❌ I couldn't complete that — there was a calculation or data issue on my "
-            "end. Your draft has been cleared so you can start fresh. Please resend your "
-            "request, e.g. *\"quote Mehta Enterprises: 22kt gold ring 12g rate 6500 per gram\"*."
+            "❌ I couldn't save that — something went wrong on my end while writing to "
+            "the database. Please send your request again as a new message."
         ),
     }

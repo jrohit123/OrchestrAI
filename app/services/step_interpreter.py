@@ -367,7 +367,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         )
         
         max_row = await fetch_one(
-            f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::int) AS max_num
+            f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::bigint) AS max_num
                 FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2""",
             ctx["org_id"], f"{seq['prefix']}%", source_key=ctx["source_key"]
         )
