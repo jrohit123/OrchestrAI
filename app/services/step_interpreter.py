@@ -354,7 +354,8 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
 
     # ── existing Postgres path (unchanged below this line) ──
     if "sequence" in params:
-        seq = params["sequence"]
+        seq    = params["sequence"]
+        prefix = seq["prefix"]
         # Use advisory lock to prevent duplicate document numbers under concurrent requests
         # Lock key: hash of org_id + table + field
         lock_key = await fetch_one(
@@ -365,14 +366,33 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
             "SELECT pg_advisory_xact_lock($1)",
             lock_key["key"], source_key=ctx["source_key"]
         )
-        
-        max_row = await fetch_one(
-            f"""SELECT MAX(NULLIF(regexp_replace({seq['field']}, '\\D', '', 'g'), '')::bigint) AS max_num
-                FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2""",
-            ctx["org_id"], f"{seq['prefix']}%", source_key=ctx["source_key"]
+
+        # Extract the numeric suffix from ONLY the part of each existing
+        # value that comes AFTER the prefix — never strip digits from the
+        # prefix itself. The old approach ran a regex on the FULL string,
+        # which silently re-absorbed digits inside the prefix (e.g.
+        # "CS-26-08-") into the counted number every time, causing the
+        # generated number to compound/grow on every single insert
+        # (CS-26-08-00011 -> CS-26-08-260800012 -> CS-26-08-2608260800013...).
+        # Done in Python with an unbounded int, so no overflow risk either.
+        existing_rows = await fetch_all(
+            f"SELECT {seq['field']} AS val FROM {table} WHERE org_id = $1 AND {seq['field']} LIKE $2",
+            ctx["org_id"], f"{prefix}%", source_key=ctx["source_key"]
         )
-        next_num = max(int(max_row["max_num"] or 0) + 1, seq.get("start", 100))
-        doc_number = seq["prefix"] + str(next_num)
+        max_num = 0
+        for row in existing_rows:
+            val = row["val"] or ""
+            if not val.startswith(prefix):
+                continue
+            suffix_digits = re.sub(r'\D', '', val[len(prefix):])
+            if suffix_digits:
+                try:
+                    max_num = max(max_num, int(suffix_digits))
+                except ValueError:
+                    pass
+
+        next_num = max(max_num + 1, seq.get("start", 100))
+        doc_number = prefix + str(next_num)
         values[seq["field"]] = doc_number
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 

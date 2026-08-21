@@ -1932,6 +1932,15 @@ Return ONLY the WhatsApp message text, nothing else."""
         if not assistant_message.tool_calls:
             content = assistant_message.content or ""
 
+            # Retry on a completely empty completion (observed intermittently
+            # with gemini-2.5-flash — no text, no tool call). Round-robin in
+            # llm_router.py means a retry usually lands on a different
+            # key/provider that responds normally, instead of surfacing a
+            # user-facing failure for what is really a transient blank reply.
+            if not content.strip() and iteration < max_iterations - 1:
+                logger.warning(f"Empty LLM response with no tool calls on iteration {iteration+1} — retrying")
+                continue
+
             # NEW: catch the model fabricating a "fetch failed" apology instead of
             # actually calling query_database. This has been observed with
             # gemini-2.5-flash-lite on large system prompts.
