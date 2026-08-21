@@ -35,11 +35,36 @@ _CONFIRM_WORDS = frozenset({
     "yes", "y", "haan", "ha", "ok", "confirm", "confirmed",
     "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
 })
-_CANCEL_WORDS = frozenset({"no", "n", "nahi", "na", "cancel", "stop"})
+_CANCEL_WORDS = frozenset({
+    "no", "n", "nahi", "na", "cancel", "stop",
+    "start over", "restart", "forget it", "scrap it", "scrap that",
+    "discard", "discard it", "reset", "never mind", "nevermind",
+})
 _RESTART_WORDS = frozenset({
     "restart", "start over", "new", "fresh", "cancel", "stop",
     "register_complaint", "complaint", "case", "file", "register"
 })
+
+
+async def _clear_stuck_draft(user: dict, session: dict, session_id: str, session_ttl: int,
+                              reason: str = "cancelled") -> None:
+    """
+    Single source of truth for clearing a draft. MUST be used everywhere a
+    draft is abandoned/cancelled/timed-out/capped. Closing only the Redis
+    session copy (session.pop("pending_action")) without also closing the
+    authoritative `user_drafts` DB row leaves that row active — the
+    DB-rehydration logic in handle_message will silently bring the exact
+    same "cleared" draft right back on the very next message.
+
+    `reason` must be a value allowed by user_drafts_stage_check — currently:
+    collecting / awaiting_confirmation / awaiting_otp / awaiting_approval /
+    done / cancelled. Use "cancelled" unless you've added a new allowed
+    value (see the optional 'expired' migration note below).
+    """
+    from app.services.draft_store import close_draft
+    await close_draft(user["org_id"], user["user_id"], reason, source_key=user["source_key"])
+    session.pop("pending_action", None)
+    await set_session(session_id, session, ttl=session_ttl)
 
 
 def verify_signature(raw: bytes, header: str | None) -> bool:
@@ -441,6 +466,38 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     session_ttl = ttl_minutes * 60
     pending_action = session.get("pending_action")
 
+    # ── GUARD: same workflow re-tapped while its draft is already active ──
+    # Tapping a menu row or slash command sends the raw intent_key as text
+    # (e.g. "register_complaint"). If that intent_key matches the draft
+    # that's already in progress, treating it as a free-text correction or
+    # instruction corrupts the draft: it downgrades stage back to
+    # "collecting" and stores the intent_key itself as a nonsensical
+    # correction_hint, which then confuses the LLM into producing garbled
+    # or fabricated replies. Just re-show the current draft instead.
+    if (
+        pending_action
+        and pending_action.get("stage") in ("collecting", "awaiting_confirmation")
+        and text.strip() == pending_action.get("intent_key")
+    ):
+        fields = pending_action.get("fields") or {}
+        if isinstance(fields, str):
+            try:
+                fields = json.loads(fields)
+            except (json.JSONDecodeError, TypeError):
+                fields = {}
+        details = "\n".join(f"  • {k}: {v}" for k, v in fields.items()) or "  (nothing yet)"
+        if pending_action.get("stage") == "awaiting_confirmation":
+            await send_text(phone,
+                f"You already have a *{pending_action['intent_key']}* draft waiting for confirmation:\n"
+                f"{details}\n\nReply *yes* to confirm, *no* to cancel, or tell me what to change."
+            )
+        else:
+            await send_text(phone,
+                f"You're already filling out *{pending_action['intent_key']}*. So far:\n"
+                f"{details}\n\nPlease continue with the remaining details, or /cancel to start over."
+            )
+        return
+
     async def _send_action_pdf(exec_result: dict):
         if not exec_result.get("pdf_bytes"):
             return
@@ -493,11 +550,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
 
         if text_lower in _CANCEL_WORDS:
-            from app.services.draft_store import close_draft
-            session.pop("pending_action", None)
-            await set_session(session_id, session, ttl=session_ttl)
-            # Also clear from database
-            await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+            await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
             await send_text(phone, "❌ Action cancelled.")
             return
 
@@ -509,8 +562,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 # Confirmation window (10 min) has expired — drop the draft entirely
                 # and let the message fall through as a brand-new request.
                 logger.info(f"Stale awaiting_confirmation draft detected — clearing")
-                session.pop("pending_action", None)
-                await set_session(session_id, session, ttl=session_ttl)
+                await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
                 pending_action = None
                 await send_text(phone,
                     "_⏱️ Your previous confirmation timed out and was cleared. "
@@ -544,8 +596,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     if current_reprompt_count >= _MAX_REPROMPT_COUNT:
                         # Cap hit — the user and the bot are going in circles. Force a clean restart.
                         logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
-                        session.pop("pending_action", None)
-                        await set_session(session_id, session, ttl=session_ttl)
+                        await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
                         await send_text(phone,
                             "🤔 I'm having trouble understanding the details for this request. "
                             "Let's start fresh — please send your request again with all the details "
@@ -615,8 +666,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         reprompt_count = pending_action.get("reprompt_count", 0)
         if reprompt_count >= _MAX_REPROMPT_COUNT:
             print(f"[WEBHOOK] Collecting-stage reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
-            session.pop("pending_action", None)
-            await set_session(session_id, session, ttl=session_ttl)
+            await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
             await send_text(phone,
                 "🤔 I'm having trouble understanding the details for this request. "
                 "Let's start fresh — please send your request again with all the details "
@@ -730,26 +780,26 @@ async def handle_system_row(text: str, user: dict, phone: str):
         )
 
 async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
-    """Cancel the user's active draft."""
+    """Cancel the user's active draft. This always cancels immediately —
+    `confirm` only controls whether the message mentions how much is being
+    discarded. (Previously this claimed to wait for a 'yes' reply but
+    cancelled unconditionally regardless of the reply — fixed to be honest
+    about what it actually does.)"""
     from app.services.draft_store import get_active_draft, close_draft
-    
+
     draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
     if not draft:
         await send_text(phone, "✅ No active draft to cancel.")
         return
-    
-    if confirm and len(draft.get("fields", {})) >= 2:
-        # Ask for confirmation if draft has substantial data
+
+    field_count = len(draft.get("fields", {}))
+    await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+
+    if confirm and field_count >= 2:
         await send_text(phone,
-            f"⚠️ You have a draft for *{draft['intent_key']}* with {len(draft['fields'])} fields.\n"
-            f"Reply 'yes' to cancel, or continue working."
+            f"🔄 Draft for *{draft['intent_key']}* cancelled ({field_count} field(s) discarded)."
         )
-        # Note: In a full implementation, we'd set a state to await confirmation
-        # For now, we'll cancel directly as this is a safety escape hatch
-        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
-        await send_text(phone, "🔄 Draft cancelled.")
     else:
-        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
         await send_text(phone, "🔄 Draft cancelled.")
 
 

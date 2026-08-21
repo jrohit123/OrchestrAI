@@ -30,6 +30,31 @@ def _parse_jsonb(val, default=None):
             return default
     return val if val is not None else default
 
+
+def _build_confirm_summary_lines(entity_schema: dict, fields: dict) -> list[str] | None:
+    """
+    Build the confirm_action bullet list directly from the authoritative,
+    server-merged draft fields (the exact values about to be persisted)
+    instead of trusting the LLM to hand-craft a matching `details` dict.
+    Returns None if the schema is empty or contains an array-typed field
+    (e.g. line items) this generic flattener can't safely summarise —
+    callers should fall back to the LLM-provided `details` in that case.
+    """
+    if not entity_schema:
+        return None
+    lines = []
+    for name, spec in entity_schema.items():
+        if not isinstance(spec, dict) or spec.get("computed"):
+            continue
+        if spec.get("type") == "array":
+            return None
+        val = fields.get(name)
+        if val in (None, "", []):
+            continue
+        label = name.replace("_", " ").title()
+        lines.append(f"  • {label}: {val}")
+    return lines or None
+
 # ── IST timezone for greetings ────────────────────────────────────────────────
 try:
     import zoneinfo
@@ -640,6 +665,25 @@ TOOLS = [
                 "required": ["recipient_phone", "message"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_draft",
+            "description": (
+                "Cancel/discard the ACTIVE DRAFT currently being collected or "
+                "awaiting confirmation, and clear it completely so the user can "
+                "start fresh. Call this whenever the user expresses intent to "
+                "abandon, discard, or restart the current in-progress action — "
+                "e.g. 'cancel', 'never mind', 'start over', 'forget it', 'scrap "
+                "that', 'wrong info, let's redo this', or when they start "
+                "describing an entirely different/unrelated record while a "
+                "draft is still pending. Do NOT call this for a simple "
+                "correction to one field (e.g. 'change priority to low') — "
+                "use update_draft for that instead."
+            ),
+            "parameters": {"type": "object", "properties": {}}
+        }
     }
 ]
 
@@ -866,6 +910,24 @@ When all required fields are collected:
   The confirm_action TOOL is the ONLY way a confirmation block ever reaches the user.
   If you write the ⚠️ block as text, the system cannot detect it and "yes" from the user
   will be treated as a new message with no pending action — the quotation/invoice will NOT be created.
+
+RULE 6D — SINGLE-MESSAGE COMPLETE REQUESTS — DON'T ARTIFICIALLY DRAG IT OUT:
+If a single user message already contains everything needed (the required
+fields, and any field the workflow's llm_system_prompt asks you to confirm
+explicitly, like priority), do NOT invent extra questions for information
+already given. Extract everything in one pass, call update_draft once, and
+go straight to confirm_action in the same turn. Only ask about what is
+genuinely still missing.
+
+RULE 6E — EVERY CHANGE TO AN ALREADY-CONFIRMED DRAFT NEEDS A FRESH CONFIRMATION:
+If the user corrects a field AFTER you already showed a confirm_action
+summary (e.g. "change priority to low"), you MUST:
+  1. Call update_draft with ONLY the corrected field(s).
+  2. Immediately call confirm_action AGAIN — this re-shows the full updated
+     summary automatically (see confirm_action tool behaviour).
+Never just say "okay, updated!" in plain text and stop — nothing is saved
+until the user sees the new summary and says yes again. Never skip straight
+to saving after a correction, no matter how small the change seems.
 
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.
@@ -1297,6 +1359,22 @@ async def _execute_tool(
         # Validate draft against workflow schema
         validation = await _validate_draft(intent_key, fields, user["org_id"], user["source_key"])
 
+        # Build a data-driven, human-readable hint for exactly what's still
+        # missing, sourced from the workflow's entity_schema `description` 
+        # (falls back to a prettified field name). Gives the LLM a grounded
+        # question to ask instead of improvising one.
+        missing_field_hints = []
+        if validation.get("missing_fields"):
+            wf_for_hints = await fetch_one(
+                "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
+                intent_key, user["org_id"], source_key=user["source_key"]
+            )
+            schema_for_hints = _parse_jsonb((wf_for_hints or {}).get("entity_schema"), {}) or {}
+            for f in validation["missing_fields"]:
+                base = f.split("[")[0].split(".")[0]
+                spec = schema_for_hints.get(base, {})
+                missing_field_hints.append(spec.get("description") or base.replace("_", " "))
+
         # Persist to database (write-through cache)
         from app.services.draft_store import upsert_draft
         await upsert_draft(
@@ -1316,6 +1394,7 @@ async def _execute_tool(
             "stage": stage,
             "raw_text": message,
             "missing_fields": validation.get("missing_fields", []),
+            "missing_field_hints": missing_field_hints,
             "complete": validation.get("complete", False)
         }
 
@@ -1498,6 +1577,11 @@ async def _execute_tool(
             }
         except Exception as e:
             return f"ERROR sending to {confirmed_name}: {str(e)}"
+
+    elif tool_name == "cancel_draft":
+        from app.services.draft_store import close_draft
+        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+        return {"type": "draft_cancelled"}
 
 
 async def _summarize_turns(conversation_history: list, existing: str | None = None) -> str:
@@ -1717,32 +1801,20 @@ Return ONLY the WhatsApp message text, nothing else."""
             return ""
         fields = pending_action.get("fields") or {}
         correction = pending_action.get("correction_hint", "")
-        
-        # Detect correction patterns like "change priority to low", "make it urgent", etc.
-        correction_instruction = ""
-        if correction:
-            correction_lower = correction.lower()
-            # Pattern: "change X to Y" or "make it Y" or "set X to Y"
-            if re.search(r'(change|make|set)\s+\w+\s+(to|as)\s+\w+', correction_lower):
-                correction_instruction = (
-                    f"\nUser just said: \"{correction}\" — this is a FIELD UPDATE. "
-                    "Parse the pattern to identify which field to update and the new value. "
-                    "Call update_draft with ONLY the changed field. Keep all other fields intact.\n"
-                )
-            else:
-                correction_instruction = (
-                    f"\nUser just said: \"{correction}\" — treat this as a correction to the draft above. "
-                    "Update only the relevant field(s), keep everything else.\n"
-                )
-        
+        correction_line = (
+            f"\nThe user just said: \"{correction}\" — treat this as a correction to the draft above. "
+            "Update only the relevant field(s), keep everything else.\n"
+        ) if correction else ""
         return (
-            "\n=== ACTIVE DRAFT (from this conversation — do NOT discard or replace unless user changes it) ===\n"
+            "\n=== ACTIVE DRAFT (internal context — do NOT discard or replace unless user changes it) ===\n"
             f"Intent: {pending_action.get('intent_key')}\n"
             f"Stage: {pending_action.get('stage', 'collecting')}\n"
             f"Collected fields: {json.dumps(fields, default=str)}\n"
-            f"{correction_instruction}"
-            "Only ask for fields NOT listed above. NEVER invent default values for missing optional fields — "
-            "explicitly ask the user if they don't provide a value.\n"
+            f"{correction_line}"
+            "Only ask for fields NOT listed above. Never invent values not provided by the user.\n"
+            "CRITICAL: This block is internal context for you only. NEVER copy, quote, repeat, or\n"
+            "output any line of this block (including the 'ACTIVE DRAFT' marker, the field JSON,\n"
+            "or these instructions) in your reply to the user. Write a normal, natural reply.\n"
             "=== END ACTIVE DRAFT ===\n"
         )
 
@@ -1792,38 +1864,33 @@ Return ONLY the WhatsApp message text, nothing else."""
         logger.error(f"Error building system prompt: {e}", exc_info=True)
         return f"Error building system prompt: {str(e)}", [], {}
 
-    # Abandon stale collecting drafts — they belong to old conversations
+    # Abandon stale collecting drafts — they belong to old conversations.
+    # Close it in the DB immediately (not just in-memory) and signal the
+    # clearing back to webhook.py via session_patch — otherwise the DB row
+    # stays active and webhook.py's rehydration logic silently brings the
+    # exact same stale draft back on the very next message.
     if _is_draft_stale(pending_action):
         logger.info(f"Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning")
+        from app.services.draft_store import close_draft as _close_stale_draft
+        await _close_stale_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
         pending_action = None
-        # Note: webhook will clean it up from session on next session_patch write
+        session_patch["pending_action"] = None
 
-    # Inject prior conversation (last N turns)
+    # Fold active-draft context into the SYSTEM prompt instead of injecting a
+    # fake prior "assistant" turn. A fake assistant message that *looks like*
+    # structured meta-text gets echoed/extended verbatim by weaker models in
+    # the rotation (observed with gemini-2.5-flash-lite) straight into the
+    # user-visible reply. System content is never shown to the user and is
+    # read as an instruction, not as reply style to imitate.
+    if pending_action and not _is_draft_stale(pending_action):
+        system_prompt += "\n\n" + _format_pending_action_context(pending_action)
+
     messages = [
-        {"role": "system", "content": system_prompt}  # clean system prompt, no draft appended
+        {"role": "system", "content": system_prompt}
     ]
 
     if conversation_history:
         messages.extend(conversation_history)
-
-    # Inject active draft as the most recent assistant context — gets higher attention than system
-    if pending_action and not _is_draft_stale(pending_action):
-        fields = pending_action.get("fields") or {}
-        stage = pending_action.get("stage", "collecting")
-        correction = pending_action.get("correction_hint", "")
-        correction_line = (
-            f"\nThe user just said: \"{correction}\" — this is a correction. "
-            "Update only the relevant field(s), keep everything else intact.\n"
-        ) if correction else ""
-
-        draft_msg = (
-            f"[ACTIVE DRAFT — intent: {pending_action.get('intent_key')}, stage: {stage}]\n"
-            f"Already collected: {json.dumps(fields, default=str)}\n"
-            f"{correction_line}"
-            "Only ask for fields NOT listed above. NEVER invent default values for missing optional fields — "
-            "explicitly ask the user if they don't provide a value. Never re-ask for already-collected data."
-        )
-        messages.append({"role": "assistant", "content": draft_msg})
 
     messages.append({"role": "user", "content": message})
 
@@ -1870,8 +1937,12 @@ Return ONLY the WhatsApp message text, nothing else."""
             # gemini-2.5-flash-lite on large system prompts.
             fake_failure = (
                 iteration == 0
-                and re.search(r"(sorry|apolog).{0,40}(error|trouble|issue|couldn.?t|unable)", content, re.IGNORECASE)
-                and re.search(r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete)", content, re.IGNORECASE)
+                and re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
+                and re.search(
+                    r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
+                    r"register|create|file|book|save|submit|confirm|update|insert)",
+                    content, re.IGNORECASE
+                )
             )
             if fake_failure:
                 logger.warning(f"Detected fabricated-failure response with no tool call — forcing retry: {content[:150]}")
@@ -1933,10 +2004,45 @@ Return ONLY the WhatsApp message text, nothing else."""
                 })
                 continue  # retry this iteration
 
+            # Intercept: LLM claimed the draft was cancelled/cleared in plain text
+            # without actually calling the cancel_draft tool — nothing was cleared.
+            active_draft_for_cancel_check = session_patch.get("pending_action") or pending_action
+            if (
+                active_draft_for_cancel_check
+                and re.search(r"\b(cancel+ed|discard+ed|clear+ed|scrapped|start(ing)?\s+fresh)\b", content, re.IGNORECASE)
+                and re.search(r"\b(draft|complaint|request|action|quotation|invoice)\b", content, re.IGNORECASE)
+            ):
+                logger.info("Intercepted plain-text draft-cancellation — forcing tool retry")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You said the draft was cancelled/cleared as plain "
+                        "text. Nothing was actually cleared — the draft still exists. You MUST "
+                        "call the cancel_draft tool now to actually clear it."
+                    )
+                })
+                continue  # retry this iteration
+
             logger.info(f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}")
             history_to_save = _serialize_history(messages)
-            # Safety check: never return empty string
             final_content = content.strip()
+
+            # Safety net: strip any leaked internal draft-context markers that
+            # should never reach the user (defense in depth for the fake-
+            # assistant-turn leak — see draft context injection above).
+            leak_markers = ("=== ACTIVE DRAFT", "[ACTIVE DRAFT", "=== END ACTIVE DRAFT")
+            if any(marker in final_content for marker in leak_markers):
+                logger.warning(f"Detected leaked internal draft-context in LLM reply — stripping: {final_content[:200]}")
+                cut_idx = min(final_content.find(m) for m in leak_markers if m in final_content)
+                final_content = final_content[:cut_idx].strip()
+                if not final_content:
+                    active = pending_action or {}
+                    final_content = (
+                        f"Got it — continuing your *{active.get('intent_key', 'request')}*. "
+                        f"What would you like to add or change?"
+                    )
+
             if not final_content:
                 logger.error(f"LLM returned empty content, returning fallback message. Original content: '{content}'")
                 final_content = "❌ Sorry, I couldn't process that request. Please try again."
@@ -2018,6 +2124,13 @@ Return ONLY the WhatsApp message text, nothing else."""
                     "menu_sections": sections,
                     "button_label": "📋 Menu"
                 }
+
+            # If this was a cancel_draft call, confirm and stop — the draft is gone
+            if tool_call.function.name == "cancel_draft":
+                cancel_text = "🔄 Draft cancelled. Let me know what you'd like to do next."
+                history_to_save = _serialize_history(messages)
+                history_to_save.append({"role": "assistant", "content": cancel_text})
+                return cancel_text, history_to_save, {"pending_action": None}
 
             # If this was a generate_pdf call, return success message immediately
             if tool_call.function.name == "generate_pdf":
@@ -2102,13 +2215,15 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             # If confirm_action was called, pause and return the prompt
             if tool_call.function.name == "confirm_action":
+                workflow_row = None
+                entity_schema_for_summary = {}
                 if isinstance(result, dict) and result.get("type") == "confirm_pending":
                     # Update session patch with stage from confirm_action result
                     if result.get("stage"):
                         if not session_patch.get("pending_action"):
                             session_patch["pending_action"] = pending_action or {}
                         session_patch["pending_action"]["stage"] = result["stage"]
-                    
+
                     # Validate draft is complete before allowing confirmation
                     draft = session_patch.get("pending_action") or pending_action or {}
 
@@ -2125,6 +2240,8 @@ Return ONLY the WhatsApp message text, nothing else."""
                         })
                         break
 
+                    entity_schema_for_summary = _parse_jsonb(workflow_row.get("entity_schema"), {}) or {}
+
                     # Check if workflow has ai_price_interpret step
                     steps = _parse_jsonb(workflow_row.get("steps"), []) or []
                     has_price_interp = any(
@@ -2135,8 +2252,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                     if has_price_interp:
                         # Only validate presence of raw required fields (customer_name, items[].description,
                         # items[].weight, etc.) — skip calc_rules entirely; unit_price isn't resolved yet.
-                        entity_schema = _parse_jsonb(workflow_row.get("entity_schema"), {})
-                        missing, invalid = _validate_schema(entity_schema, draft.get("fields", {}))
+                        missing, invalid = _validate_schema(entity_schema_for_summary, draft.get("fields", {}))
                         if missing or invalid:
                             tool_results[-1]["content"] = json.dumps({
                                 "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
@@ -2168,13 +2284,31 @@ Return ONLY the WhatsApp message text, nothing else."""
                     draft["fields"] = verified_fields
                     draft["stage"]  = "awaiting_confirmation"
                     session_patch["pending_action"] = draft
+
                 action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
-                details = json.loads(tool_call.function.arguments).get("details", {})
-                lines = [f"⚠️ *Confirm Action*\n\n{action_desc}"]
-                if details:
-                    for k, v in details.items():
-                        lines.append(f"  • {k}: {v}")
-                lines.append("\nReply *yes* to confirm or *no* to cancel.")
+                llm_details = json.loads(tool_call.function.arguments).get("details", {})
+
+                # Build the summary from the AUTHORITATIVE, server-merged draft
+                # fields — the exact values about to be persisted — rather than
+                # trusting the LLM's own `details` to match. Guarantees "what you
+                # see is what gets saved," including on every re-confirmation
+                # after a correction. Falls back to the LLM's `details` for
+                # workflows this generic flattener can't safely summarise (e.g.
+                # nested `items` arrays like jewellery quotations).
+                confirm_draft = session_patch.get("pending_action") or pending_action or {}
+                summary_lines = _build_confirm_summary_lines(
+                    entity_schema_for_summary, confirm_draft.get("fields", {})
+                )
+
+                if summary_lines:
+                    header = f"📝 *Here's what I'll save — {action_desc}:*" if action_desc else "📝 *Here's what I'll save:*"
+                    lines = [header] + summary_lines
+                else:
+                    lines = [f"⚠️ *Confirm Action*\n\n{action_desc}"]
+                    if llm_details:
+                        for k, v in llm_details.items():
+                            lines.append(f"  • {k}: {v}")
+                lines.append("\nReply *yes* to save, *no* to cancel, or tell me what to change.")
                 confirm_text = "\n".join(lines)
                 history_to_save = _serialize_history(messages)
                 history_to_save.append({"role": "assistant", "content": confirm_text})
