@@ -173,9 +173,9 @@ ON CONFLICT (org_id, intent_key) DO NOTHING;
 -- 8. For testing: Shrink TAT for low priority to minute-scale
 -- ============================================================
 
--- Uncomment the following to enable fast testing (2-minute reminder threshold)
+-- Uncomment the following to enable fast testing (5-minute reminder threshold)
 -- UPDATE priority_tat_rules
--- SET tat_minutes = 10, reminder_threshold_minutes = 2
+-- SET tat_minutes = 10, reminder_threshold_minutes = 5
 -- WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'::uuid AND priority = 'low';
 
 -- ============================================================

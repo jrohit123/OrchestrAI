@@ -142,6 +142,8 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     if not name_val:
         raise StepError(f"resolve_entity: no value at '{name_path}'")
 
+    name_val = str(name_val)   # NEW — handles UUID/int/etc. values (e.g. $case.complainant_id) safely
+
     # NEW: table="sheet:TabName" routes to Google Sheets instead of Postgres
     if table.startswith("sheet:"):
         from app.services.sheets_client import sheet_fetch_filtered
@@ -155,7 +157,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
         # Escape LIKE metacharacters to prevent injection (AP-10)
         safe_name = name_val.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         raw_rows = await fetch_all(
-            f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col} ILIKE $2 LIMIT 5",
+            f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col}::text ILIKE $2 LIMIT 5",
             ctx["org_id"], f"%{safe_name}%", source_key=ctx["source_key"]
         )
         rows = [dict(r) for r in raw_rows]
