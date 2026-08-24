@@ -1075,6 +1075,7 @@ async def _execute_tool(
     user: dict,
     phone: str,
     message: str = "",
+    pending_action: dict | None = None,
 ) -> str:
     """Execute a tool call and return result as string."""
 
@@ -1327,6 +1328,9 @@ async def _execute_tool(
             if existing_draft:
                 intent_key = existing_draft.get("intent_key")
                 logger.debug(f"Inferred intent_key from existing draft: {intent_key}")
+            elif pending_action and pending_action.get("intent_key"):
+                intent_key = pending_action["intent_key"]
+                logger.debug(f"Inferred intent_key from in-memory pending_action: {intent_key}")
             else:
                 logger.warning("update_draft called without intent_key and no existing draft found")
                 return "ERROR: No intent_key provided and no existing draft to infer from"
@@ -1759,7 +1763,57 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             return formatted, history_to_save, {}
         else:
-            message = f"Execute the {wf['name']} workflow."
+            # Action workflow tapped directly (menu button / slash command) with
+            # no arguments. Sending a bare "Execute the X workflow" instruction
+            # to the LLM reliably produces EMPTY completions from gemini-2.5-flash
+            # across every rotated key (confirmed in logs — 5 retries, all empty)
+            # because there's no real user content to react to. Bootstrap the
+            # draft deterministically instead: open/resume a collecting-stage
+            # draft and ask for the first missing required field, driven by
+            # entity_schema — no LLM call needed, so it can never come back empty.
+            if entity_schema and not all_optional:
+                from app.services.draft_store import upsert_draft, get_active_draft
+                existing = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+                if existing and existing.get("intent_key") == wf["intent_key"]:
+                    fields = existing.get("fields") or {}
+                    if isinstance(fields, str):
+                        try:
+                            fields = json.loads(fields)
+                        except (json.JSONDecodeError, TypeError):
+                            fields = {}
+                else:
+                    fields = {}
+                    await upsert_draft(
+                        org_id=user["org_id"], user_id=user["user_id"],
+                        intent_key=wf["intent_key"], fields=fields,
+                        stage="collecting", source_key=user["source_key"],
+                    )
+
+                first_missing = None
+                for fname, fspec in entity_schema.items():
+                    if not isinstance(fspec, dict) or fspec.get("computed"):
+                        continue
+                    if fspec.get("required") and not fields.get(fname):
+                        first_missing = (fname, fspec)
+                        break
+
+                if first_missing:
+                    fname, fspec = first_missing
+                    question = fspec.get("description") or f"What is the {fname.replace('_', ' ')}?"
+                    reply_text = f"I'll help you with *{wf['name']}*. {question}"
+                    history_to_save = [{"role": "user", "content": message},
+                                        {"role": "assistant", "content": reply_text}]
+                    return reply_text, history_to_save, {
+                        "pending_action": {
+                            "intent_key": wf["intent_key"],
+                            "fields": fields,
+                            "stage": "collecting",
+                            "created_at": __import__("datetime").datetime.now().isoformat(),
+                        }
+                    }
+                message = f"Continue the {wf['name']} workflow — required fields may already be collected; review and confirm if ready."
+            else:
+                message = f"Execute the {wf['name']} workflow."
     
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
@@ -2033,6 +2087,28 @@ Return ONLY the WhatsApp message text, nothing else."""
                 })
                 continue  # retry this iteration
 
+            # Intercept: LLM fabricated an "already done" claim (registered/saved/created)
+            # without any tool call confirming it. This happens when a correction fails
+            # (e.g., update_draft with no intent_key) and the model papered over the error
+            # with a plausible-sounding refusal instead of surfacing the real issue.
+            fabricated_already_done = (
+                iteration == 0
+                and re.search(r"already\s+(been\s+)?(registered|saved|created|completed|submitted|filed)", content, re.IGNORECASE)
+            )
+            if fabricated_already_done:
+                logger.warning(f"Detected fabricated 'already done' claim — forcing retry: {content[:150]}")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: Do not claim something was already saved/registered "
+                        "unless a tool call in THIS conversation actually confirmed it. If a draft "
+                        "is still awaiting confirmation, call update_draft with the correction and "
+                        "then confirm_action to re-show the updated summary."
+                    )
+                })
+                continue  # retry this iteration
+
             logger.info(f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}")
             history_to_save = _serialize_history(messages)
             final_content = content.strip()
@@ -2078,7 +2154,8 @@ Return ONLY the WhatsApp message text, nothing else."""
                     tool_input=json.loads(tool_call.function.arguments),
                     user=user,
                     phone=phone,
-                    message=message
+                    message=message,
+                    pending_action=pending_action
                 )
             except Exception as tool_err:
                 print(f"[AGENT] Tool {tool_call.function.name} raised: {tool_err}")
@@ -2293,6 +2370,14 @@ Return ONLY the WhatsApp message text, nothing else."""
                     draft["fields"] = verified_fields
                     draft["stage"]  = "awaiting_confirmation"
                     session_patch["pending_action"] = draft
+
+                    # Persist to database immediately so corrections afterward can find the draft
+                    from app.services.draft_store import upsert_draft as _upsert_confirm_draft
+                    await _upsert_confirm_draft(
+                        org_id=user["org_id"], user_id=user["user_id"],
+                        intent_key=draft.get("intent_key"), fields=verified_fields,
+                        stage="awaiting_confirmation", source_key=user["source_key"],
+                    )
 
                 action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
                 llm_details = json.loads(tool_call.function.arguments).get("details", {})

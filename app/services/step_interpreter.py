@@ -654,6 +654,34 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+async def _op_notify_user(params: dict, ctx: dict) -> dict:
+    """
+    Send a text to an arbitrary resolved user (not the current caller).
+    `to` resolves a $path to a phone (e.g. "$assignee.phone").
+    `message_template` (from DB-stored step params) supports {field}
+    placeholders drawn from fields/computed/generated/case context.
+    """
+    from app.services.messaging import send_text
+
+    to_phone = _resolve_path(ctx, params["to"])
+    if not to_phone:
+        return ctx  # no phone on file — skip silently, don't fail the workflow
+
+    all_vals = {
+        **ctx.get("fields", {}),
+        **ctx.get("computed", {}),
+        **ctx.get("generated", {}),
+        **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
+    }
+    try:
+        message = params["message_template"].format(**all_vals)
+    except (KeyError, IndexError):
+        message = params["message_template"]
+
+    await send_text(to_phone, message)
+    return ctx
+
+
 async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
     """
     Send PDF document and/or text message to the user's WhatsApp.
@@ -697,6 +725,7 @@ PRIMITIVES = {
     "sheets.delete_row":  _op_delete_row,    # NEW — alias
     "pdf.generate":       _op_generate_pdf,
     "notify.whatsapp":    _op_notify_whatsapp,
+    "notify.user":        _op_notify_user,    # NEW
 }
 
 

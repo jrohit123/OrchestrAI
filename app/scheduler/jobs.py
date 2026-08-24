@@ -6,6 +6,7 @@ calls run_agent with the stored query_text, and delivers the result via
 WhatsApp (text or PDF) and/or email — same as the user typing the query manually.
 """
 import datetime
+import json
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -194,6 +195,101 @@ async def run_scheduled_reports():
                 pass
 
 
+async def run_case_reminders():
+    """
+    Fires every minute. Entirely config-driven per org via
+    orgs.settings->'case_reminders' — table, columns, and message
+    templates all come from that jsonb config, not from code.
+    Only the mechanism (join on priority_tat_rules, fire-once tracking
+    via a reminder_sent column) lives here.
+    """
+    from app.db import get_all_source_keys
+    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier
+
+    source_keys = await get_all_source_keys()
+
+    for source_key in source_keys:
+        try:
+            orgs = await fetch_all(
+                "SELECT id, settings FROM orgs WHERE is_active = true",
+                source_key=source_key
+            )
+        except Exception:
+            continue
+
+        for org in orgs:
+            settings = org["settings"]
+            if isinstance(settings, str):
+                settings = json.loads(settings)
+            cfg = (settings or {}).get("case_reminders")
+            if not cfg or not cfg.get("enabled"):
+                continue
+
+            table = cfg["table"]
+            col_keys = [
+                "case_number_column", "title_column", "priority_column",
+                "status_column", "created_at_column", "reminder_sent_column",
+                "assignee_id_column", "complainant_id_column",
+            ]
+            cols = [cfg[k] for k in col_keys]
+
+            allowlist = await _load_schema_allowlist(source_key)
+            _validate_identifier(table, "table name")
+            if table not in allowlist:
+                continue
+            valid = True
+            for c in cols:
+                _validate_identifier(c, "column name")
+                if c not in allowlist[table]:
+                    valid = False
+                    break
+            if not valid:
+                continue
+
+            closed_values = cfg.get("closed_values", ["closed"])
+
+            sql = f"""
+                SELECT t.{cfg['case_number_column']} AS case_number,
+                       t.{cfg['title_column']} AS title,
+                       t.{cfg['priority_column']} AS priority,
+                       t.{cfg['status_column']} AS status,
+                       t.{cfg['assignee_id_column']} AS assignee_id,
+                       t.{cfg['complainant_id_column']} AS complainant_id,
+                       t.id AS row_id
+                FROM {table} t
+                JOIN priority_tat_rules ptr
+                  ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg['priority_column']}
+                WHERE t.org_id = $1
+                  AND t.{cfg['status_column']} != ALL($2)
+                  AND t.{cfg['reminder_sent_column']} IS NULL
+                  AND t.{cfg['created_at_column']} + (ptr.reminder_threshold_minutes || ' minutes')::interval <= now()
+            """
+            due = await fetch_all(sql, str(org["id"]), closed_values, source_key=source_key)
+
+            for row in due:
+                assignee = (
+                    await fetch_one("SELECT phone FROM users WHERE id = $1",
+                                     row["assignee_id"], source_key=source_key)
+                    if row["assignee_id"] else None
+                )
+                complainant = (
+                    await fetch_one("SELECT phone FROM users WHERE id = $1",
+                                     row["complainant_id"], source_key=source_key)
+                    if row["complainant_id"] else None
+                )
+
+                vals = dict(row)
+                if assignee and assignee["phone"] and cfg.get("assignee_message_template"):
+                    await send_text(assignee["phone"], cfg["assignee_message_template"].format(**vals))
+                if complainant and complainant["phone"] and cfg.get("complainant_message_template"):
+                    await send_text(complainant["phone"], cfg["complainant_message_template"].format(**vals))
+
+                await execute(
+                    f"UPDATE {table} SET {cfg['reminder_sent_column']} = now() WHERE id = $1",
+                    row["row_id"], source_key=source_key
+                )
+
+
 # ── Schedule management helpers ───────────────────────────────────────────────
 
 async def create_scheduled_report(
@@ -283,8 +379,15 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        run_case_reminders,
+        trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
+        id="case_reminders",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
-    print("[SCHEDULER] Started — universal runner every minute")
+    print("[SCHEDULER] Started — universal runner + case reminders every minute")
 
 
 def stop_scheduler():
