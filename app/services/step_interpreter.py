@@ -654,6 +654,24 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+async def _op_derive_field(params: dict, ctx: dict) -> dict:
+    """
+    Generic single-field derivation using calc_engine's sandboxed expression
+    evaluator. Unlike calc_rules/compute, this runs ONLY inside the steps
+    pipeline — never via qa_verifier.verify_draft's pre-confirmation check —
+    so it's safe to reference values that only exist mid-pipeline (e.g.
+    something exposed by a prior resolve_entity step against a lookup
+    table), which the confirm-time validation has no visibility into.
+    params: {"field": "<name to set in fields>", "expr": "<calc_engine expression>"}
+    """
+    from app.services.calc_engine import compute_aggregate_rules
+    field_name = params["field"]
+    result = compute_aggregate_rules({field_name: params["expr"]}, ctx["fields"], {})
+    ctx["fields"][field_name] = result[field_name]
+    ctx.setdefault("computed", {})[field_name] = result[field_name]
+    return ctx
+
+
 async def _op_notify_user(params: dict, ctx: dict) -> dict:
     """
     Send a text to an arbitrary resolved user (not the current caller).
@@ -726,6 +744,7 @@ PRIMITIVES = {
     "pdf.generate":       _op_generate_pdf,
     "notify.whatsapp":    _op_notify_whatsapp,
     "notify.user":        _op_notify_user,    # NEW
+    "derive_field":       _op_derive_field,   # NEW
 }
 
 

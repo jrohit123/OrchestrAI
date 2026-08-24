@@ -46,37 +46,13 @@ ON CONFLICT (org_id, priority) DO NOTHING;
 
 UPDATE workflows
 SET steps = '[
-  {
-    "op": "resolve_entity",
-    "params": {
-      "table": "priority_tat_rules",
-      "match_column": "priority",
-      "name_from": "$fields.priority",
-      "into": "tat",
-      "expose": { "tat_minutes": "tat_minutes" }
-    }
-  },
-  { "op": "compute", "params": {} },
-  {
-    "op": "db.insert_row",
-    "params": {
-      "table": "cases",
-      "values": {
-        "title": "$fields.title",
-        "status": "reported",
-        "location": "$fields.location",
-        "priority": "$fields.priority",
-        "description": "$fields.description",
-        "complainant_id": "$user.user_id",
-        "due_date": "$computed.due_date"
-      },
-      "sequence": { "field": "case_number", "start": 1, "prefix": "CS-26-08-" }
-    }
-  },
-  { "op": "notify.whatsapp", "params": { "attach_pdf": false } }
+  {"op":"resolve_entity","params":{"table":"priority_tat_rules","match_column":"priority","name_from":"$fields.priority","into":"tat","expose":{"tat_minutes":"tat_minutes"}}},
+  {"op":"derive_field","params":{"field":"due_date","expr":"due_from_tat(tat_minutes, \"minutes\")"}},
+  {"op":"db.insert_row","params":{"table":"cases","values":{"title":"$fields.title","status":"reported","location":"$fields.location","priority":"$fields.priority","description":"$fields.description","complainant_id":"$user.user_id","due_date":"$fields.due_date"},"sequence":{"field":"case_number","start":1,"prefix":"CS-26-08-"}}},
+  {"op":"notify.whatsapp","params":{"attach_pdf":false}}
 ]'::jsonb,
-    entity_schema = entity_schema || '{"due_date": {"type":"string","required":false,"computed":true,"description":"Auto-computed from priority TAT — never collected from the user"}}'::jsonb,
-    calc_rules = '{"aggregate_rules": {"due_date": "due_from_tat(tat_minutes, \"minutes\")"}}'::jsonb
+    calc_rules = '{}'::jsonb,
+    entity_schema = entity_schema || '{"due_date": {"type":"string","required":false,"computed":true,"description":"Auto-computed from priority TAT — never collected from the user"}}'::jsonb
 WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'::uuid
   AND intent_key = 'register_complaint';
 
