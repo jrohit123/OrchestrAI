@@ -32,6 +32,23 @@ IDENTIFIER_PATTERN = re.compile(r'^[a-z_][a-z0-9_]*$')
 # Format: {source_key: {table: set(columns)}}
 _schema_allowlist: dict = {}
 
+# Self-reference words for deterministic self-assignment
+_SELF_REFERENCE_WORDS = {"myself", "me", "self", "mujhe", "khud", "mera", "apne aap"}
+
+
+def _fix_stray_escapes(s: str) -> str:
+    """
+    Defense-in-depth: templates are stored in plain `text` columns, so
+    JSON-style escapes typed by hand (\\n, \\u2705) never get decoded.
+    No-op unless the string actually looks like it contains one.
+    """
+    if not s or ("\\u" not in s and "\\n" not in s):
+        return s
+    try:
+        return s.encode().decode("unicode_escape").encode("latin1").decode("utf-8")
+    except Exception:
+        return s
+
 
 async def _load_schema_allowlist(source_key: str) -> dict:
     """Load table and column names from information_schema for validation."""
@@ -143,6 +160,25 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
         raise StepError(f"resolve_entity: no value at '{name_path}'")
 
     name_val = str(name_val)   # NEW — handles UUID/int/etc. values (e.g. $case.complainant_id) safely
+
+    # Deterministic self-assignment — don't depend on the LLM having
+    # substituted "myself"/"me" with the caller's exact name string.
+    if (
+        table == "users"
+        and match_col == "name"
+        and name_val.strip().lower() in _SELF_REFERENCE_WORDS
+    ):
+        row = await fetch_one(
+            "SELECT * FROM users WHERE id = $1 AND org_id = $2",
+            ctx["user"]["user_id"], ctx["org_id"], source_key=ctx["source_key"]
+        )
+        if not row:
+            raise StepError("Could not resolve your own user record for self-assignment")
+        resolved = dict(row)
+        ctx[into] = resolved
+        for alias, column in (params.get("expose") or {}).items():
+            ctx["fields"][alias] = resolved.get(column)
+        return ctx
 
     # NEW: table="sheet:TabName" routes to Google Sheets instead of Postgres
     if table.startswith("sheet:"):
@@ -694,9 +730,9 @@ async def _op_notify_user(params: dict, ctx: dict) -> dict:
         **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
     }
     try:
-        message = params["message_template"].format(**all_vals)
+        message = _fix_stray_escapes(params["message_template"]).format(**all_vals)
     except (KeyError, IndexError):
-        message = params["message_template"]
+        message = _fix_stray_escapes(params["message_template"])
 
     await send_text(to_phone, message)
     return ctx
@@ -866,7 +902,7 @@ async def run_workflow_steps(
     all_vals  = {**ctx["fields"], **ctx.get("computed", {}), **ctx.get("generated", {})}
     if template:
         try:
-            message = template.format(**all_vals)
+            message = _fix_stray_escapes(template).format(**all_vals)
         except (KeyError, IndexError):
             message = f"✅ {workflow.get('name', 'Action')} completed successfully."
     else:

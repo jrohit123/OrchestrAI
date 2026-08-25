@@ -197,14 +197,14 @@ async def run_scheduled_reports():
 
 async def run_case_reminders():
     """
-    Fires every minute. Entirely config-driven per org via
-    orgs.settings->'case_reminders' — table, columns, and message
-    templates all come from that jsonb config, not from code.
-    Only the mechanism (join on priority_tat_rules, fire-once tracking
-    via a reminder_sent column) lives here.
+    Fires every minute. Runs TWO fire-once passes per org, both driven by
+    orgs.settings->'case_reminders':
+      1. "reminder"   — threshold = reminder_threshold_minutes
+      2. "tat_breach" — threshold = tat_minutes (the case's full TAT);
+         only runs if the org has configured tat_breach_sent_column.
+    Same mechanism, different threshold column / sent-column / templates.
     """
     from app.db import get_all_source_keys
-    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier
 
     source_keys = await get_all_source_keys()
 
@@ -225,69 +225,107 @@ async def run_case_reminders():
             if not cfg or not cfg.get("enabled"):
                 continue
 
-            table = cfg["table"]
-            col_keys = [
-                "case_number_column", "title_column", "priority_column",
-                "status_column", "created_at_column", "reminder_sent_column",
-                "assignee_id_column", "complainant_id_column",
-            ]
-            cols = [cfg[k] for k in col_keys]
+            org_id = str(org["id"])
 
-            allowlist = await _load_schema_allowlist(source_key)
-            _validate_identifier(table, "table name")
-            if table not in allowlist:
-                continue
-            valid = True
-            for c in cols:
-                _validate_identifier(c, "column name")
-                if c not in allowlist[table]:
-                    valid = False
-                    break
-            if not valid:
-                continue
-
-            closed_values = cfg.get("closed_values", ["closed"])
-
-            sql = f"""
-                SELECT t.{cfg['case_number_column']} AS case_number,
-                       t.{cfg['title_column']} AS title,
-                       t.{cfg['priority_column']} AS priority,
-                       t.{cfg['status_column']} AS status,
-                       t.{cfg['assignee_id_column']} AS assignee_id,
-                       t.{cfg['complainant_id_column']} AS complainant_id,
-                       t.id AS row_id
-                FROM {table} t
-                JOIN priority_tat_rules ptr
-                  ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg['priority_column']}
-                WHERE t.org_id = $1
-                  AND t.{cfg['status_column']} != ALL($2)
-                  AND t.{cfg['reminder_sent_column']} IS NULL
-                  AND t.{cfg['created_at_column']} + (ptr.reminder_threshold_minutes || ' minutes')::interval <= now()
-            """
-            due = await fetch_all(sql, str(org["id"]), closed_values, source_key=source_key)
-
-            for row in due:
-                assignee = (
-                    await fetch_one("SELECT phone FROM users WHERE id = $1",
-                                     row["assignee_id"], source_key=source_key)
-                    if row["assignee_id"] else None
-                )
-                complainant = (
-                    await fetch_one("SELECT phone FROM users WHERE id = $1",
-                                     row["complainant_id"], source_key=source_key)
-                    if row["complainant_id"] else None
+            await _run_case_notification_pass(
+                org_id=org_id, cfg=cfg, source_key=source_key,
+                minutes_col="reminder_threshold_minutes",
+                sent_col_key="reminder_sent_column",
+                assignee_tmpl_key="assignee_message_template",
+                complainant_tmpl_key="complainant_message_template",
+            )
+            if cfg.get("tat_breach_sent_column"):
+                await _run_case_notification_pass(
+                    org_id=org_id, cfg=cfg, source_key=source_key,
+                    minutes_col="tat_minutes",
+                    sent_col_key="tat_breach_sent_column",
+                    assignee_tmpl_key="assignee_tat_message_template",
+                    complainant_tmpl_key="complainant_tat_message_template",
                 )
 
-                vals = dict(row)
-                if assignee and assignee["phone"] and cfg.get("assignee_message_template"):
-                    await send_text(assignee["phone"], cfg["assignee_message_template"].format(**vals))
-                if complainant and complainant["phone"] and cfg.get("complainant_message_template"):
-                    await send_text(complainant["phone"], cfg["complainant_message_template"].format(**vals))
 
-                await execute(
-                    f"UPDATE {table} SET {cfg['reminder_sent_column']} = now() WHERE id = $1",
-                    row["row_id"], source_key=source_key
-                )
+async def _run_case_notification_pass(
+    org_id: str, cfg: dict, source_key: str,
+    minutes_col: str, sent_col_key: str,
+    assignee_tmpl_key: str, complainant_tmpl_key: str,
+):
+    """One fire-once notification pass — see run_case_reminders() above."""
+    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier
+
+    table = cfg["table"]
+    sent_column = cfg.get(sent_col_key)
+    if not sent_column:
+        return
+
+    col_keys = [
+        "case_number_column", "title_column", "priority_column",
+        "status_column", "created_at_column",
+        "assignee_id_column", "complainant_id_column",
+    ]
+    cols = [cfg[k] for k in col_keys] + [sent_column]
+
+    allowlist = await _load_schema_allowlist(source_key)
+    _validate_identifier(table, "table name")
+    if table not in allowlist:
+        return
+    for c in cols:
+        _validate_identifier(c, "column name")
+        if c not in allowlist[table]:
+            return
+
+    closed_values = cfg.get("closed_values", ["closed"])
+
+    sql = f"""
+        SELECT t.{cfg['case_number_column']} AS case_number,
+               t.{cfg['title_column']} AS title,
+               t.{cfg['priority_column']} AS priority,
+               t.{cfg['status_column']} AS status,
+               t.{cfg['assignee_id_column']} AS assignee_id,
+               t.{cfg['complainant_id_column']} AS complainant_id,
+               t.id AS row_id
+        FROM {table} t
+        JOIN priority_tat_rules ptr
+          ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg['priority_column']}
+        WHERE t.org_id = $1
+          AND t.{cfg['status_column']} != ALL($2)
+          AND t.{sent_column} IS NULL
+          AND t.{cfg['created_at_column']} + (ptr.{minutes_col} || ' minutes')::interval <= now()
+    """
+    due = await fetch_all(sql, org_id, closed_values, source_key=source_key)
+
+    for row in due:
+        assignee = (
+            await fetch_one("SELECT phone FROM users WHERE id = $1",
+                             row["assignee_id"], source_key=source_key)
+            if row["assignee_id"] else None
+        )
+        complainant = (
+            await fetch_one("SELECT phone FROM users WHERE id = $1",
+                             row["complainant_id"], source_key=source_key)
+            if row["complainant_id"] else None
+        )
+
+        vals = dict(row)
+        assignee_tmpl    = cfg.get(assignee_tmpl_key)
+        complainant_tmpl = cfg.get(complainant_tmpl_key)
+
+        if assignee and assignee["phone"] and assignee_tmpl:
+            await send_text(assignee["phone"], assignee_tmpl.format(**vals))
+
+        # Self-assigned case: assignee == complainant. Don't send the same
+        # person two near-identical messages — they already got the
+        # assignee-role one above.
+        same_person = (
+            assignee and complainant
+            and assignee["phone"] == complainant["phone"]
+        )
+        if complainant and complainant["phone"] and complainant_tmpl and not same_person:
+            await send_text(complainant["phone"], complainant_tmpl.format(**vals))
+
+        await execute(
+            f"UPDATE {table} SET {sent_column} = now() WHERE id = $1",
+            row["row_id"], source_key=source_key
+        )
 
 
 # ── Schedule management helpers ───────────────────────────────────────────────
