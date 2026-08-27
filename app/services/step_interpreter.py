@@ -134,11 +134,120 @@ def _resolve_path(ctx: dict, path):
     return val
 
 
-def _resolve_values(values: dict, ctx: dict) -> dict:
-    return {
-        k: _resolve_path(ctx, v) if isinstance(v, str) else v
-        for k, v in values.items()
-    }
+def _resolve_values(values, ctx: dict):
+    """
+    Recursively resolve $paths through dicts, lists and scalars.
+
+    The old version only handled top-level strings, so a nested value like
+      "payload": {"text": "$fields.comment_text"}
+    was written to the database as the literal string "$fields.comment_text".
+    Every comment written by add_case_comment before this fix is corrupt —
+    see MIGRATION 003 step 3d.
+    """
+    if isinstance(values, dict):
+        return {k: _resolve_values(v, ctx) for k, v in values.items()}
+    if isinstance(values, list):
+        return [_resolve_values(v, ctx) for v in values]
+    if isinstance(values, str):
+        return _resolve_path(ctx, values)
+    return values
+
+
+def _assert_no_unresolved(values, where: str) -> None:
+    """
+    Regression guard: a $-prefixed string reaching the database is always a bug.
+    This prevents the class of bug that wrote '$fields.comment_text' as a literal.
+    """
+    def walk(v, path):
+        if isinstance(v, dict):
+            for k, sub in v.items():
+                walk(sub, f"{path}.{k}")
+        elif isinstance(v, list):
+            for i, sub in enumerate(v):
+                walk(sub, f"{path}[{i}]")
+        elif isinstance(v, str) and v.startswith("$"):
+            raise StepError(
+                f"Unresolved placeholder '{v}' at {path} in {where}. "
+                f"This is a workflow definition bug — the referenced value "
+                f"does not exist in the execution context."
+            )
+    walk(values, "values")
+
+
+def _step_enabled(step: dict, ctx: dict) -> bool:
+    """
+    Evaluate an optional per-step guard. Absent guard = always run.
+
+        {"when": {"field": "$fields.action", "equals": "close"}}
+        {"when": {"field": "$fields.action", "in": ["close", "comment"]}}
+        {"when": {"field": "$fields.comment_text", "exists": true}}
+        {"when": {"field": "$fields.action", "not_equals": "comment"}}
+        {"when": {"and": [{"field": "$fields.action", "equals": "close"},
+                          {"field": "$case.assigned_to_id", "exists": true}]}}
+
+    Guards only skip steps. They never alter step indices, so resume_step
+    after an OTP/approval halt stays valid.
+    """
+    cond = step.get("when")
+    if not cond:
+        return True
+
+    if "and" in cond:
+        return all(_eval_when_condition(c, ctx) for c in cond["and"])
+    return _eval_when_condition(cond, ctx)
+
+
+def _eval_when_condition(cond: dict, ctx: dict) -> bool:
+    actual = _resolve_path(ctx, cond["field"])
+
+    if "equals" in cond:
+        return str(actual).lower() == str(cond["equals"]).lower()
+    if "not_equals" in cond:
+        return str(actual).lower() != str(cond["not_equals"]).lower()
+    if "in" in cond:
+        return str(actual).lower() in [str(v).lower() for v in cond["in"]]
+    if "not_in" in cond:
+        return str(actual).lower() not in [str(v).lower() for v in cond["not_in"]]
+    if "exists" in cond:
+        present = actual not in (None, "", [], {})
+        return present is bool(cond["exists"])
+
+    logger.warning(f"Unrecognised 'when' guard, running step anyway: {cond}")
+    return True
+
+
+async def _op_require_permission(params: dict, ctx: dict) -> dict:
+    """
+    Assert the calling user holds a permission before continuing.
+
+        {"op": "require_permission",
+         "params": {"any_of": ["close_case", "manage_case"],
+                    "denied_message": "Only committee members can close cases."}}
+
+    Or map the permission to a field value:
+        {"op": "require_permission",
+         "params": {"from": "$fields.action",
+                    "map": {"assign": "assign_case", "close": "close_case",
+                            "comment": "add_case_comment"}}}
+    """
+    perms = set(ctx["user"].get("permissions") or [])
+
+    required: list[str] = list(params.get("any_of") or [])
+    if params.get("from") and params.get("map"):
+        key = str(_resolve_path(ctx, params["from"]) or "").lower()
+        mapped = params["map"].get(key)
+        if mapped:
+            required.append(mapped)
+
+    if not required:
+        return ctx
+    if perms & set(required):
+        return ctx
+
+    raise StepError(
+        params.get("denied_message")
+        or "You don't have permission to do that. Please ask a committee member."
+    )
 
 
 # ── Step primitives ───────────────────────────────────────────────────────────
@@ -189,14 +298,45 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
         # Validate table and column against allowlist (AP-10)
         await _load_schema_allowlist(ctx["source_key"])
         _validate_table_and_columns(table, {match_col}, ctx["source_key"])
-        
-        # Escape LIKE metacharacters to prevent injection (AP-10)
-        safe_name = name_val.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        raw_rows = await fetch_all(
-            f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col}::text ILIKE $2 LIMIT 5",
-            ctx["org_id"], f"%{safe_name}%", source_key=ctx["source_key"]
-        )
-        rows = [dict(r) for r in raw_rows]
+
+        norm_mode = params.get("normalize")
+        if norm_mode == "identifier":
+            # Case/format-insensitive identifier lookup, e.g. case numbers.
+            # "Cs260817" / "CS 26 08 17" / "cs-26-08-17" all resolve the same
+            # way by stripping every non-alphanumeric character and matching
+            # against a generated `{match_col}_norm` column (see migration 007).
+            needle   = re.sub(r'[^A-Za-z0-9]', '', name_val).upper()
+            norm_col = f"{match_col}_norm"
+
+            # Tier 1: exact normalised match
+            raw_rows = await fetch_all(
+                f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} = $2 LIMIT 5",
+                ctx["org_id"], needle, source_key=ctx["source_key"]
+            )
+            # Tier 2: suffix match — handles "CS260817" vs a stored padded
+            # value like "CS260800017".
+            if not raw_rows and needle:
+                raw_rows = await fetch_all(
+                    f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE '%' || $2 LIMIT 5",
+                    ctx["org_id"], needle, source_key=ctx["source_key"]
+                )
+            # Tier 3: bare digits — "case 17" → "...17"
+            if not raw_rows:
+                digits = re.sub(r'\D', '', name_val)
+                if digits and len(digits) >= 2:
+                    raw_rows = await fetch_all(
+                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} ~ ('0*' || $2 || '$') LIMIT 5",
+                        ctx["org_id"], digits, source_key=ctx["source_key"]
+                    )
+            rows = [dict(r) for r in raw_rows]
+        else:
+            # Escape LIKE metacharacters to prevent injection (AP-10)
+            safe_name = name_val.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            raw_rows = await fetch_all(
+                f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col}::text ILIKE $2 LIMIT 5",
+                ctx["org_id"], f"%{safe_name}%", source_key=ctx["source_key"]
+            )
+            rows = [dict(r) for r in raw_rows]
 
     if len(rows) == 0:
         raise StepError(f"No {table} record found matching '{name_val}'")
@@ -357,6 +497,9 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
     # Force org_id to prevent cross-tenant writes (AP-10)
     values['org_id'] = ctx['org_id']
 
+    # Assert no unresolved placeholders before writing to DB
+    _assert_no_unresolved(values, f"db.insert_row({table})")
+
     # Resolve special date literals
     import datetime as _dt
     for k, v in list(values.items()):
@@ -392,8 +535,19 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
 
     # ── existing Postgres path (unchanged below this line) ──
     if "sequence" in params:
-        seq    = params["sequence"]
-        prefix = seq["prefix"]
+        seq = params["sequence"]
+        # Support {YYYY}/{YY}/{MM}/{DD} tokens so the prefix isn't frozen to the
+        # date the workflow was authored — a static "CS-26-08-" prefix means
+        # every case created in a later month still says 08.
+        _seq_now = _dt.date.today()
+        prefix = (
+            seq["prefix"]
+            .replace("{YYYY}", f"{_seq_now.year}")
+            .replace("{YY}",   f"{_seq_now.year % 100:02d}")
+            .replace("{MM}",   f"{_seq_now.month:02d}")
+            .replace("{DD}",   f"{_seq_now.day:02d}")
+        )
+        pad = int(seq.get("pad", 0))
         # Use advisory lock to prevent duplicate document numbers under concurrent requests
         # Lock key: hash of org_id + table + field
         lock_key = await fetch_one(
@@ -430,7 +584,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
                     pass
 
         next_num = max(max_num + 1, seq.get("start", 100))
-        doc_number = prefix + str(next_num)
+        doc_number = prefix + (f"{next_num:0{pad}d}" if pad else str(next_num))
         values[seq["field"]] = doc_number
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 
@@ -543,6 +697,10 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
 
     set_vals   = {k: _resolve_literals(v) for k, v in set_vals.items()}
     where_vals = {k: _resolve_literals(v) for k, v in where_vals.items()}
+
+    # Assert no unresolved placeholders before writing to DB
+    _assert_no_unresolved(set_vals, f"db.update_row({table}).set")
+    _assert_no_unresolved(where_vals, f"db.update_row({table}).where")
 
     # Force org_id in WHERE clause to prevent cross-tenant updates (AP-10)
     where_vals['org_id'] = ctx['org_id']
@@ -772,6 +930,7 @@ PRIMITIVES = {
     "compute":            _op_compute,
     "otp_gate":           _op_otp_gate,
     "approval_gate":      _op_approval_gate,
+    "require_permission": _op_require_permission,  # NEW
     "db.insert_row":      _op_insert_row,
     "db.update_row":      _op_update_row,
     "db.upsert_row":      _op_upsert_row,
@@ -825,6 +984,11 @@ async def run_workflow_steps(
             step = steps[i]
             if isinstance(step, str):
                 step = json.loads(step)
+
+            # NEW — conditional step guard
+            if not _step_enabled(step, ctx):
+                logger.info(f"Step {i+1}/{len(steps)}: skipped by 'when' guard")
+                continue
 
             op_name = step.get("op")
             op_fn   = PRIMITIVES.get(op_name)

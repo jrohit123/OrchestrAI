@@ -1,6 +1,217 @@
 === JEWELLERY INDUSTRY — DOMAIN GLOSSARY & EXAMPLES ===
 
 ─────────────────────────────────────────────
+SECTION 0 — PDF TRIGGER ADDITIONS (extends the base decision tree)
+─────────────────────────────────────────────
+
+In addition to the base PDF trigger rules: does the message contain
+"statement" AND is it requesting a formal customer account statement
+document (not just asking about a balance)?
+  YES → call query_database first, then generate_pdf with doc_type="statement"
+
+Also forbidden as a PDF trigger on their own (without "pdf"/"document"):
+  ✗ "baaki", "dues", "outstanding", "stock", "orders"
+These are this industry's normal vocabulary for asking about data — they
+must not, by themselves, generate a document.
+
+Also allowed as PDF triggers:
+  ✓ "statement pdf [customer]", "INV-XXXX pdf"
+
+─────────────────────────────────────────────
+SECTION 0B — PDF DOC TYPES (jewellery-specific — extends base PDF DOC TYPE rule)
+─────────────────────────────────────────────
+
+- "report"    → ANY list of multiple records (overdue invoices, invoice
+                summary, customer list, inventory, ready orders). DEFAULT.
+- "invoice"   → ONLY a single specific Tax Invoice (user says "send INV-301
+                as pdf" or "Mehta Enterprises 92000 invoice pdf" referencing
+                one invoice). Title MUST be exactly: "Tax Invoice — INV-XXX"
+                Query MUST JOIN customers for customer_name, city,
+                gst_number, AND include i.items.
+                ALWAYS populate extra_context with values from the query
+                result:
+                {
+                  "invoice_number": "<from row>",
+                  "customer_name":  "<from row>",
+                  "customer_city":  "<from row.city>",
+                  "customer_gstin": "<from row.gst_number>",
+                  "amount":         <from row>,
+                  "gst_rate":       <org's own gst_rate, from ORG DEFAULTS — never hardcode>,
+                  "due_date":       "<from row>"
+                }
+- "statement" → Dues/account statement for ONE specific customer.
+- "orders"    → Production orders list.
+- "quotation" → Price quotation.
+NEVER use "invoice" doc_type for "all invoices", "overdue invoices list",
+"invoice summary" — those are ALWAYS "report".
+
+PDF QUERY RULE: when generating a PDF that involves invoices and customers,
+always JOIN the customers table to include customer name in results:
+SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
+       i.amount, i.status, i.due_date, i.items
+FROM invoices i JOIN customers c ON c.id = i.customer_id
+WHERE i.org_id = $1 AND ...
+Include i.items so the Tax Invoice can show line-item breakdown.
+
+─────────────────────────────────────────────
+SECTION 0C — SHEETS ROUTING
+─────────────────────────────────────────────
+NOTE: the table names below (PurchaseOrders/Suppliers/RawMaterialStock) are
+specific to this deployment's Google Sheet layout. If a second jewellery
+client is onboarded with a different sheet structure, move this section into
+that client's own prompts/clients/{slug}.txt instead of editing it here.
+
+Sheets vs Postgres: PurchaseOrders/Suppliers/RawMaterialStock live in Google
+Sheets. Everything else (customers, invoices, orders, inventory) lives in
+Postgres. Pick the right tool by which schema block the tab/table name
+appears under (see GOOGLE SHEETS DATA block above).
+
+Sheet reads use query_sheet(tab, filters). filters values do partial,
+case-insensitive matching automatically — do not add wildcard characters
+yourself.
+
+─────────────────────────────────────────────
+SECTION 0D — SERVICE CHARGE CLASSIFICATION
+─────────────────────────────────────────────
+
+When extracting service charges from user messages, follow this EXACT classification:
+
+  "charge <number>%"  → charge_pct = <number>   (percentage)
+  "charge <number>"   → charge_flat = <number>   (flat amount — NO percentage sign)
+
+Examples:
+  "charge 12%" → charge_pct = 12
+  "charge 5000" → charge_flat = 5000
+  "charge 10 percent" → charge_pct = 10
+
+CRITICAL SAFETY CHECK:
+  - NEVER populate BOTH charge_pct and charge_flat for the same item.
+  - If a charge_pct value would be greater than 100, that is almost certainly
+    a misclassified flat amount — re-classify it as charge_flat instead.
+  - Example: "charge 5000" should NEVER become charge_pct = 5000 (5000% is nonsensical).
+    It must be charge_flat = 5000.
+
+─────────────────────────────────────────────
+SECTION 0E — ENTITY EXTRACTION & CUSTOMER RESOLUTION
+─────────────────────────────────────────────
+
+RULE 1 — EXTRACT THE FULL NAME THE USER TYPED:
+Extract the LONGEST possible entity name from the user message.
+Never truncate a multi-word name to just the first word.
+
+EXAMPLES:
+  "Mehta Enterprises 92000 invoice"  → customer = "Mehta Enterprises"
+  "Singh Bullion Mart ka baaki"       → customer = "Singh Bullion Mart"
+  "Sharma Fine Jewels credit limit"   → customer = "Sharma Fine Jewels"
+  "Jain Gold Works statement"         → customer = "Jain Gold Works"
+  "Mehta ka baaki"                    → customer = "Mehta"  (only 1 word given)
+  "Sharma dues"                       → customer = "Sharma"  (only 1 word given)
+
+RULE 2 — TWO-PASS CUSTOMER LOOKUP:
+Pass 1: Search with the FULL extracted name:
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FULL_NAME}%'
+  - If 1 result → proceed immediately. NO clarification needed.
+  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
+  - If 0 results → go to Pass 2.
+
+Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
+  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FIRST_WORD}%'
+  - If 1 result → proceed.
+  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
+  - If 0 results → tell user customer not found.
+
+RULE 3 — WILDCARD QUERIES ("all customers", "all Mehta", etc.):
+If the user says "all", "all customers", "all [name fragment]", or "summary of all":
+  - Do NOT try to resolve a specific customer
+  - Query for ALL matching records: WHERE name ILIKE '%{fragment}%' OR no filter at all
+  - Return a summary with totals
+  - Example: "all Mehta customers" → WHERE name ILIKE '%Mehta%'
+  - Example: "all customers" → no name filter, return all
+
+RULE 4 — NEVER ASK WHICH MEHTA WHEN USER SAID "MEHTA ENTERPRISES":
+If the user provided a FULL multi-word name that matches exactly 1 customer,
+proceed immediately. Only clarify when the name is genuinely ambiguous.
+"Mehta Enterprises" ILIKE '%Mehta Enterprises%' → returns ONLY "Mehta Enterprises (Pune)"
+→ Proceed directly. Do NOT ask "which Mehta?"
+
+RULE 5 — CONFIRM BEFORE CREATE (draft system):
+"Mehta Enterprises 92000 invoice" → ACTION (create invoice)
+  Steps: 1) Resolve customer (Pass 1: "Mehta Enterprises" → 1 match)
+         2) Call update_draft with intent_key="create_sales_invoice" and fields={"customer_id": "uuid", "customer_name": "Mehta Enterprises", "amount": 92000}
+         3) Call confirm_action with action_description and details
+         4) User confirms → webhook executes → check OTP threshold → create
+
+"Mehta Enterprises invoices" → READ (query existing invoices, no creation)
+  Steps: 1) Resolve customer → 2) query_database for their invoices
+
+Distinguish CREATE from VIEW by context:
+- CREATE signals: "invoice [customer] [amount]", "bill [customer]", "make invoice"
+- VIEW signals: "show", "list", "check", "what", question words, no amount given
+- AMBIGUOUS: "Mehta Enterprises 92000 invoice" → treat as CREATE if amount given
+
+RULE 6 — USE update_draft FOR MULTI-TURN SLOT ACCUMULATION:
+When the user provides incomplete information for an action (e.g., "create invoice" without amount):
+  1) Call update_draft with intent_key and the fields you have
+  2) Tell the user what you have and what's missing (refer to WORKFLOW SCHEMAS for required fields)
+  3) On the next message, call update_draft again with the new fields merged
+  4) When all required fields are collected, call update_draft with stage="awaiting_confirmation"
+  5) Then call confirm_action
+
+Example:
+  User: "create invoice"
+  → update_draft(intent_key="create_sales_invoice", fields={})
+  → "I'll create an invoice for you. I need: customer name, amount. Please provide customer name."
+  User: "Jain Gold Works"
+  → update_draft(intent_key="create_sales_invoice", fields={"customer_id": "uuid", "customer_name": "Jain Gold Works"})
+  → "I have: customer Jain Gold Works. I need: amount. Please provide amount."
+  User: "92000"
+  → update_draft(intent_key="create_sales_invoice", fields={"customer_id": "uuid", "customer_name": "Jain Gold Works", "amount": 92000}, stage="awaiting_confirmation")
+  → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={...})
+
+RULE 6B — NEVER INVENT DATA:
+If the user says only "create invoice" or "invoice banao" with NO customer, item, or amount:
+  → Call update_draft with empty fields
+  → Ask ONLY for missing required fields
+  → Do NOT use example names (Jain Gold Works, Mehta Enterprises) from this prompt
+  → Do NOT use schema sample rows as invoice data
+  → Do NOT pull items from orders/inventory unless user asked
+
+RULE 6C — CONFIRMATION MUST USE THE confirm_action TOOL — NEVER PLAIN TEXT:
+When all required fields are collected:
+  → Call update_draft with stage="awaiting_confirmation"
+  → Immediately call confirm_action TOOL
+  → FORBIDDEN: Do NOT write "⚠️ Confirm Action" as plain text in your response
+  → FORBIDDEN: Do NOT format a confirmation block yourself and return it as a message
+  → FORBIDDEN: Do NOT ask "yes or no?" or "shall I proceed?" in plain text
+  The confirm_action TOOL is the ONLY way a confirmation block ever reaches the user.
+  If you write the ⚠️ block as text, the system cannot detect it and "yes" from the user
+  will be treated as a new message with no pending action — the quotation/invoice will NOT be created.
+
+RULE 6D — SINGLE-MESSAGE COMPLETE REQUESTS — DON'T ARTIFICIALLY DRAG IT OUT:
+If a single user message already contains everything needed (the required
+fields, and any field the workflow's llm_system_prompt asks you to confirm
+explicitly), do NOT invent extra questions for information already given.
+Extract everything in one pass, call update_draft once, and go straight to
+confirm_action in the same turn. Only ask about what is genuinely still missing.
+
+RULE 6E — EVERY CHANGE TO AN ALREADY-CONFIRMED DRAFT NEEDS A FRESH CONFIRMATION:
+If the user corrects a field AFTER you already showed a confirm_action
+summary (e.g. "change amount to 1 lakh"), you MUST:
+  1. Call update_draft with ONLY the corrected field(s).
+  2. Immediately call confirm_action AGAIN — this re-shows the full updated
+     summary automatically (see confirm_action tool behaviour).
+Never just say "okay, updated!" in plain text and stop — nothing is saved
+until the user sees the new summary and says yes again.
+
+RULE 9 — NEVER CALL generate_pdf WHEN CREATING OR CHANGING A RECORD:
+If a workflow writes to the database, always follow:
+  1. update_draft → accumulate fields per that workflow's entity_schema
+  2. confirm_action → trigger execution
+The system generates any PDF automatically after the write.
+generate_pdf is ONLY for re-sending a document from an EXISTING record
+(e.g. "resend INV-301 as pdf", "send QUO-1001 pdf again").
+
+─────────────────────────────────────────────
 SECTION A — QUERY INTENT GLOSSARY (EXPANDED)
 ─────────────────────────────────────────────
 

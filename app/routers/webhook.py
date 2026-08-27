@@ -2,6 +2,7 @@ import os
 import json
 import hmac
 import hashlib
+import re
 from fastapi import APIRouter, Request, Response
 from dotenv import load_dotenv
 
@@ -40,9 +41,14 @@ _CANCEL_WORDS = frozenset({
     "start over", "restart", "forget it", "scrap it", "scrap that",
     "discard", "discard it", "reset", "never mind", "nevermind",
 })
-_RESTART_WORDS = frozenset({
-    "restart", "start over", "new", "fresh", "cancel", "stop",
-    "register_complaint", "complaint", "case", "file", "register"
+# Word-boundary tokens only. NEVER substring-match these — "case" matches
+# inside "staircase", "new" inside "renewal" (we have a case titled
+# "AMC renewal overdue for Wing 2 lift"), "file" inside "profile".
+_CANCEL_TOKENS = frozenset({
+    "cancel", "/cancel", "stop", "abort", "quit", "exit",
+    "reset", "restart", "discard", "nevermind", "never mind",
+    "forget it", "scrap it", "start over", "start again",
+    "rehne do", "chhodo", "chodo", "band karo isko", "radd karo",
 })
 
 
@@ -398,21 +404,56 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     session_id = f"{user['org_id']}:{phone}"
     session    = await get_session(session_id)
 
+    # Cancel gate — works at EVERY stage, not just awaiting_confirmation
+    # This is the user's escape hatch and must never depend on LLM cooperation
+    _t = text.strip().lower().rstrip("!.?")
+    _tokens = set(re.findall(r"[a-z/]+", _t))
+
+    if _t in _CANCEL_TOKENS or (_tokens & {"cancel", "/cancel"} and len(_tokens) <= 3):
+        had_draft = bool(session.get("pending_action"))
+        if not had_draft:
+            from app.services.draft_store import get_active_draft
+            had_draft = bool(await get_active_draft(
+                user["org_id"], user["user_id"], user["source_key"]
+            ))
+        await _clear_stuck_draft(user, session, session_id, ttl_minutes * 60,
+                                 reason="cancelled")
+        # Wipe conversation history too — a cancelled draft's turns are the
+        # main source of the LLM re-proposing the thing you just cancelled.
+        session["conversation_history"] = []
+        await set_session(session_id, session, ttl=ttl_minutes * 60)
+        await send_text(phone,
+            "🔄 Cleared. What would you like to do?\n\n_Type *menu* to see your options._"
+            if had_draft else
+            "✅ Nothing in progress. Type *menu* to see your options."
+        )
+        return
+
     # Sanitize conversation history immediately after loading - remove tool messages
     # to prevent OpenAI API errors from corrupted history
     conversation_history = session.get("conversation_history", [])
     has_corrupted = False
     sanitized_history = []
-    for msg in conversation_history:
-        if msg.get("role") == "tool":
-            has_corrupted = True
+    i = 0
+    while i < len(conversation_history):
+        m = conversation_history[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            want = {tc["id"] for tc in m["tool_calls"]}
+            block, j = [], i + 1
+            while j < len(conversation_history) and conversation_history[j].get("role") == "tool":
+                block.append(conversation_history[j]); j += 1
+            got = {t.get("tool_call_id") for t in block}
+            if want and want <= got:
+                sanitized_history.append(m); sanitized_history.extend(block)   # complete pair — keep
+            else:
+                has_corrupted = True                            # orphan — drop both
+            i = j
             continue
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            has_corrupted = True
-            continue
-        if msg.get("role") in ("user", "assistant"):
-            if msg.get("content") and not msg.get("tool_calls"):
-                sanitized_history.append(msg)
+        if m.get("role") == "tool":
+            has_corrupted = True; i += 1; continue              # orphan tool msg
+        if m.get("role") in ("user", "assistant") and m.get("content"):
+            sanitized_history.append(m)
+        i += 1
 
     if has_corrupted:
         logger.warning(f"Corrupted history detected, sanitizing session {session_id}")
@@ -438,7 +479,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 "intent_key": db_draft["intent_key"],
                 "fields": fields,
                 "stage": db_draft["stage"],
-                "rehydrated": True
+                "rehydrated": True,
+                # D12: without this, _is_draft_stale() is a permanent no-op
+                "created_at": (
+                    db_draft.get("created_at") or db_draft.get("updated_at")
+                ),
+                "reprompt_count": 0,
             }
             await set_session(session_id, session, ttl=ttl_minutes * 60)
             # Send greeting to user about the unfinished draft
@@ -570,44 +616,28 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 )
                 # fall through to agent with pending_action=None
             else:
-                # Check if user wants to restart with a new intent
-                text_lower_for_restart = text.strip().lower()
-                if any(word in text_lower_for_restart for word in _RESTART_WORDS):
-                    # Clear existing draft and start fresh
-                    from app.services.draft_store import close_draft
-                    logger.info(f"Intent restart detected — clearing draft")
-                    session.pop("pending_action", None)
-                    await set_session(session_id, session, ttl=session_ttl)
-                    # Also clear from database
-                    await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+                # Still fresh — treat as a correction to the existing draft.
+                # Downgrade stage so the agent re-enters collection mode.
+                # NOTE: reprompt_count is incremented once, later, by the
+                # collecting-stage check further down — do NOT increment it
+                # here too, or corrections get double-counted and hit the
+                # cap in half the intended number of turns.
+                current_reprompt_count = pending_action.get("reprompt_count", 0)
+                if current_reprompt_count >= _MAX_REPROMPT_COUNT:
+                    # Cap hit — the user and the bot are going in circles. Force a clean restart.
+                    logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+                    await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
                     await send_text(phone,
-                        "_⏱️ Previous draft cleared. Starting fresh..._"
+                        "🤔 I'm having trouble understanding the details for this request. "
+                        "Let's start fresh — please send your request again with all the details "
+                        "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
                     )
-                    # fall through to agent with pending_action=None
-                    pending_action = None
-                else:
-                    # Still fresh — treat as a correction to the existing draft.
-                    # Downgrade stage so the agent re-enters collection mode.
-                    # NOTE: reprompt_count is incremented once, later, by the
-                    # collecting-stage check further down — do NOT increment it
-                    # here too, or corrections get double-counted and hit the
-                    # cap in half the intended number of turns.
-                    current_reprompt_count = pending_action.get("reprompt_count", 0)
-                    if current_reprompt_count >= _MAX_REPROMPT_COUNT:
-                        # Cap hit — the user and the bot are going in circles. Force a clean restart.
-                        logger.warning(f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
-                        await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
-                        await send_text(phone,
-                            "🤔 I'm having trouble understanding the details for this request. "
-                            "Let's start fresh — please send your request again with all the details "
-                            "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
-                        )
-                        return
-                    pending_action["stage"] = "collecting"
-                    pending_action["correction_hint"] = text
-                    session["pending_action"] = pending_action
-                    await set_session(session_id, session, ttl=session_ttl)
-                    # fall through to agent — step 10 below will increment reprompt_count once
+                    return
+                pending_action["stage"] = "collecting"
+                pending_action["correction_hint"] = text
+                session["pending_action"] = pending_action
+                await set_session(session_id, session, ttl=session_ttl)
+                # fall through to agent — step 10 below will increment reprompt_count once
         else:
             # No draft at all — just fall through
             pass
@@ -749,19 +779,20 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 async def handle_system_row(text: str, user: dict, phone: str):
     """Handle sys:status, sys:cancel, sys:help from menu."""
     from app.services.draft_store import get_active_draft, close_draft
-    
+    import datetime as _dt
+
     if text == "sys:status":
         draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
         if draft:
             intent = draft["intent_key"]
             stage = draft["stage"]
             fields = draft.get("fields", {})
+            field_lines = "\n".join(f"  • {k}: {v}" for k, v in fields.items()) or "  (nothing yet)"
+            age_min = int((_dt.datetime.now(_dt.timezone.utc) - draft.get("created_at", _dt.datetime.now(_dt.timezone.utc))).total_seconds() // 60)
             await send_text(phone,
-                f"📋 *Draft Status*\n"
-                f"Workflow: {intent}\n"
-                f"Stage: {stage}\n"
-                f"Fields collected: {len(fields)}\n\n"
-                f"Tap /cancel to clear this draft."
+                f"📝 In progress: *{intent}* (started {age_min} min ago)\n"
+                f"{field_lines}\n\n"
+                f"Reply *cancel* to discard it, or continue where you left off."
             )
         else:
             await send_text(phone, "✅ No active draft. You're ready to start fresh.")

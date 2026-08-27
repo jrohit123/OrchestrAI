@@ -11,6 +11,12 @@ workflow. Everything downstream (GST, making charges, totals) is still
 100% calc_engine — no LLM, ever, touches multiplication/addition. This
 only decides "what number did the human mean", never "what does the
 math work out to".
+
+DELIBERATELY NOT ROUTED THROUGH llm_router.
+llm_qa_reviewer cross-checks this interpretation against an independent
+OpenAI one. If both sides used the shared fallback ladder they could
+resolve to the same underlying model, and the cross-check would validate
+nothing. Provider independence is the whole point of this module.
 """
 import os
 import json

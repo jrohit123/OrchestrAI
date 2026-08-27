@@ -52,6 +52,32 @@ async def _build_context(org_id: str, source_key: str) -> dict:
     }
 
 
+def _is_required(spec: dict, fields: dict) -> bool:
+    """
+    A field is required if `required: true`, or if its `required_if` condition
+    is currently satisfied by the other field values in this draft.
+
+        "required_if": {"field": "action", "in": ["close", "comment"]}
+        "required_if": {"field": "action", "equals": "close"}
+        "required_if": {"field": "assignee_id", "exists": true}
+    """
+    if spec.get("required"):
+        return True
+    cond = spec.get("required_if")
+    if not cond:
+        return False
+    other = fields.get(cond["field"])
+    other_s = str(other).lower() if other is not None else ""
+    if "in" in cond:
+        return other_s in [str(v).lower() for v in cond["in"]]
+    if "equals" in cond:
+        return other_s == str(cond["equals"]).lower()
+    if "exists" in cond:
+        present = other not in (None, "", [], {})
+        return present is bool(cond["exists"])
+    return False
+
+
 def _validate_schema(entity_schema: dict, fields: dict) -> tuple[list, list]:
     """
     Check RAW (non-computed) required fields are present and typed correctly.
@@ -85,7 +111,7 @@ def _validate_schema(entity_schema: dict, fields: dict) -> tuple[list, list]:
             continue
 
         val = fields.get(name)
-        if spec.get("required") and val in (None, "", []):
+        if _is_required(spec, fields) and val in (None, "", []):
             missing.append(name)
         elif spec.get("type") in ("float", "integer") and val is not None:
             try:

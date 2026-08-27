@@ -734,7 +734,14 @@ async def _build_system_prompt(user: dict) -> str:
                 workflow_schema_text += f"\n{intent_key}:\n"
                 workflow_schema_text += f"  Required fields:\n"
                 for field_name, field_def in entity_schema.items():
-                    required   = "REQUIRED" if field_def.get("required") else "optional"
+                    if field_def.get("required"):
+                        required = "REQUIRED"
+                    elif field_def.get("required_if"):
+                        _cond = field_def["required_if"]
+                        _trigger = _cond.get("equals") or ", ".join(str(v) for v in _cond.get("in", []))
+                        required = f"REQUIRED WHEN {_cond['field']} is {_trigger}"
+                    else:
+                        required = "optional"
                     field_type = field_def.get("type", "string")
                     computed   = " [COMPUTED — do not fill, system calculates this]" if field_def.get("computed") else ""
                     description = f" — {field_def.get('description', '')}" if field_def.get("description") else ""
@@ -786,6 +793,14 @@ async def _build_system_prompt(user: dict) -> str:
         )
     org_defaults_line = ("ORG DEFAULTS: " + " | ".join(org_defaults_parts)) if org_defaults_parts else ""
 
+    # Only mention Google Sheets at all if this org actually has a sheet configured —
+    # otherwise every org (including ones with no Sheets integration) got an unconditional
+    # "(none configured)" block plus sheet-routing rules that don't apply to them.
+    sheets_block = (
+        "GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):\n"
+        f"{sheets_schema}"
+    ) if sheets_schema else ""
+
     return f"""You are a messaging ERP assistant for {user["org_name"]}.
 
 {critical_tables_block}
@@ -799,15 +814,7 @@ TODAY: {today}
 
 {org_defaults_line}
 
-GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):
-{sheets_schema if sheets_schema else "(none configured)"}
-
-RULE S1 — Sheets vs Postgres: PurchaseOrders/Suppliers/RawMaterialStock live in Google
-Sheets. Everything else (customers, invoices, orders, inventory) lives in Postgres.
-Pick the right tool by which schema block the tab/table name appears under.
-
-RULE S2 — Sheet reads use query_sheet(tab, filters). filters values do partial,
-case-insensitive matching automatically — do not add wildcard characters yourself.
+{sheets_block}
 
 {workflow_schema_text}
 
@@ -817,123 +824,11 @@ MENU REQUESTS:
 If the user asks to see the menu/options in ANY phrasing or language, at ANY point —
 call the show_menu tool. Do not describe the options as plain text in that case.
 
-ENTITY EXTRACTION — CRITICAL RULES (read before every query):
-
-RULE 1 — EXTRACT THE FULL NAME THE USER TYPED:
-Extract the LONGEST possible entity name from the user message.
-Never truncate a multi-word name to just the first word.
-
-EXAMPLES:
-  "Mehta Enterprises 92000 invoice"  → customer = "Mehta Enterprises"
-  "Singh Bullion Mart ka baaki"       → customer = "Singh Bullion Mart"
-  "Sharma Fine Jewels credit limit"   → customer = "Sharma Fine Jewels"
-  "Jain Gold Works statement"         → customer = "Jain Gold Works"
-  "Mehta ka baaki"                    → customer = "Mehta"  (only 1 word given)
-  "Sharma dues"                       → customer = "Sharma"  (only 1 word given)
-
-RULE 2 — TWO-PASS CUSTOMER LOOKUP:
-Pass 1: Search with the FULL extracted name:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FULL_NAME}}%'
-  - If 1 result → proceed immediately. NO clarification needed.
-  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
-  - If 0 results → go to Pass 2.
-
-Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{{FIRST_WORD}}%'
-  - If 1 result → proceed.
-  - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
-  - If 0 results → tell user customer not found.
-
-RULE 3 — WILDCARD QUERIES ("all customers", "all Mehta", etc.):
-If the user says "all", "all customers", "all [name fragment]", or "summary of all":
-  - Do NOT try to resolve a specific customer
-  - Query for ALL matching records: WHERE name ILIKE '%{{fragment}}%' OR no filter at all
-  - Return a summary with totals
-  - Example: "all Mehta customers" → WHERE name ILIKE '%Mehta%'
-  - Example: "all customers" → no name filter, return all
-
-RULE 4 — NEVER ASK WHICH MEHTA WHEN USER SAID "MEHTA ENTERPRISES":
-If the user provided a FULL multi-word name that matches exactly 1 customer,
-proceed immediately. Only clarify when the name is genuinely ambiguous.
-"Mehta Enterprises" ILIKE '%Mehta Enterprises%' → returns ONLY "Mehta Enterprises (Pune)"
-→ Proceed directly. Do NOT ask "which Mehta?"
-
-RULE 5 — CONFIRM BEFORE CREATE (UPDATED with draft system):
-"Mehta Enterprises 92000 invoice" → ACTION (create invoice)
-  Steps: 1) Resolve customer (Pass 1: "Mehta Enterprises" → 1 match)
-         2) Call update_draft with intent_key="create_sales_invoice" and fields={{"customer_id": "uuid", "customer_name": "Mehta Enterprises", "amount": 92000}}
-         3) Call confirm_action with action_description and details
-         4) User confirms → webhook executes → check OTP threshold → create
-
-"Mehta Enterprises invoices" → READ (query existing invoices, no creation)
-  Steps: 1) Resolve customer → 2) query_database for their invoices
-
-Distinguish CREATE from VIEW by context:
-- CREATE signals: "invoice [customer] [amount]", "bill [customer]", "make invoice"
-- VIEW signals: "show", "list", "check", "what", question words, no amount given
-- AMBIGUOUS: "Mehta Enterprises 92000 invoice" → treat as CREATE if amount given
-
-RULE 6 — USE update_draft FOR MULTI-TURN SLOT ACCUMULATION:
-When the user provides incomplete information for an action (e.g., "create invoice" without amount):
-  1) Call update_draft with intent_key and the fields you have
-  2) Tell the user what you have and what's missing (refer to WORKFLOW SCHEMAS for required fields)
-  3) On the next message, call update_draft again with the new fields merged
-  4) When all required fields are collected, call update_draft with stage="awaiting_confirmation"
-  5) Then call confirm_action
-
-Example:
-  User: "create invoice"
-  → update_draft(intent_key="create_sales_invoice", fields={{}})
-  → "I'll create an invoice for you. I need: customer name, amount. Please provide customer name."
-  User: "Jain Gold Works"
-  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works"}})
-  → "I have: customer Jain Gold Works. I need: amount. Please provide amount."
-  User: "92000"
-  → update_draft(intent_key="create_sales_invoice", fields={{"customer_id": "uuid", "customer_name": "Jain Gold Works", "amount": 92000}}, stage="awaiting_confirmation")
-  → confirm_action(action_description="Create invoice for Jain Gold Works, Rs.92,000", details={{...}})
-
-RULE 6B — NEVER INVENT DATA:
-If the user says only "create invoice" or "invoice banao" with NO customer, item, or amount:
-  → Call update_draft with empty fields
-  → Ask ONLY for missing required fields
-  → Do NOT use example names (Jain Gold Works, Mehta Enterprises) from this prompt
-  → Do NOT use schema sample rows as invoice data
-  → Do NOT pull items from orders/inventory unless user asked
-
-RULE 6C — CONFIRMATION MUST USE THE confirm_action TOOL — NEVER PLAIN TEXT:
-When all required fields are collected:
-  → Call update_draft with stage="awaiting_confirmation"
-  → Immediately call confirm_action TOOL
-  → FORBIDDEN: Do NOT write "⚠️ Confirm Action" as plain text in your response
-  → FORBIDDEN: Do NOT format a confirmation block yourself and return it as a message
-  → FORBIDDEN: Do NOT ask "yes or no?" or "shall I proceed?" in plain text
-  The confirm_action TOOL is the ONLY way a confirmation block ever reaches the user.
-  If you write the ⚠️ block as text, the system cannot detect it and "yes" from the user
-  will be treated as a new message with no pending action — the quotation/invoice will NOT be created.
-
-RULE 6D — SINGLE-MESSAGE COMPLETE REQUESTS — DON'T ARTIFICIALLY DRAG IT OUT:
-If a single user message already contains everything needed (the required
-fields, and any field the workflow's llm_system_prompt asks you to confirm
-explicitly, like priority), do NOT invent extra questions for information
-already given. Extract everything in one pass, call update_draft once, and
-go straight to confirm_action in the same turn. Only ask about what is
-genuinely still missing.
-
-RULE 6E — EVERY CHANGE TO AN ALREADY-CONFIRMED DRAFT NEEDS A FRESH CONFIRMATION:
-If the user corrects a field AFTER you already showed a confirm_action
-summary (e.g. "change priority to low"), you MUST:
-  1. Call update_draft with ONLY the corrected field(s).
-  2. Immediately call confirm_action AGAIN — this re-shows the full updated
-     summary automatically (see confirm_action tool behaviour).
-Never just say "okay, updated!" in plain text and stop — nothing is saved
-until the user sees the new summary and says yes again. Never skip straight
-to saving after a correction, no matter how small the change seems.
-
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.
-Each workflow lists its required fields with types and whether they're required.
-Use this to give accurate guidance on what's missing.
-Example: For create_sales_invoice, required fields are: customer_name (string, REQUIRED), items (array, REQUIRED).
+Each workflow lists its required fields with types and whether they're required
+(including conditionally-required fields, shown as "REQUIRED WHEN ..."). Use
+this to give accurate guidance on what's missing.
 
 RULE 8 — WORKFLOW-SPECIFIC FIELD STRUCTURE:
 Every field a workflow needs — including nested item fields and which ones are
@@ -948,63 +843,7 @@ If a workflow writes to the database, always follow:
   1. update_draft → accumulate fields per that workflow's entity_schema
   2. confirm_action → trigger execution
 The system generates any PDF automatically after the write.
-generate_pdf is ONLY for re-sending a document from an EXISTING record
-(e.g. "resend INV-301 as pdf", "send QUO-1001 pdf again").
-
-PDF DOC TYPE RULES — ALWAYS pass doc_type explicitly:
-- "report"    → ANY list of multiple records (overdue invoices, invoice summary,
-                 customer list, inventory, ready orders). THIS IS THE DEFAULT.
-- "invoice"   → ONLY a single specific Tax Invoice (user says "send INV-301 as pdf"
-                 or "Mehta Enterprises 92000 invoice pdf" referencing one invoice).
-                 Title MUST be exactly: "Tax Invoice — INV-XXX"
-                 Query MUST JOIN customers for customer_name, city, gst_number, AND include i.items.
-                 ALWAYS populate extra_context with values from the query result:
-                 {{
-                   "invoice_number": "<from row>",
-                   "customer_name":  "<from row>",
-                   "customer_city":  "<from row.city>",
-                   "customer_gstin": "<from row.gst_number>",
-                   "amount":         <from row>,
-                   "gst_rate":       3.0,
-                   "due_date":       "<from row>"
-                 }}
-- "statement" → Dues/account statement for ONE specific customer.
-- "orders"    → Production orders list.
-- "quotation" → Price quotation.
-NEVER use "invoice" doc_type for "all invoices", "overdue invoices list", "invoice summary".
-Those are ALWAYS "report".
-
-PDF QUERY RULE: When generating a PDF that involves invoices and customers,
-always JOIN the customers table to include customer name in results:
-SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
-       i.amount, i.status, i.due_date, i.items
-FROM invoices i JOIN customers c ON c.id = i.customer_id
-WHERE i.org_id = $1 AND ...
-Include i.items so the Tax Invoice can show line-item breakdown.
-
-AMOUNT DISPLAY: Always display monetary values in Indian format with Rs. prefix.
-Rs.1,45,000 not Rs.145000. Use commas at Indian positions.
-
-SQL SELF-CORRECTION PROTOCOL:
-When query_database returns an ERROR:
-1. Do NOT show the user raw errors or SQL
-2. Identify the issue: wrong column name? wrong table? syntax error?
-3. Write a corrected SELECT and call query_database again
-4. If the second attempt also fails: "I couldn't retrieve that data.
-   Please verify [specific thing] and try again."
-Example: tried `inventory.quantity` → error → retry with `inventory.qty`
-
-RESPONSE QUALITY CHECK (before sending any reply):
-Ask yourself: Does my response contain any of these? If yes, rewrite it.
-  ✗ SQL queries or WHERE clauses
-  ✗ Column names (org_id, customer_id, invoice_number as raw text)
-  ✗ UUID strings
-  ✗ Table names mentioned to the user
-  ✗ Raw error strings from the database
-  ✗ Technical system details
-
-NEVER: expose passwords, OTP hashes, raw UUIDs, or internal workflow config.
-NEVER: run DROP, DELETE, UPDATE, INSERT, or any DDL.
+generate_pdf is ONLY for re-sending a document from an EXISTING record.
 """
 
 
@@ -1322,6 +1161,8 @@ async def _execute_tool(
         stage = tool_input.get("stage", "collecting")
 
         # If intent_key not provided, infer from existing draft
+        existing_draft = None
+        intent_switched = False
         if not intent_key:
             from app.services.draft_store import get_active_draft
             existing_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
@@ -1334,6 +1175,13 @@ async def _execute_tool(
             else:
                 logger.warning("update_draft called without intent_key and no existing draft found")
                 return "ERROR: No intent_key provided and no existing draft to infer from"
+        else:
+            # Check if this is an intent switch
+            from app.services.draft_store import get_active_draft
+            existing_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+            if existing_draft and existing_draft.get("intent_key") != intent_key:
+                intent_switched = True
+                logger.info(f"Intent switch detected: {existing_draft.get('intent_key')} → {intent_key}")
 
         # Guard: the LLM must always pass an object. A malformed call (e.g.
         # passing an items array directly as `fields`) corrupts the stored
@@ -1388,6 +1236,7 @@ async def _execute_tool(
             fields=fields,
             stage=stage,
             source_key=user["source_key"],
+            reset_fields=intent_switched,  # D1: reset fields when switching workflows
         )
 
         # Return session patch for webhook to persist
@@ -1787,6 +1636,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         org_id=user["org_id"], user_id=user["user_id"],
                         intent_key=wf["intent_key"], fields=fields,
                         stage="collecting", source_key=user["source_key"],
+                        reset_fields=True,  # D1: reset fields when switching workflows
                     )
 
                 first_missing = None
@@ -1961,10 +1811,30 @@ Return ONLY the WhatsApp message text, nothing else."""
                 tool_choice="auto",
                 max_tokens=8192,
                 temperature=0.1,
+                require_tools=True,  # Skip small models for tool-driven turns
             )
         except Exception as e:
-            logger.error(f"All LLM providers failed: {e}", exc_info=True)
-            return str(e), [], {}
+            from app.services.llm_router import AllProvidersFailed
+            if isinstance(e, AllProvidersFailed):
+                logger.error(f"All LLM providers failed: {e.errors}", exc_info=True)
+                # The draft is intentionally left intact — this is a transient infra
+                # failure, not a user error. They should be able to say "yes" and have
+                # it work once capacity returns.
+                return (
+                    "⚠️ I'm having trouble reaching my AI service right now. "
+                    "Your request has been saved — please resend your last message in "
+                    "a minute and I'll pick up exactly where we left off.",
+                    [],
+                    {},
+                )
+            else:
+                logger.error(f"Unexpected agent failure: {e}", exc_info=True)
+                return (
+                    "⚠️ Something went wrong on my end. Please try again, or type "
+                    "*menu* to start over.",
+                    [],
+                    {},
+                )
         
         if not response:
             logger.error("No response received from any LLM provider")
@@ -2376,6 +2246,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                     await _upsert_confirm_draft(
                         org_id=user["org_id"], user_id=user["user_id"],
                         intent_key=draft.get("intent_key"), fields=verified_fields,
+                        reset_fields=False,  # Same workflow, just verified fields
                         stage="awaiting_confirmation", source_key=user["source_key"],
                     )
 

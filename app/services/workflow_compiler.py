@@ -7,12 +7,9 @@ dict and returns a full workflow spec + plain_english_summary.
 """
 import json
 import os
-from openai import AsyncOpenAI
 from app.db import fetch_all
-
+from app.services.llm_router import chat_completion as _llm_chat
 from app.config import required
-
-_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 
 def _parse(val, default):
@@ -222,11 +219,10 @@ Return ONLY this JSON, no markdown:
     last_error = "Unknown error"
     for attempt in range(3):
         try:
-            response = await _client.chat.completions.create(
-                model="gpt-4o",
+            response = await _llm_chat(
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=8192,
                 temperature=0.1 + attempt * 0.1,
-                messages=[{"role": "user", "content": prompt}]
             )
             content = response.choices[0].message.content.strip()
             if "```" in content:

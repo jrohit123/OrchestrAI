@@ -32,12 +32,34 @@ async def execute_pending_action(
     """
     intent_key = pending_action.get("intent_key")
     if not intent_key:
-        return {"success": False, "message": "No intent_key in pending_action"}
+        logger.error(f"pending_action has no intent_key: {pending_action!r}")
+        return {
+            "success": False,
+            "message": (
+                "I lost track of what we were working on. Please send your "
+                "request again — for example *\"assign CS-26-08-17 to Anuja\"*."
+            ),
+        }
 
     workflow = await fetch_one(
         "SELECT * FROM workflows WHERE intent_key = $1 AND org_id = $2 AND is_active = true",
         intent_key, user["org_id"], source_key=user["source_key"]
     )
+
+    # D4: Permission check at execution time — any role can run any workflow without this
+    perms = set(user.get("permissions") or [])
+    if intent_key not in perms:
+        logger.warning(
+            f"Permission denied: user={user.get('user_id')} "
+            f"role={user.get('role')} intent={intent_key}"
+        )
+        return {
+            "success": False,
+            "message": (
+                "You don't have permission to do that. "
+                "Please ask a committee member or admin."
+            ),
+        }
     if not workflow:
         return {
             "success": False,
@@ -79,12 +101,14 @@ async def execute_pending_action(
     if result["status"] == "ambiguous":
         candidates = result.get("candidates", [])
         opts = "\n".join(
-            f"{i+1}. {c.get('name', c.get('customer_name', '?'))}"
-            for i, c in enumerate(candidates)
+            f"{i+1}. {c.get('case_number') or c.get('name') or '?'}"
+            + (f" — {c['title']}" if c.get("title") else "")
+            for i, c in enumerate(candidates[:5])
         )
         return {
             "success": False,
-            "message": f"🤔 Multiple matches found:\n{opts}\nPlease be more specific.",
+            "message": f"🤔 I found more than one match:\n{opts}\n\n"
+                       f"Which one did you mean? Reply with the full number.",
         }
 
     # status == "error" - close draft and show friendly message

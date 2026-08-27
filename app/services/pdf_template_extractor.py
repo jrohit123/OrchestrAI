@@ -11,11 +11,9 @@ Runs ONCE at workflow-authoring time — never on the message-time hot path.
 import base64
 import json
 import os
-from openai import AsyncOpenAI
+from app.services.llm_router import chat_completion as _llm_chat
 
 from app.config import required
-
-_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 
 def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
@@ -107,11 +105,10 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
             "image_url": {"url": f"data:image/png;base64,{img_b64}"}
         })
 
-    response = await _client.chat.completions.create(
-        model="gpt-4o",
+    response = await _llm_chat(
+        messages=[{"role": "user", "content": content}],
         max_tokens=1500,
         temperature=0.1,
-        messages=[{"role": "user", "content": content}]
     )
 
     raw = response.choices[0].message.content.strip()

@@ -157,5 +157,22 @@ async def health():
         logger.error(f"Scheduler health check failed: {e}")
         status["dependencies"]["scheduler"] = f"error: {str(e)}"
         status["status"] = "degraded"
-    
+
+    # Check LLM ladder state
+    try:
+        from app.services.llm_router import _COOLDOWN_UNTIL, _build_ladder
+        import time as _t
+        _now = _t.monotonic()
+        status["dependencies"]["llm_ladder"] = [
+            {
+                "provider": a.label,
+                "state": "cooling" if _COOLDOWN_UNTIL.get(a.label, 0) > _now else "ready",
+                "resumes_in_s": max(0, round(_COOLDOWN_UNTIL.get(a.label, 0) - _now)),
+            }
+            for a in _build_ladder()
+        ]
+    except Exception as e:
+        logger.error(f"LLM ladder health check failed: {e}")
+        status["dependencies"]["llm_ladder"] = f"error: {str(e)}"
+
     return status

@@ -1,0 +1,406 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- COMBINED DEPLOY — migrations 005 through 008, in dependency order, as one
+-- transaction (all-or-nothing: if anything fails, the whole thing rolls back
+-- and nothing is left half-applied).
+--
+-- Contents, in the order they run:
+--   1. (005) partial unique index on user_drafts + created_at column
+--   2. (006) self-dating, zero-padded case number prefix for register_complaint
+--   3. (007) case_number_norm generated column + indexes on cases
+--   4. (008) fold close_case + add_case_comment INTO assign_case (in place —
+--            assign_case keeps its id/intent_key/slash_command), corrupted-
+--            comment repair, closed-case history backfill
+--
+-- End state: exactly 3 active workflows for this org —
+--   view_all_cases (untouched), register_complaint (untouched),
+--   assign_case (now handles assign / comment / close).
+-- No new workflow is created and no permissions are added — roles already
+-- hold assign_case/close_case/add_case_comment as separate permission
+-- strings, and that per-action granularity is kept and enforced by a
+-- require_permission step inside assign_case itself.
+--
+-- Requires the following CODE already deployed (all done as of this repo
+-- state — see app/services/step_interpreter.py, qa_verifier.py, agent.py,
+-- draft_store.py, action_executor.py, llm_router.py, webhook.py):
+--   - _resolve_values (deep resolution) + _assert_no_unresolved
+--   - _step_enabled ("when" guards, incl. "and") + _op_require_permission
+--   - normalize: "identifier" in _op_resolve_entity
+--   - required_if support in qa_verifier / agent.py
+--   - draft_store.upsert_draft with intent_key=EXCLUDED + expires_at refresh
+--
+-- Org: Godrej Emerald (793eead0-31b2-4538-b9b3-1885f9e94604)
+--
+-- This script is intended to run ONCE against a fresh copy of the schema
+-- shown in the dump you provided (where one_active_draft_per_user is still
+-- a plain, non-partial UNIQUE constraint). Re-running it after a successful
+-- run will fail at step 1 (the constraint no longer exists to drop) — that
+-- failure is expected and safe; it just means step 1 already happened.
+--
+-- Run with: psql "$DATABASE_URL" -f migrations/DEPLOY_ALL_pending.sql
+-- Or via asyncpg: see run_migration_005.py for the connection pattern —
+-- point it at this file instead.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- STEP 1  (was migration 005) — one ACTIVE draft per user, not one ever
+-- ─────────────────────────────────────────────────────────────────────────
+
+-- Existing done/cancelled rows currently occupy the single slot per user.
+-- Nothing reads them; drop them so the partial index can be created cleanly.
+DELETE FROM user_drafts WHERE stage IN ('done', 'cancelled');
+
+ALTER TABLE user_drafts DROP CONSTRAINT IF EXISTS one_active_draft_per_user;
+
+CREATE UNIQUE INDEX one_active_draft_per_user
+    ON user_drafts (org_id, user_id)
+    WHERE stage NOT IN ('done', 'cancelled');
+
+-- Track when a draft was started, so _is_draft_stale can actually work.
+ALTER TABLE user_drafts
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_user_drafts_expiry
+    ON user_drafts (expires_at) WHERE stage NOT IN ('done','cancelled');
+
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- STEP 2  (was migration 006) — self-dating, zero-padded case numbers
+-- ─────────────────────────────────────────────────────────────────────────
+-- Only changes how FUTURE case numbers are generated. Does NOT rewrite
+-- existing case_number values (residents already have the old ones in
+-- their WhatsApp/Telegram history). STEP 3 below is what makes both old
+-- and new formats resolvable.
+
+WITH target AS (
+    SELECT id, steps
+      FROM workflows
+     WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'
+       AND intent_key = 'register_complaint'
+),
+idx AS (
+    SELECT id, (elem.ordinality - 1) AS step_index
+      FROM target, jsonb_array_elements(steps) WITH ORDINALITY AS elem(value, ordinality)
+     WHERE elem.value->>'op' = 'db.insert_row'
+       AND elem.value->'params'->>'table' = 'cases'
+)
+UPDATE workflows w
+   SET steps = jsonb_set(
+         w.steps,
+         array[idx.step_index::text, 'params', 'sequence'],
+         '{"field": "case_number", "prefix": "CS-{YY}-{MM}-", "start": 1, "pad": 5}'::jsonb
+       )
+  FROM idx
+ WHERE w.id = idx.id;
+
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- STEP 3  (was migration 007) — normalised case-number lookup
+-- ─────────────────────────────────────────────────────────────────────────
+-- Pairs with normalize: "identifier" in _op_resolve_entity. Lets "Cs260817",
+-- "CS 26 08 17", "cs-26-08-17", and "case 17" all resolve to the same case.
+
+ALTER TABLE cases
+  ADD COLUMN IF NOT EXISTS case_number_norm text
+  GENERATED ALWAYS AS (regexp_replace(upper(case_number), '[^A-Z0-9]', '', 'g')) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_cases_number_norm
+    ON cases (org_id, case_number_norm);
+
+-- pg_trgm is already installed (see CREATE EXTENSION at the top of the schema).
+CREATE INDEX IF NOT EXISTS idx_cases_number_norm_trgm
+    ON cases USING gin (case_number_norm gin_trgm_ops);
+
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- STEP 4  (was migration 008) — fold close_case + add_case_comment INTO
+-- assign_case. Final workflow count for this org: exactly 3 active
+-- workflows — view_all_cases (untouched), register_complaint (untouched),
+-- assign_case (expanded to handle assign / comment / close).
+--
+-- assign_case KEEPS its existing id, intent_key, and slash_command — this
+-- is an UPDATE in place, not a new workflow. No permission/role changes are
+-- needed: roles already hold assign_case/close_case/add_case_comment as
+-- separate permission strings, and that granularity is enforced by a
+-- require_permission step inside assign_case itself (mapped by `action`).
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE workflows
+   SET
+     name                 = 'Assign / Update Case',
+     description          = 'Assign a case, add an optional progress comment, or close it. Closing always records a comment so both the assignee and the original complainant know the outcome.',
+     command_description  = 'Assign, comment on, or close a case',
+     training_phrases = '["assign {case_number} to {name}", "{name} ko {case_number} assign karo",
+  "give case to {name}", "hand this case over to {name}", "assign to myself",
+  "close {case_number}", "{case_number} band karo", "resolve {case_number}",
+  "mark {case_number} as closed", "issue fixed {case_number}",
+  "comment on {case_number}", "add update to {case_number}",
+  "{case_number} mein note likho", "remarks daalo {case_number}",
+  "update case {case_number}"]'::jsonb,
+     entity_schema = $es${
+       "action": {
+         "type": "string",
+         "required": true,
+         "enum": ["assign", "comment", "close"],
+         "description": "What to do with the case. assign = give it to someone; comment = add an optional progress note; close = resolve and close it."
+       },
+       "case_number": {
+         "type": "string",
+         "required": true,
+         "description": "The case number, e.g. CS-26-08-00017. Accept whatever format the user types — the system normalises it."
+       },
+       "assignee_name": {
+         "type": "string",
+         "required_if": {"field": "action", "equals": "assign"},
+         "description": "Who the case goes to. If the user says 'me'/'myself', use their own name."
+       },
+       "comment_text": {
+         "type": "string",
+         "required_if": {"field": "action", "in": ["close", "comment"]},
+         "description": "The note to record. Optional when assigning. MANDATORY when closing — this is the closing note so both the assignee and the complainant know what was done."
+       }
+     }$es$::jsonb,
+     steps = $steps$[
+       {
+         "op": "require_permission",
+         "params": {
+           "from": "$fields.action",
+           "map": {
+             "assign":  "assign_case",
+             "close":   "close_case",
+             "comment": "add_case_comment"
+           },
+           "denied_message": "You don't have permission for that action on a case. You can still add a comment, or ask a committee member."
+         }
+       },
+       {
+         "op": "resolve_entity",
+         "params": {
+           "into": "case",
+           "table": "cases",
+           "name_from": "$fields.case_number",
+           "match_column": "case_number",
+           "normalize": "identifier",
+           "expose": {
+             "resolved_case_number": "case_number",
+             "case_title": "title"
+           }
+         }
+       },
+       {
+         "op": "resolve_entity",
+         "when": {"field": "$fields.action", "equals": "assign"},
+         "params": {
+           "into": "assignee",
+           "table": "users",
+           "name_from": "$fields.assignee_name",
+           "match_column": "name",
+           "expose": {"resolved_assignee_name": "name"}
+         }
+       },
+       {
+         "op": "db.insert_row",
+         "when": {"field": "$fields.comment_text", "exists": true},
+         "params": {
+           "table": "case_activity",
+           "values": {
+             "case_id": "$case.id",
+             "actor_user_id": "$user.user_id",
+             "activity_type": "comment",
+             "payload": {"text": "$fields.comment_text"}
+           }
+         }
+       },
+       {
+         "op": "db.update_row",
+         "when": {"field": "$fields.action", "equals": "assign"},
+         "params": {
+           "table": "cases",
+           "set": {"assigned_to_id": "$assignee.id"},
+           "where": {"id": "$case.id"}
+         }
+       },
+       {
+         "op": "db.insert_row",
+         "when": {"field": "$fields.action", "equals": "assign"},
+         "params": {
+           "table": "case_activity",
+           "values": {
+             "case_id": "$case.id",
+             "actor_user_id": "$user.user_id",
+             "activity_type": "assignment",
+             "payload": {"to_user_id": "$assignee.id", "to_name": "$assignee.name"}
+           }
+         }
+       },
+       {
+         "op": "db.update_row",
+         "when": {"field": "$fields.action", "equals": "close"},
+         "params": {
+           "table": "cases",
+           "set": {"status": "closed", "closed_at": "NOW()"},
+           "where": {"id": "$case.id"}
+         }
+       },
+       {
+         "op": "db.insert_row",
+         "when": {"field": "$fields.action", "equals": "close"},
+         "params": {
+           "table": "case_activity",
+           "values": {
+             "case_id": "$case.id",
+             "actor_user_id": "$user.user_id",
+             "activity_type": "status_change",
+             "payload": {"to": "closed", "closing_note": "$fields.comment_text"}
+           }
+         }
+       },
+       {
+         "op": "notify.user",
+         "when": {"field": "$fields.action", "equals": "assign"},
+         "params": {
+           "to": "$assignee.phone",
+           "message_template": "📋 Case Assigned To You\n\nCase #: {resolved_case_number}\n{case_title}\n\nReply to check status or add updates."
+         }
+       },
+       {
+         "op": "resolve_entity",
+         "when": {"and": [{"field": "$fields.action", "equals": "close"},
+                          {"field": "$case.assigned_to_id", "exists": true}]},
+         "params": {
+           "into": "prior_assignee",
+           "table": "users",
+           "name_from": "$case.assigned_to_id",
+           "match_column": "id"
+         }
+       },
+       {
+         "op": "notify.user",
+         "when": {"and": [{"field": "$fields.action", "equals": "close"},
+                          {"field": "$case.assigned_to_id", "exists": true}]},
+         "params": {
+           "to": "$prior_assignee.phone",
+           "message_template": "✅ Case {resolved_case_number} closed.\n\n{case_title}\n\nClosing note: {comment_text}"
+         }
+       },
+       {
+         "op": "resolve_entity",
+         "when": {"field": "$fields.action", "equals": "close"},
+         "params": {
+           "into": "complainant",
+           "table": "users",
+           "name_from": "$case.complainant_id",
+           "match_column": "id"
+         }
+       },
+       {
+         "op": "notify.user",
+         "when": {"field": "$fields.action", "equals": "close"},
+         "params": {
+           "to": "$complainant.phone",
+           "message_template": "✅ Your case {resolved_case_number} has been closed.\n\n{case_title}\n\nClosing note: {comment_text}"
+         }
+       }
+     ]$steps$::jsonb,
+     response_template = '✅ Case {resolved_case_number} updated.
+{case_title}',
+     business_glossary = '{"band karo": "close the case", "solved": "close the case",
+  "resolve": "close the case", "de do": "assign", "dedo": "assign",
+  "note": "comment", "remarks": "comment", "update": "comment",
+  "handle karo": "assign to self"}'::jsonb,
+     llm_system_prompt = $lsp$Single entry point for every change to an EXISTING case. Do not use this
+to create a new case — that is register_complaint.
+
+FIRST decide `action` from the user's words:
+  "assign X to Y", "give to", "de do", "hand over"     -> action = "assign"
+  "close", "band karo", "resolve", "fixed", "done"     -> action = "close"
+  "comment", "note", "update", "remarks", "add"        -> action = "comment"
+
+If the user's wording is genuinely ambiguous between two actions, ask which
+one they mean. Never guess between close and comment — they are not
+reversible in the same way.
+
+CLOSING ALWAYS NEEDS A NOTE. When action = "close" and comment_text is
+empty, you MUST ask before calling confirm_action, e.g.:
+  "Before I close CS-26-08-00017 — what was done to resolve it? I'll let
+   both the assignee and the original complainant know."
+Do not accept "closed"/"done"/"ok" as the note; ask again for a real
+description of the resolution.
+
+ASSIGNING never requires a comment — only ask for one if the user
+volunteers one.
+
+CASE NUMBERS: accept whatever the user types — "cs260817", "CS 26 08 17",
+"case 17" all resolve. Never tell a user a case does not exist because of
+formatting. Pass their text through unchanged as case_number.
+
+SELF-ASSIGNMENT: "assign to me"/"myself"/"mujhe" -> set assignee_name to the
+current user's own name; the engine resolves it deterministically.
+
+CONFIRMATION: details{} must contain ONLY user-facing values — action,
+case_number, comment_text, assignee_name. NEVER include ids, org_id,
+status internals, or any $-prefixed value.$lsp$
+ WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'
+   AND intent_key = 'assign_case';
+
+-- Retire the two absorbed workflows (deactivate, not delete — audit_log
+-- and case_activity keep historical references to these intent_keys).
+UPDATE workflows
+   SET is_active = false
+ WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'
+   AND intent_key IN ('close_case', 'add_case_comment');
+
+-- Repair any comment corrupted by the D3 resolver bug before it was fixed
+UPDATE case_activity
+   SET payload = jsonb_set(
+         payload, '{text}',
+         to_jsonb('[recovered — original text lost to a resolver bug before it was fixed]'::text)
+       )
+ WHERE payload->>'text' LIKE '$fields.%';
+
+-- Backfill a status_change row for any case closed with no history
+INSERT INTO case_activity (org_id, case_id, actor_user_id, activity_type, payload, created_at)
+SELECT c.org_id, c.id, c.assigned_to_id, 'status_change',
+       jsonb_build_object(
+         'to', 'closed',
+         'closing_note', '[backfilled] Closed before closing notes were mandatory.'
+       ),
+       c.closed_at
+  FROM cases c
+ WHERE c.org_id = '793eead0-31b2-4538-b9b3-1885f9e94604'
+   AND c.status = 'closed'
+   AND c.closed_at IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1 FROM case_activity a
+         WHERE a.case_id = c.id AND a.activity_type = 'status_change'
+   );
+
+COMMIT;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- POST-DEPLOY VERIFICATION — run these separately after the transaction above
+-- commits.
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Exactly 3 active workflows should remain:
+--   SELECT intent_key FROM workflows
+--    WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604' AND is_active
+--    ORDER BY intent_key;
+--   -> assign_case, register_complaint, view_all_cases
+--
+-- Zero rows expected: no unresolved placeholders anywhere
+--   SELECT id FROM case_activity WHERE payload::text LIKE '%$fields.%';
+--
+-- Zero rows expected: every closed case has a closing note on record
+--   SELECT c.case_number FROM cases c WHERE c.status='closed'
+--     AND NOT EXISTS (SELECT 1 FROM case_activity a WHERE a.case_id=c.id
+--                     AND a.activity_type='status_change');
+--
+-- Zero rows expected: at most one live draft per user
+--   SELECT org_id, user_id, count(*) FROM user_drafts
+--    WHERE stage NOT IN ('done','cancelled') GROUP BY 1,2 HAVING count(*) > 1;
+--
+-- Sanity: staff must still show assign_case (menu entry) but NOT close_case
+--   SELECT name, permissions FROM roles
+--    WHERE org_id = '793eead0-31b2-4538-b9b3-1885f9e94604' ORDER BY name;

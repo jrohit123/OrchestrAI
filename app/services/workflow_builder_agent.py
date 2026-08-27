@@ -9,14 +9,12 @@ through the browser.
 import json
 import os
 import base64
-from openai import AsyncOpenAI
 from app.db import fetch_all, fetch_one, execute
 from app.services.workflow_compiler import compile_workflow_spec
 from app.services.workflow_publisher import publish_draft
+from app.services.llm_router import chat_completion as _llm_chat
 
 from app.config import required
-
-_client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 _SYSTEM_PROMPT = """You are helping a non-technical business owner describe a business process
 so it becomes a working WhatsApp workflow. They think in plain terms — not schemas, not JSON, not code.
@@ -499,13 +497,11 @@ async def run_builder_agent(
     has_pdf_preview = False
 
     for _ in range(max_iterations):
-        response = await _client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=8192,
+        response = await _llm_chat(
             messages=messages,
             tools=_TOOLS,
             tool_choice="auto",
-            parallel_tool_calls=False,
+            max_tokens=8192,
         )
         msg = response.choices[0].message
 
