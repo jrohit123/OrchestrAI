@@ -1737,8 +1737,14 @@ Return ONLY the WhatsApp message text, nothing else."""
         overflow = conversation_history[:-limit]
         # Fold dropped turns into a rolling summary (one cheap LLM call)
         summary = await _summarize_turns(overflow, existing=draft_summary)
-        # Update draft summary if a draft is active
-        if pending_action:
+        # Update draft summary if a draft is active. Guard on intent_key, not
+        # just pending_action truthiness — a stale/corrupted session can carry
+        # a pending_action dict with a stage but no real intent_key, and
+        # user_drafts.intent_key is NOT NULL, so persisting that crashes the
+        # whole turn (observed in production: a leftover pending_action from
+        # hours earlier with no intent_key kept violating this every time
+        # history crossed the context limit).
+        if pending_action and pending_action.get("intent_key"):
             from app.services.draft_store import upsert_draft
             # Parse fields if it's a JSON string from DB
             fields = pending_action.get("fields", {})
@@ -1914,31 +1920,48 @@ Return ONLY the WhatsApp message text, nothing else."""
                 messages.append({"role": "user", "content": correction})
                 continue  # retry this iteration
 
-            # Intercept: LLM asked the user to confirm/proceed in plain text instead of
-            # calling confirm_action tool. This happens when all info is given in one
-            # message and the model skips tool-calling. Inject a corrective message
-            # and retry so the draft gets properly saved to Redis.
+            # Intercept: LLM narrated/asked about proceeding in plain text instead of
+            # actually calling update_draft/confirm_action. This happens when all info
+            # is given in one message and the model skips tool-calling — sometimes as a
+            # question ("Shall I proceed?"), sometimes as a bare declarative ("I'll
+            # register this complaint. Please hold on."), sometimes as a hand-rolled
+            # confirm block ("Reply yes to confirm..." with no trailing "?" at all).
             #
-            # Detection is state-based, not phrase-based: different providers word this
-            # differently (Gemini tends to use a "⚠️ Confirm" block; gpt-4o-mini tends to
-            # write prose like "Shall I proceed?"/"Just to confirm... shall I proceed?").
-            # Matching on wording alone is a losing game — a new provider or model version
-            # phrases it differently again. What's actually reliable is the STATE: there is
-            # an active draft still in collecting/awaiting_confirmation, no tool was called,
-            # and the reply is asking permission to proceed rather than asking the user for
-            # missing/ambiguous information (a real clarifying question, which is legitimate
-            # plain text and must NOT be intercepted).
+            # Wording keeps changing shape per-provider and per-response, so guessing at
+            # phrasing is a losing game. What's actually reliable is SCHEMA STATE: if the
+            # active draft already has every field its workflow's entity_schema requires,
+            # but is still sitting in "collecting"/"awaiting_confirmation" with no tool
+            # call this completion, the model should have called confirm_action — full
+            # stop, regardless of how the reply is worded. A genuine clarifying question
+            # (asking for a MISSING or ambiguous field) naturally won't trigger this,
+            # because the draft won't look complete yet.
             active_draft = session_patch.get("pending_action") or pending_action
+            active_draft_confirmable = active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation")
+            draft_looks_complete = False
+            if active_draft_confirmable and active_draft.get("intent_key"):
+                try:
+                    from app.services.qa_verifier import _validate_schema
+                    wf_row = await fetch_one(
+                        "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
+                        active_draft["intent_key"], user["org_id"], source_key=user["source_key"]
+                    )
+                    if wf_row:
+                        schema = _parse_jsonb(wf_row.get("entity_schema"), {}) or {}
+                        missing, invalid = _validate_schema(schema, active_draft.get("fields", {}))
+                        draft_looks_complete = not missing and not invalid
+                except Exception as schema_check_err:
+                    logger.warning(f"draft-completeness check failed (non-fatal): {schema_check_err}")
+            # Wording-based fallback, kept for cases the schema check can't cover
+            # (e.g. a workflow with an unusually loose entity_schema).
             is_legacy_confirm_block = "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower())
             is_asking_to_proceed = bool(re.search(
                 r"(shall i|should i|do you want me to|can i go ahead|go ahead and|"
                 r"i'll proceed|i will proceed|proceed with this|confirm (?:that|this)|"
-                r"just to confirm).{0,80}\?",
+                r"just to confirm|reply .{0,10}yes.{0,10}(to confirm|to save|to proceed))",
                 content, re.IGNORECASE
             ))
-            active_draft_confirmable = active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation")
-            if active_draft_confirmable and (is_legacy_confirm_block or is_asking_to_proceed):
-                logger.info(f"Intercepted plain-text confirm block — forcing tool retry")
+            if active_draft_confirmable and (draft_looks_complete or is_legacy_confirm_block or is_asking_to_proceed):
+                logger.info(f"Intercepted plain-text confirm/narration (draft_looks_complete={draft_looks_complete}) — forcing tool retry")
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",

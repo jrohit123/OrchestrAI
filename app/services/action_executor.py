@@ -8,6 +8,9 @@ Adding a new workflow requires zero changes to this file.
 from app.db import fetch_one
 from app.services.step_interpreter import run_workflow_steps
 from app.services.draft_store import close_draft
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 
 async def execute_pending_action(
@@ -111,7 +114,14 @@ async def execute_pending_action(
                        f"Which one did you mean? Reply with the full number.",
         }
 
-    # status == "error" - close draft and show friendly message
+    # status == "error" - close draft and show friendly message.
+    # The real cause lives in result["message"] (set by step_interpreter's
+    # StepError handling) but was previously discarded here with nothing
+    # logged anywhere — making failures like this unreproducible after the
+    # fact. Log it before replacing it with the user-facing generic text.
+    logger.error(
+        f"Workflow '{intent_key}' execution failed: {result.get('message')}"
+    )
     await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled", source_key=user["source_key"])
     return {
         "success": False,
