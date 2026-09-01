@@ -489,7 +489,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
             VALUES ($1, $2, $3, $4, $5::jsonb, 'pending')
             RETURNING id
         """, org_id, user["user_id"], approver_role_name,
-            ctx["workflow"]["intent_key"], json.dumps(approval_context), source_key=ctx["source_key"])
+            ctx["workflow"]["intent_key"], json.dumps(approval_context, default=str), source_key=ctx["source_key"])
         approval_id = approval_row[0]["id"]
 
         await _send_buttons(
@@ -557,7 +557,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         # Serialize lists/dicts same as Postgres path, for consistency
         for k, v in list(values.items()):
             if isinstance(v, (list, dict)):
-                values[k] = json.dumps(v)
+                values[k] = json.dumps(v, default=str)
 
         await sheet_insert_row(tab, values)
         ctx.setdefault("inserted", {})[tab] = values
@@ -619,7 +619,7 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         ctx.setdefault("generated", {})[seq["field"]] = doc_number
 
     cols        = list(values.keys())
-    sql_values  = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
+    sql_values  = [json.dumps(v, default=str) if isinstance(v, (list, dict)) else v for v in values.values()]
     placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
     sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING *"
 
@@ -754,7 +754,7 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
         f"{c} = ${i+1+len(set_cols)}" for i, c in enumerate(where_cols)
     )
     sql_values = (
-        [json.dumps(v) if isinstance(v, (list, dict)) else v for v in set_vals.values()]
+        [json.dumps(v, default=str) if isinstance(v, (list, dict)) else v for v in set_vals.values()]
         + list(where_vals.values())
     )
     sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause} RETURNING *"
@@ -867,7 +867,7 @@ async def _op_upsert_row(params: dict, ctx: dict) -> dict:
         f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict_cols
     )
     sql_values = [
-        json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()
+        json.dumps(v, default=str) if isinstance(v, (list, dict)) else v for v in values.values()
     ]
     sql = (
         f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
