@@ -1806,6 +1806,36 @@ Return ONLY the WhatsApp message text, nothing else."""
 
     messages.append({"role": "user", "content": message})
 
+    # Deterministically resolve "bare number reply to a numbered list" instead
+    # of leaving it to the model's free reasoning. Observed failure mode: the
+    # model presents "1. Assign  2. Comment  3. Close" as plain text (not even
+    # via the clarify tool, which itself doesn't persist option state either),
+    # the user replies "1", and the model re-asks the SAME question instead of
+    # resolving it — looping indefinitely because nothing tells it explicitly
+    # what "1" maps to. Parsing the numbered list ourselves and stating the
+    # resolved option outright removes the guesswork entirely, regardless of
+    # which provider is answering.
+    if re.fullmatch(r"\s*\d+\s*", message or ""):
+        chosen_n = int(message.strip())
+        last_assistant = next(
+            (m for m in reversed(conversation_history or []) if m.get("role") == "assistant"),
+            None
+        )
+        if last_assistant:
+            list_lines = re.findall(
+                rf"(?m)^\s*{chosen_n}\.\s*(.+)$", last_assistant.get("content", "")
+            )
+            if list_lines:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM NOTE: The user's reply \"{message.strip()}\" selects option {chosen_n} "
+                        f"from your own numbered list: \"{list_lines[0].strip()}\". Resolve this to the "
+                        f"correct field value now and call update_draft immediately with it — do not ask "
+                        f"the same question again."
+                    )
+                })
+
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
         

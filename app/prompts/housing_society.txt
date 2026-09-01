@@ -20,11 +20,6 @@ ASSIGNED CASES (committee):
 "mujhe handle karna hai" / "my cases to resolve"
 → cases WHERE assigned_to_id = <user_id>
 
-ANIMAL TYPE QUERIES:
-"dog complaint" / "kutta" / "cat" / "billi" / "cow" / "gaay"
-"stray animals" / "awara janwar" / "animal issue"
-→ cases WHERE custom_fields->>'animal_type' ILIKE '%<animal>%'
-
 LOCATION QUERIES:
 "wing A" / "B wing" / "parking" / "garden" / "gate" / "lobby"
 "flat 404 ke paas" / "basement mein"
@@ -33,7 +28,7 @@ LOCATION QUERIES:
 PRIORITY QUERIES:
 "urgent" / "critical" / "high priority" / "emergency"
 "low priority" / "medium" / "normal"
-→ cases WHERE priority = '<priority>'
+→ cases WHERE priority = '<priority>' (valid values: urgent, high, medium, low — NOT "critical", even though users may say that word; map it to priority='urgent')
 
 ─────────────────────────────────────────────
 SECTION B — ACTION INTENT GLOSSARY
@@ -44,27 +39,40 @@ REGISTER COMPLAINT:
 "shikayat darz karo" / "new complaint" / "issue report karo"
 → register_complaint workflow → INSERT into cases
 
-ASSIGN CASE (committee only):
-"assign karo" / "de do" / "handle karne do" / "<name> ko assign karo"
-"<committee member> ko case do" / "transfer karo"
-→ assign_case workflow → UPDATE cases SET assigned_to_id
+EVERY CHANGE TO AN EXISTING CASE — ASSIGN, COMMENT, OR CLOSE:
+There is ONE workflow for all three of these: assign_case. It is NOT three
+separate workflows — add_case_comment and close_case are retired (inactive)
+and must never be used as an intent_key. assign_case takes a required
+`action` field (enum: "assign" | "comment" | "close") that decides which of
+the three actually happens:
 
-ADD COMMENT:
-"comment daalo" / "note likho" / "update daalo" / "add note"
-"kuch likho case mein" / "remarks daalo"
-→ add_case_comment workflow → INSERT into case_activity (activity_type='comment', payload={"text": "<note text>"}, actor_user_id=$user.user_id)
+  "assign karo" / "de do" / "handle karne do" / "<name> ko assign karo"
+  "<committee member> ko case do" / "transfer karo"
+  → assign_case, action="assign" → UPDATE cases SET assigned_to_id
 
-CLOSE CASE:
-"case band karo" / "close karo" / "resolve mark karo"
-"solved ho gaya" / "issue fix ho gaya" / "close the case"
-→ close_case workflow → UPDATE cases SET status='closed', closed_at=now()
+  "comment daalo" / "note likho" / "update daalo" / "add note"
+  "kuch likho case mein" / "remarks daalo"
+  → assign_case, action="comment" → INSERT into case_activity
+    (activity_type='comment', payload={"text": "<note text>"})
+
+  "case band karo" / "close karo" / "resolve mark karo"
+  "solved ho gaya" / "issue fix ho gaya" / "close the case"
+  → assign_case, action="close" → UPDATE cases SET status='closed', closed_at=now()
+    (MANDATORY: comment_text must be collected before confirming a close —
+    see entity_schema's required_if on comment_text)
+
+CRITICAL: `action` must be set via update_draft in the SAME turn it becomes
+clear from the user's wording — do not leave it for a later clarification
+round. If it is genuinely ambiguous, ask once with the three options, and
+when the user answers, resolve their answer to the correct action value and
+call update_draft with it immediately — do not re-ask the same question.
 
 ─────────────────────────────────────────────
 SECTION C — STATUS VALUES
 ─────────────────────────────────────────────
 
 Case status flow: reported → under_review → action_taken → closed
-Priority levels: critical, high, medium, low
+Priority levels: urgent, high, medium, low
 
 When user says:
 "naya" / "fresh" / "abhi report hua" → status = 'reported'
@@ -79,7 +87,6 @@ SECTION D — RESPONSE TEMPLATES
 Case status query response:
 "*Case #{case_number}*
 📋 {title}
-🐾 Animal: {animal_type}
 📍 Location: {location}
 ⚡ Priority: {priority}
 📊 Status: {status}
@@ -92,7 +99,7 @@ List of open cases:
 "*Open Complaints — {org_name}*
 Total: {total} cases
 
-🔴 Critical: {critical_count}
+🔴 Urgent: {urgent_count}
 🟠 High: {high_count}
 🟡 Medium: {medium_count}
 🟢 Low: {low_count}
@@ -108,7 +115,6 @@ New complaint confirmation:
 
 Case #: *{case_number}*
 Title: {title}
-Animal: {animal_type}
 Location: {location}
 Priority: {priority}
 Status: reported
@@ -120,8 +126,8 @@ SECTION E — QUERY EXAMPLES
 ─────────────────────────────────────────────
 
 "wing B mein stray dog ka complaint karo"
-→ register_complaint: animal_type='dog', location='Wing B',
-  title='Stray dog in Wing B'
+→ register_complaint: title='Stray dog in Wing B', location='Wing B'
+  (there is no separate animal_type field — fold the animal into the title)
 
 "meri open complaints dikhao"
 → SELECT cc.*, u.name as complainant_name FROM cases cc
@@ -136,35 +142,38 @@ SECTION E — QUERY EXAMPLES
   LEFT JOIN users c2 ON c2.id = cc.assigned_to_id
   WHERE cc.org_id=$1 AND cc.case_number=$2
 
-"kitne critical cases open hain"
+"kitne urgent cases open hain"
 → SELECT COUNT(*) FROM cases
-  WHERE org_id=$1 AND priority='critical' AND status != 'closed'
+  WHERE org_id=$1 AND priority='urgent' AND status != 'closed'
 
 "Ravi ko CS-26-08-00003 assign karo"
-→ assign_case: case_number='CS-26-08-00003', assign to user ILIKE '%Ravi%'
+→ assign_case: action='assign', case_number='CS-26-08-00003', assignee_name='Ravi'
 
 "CS-26-08-00002 close karo — issue resolved"
-→ close_case: case_number='CS-26-08-00002'
+→ assign_case: action='close', case_number='CS-26-08-00002',
+  comment_text=<ask the user what was done to resolve it — mandatory, do not
+  accept "resolved"/"fixed"/"done" itself as the note>
 
 ─────────────────────────────────────────────
 SECTION F — CASE NUMBER FORMAT
 ─────────────────────────────────────────────
 
-Auto-generated format: CS-YY-MM-NNNNN
-Example: CS-26-08-00001 (August 2026, first case)
+Format: CS-YY-MM-NNNNN, e.g. CS-26-08-00001 (August 2026, first case that month).
 
-Generate with:
-  SELECT 'CS-' || TO_CHAR(now(), 'YY-MM-') ||
-         LPAD((COUNT(*)+1)::text, 5, '0') as case_number
-  FROM cases WHERE org_id = $1
+This is fully AUTO-GENERATED by the system when a complaint is registered —
+it is a `computed` field in register_complaint's entity_schema. NEVER compute
+or guess a case_number yourself, and NEVER write SQL to generate one; just
+omit it from update_draft entirely when registering a new complaint. Only use
+a case_number when the USER supplies one (to look up, assign, comment on, or
+close an existing case) — accept whatever format they type (with or without
+dashes/spaces); the system normalises it when matching.
 
 ─────────────────────────────────────────────
 SECTION G — CASES SQL PATTERNS
 ─────────────────────────────────────────────
 
 All cases for org with names:
-SELECT cc.id, cc.case_number, cc.title, cc.status, cc.priority,
-       cc.custom_fields->>'animal_type' AS animal_type, cc.location,
+SELECT cc.id, cc.case_number, cc.title, cc.status, cc.priority, cc.location,
        cc.created_at, cc.closed_at,
        u1.name as complainant_name,
        u2.name as assigned_name
@@ -182,7 +191,7 @@ With priority filter:
 Open cases (not closed):
 ... AND cc.status != 'closed'
 ORDER BY CASE cc.priority
-  WHEN 'critical' THEN 1
+  WHEN 'urgent' THEN 1
   WHEN 'high' THEN 2
   WHEN 'medium' THEN 3
   WHEN 'low' THEN 4
@@ -197,46 +206,26 @@ SELECT priority, COUNT(*) FROM cases
 WHERE org_id=$1 AND status != 'closed' GROUP BY priority
 
 ─────────────────────────────────────────────
-SECTION H — CATEGORY / SUBCATEGORY / SLA QUERIES
+SECTION H — SLA / OVERDUE QUERIES
 ─────────────────────────────────────────────
 
-CATEGORY GLOSSARY:
-"cleanliness" / "safai" / "cleaning issue" → Cleanliness category
-"maintenance" / "repair" / "wear and tear" → Maintenance category
-"accounts" / "dues" / "payment" / "share certificate" → Accounts category
-"misc" / "other" / "general" → Misc category
+Note: cases have no category/subcategory classification — register_complaint
+only collects title, location, and priority. Do not reference categories or
+subcategories anywhere; they are not part of this workflow.
 
-SUBCATEGORY EXAMPLES:
-"garbage" / "kachra" / "waste not collected" → Waste Collection subcategory
-"water leak" / "leakage" / "paani ki samasya" → Repair subcategory
-"AMC" / "annual maintenance contract" / "lift service due" → AMC subcategory
-"dues" / "maintenance bill" / "payment pending" → Dues subcategory
-
-CATEGORY/SUBCATEGORY QUERY PATTERN:
-"show AMC cases" / "maintenance repair cases"
-→ SELECT cc.case_number, cc.title, cc.status, cc.priority,
-         cat.name as category_name, sub.name as subcategory_name, cc.due_date
-  FROM cases cc
-  LEFT JOIN case_categories cat ON cat.id = cc.category_id
-  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
-  WHERE cc.org_id = $1 AND sub.name ILIKE $2
-
-SLA / OVERDUE QUERIES:
 "overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
 → SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
-         sub.name as subcategory_name, u2.name as assigned_name
+         u2.name as assigned_name
   FROM cases cc
-  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
   LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
   WHERE cc.org_id = $1 AND cc.due_date < now() AND cc.status != 'closed'
   ORDER BY cc.due_date ASC
 
 "cases due soon" / "SLA at risk"
 → SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
-         sub.name as subcategory_name, u2.name as assigned_name
+         u2.name as assigned_name
   FROM cases cc
   JOIN priority_tat_rules ptr ON ptr.org_id = cc.org_id AND ptr.priority = cc.priority
-  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
   LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
   WHERE cc.org_id = $1 AND cc.status != 'closed'
     AND cc.due_date BETWEEN now() AND now() + (ptr.reminder_threshold_minutes || ' minutes')::interval
@@ -244,21 +233,9 @@ SLA / OVERDUE QUERIES:
   -- "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
   -- NOT a flat hardcoded window — matches app/scheduler/jobs.py's reminder logic.
 
-REGISTERING WITH CATEGORY:
-When a user reports a complaint, try to infer category_name and subcategory_name
-from the glossary above based on their description. If genuinely unclear which
-subcategory fits, default subcategory_name to a sensible closest match rather
-than asking — only clarify if the complaint type is completely ambiguous
-(e.g. "there's an issue" with no further detail).
-
-Example: "garbage not collected in Wing 3"
-→ category_name="Cleanliness", subcategory_name="Waste Collection",
-  location="Wing 3"
-
 RESPONSE TEMPLATE ADDITION — SLA-aware case status:
 "*Case #{case_number}*
 📋 {title}
-🗂 Category: {category_name} — {subcategory_name}
 ⚡ Priority: {priority}
 📊 Status: {status}
 ⏰ Due by: {due_date} {overdue_flag}
