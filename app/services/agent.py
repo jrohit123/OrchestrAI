@@ -1951,8 +1951,16 @@ Return ONLY the WhatsApp message text, nothing else."""
                         draft_looks_complete = not missing and not invalid
                 except Exception as schema_check_err:
                     logger.warning(f"draft-completeness check failed (non-fatal): {schema_check_err}")
-            # Wording-based fallback, kept for cases the schema check can't cover
-            # (e.g. a workflow with an unusually loose entity_schema).
+            # Wording/shape-based fallback — deliberately NOT gated on an active
+            # draft already existing, because the very FIRST message in a
+            # conversation has no draft yet (update_draft hasn't been called
+            # once), so the schema-completeness check above can never fire for
+            # it. That's exactly the case that was slipping through: the model's
+            # first-ever reply to a complete request, hand-typing a fake
+            # "Let's confirm the details: - Field: value ... Reply yes to
+            # confirm" block instead of calling the tool. This is recognisable
+            # by SHAPE (a bulleted field list ending in an invitation to reply
+            # yes/confirm) regardless of provider-specific wording.
             is_legacy_confirm_block = "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower())
             is_asking_to_proceed = bool(re.search(
                 r"(shall i|should i|do you want me to|can i go ahead|go ahead and|"
@@ -1960,8 +1968,18 @@ Return ONLY the WhatsApp message text, nothing else."""
                 r"just to confirm|reply .{0,10}yes.{0,10}(to confirm|to save|to proceed))",
                 content, re.IGNORECASE
             ))
-            if active_draft_confirmable and (draft_looks_complete or is_legacy_confirm_block or is_asking_to_proceed):
-                logger.info(f"Intercepted plain-text confirm/narration (draft_looks_complete={draft_looks_complete}) — forcing tool retry")
+            bullet_field_lines = re.findall(r"(?m)^\s*[-•]\s*\**[\w \(\)]+\**\s*:", content)
+            invites_confirmation = bool(re.search(
+                r"reply\s+\**yes\**|let'?s confirm the details|confirm the details|"
+                r"let me know if you (?:want to|'?d like to) (?:make any )?change",
+                content, re.IGNORECASE
+            ))
+            looks_like_manual_confirm_block = len(bullet_field_lines) >= 2 and invites_confirmation
+            if draft_looks_complete or is_legacy_confirm_block or is_asking_to_proceed or looks_like_manual_confirm_block:
+                logger.info(
+                    f"Intercepted plain-text confirm/narration (draft_looks_complete={draft_looks_complete}, "
+                    f"manual_confirm_block={looks_like_manual_confirm_block}) — forcing tool retry"
+                )
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
@@ -2262,6 +2280,8 @@ Return ONLY the WhatsApp message text, nothing else."""
                         draft.get("intent_key"), user["org_id"], source_key=user["source_key"]
                     )
                     if not workflow_row:
+                        session_patch["_tool_succeeded_this_turn"] = False
+                        logger.error(f"confirm_action: workflow '{draft.get('intent_key')}' not found for org {user['org_id']}")
                         tool_results[-1]["content"] = json.dumps({
                             "error": f"Workflow '{draft.get('intent_key')}' not found. Cannot confirm."
                         })
@@ -2281,6 +2301,8 @@ Return ONLY the WhatsApp message text, nothing else."""
                         # items[].weight, etc.) — skip calc_rules entirely; unit_price isn't resolved yet.
                         missing, invalid = _validate_schema(entity_schema_for_summary, draft.get("fields", {}))
                         if missing or invalid:
+                            session_patch["_tool_succeeded_this_turn"] = False
+                            logger.warning(f"confirm_action: schema validation failed — missing={missing} invalid={invalid}")
                             tool_results[-1]["content"] = json.dumps({
                                 "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
                             })
@@ -2292,6 +2314,11 @@ Return ONLY the WhatsApp message text, nothing else."""
                                 dict(workflow_row), draft.get("fields", {}), user["org_id"], user["source_key"]
                             )
                         except VerificationError as e:
+                            session_patch["_tool_succeeded_this_turn"] = False
+                            logger.warning(
+                                f"confirm_action: verify_draft failed — missing={e.missing_fields} invalid={e.invalid_fields} "
+                                f"fields={draft.get('fields', {})}"
+                            )
                             missing_str = ", ".join(e.missing_fields + e.invalid_fields)
                             tool_results[-1]["content"] = json.dumps({
                                 "error": (

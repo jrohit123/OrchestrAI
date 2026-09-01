@@ -328,6 +328,32 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
                         f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} ~ ('0*' || $2 || '$') LIMIT 5",
                         ctx["org_id"], digits, source_key=ctx["source_key"]
                     )
+            # Tier 4: prefix + integer-value match on the trailing digit run.
+            # Tiers 1-3 all fail when the typed sequence number has FEWER
+            # digits than the stored zero-padding — e.g. typed "CS-26-09-1"
+            # or "cs 26 09 0001" against a stored "CS-26-09-00001". A regex
+            # suffix match can only absorb EXTRA leading zeros on the typed
+            # side, not the reverse, and here the date-token digits (2609)
+            # are glued to the sequence digits so no fixed-width padding
+            # rule can tell them apart. Comparing the trailing digit run by
+            # integer VALUE (1 == 01 == 0001 == 00001) instead of by string
+            # pattern sidesteps padding entirely — this is a last resort,
+            # bounded to a small candidate set, only reached when nothing
+            # else matched.
+            if not raw_rows:
+                m = re.match(r'^(.*?)(\d+)$', needle)
+                if m:
+                    needle_prefix, needle_digits = m.group(1), m.group(2)
+                    candidates = await fetch_all(
+                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE $2 LIMIT 200",
+                        ctx["org_id"], f"{needle_prefix}%", source_key=ctx["source_key"]
+                    )
+                    matched = []
+                    for row in candidates:
+                        cm = re.match(r'^(.*?)(\d+)$', row[norm_col] or "")
+                        if cm and cm.group(1) == needle_prefix and int(cm.group(2)) == int(needle_digits):
+                            matched.append(row)
+                    raw_rows = matched[:5]
             rows = [dict(r) for r in raw_rows]
         else:
             # Escape LIKE metacharacters to prevent injection (AP-10)
