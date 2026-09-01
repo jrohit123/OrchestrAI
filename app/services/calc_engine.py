@@ -95,13 +95,20 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     if not item_rules:
         return dict(item)
     # Ensure qty defaults to 1 if not present
-    # Ensure making_charge_pct defaults to org's default if not present
+    # making_charge_pct falls back to the org's default_making_charge_pct if the
+    # item doesn't specify its own — but if neither is set, that's a data gap,
+    # not something safe to guess a number for (it changes the invoice amount).
     # making_charges can be flat (direct value) or percentage-based
     # Keep making_charges_flat in context even if None (for calc rule fallback check)
+    making_charge_pct = item.get("making_charge_pct", context.get("default_making_charge_pct"))
+    if making_charge_pct is None and item.get("making_charges_flat") is None:
+        raise CalcError(
+            "making_charge_pct missing on item and no default_making_charge_pct set for org"
+        )
     item_with_defaults = {
         **item,
         "qty": item.get("qty", 1),
-        "making_charge_pct": item.get("making_charge_pct", context.get("default_making_charge_pct", 12)),
+        "making_charge_pct": making_charge_pct,
         "making_charges_flat": item.get("making_charges_flat"),
     }
     # Filter out None values EXCEPT for making_charges_flat (needed for fallback logic)

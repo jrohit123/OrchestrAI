@@ -45,7 +45,7 @@ If query_database returns an ERROR:
 4. NEVER show raw SQL errors or query text to the user
 
 SQL SAFETY:
-- Only SELECT statements. LIMIT 50 max.
+- Only SELECT statements. LIMIT 100 max.
 - NEVER run DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, or any DDL.
 - Never expose UUIDs, org_id, or internal IDs.
 

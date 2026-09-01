@@ -382,7 +382,7 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
         return ctx
 
     user = ctx["user"]
-    sent = await generate_and_send_otp(
+    result = await generate_and_send_otp(
         user_id=user["user_id"],
         user_email=user["email"],
         user_name=user["user_name"],
@@ -391,9 +391,13 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
         action_context={"type": "action_otp", "intent_key": ctx["workflow"]["intent_key"]},
         source_key=ctx["source_key"]
     )
-    if not sent:
+    if not result["sent"]:
+        if result["reason"] == "cooldown":
+            raise StepError(f"Please wait {result['wait_seconds']}s before requesting another code")
         raise StepError("Could not send OTP email")
 
+    ctx["_otp_expiry_minutes"] = result["expiry_minutes"]
+    ctx["_otp_length"] = result["otp_length"]
     ctx["_halt"] = "awaiting_otp"
     return ctx
 
@@ -1036,7 +1040,7 @@ async def run_workflow_steps(
                 return {
                     "status":      ctx["_halt"],
                     "resume_step": i + 1,
-                    "message":     _gate_message(ctx["_halt"], user),
+                    "message":     _gate_message(ctx["_halt"], user, ctx),
                 }
 
     except VerificationError as e:
@@ -1095,13 +1099,15 @@ async def run_workflow_steps(
     }
 
 
-def _gate_message(stage: str, user: dict) -> str:
+def _gate_message(stage: str, user: dict, ctx: dict) -> str:
     if stage == "awaiting_otp":
+        otp_length = ctx.get("_otp_length", 4)
+        expiry_minutes = ctx.get("_otp_expiry_minutes", 3)
         return (
             f"🔐 *Security Verification Required*\n\n"
-            f"A 4-digit code has been sent to *{user.get('email', 'your email')}*\n"
+            f"A {otp_length}-digit code has been sent to *{user.get('email', 'your email')}*\n"
             f"Reply with the code to continue.\n\n"
-            f"⏱ Code expires in 3 minutes."
+            f"⏱ Code expires in {expiry_minutes} minutes."
         )
     return (
         "This action requires MD approval.\n"

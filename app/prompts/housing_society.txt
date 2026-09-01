@@ -232,8 +232,17 @@ SLA / OVERDUE QUERIES:
   ORDER BY cc.due_date ASC
 
 "cases due soon" / "SLA at risk"
-→ same as above but WHERE cc.due_date BETWEEN now() AND now() + interval '6 hours'
-  AND cc.status != 'closed'
+→ SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
+         sub.name as subcategory_name, u2.name as assigned_name
+  FROM cases cc
+  JOIN priority_tat_rules ptr ON ptr.org_id = cc.org_id AND ptr.priority = cc.priority
+  LEFT JOIN case_subcategories sub ON sub.id = cc.subcategory_id
+  LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
+  WHERE cc.org_id = $1 AND cc.status != 'closed'
+    AND cc.due_date BETWEEN now() AND now() + (ptr.reminder_threshold_minutes || ' minutes')::interval
+  ORDER BY cc.due_date ASC
+  -- "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
+  -- NOT a flat hardcoded window — matches app/scheduler/jobs.py's reminder logic.
 
 REGISTERING WITH CATEGORY:
 When a user reports a complaint, try to infer category_name and subcategory_name

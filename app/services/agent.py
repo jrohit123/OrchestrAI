@@ -1042,8 +1042,10 @@ async def _execute_tool(
             elif doc_type == "invoice":
                 # Synthetic fallback: seeded/legacy invoices may have empty items array.
                 # Build one line item treating `amount` as the GST-inclusive total.
+                if extra_context.get("gst_rate") is None:
+                    return "ERROR: gst_rate missing from context — cannot compute invoice without the org's tax rate"
                 raw_amount = float(extra_context.get("amount", 0))
-                gst_rate   = float(extra_context.get("gst_rate", 3.0))
+                gst_rate   = float(extra_context["gst_rate"])
                 subtotal   = round(raw_amount / (1 + gst_rate / 100), 2)
                 gst_val    = round(raw_amount - subtotal, 2)
                 rows = [{

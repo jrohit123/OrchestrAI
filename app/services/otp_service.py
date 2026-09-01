@@ -15,12 +15,27 @@ load_dotenv()
 BREVO_API_KEY = required("BREVO_API_KEY")
 SENDER_EMAIL  = required("SENDER_EMAIL")
 SENDER_NAME   = required("SENDER_NAME")
-OTP_EXPIRY_MINUTES = 3
-MAX_ATTEMPTS = 3
 
 
 def _hash(otp: str) -> str:
     return hashlib.sha256(otp.encode()).hexdigest()
+
+
+async def _get_otp_config(org_id: str, source_key: str) -> dict:
+    """Per-org OTP behaviour. Columns are NOT NULL with defaults, so this
+    always returns real values once migration 009 has run."""
+    row = await fetch_one(
+        """SELECT otp_expiry_minutes, otp_max_attempts, otp_length,
+                  otp_resend_cooldown_seconds
+           FROM orgs WHERE id = $1""",
+        org_id, source_key=source_key
+    )
+    return {
+        "expiry_minutes": row["otp_expiry_minutes"] if row else 3,
+        "max_attempts": row["otp_max_attempts"] if row else 3,
+        "otp_length": row["otp_length"] if row else 4,
+        "resend_cooldown_seconds": row["otp_resend_cooldown_seconds"] if row else 60,
+    }
 
 
 async def generate_and_send_otp(
@@ -31,14 +46,35 @@ async def generate_and_send_otp(
     org_id: str,
     action_context: dict,
     source_key: str
-) -> bool:
+) -> dict:
     """
     Generates OTP, saves hash to DB, sends email via Brevo.
-    Returns True if email sent successfully.
+    Returns {"sent": bool, "reason": str | None, "expiry_minutes": int,
+             "otp_length": int, "wait_seconds": int | None}.
+    "reason": "cooldown" if a resend was requested too soon after the last one.
     """
-    otp = str(random.randint(1000, 9999))
+    config = await _get_otp_config(org_id, source_key)
+
+    last = await fetch_one(
+        "SELECT created_at FROM otp_tokens WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+        user_id, source_key=source_key
+    )
+    if last:
+        elapsed = (datetime.now(timezone.utc) - last["created_at"]).total_seconds()
+        remaining = config["resend_cooldown_seconds"] - elapsed
+        if remaining > 0:
+            return {
+                "sent": False,
+                "reason": "cooldown",
+                "wait_seconds": int(remaining) + 1,
+                "expiry_minutes": config["expiry_minutes"],
+                "otp_length": config["otp_length"],
+            }
+
+    otp_length = config["otp_length"]
+    otp = str(random.randint(10 ** (otp_length - 1), 10 ** otp_length - 1))
     otp_hash = _hash(otp)
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=config["expiry_minutes"])
 
     # Invalidate any previous unused OTPs for this user
     await execute(
@@ -59,11 +95,18 @@ async def generate_and_send_otp(
         user_name=user_name,
         otp=otp,
         action_desc=action_context.get("description", "your request"),
-        org_name=org_name
+        org_name=org_name,
+        expiry_minutes=config["expiry_minutes"],
     )
 
     # Raw OTP no longer referenced after this point
-    return success
+    return {
+        "sent": success,
+        "reason": None if success else "send_failed",
+        "expiry_minutes": config["expiry_minutes"],
+        "otp_length": otp_length,
+        "wait_seconds": None,
+    }
 
 
 async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
@@ -74,7 +117,7 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     now = datetime.now(timezone.utc)
 
     row = await fetch_one("""
-        SELECT id, action_context, expires_at, attempts
+        SELECT id, org_id, action_context, expires_at, attempts
         FROM otp_tokens
         WHERE user_id = $1
           AND used = false
@@ -85,8 +128,10 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     if not row:
         return {"valid": False, "reason": "No active OTP found. Reply 'retry' to get a new code."}
 
+    max_attempts = (await _get_otp_config(str(row["org_id"]), source_key))["max_attempts"]
+
     # Check attempts
-    if row["attempts"] >= MAX_ATTEMPTS:
+    if row["attempts"] >= max_attempts:
         await execute("UPDATE otp_tokens SET used = true WHERE id = $1", row["id"], source_key=source_key)
         return {"valid": False, "reason": "Too many attempts. Reply 'retry' to get a new code."}
 
@@ -109,7 +154,7 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     """, row["id"], entered_hash, source_key=source_key)
 
     if not valid_row:
-        remaining = MAX_ATTEMPTS - (row["attempts"] + 1)
+        remaining = max_attempts - (row["attempts"] + 1)
         return {
             "valid": False,
             "reason": f"Incorrect code. {remaining} attempt(s) remaining."
@@ -131,7 +176,8 @@ async def _send_brevo_email(
     user_name: str,
     otp: str,
     action_desc: str,
-    org_name: str
+    org_name: str,
+    expiry_minutes: int
 ) -> bool:
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;">
@@ -144,7 +190,7 @@ async def _send_brevo_email(
                   border-radius:8px;color:#4a00e0;margin:16px 0;">
         {otp}
       </div>
-      <p style="color:#e53935;">⚠️ This code expires in {OTP_EXPIRY_MINUTES} minutes and can only be used once.</p>
+      <p style="color:#e53935;">⚠️ This code expires in {expiry_minutes} minutes and can only be used once.</p>
       <p style="color:#e53935;">🚫 If you did not make this request, contact your admin immediately.</p>
       <hr style="margin:20px 0;border:none;border-top:1px solid #eee;">
       <p style="color:#888;font-size:12px;">— OrchestrAI Security System · {org_name}</p>

@@ -111,7 +111,9 @@ async def toggle_otp(workflow_id: str, request: Request):
 async def update_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
-    threshold = float(body.get("threshold", 50000))
+    if body.get("threshold") is None:
+        raise HTTPException(status_code=400, detail="threshold required")
+    threshold = float(body["threshold"])
     source_key = await get_default_source_key()
     await execute(
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
@@ -124,7 +126,9 @@ async def update_threshold(workflow_id: str, request: Request):
 async def update_approval_threshold(workflow_id: str, request: Request):
     _check_token(request)
     body = await request.json()
-    threshold = float(body.get("threshold", 100000))
+    if body.get("threshold") is None:
+        raise HTTPException(status_code=400, detail="threshold required")
+    threshold = float(body["threshold"])
     source_key = await get_default_source_key()
     await execute(
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
@@ -587,7 +591,9 @@ async def save_generated_workflow(request: Request):
 async def update_gst_rate(request: Request):
     _check_token(request)
     body = await request.json()
-    gst = float(body.get("gst_rate", 3.0))
+    if body.get("gst_rate") is None:
+        raise HTTPException(status_code=400, detail="gst_rate required")
+    gst = float(body["gst_rate"])
     source_key = await get_default_source_key()
     org_id = body.get("org_id")
     if not org_id:

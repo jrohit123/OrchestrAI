@@ -23,7 +23,8 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
     await execute("""
         INSERT INTO user_drafts (org_id, user_id, intent_key, fields, stage,
                                  conversation_summary, expires_at)
-        VALUES ($1,$2,$3,$4::jsonb,$5,$6, now() + interval '24 hours')
+        VALUES ($1,$2,$3,$4::jsonb,$5,$6,
+                now() + make_interval(mins => (SELECT COALESCE(session_ttl_minutes, 480) FROM orgs WHERE id = $1)))
         ON CONFLICT (org_id, user_id) WHERE stage NOT IN ('done','cancelled')
         DO UPDATE SET
             -- D1: intent_key MUST follow the workflow the user is now running.
@@ -31,7 +32,7 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
             -- D1: switching intent must not inherit the old workflow's fields.
             fields = CASE
                        WHEN user_drafts.intent_key IS DISTINCT FROM EXCLUDED.intent_key
-                            OR $8::boolean
+                            OR $7::boolean
                        THEN EXCLUDED.fields
                        ELSE user_drafts.fields || EXCLUDED.fields
                      END,
@@ -40,9 +41,10 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
                                             user_drafts.conversation_summary),
             updated_at = now(),
             -- D2: an actively-used draft must not silently expire.
-            expires_at = now() + interval '24 hours'
+            -- TTL follows the org's own session_ttl_minutes, not a fixed window.
+            expires_at = now() + make_interval(mins => (SELECT COALESCE(session_ttl_minutes, 480) FROM orgs WHERE id = $1))
     """, org_id, user_id, intent_key, json.dumps(fields), stage, summary,
-         source_key, reset_fields, source_key=source_key)
+         reset_fields, source_key=source_key)
 
 async def close_draft(org_id, user_id, final_stage: str, source_key: str):
     await execute("""

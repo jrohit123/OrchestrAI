@@ -215,7 +215,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 from app.services.identity import find_unlinked_user_by_email
                 candidate = await find_unlinked_user_by_email(text.strip())
                 if candidate:
-                    sent = await generate_and_send_otp(
+                    result = await generate_and_send_otp(
                         user_id=candidate["user_id"],
                         user_email=candidate["email"],
                         user_name=candidate["user_name"],
@@ -224,7 +224,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                         action_context={"type": "telegram_link"},
                         source_key=candidate["source_key"],
                     )
-                    if sent:
+                    if result["sent"]:
                         await set_session(link_session_id, {
                             "state": "awaiting_link_otp",
                             "user_id": str(candidate["user_id"]),
@@ -233,7 +233,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                         await send_text(phone,
                             f"🔐 A verification code has been sent to *{candidate['email']}*.\n"
                             f"Reply with the code to link your Telegram account.\n\n"
-                            f"_Code expires in 3 minutes. Reply 'retry' to cancel and restart._"
+                            f"_Code expires in {result['expiry_minutes']} minutes. Reply 'retry' to cancel and restart._"
+                        )
+                    elif result["reason"] == "cooldown":
+                        await send_text(phone,
+                            f"⏳ Please wait {result['wait_seconds']}s before requesting another code."
                         )
                     else:
                         await send_text(phone, "❌ Could not send verification email. Contact admin.")
@@ -326,7 +330,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             # Handle explicit retry — generate a fresh OTP instead of re-checking the stale one
             if text.strip().lower() == "retry":
                 pending_text = pre_session.get("pending_text", "")
-                sent = await generate_and_send_otp(
+                result = await generate_and_send_otp(
                     user_id=user["user_id"],
                     user_email=user["email"],
                     user_name=user["user_name"],
@@ -335,7 +339,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     action_context={"type": "security_auth"},
                     source_key=user["source_key"]
                 )
-                if sent:
+                if result["sent"]:
                     await set_session(sec_session_id, {
                         "state": "awaiting_security_otp",
                         "pending_text": pending_text
@@ -343,6 +347,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     await send_text(phone,
                         f"🔐 A new verification code has been sent to *{user['email']}*.\n"
                         f"Reply with the code to continue."
+                    )
+                elif result["reason"] == "cooldown":
+                    await send_text(phone,
+                        f"⏳ Please wait {result['wait_seconds']}s before requesting another code."
                     )
                 else:
                     await send_text(phone, "❌ Could not send verification email. Contact admin.")
@@ -370,7 +378,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
 
         # Session expired — send security OTP
-        sent = await generate_and_send_otp(
+        result = await generate_and_send_otp(
             user_id=user["user_id"],
             user_email=user["email"],
             user_name=user["user_name"],
@@ -379,7 +387,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             action_context={"type": "security_auth"},
             source_key=user["source_key"]
         )
-        if sent:
+        if result["sent"]:
             await set_session(sec_session_id, {
                 "state": "awaiting_security_otp",
                 "pending_text": text
@@ -395,6 +403,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 f"A verification code has been sent to *{user['email']}*.\n"
                 f"Reply with the code to continue.\n\n"
                 f"_Required every {ttl_str} for security._"
+            )
+        elif result["reason"] == "cooldown":
+            await send_text(phone,
+                f"⏳ Please wait {result['wait_seconds']}s before requesting another code."
             )
         else:
             await send_text(phone, "❌ Could not send verification email. Contact admin.")
@@ -735,13 +747,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 # Update pending_action reference for next iteration
                 pending_action = session_patch.get("pending_action")
 
-            # Save last 15 messages (7-8 turns) for context
             # Ensure agent reply is in history (it's present for normal text replies,
             # but clarify-path skips it — add it here unconditionally if not already last)
+            # History length is capped by run_agent itself per the org's
+            # context_message_limit — no separate cap needed here.
             if not updated_history or updated_history[-1].get("content") != reply:
                 updated_history = updated_history + [{"role": "assistant", "content": reply}]
 
-            updated_history = updated_history[-15:]
             session["last_message"] = text
         session["conversation_history"] = updated_history
         await set_session(session_id, session, ttl=session_ttl)
