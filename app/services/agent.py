@@ -1803,7 +1803,7 @@ Return ONLY the WhatsApp message text, nothing else."""
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
         
-        # Route through central LLM router (Gemini x3 → Groq → Cerebras → OpenAI)
+        # Route through central LLM router (see llm_router.py for current provider order)
         response = None
         used_provider = None
         try:
@@ -1867,23 +1867,43 @@ Return ONLY the WhatsApp message text, nothing else."""
                 logger.warning(f"Empty LLM response with no tool calls on iteration {iteration+1} — retrying")
                 continue
 
-            # NEW: catch the model fabricating a "fetch failed" apology instead of
-            # actually calling query_database. This has been observed with
-            # gemini-2.5-flash-lite on large system prompts.
-            fake_failure = (
-                re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
-                and re.search(
-                    r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
-                    r"register|create|file|book|save|submit|confirm|update|insert)",
+            # Catch the model fabricating a failure apology instead of actually
+            # calling the tool. Two detection paths, in order of reliability:
+            #
+            # 1. State-based (works regardless of provider/wording): a tool call
+            #    already succeeded earlier THIS SAME TURN (_tool_succeeded_this_turn),
+            #    yet this later completion claims something went wrong. That's a
+            #    direct contradiction of known fact, so any negative-sounding word
+            #    is enough to catch it — no need to match a specific phrasing.
+            # 2. Wording-based fallback (no prior success to compare against, so we
+            #    can't prove a contradiction — narrower match to avoid false
+            #    positives on genuine "I couldn't find that" answers).
+            tool_succeeded_this_turn = bool(session_patch.get("_tool_succeeded_this_turn"))
+            if tool_succeeded_this_turn:
+                fake_failure = bool(re.search(
+                    r"(sorry|apolog|issue|problem|trouble|unable|couldn.?t|can.?t|fail|wrong|error)",
                     content, re.IGNORECASE
+                ))
+            else:
+                fake_failure = bool(
+                    re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
+                    and re.search(
+                        r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
+                        r"register|create|file|book|save|submit|confirm|update|insert)",
+                        content, re.IGNORECASE
+                    )
                 )
-            )
             if fake_failure:
-                logger.warning(f"Detected fabricated-failure response with no tool call — forcing retry: {content[:150]}")
+                logger.warning(f"Detected fabricated-failure response — forcing retry (tool_succeeded_this_turn={tool_succeeded_this_turn}): {content[:150]}")
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
+                if tool_succeeded_this_turn:
+                    correction = (
+                        "SYSTEM CORRECTION: A tool you called earlier in this same turn already "
+                        "succeeded — there is no real error. Report the actual successful result to "
+                        "the user instead of claiming something went wrong."
+                    )
+                else:
+                    correction = (
                         "SYSTEM CORRECTION: You did not actually call any tool — no query or PDF "
                         "generation was run, so there was no real error. If the user is asking for "
                         "data, you MUST call query_database with a real SELECT query. If the user "
@@ -1891,30 +1911,46 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "(re-run query_database first if needed to get the data). Do not apologize "
                         "about a failure unless you actually called the tool and it returned an ERROR."
                     )
-                })
+                messages.append({"role": "user", "content": correction})
                 continue  # retry this iteration
 
-            # Intercept: LLM printed a ⚠️ Confirm block as plain text instead of
+            # Intercept: LLM asked the user to confirm/proceed in plain text instead of
             # calling confirm_action tool. This happens when all info is given in one
             # message and the model skips tool-calling. Inject a corrective message
             # and retry so the draft gets properly saved to Redis.
-            if "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower()):
-                # Only intercept if there's a draft being collected
-                active_draft = session_patch.get("pending_action") or pending_action
-                if active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation"):
-                    logger.info(f"Intercepted plain-text confirm block — forcing tool retry")
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "SYSTEM CORRECTION: You printed the confirmation block as plain text. "
-                            "This does NOT work — the user's 'yes' cannot be detected without the tool. "
-                            "You MUST now call update_draft (with all collected fields and "
-                            "stage='awaiting_confirmation') followed immediately by confirm_action. "
-                            "Use the exact same details you just showed. Do it now."
-                        )
-                    })
-                    continue  # retry this iteration
+            #
+            # Detection is state-based, not phrase-based: different providers word this
+            # differently (Gemini tends to use a "⚠️ Confirm" block; gpt-4o-mini tends to
+            # write prose like "Shall I proceed?"/"Just to confirm... shall I proceed?").
+            # Matching on wording alone is a losing game — a new provider or model version
+            # phrases it differently again. What's actually reliable is the STATE: there is
+            # an active draft still in collecting/awaiting_confirmation, no tool was called,
+            # and the reply is asking permission to proceed rather than asking the user for
+            # missing/ambiguous information (a real clarifying question, which is legitimate
+            # plain text and must NOT be intercepted).
+            active_draft = session_patch.get("pending_action") or pending_action
+            is_legacy_confirm_block = "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower())
+            is_asking_to_proceed = bool(re.search(
+                r"(shall i|should i|do you want me to|can i go ahead|go ahead and|"
+                r"i'll proceed|i will proceed|proceed with this|confirm (?:that|this)|"
+                r"just to confirm).{0,80}\?",
+                content, re.IGNORECASE
+            ))
+            active_draft_confirmable = active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation")
+            if active_draft_confirmable and (is_legacy_confirm_block or is_asking_to_proceed):
+                logger.info(f"Intercepted plain-text confirm block — forcing tool retry")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You printed the confirmation block as plain text. "
+                        "This does NOT work — the user's 'yes' cannot be detected without the tool. "
+                        "You MUST now call update_draft (with all collected fields and "
+                        "stage='awaiting_confirmation') followed immediately by confirm_action. "
+                        "Use the exact same details you just showed. Do it now."
+                    )
+                })
+                continue  # retry this iteration
 
             # Intercept: LLM printed a ✅ Scheduled confirmation as plain text instead of
             # calling manage_schedule tool. Nothing gets saved to DB in this case.
@@ -2034,6 +2070,17 @@ Return ONLY the WhatsApp message text, nothing else."""
                 result = f"ERROR: {tool_err}"
             result_str = str(result)[:100] if result else "None"
             print(f"[AGENT] Tool result: {result_str}...")
+
+            # Track whether ANY tool succeeded this turn — used below to catch the
+            # model fabricating a failure message in a LATER completion despite an
+            # earlier tool call in this same turn having actually worked. This is a
+            # state-based check, not a wording-based one: it works regardless of
+            # which provider/model phrases the fabricated failure, unlike matching
+            # on specific apology phrases which only covers whatever phrasing was
+            # last observed from whichever provider happened to be primary then.
+            tool_failed = isinstance(result, str) and result.upper().startswith("ERROR")
+            if not tool_failed:
+                session_patch["_tool_succeeded_this_turn"] = True
 
             # Convert dict results to JSON string for OpenAI API
             content = json.dumps(result) if isinstance(result, dict) else str(result)
