@@ -1871,8 +1871,7 @@ Return ONLY the WhatsApp message text, nothing else."""
             # actually calling query_database. This has been observed with
             # gemini-2.5-flash-lite on large system prompts.
             fake_failure = (
-                iteration == 0
-                and re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
+                re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
                 and re.search(
                     r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
                     r"register|create|file|book|save|submit|confirm|update|insert)",

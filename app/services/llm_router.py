@@ -2,9 +2,9 @@
 llm_router.py — Centralised multi-provider LLM client with key rotation and fallback.
 
 Provider order:
-  1. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
+  1. OpenAI  (1 key, gpt-4o-mini — paid tier)
   2. Groq    (1 key, llama-3.1-8b-instant — free tier with daily reset, 128k context)
-  3. OpenAI  (1 key, gpt-4o-mini — paid tier)
+  3. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
   4. Cerebras (1 key, gpt-oss-120b — requires payment method after Aug 17, large context)
 
 Usage:
@@ -98,11 +98,18 @@ class _Attempt:
 
 def _build_ladder() -> list[_Attempt]:
     """
-    Ordered attempt list. Gemini keys are rotated so we don't always start
-    at key 1; everything else is fixed priority.
+    Ordered attempt list: OpenAI -> Groq -> Gemini -> Cerebras.
+    Gemini keys are rotated so we don't always start at key 1; everything
+    else is fixed priority.
     """
     ladder: list[_Attempt] = []
 
+    if _openai_client:
+        ladder.append(_Attempt("openai", _openai_client, OPENAI_MODEL,
+                               strip=("parallel_tool_calls",)))
+    if _groq_client:
+        ladder.append(_Attempt("groq", _groq_client, GROQ_MODEL,
+                               strip=("parallel_tool_calls",)))
     if _gemini_clients:
         n = len(_gemini_clients)
         start = next(_gemini_cycle)
@@ -114,13 +121,6 @@ def _build_ladder() -> list[_Attempt]:
                     client=_gemini_clients[idx],
                     model=model,
                 ))
-
-    if _groq_client:
-        ladder.append(_Attempt("groq", _groq_client, GROQ_MODEL,
-                               strip=("parallel_tool_calls",)))
-    if _openai_client:
-        ladder.append(_Attempt("openai", _openai_client, OPENAI_MODEL,
-                               strip=("parallel_tool_calls",)))
     if _cerebras_client:
         ladder.append(_Attempt("cerebras", _cerebras_client, CEREBRAS_MODEL))
     return ladder
@@ -187,13 +187,13 @@ if _cerebras_key:
 
 CEREBRAS_MODEL = "gpt-oss-120b"
 
-# ── OpenAI (last resort) ─────────────────────────────────────────────────────
+# ── OpenAI (primary) ─────────────────────────────────────────────────────────
 _openai_client: AsyncOpenAI | None = None
 _openai_key = os.getenv("OPENAI_API_KEY")
 if _openai_key:
     try:
         _openai_client = AsyncOpenAI(api_key=_openai_key, timeout=30.0)
-        logger.info("OpenAI client registered (last resort)")
+        logger.info("OpenAI client registered (primary)")
     except Exception as e:
         logger.warning(f"Failed to init OpenAI client: {e}")
 
