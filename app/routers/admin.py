@@ -85,19 +85,39 @@ async def admin_data(org_slug: str):
         ORDER BY created_at
     """, org_id, source_key=source_key)
 
-    stats = await fetch_one("""
-        SELECT
-            COUNT(*) FILTER (WHERE status = 'paid') AS total_invoices,
-            COALESCE(SUM(amount) FILTER (WHERE status = 'paid'), 0) AS total_amount,
-            COUNT(*) FILTER (WHERE status = 'pending') AS pending_invoices,
-            (SELECT COUNT(*) FROM customers WHERE org_id = $1) AS total_customers
-        FROM invoices WHERE org_id = $1
-    """, org_id, source_key=source_key)
+    # invoices/customers/inventory are jewelry-business tables (Baanganga) —
+    # they don't exist on a housing-society org's database (Godrej Emerald
+    # has cases/residents/staff instead). This dashboard was only ever
+    # exercised against Baanganga before the panel became reachable per-org,
+    # so the mismatch never surfaced. Check what actually exists rather than
+    # assume every org has the same schema.
+    existing = {
+        r["table_name"] for r in await fetch_all(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_name = ANY($1)",
+            ["invoices", "customers", "inventory"], source_key=source_key
+        )
+    }
 
-    low_stock = await fetch_all("""
-        SELECT name, qty, reorder_level FROM inventory
-        WHERE org_id = $1 AND qty <= reorder_level
-    """, org_id, source_key=source_key)
+    if "invoices" in existing and "customers" in existing:
+        stats = await fetch_one("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'paid') AS total_invoices,
+                COALESCE(SUM(amount) FILTER (WHERE status = 'paid'), 0) AS total_amount,
+                COUNT(*) FILTER (WHERE status = 'pending') AS pending_invoices,
+                (SELECT COUNT(*) FROM customers WHERE org_id = $1) AS total_customers
+            FROM invoices WHERE org_id = $1
+        """, org_id, source_key=source_key)
+    else:
+        stats = None
+
+    low_stock = (
+        await fetch_all("""
+            SELECT name, qty, reorder_level FROM inventory
+            WHERE org_id = $1 AND qty <= reorder_level
+        """, org_id, source_key=source_key)
+        if "inventory" in existing else []
+    )
 
     recent_logs = await fetch_all("""
         SELECT a.intent_key, a.outcome, a.otp_used,
