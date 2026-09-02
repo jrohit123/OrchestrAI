@@ -1915,42 +1915,33 @@ Return ONLY the WhatsApp message text, nothing else."""
                 continue
 
             # Catch the model fabricating a failure apology instead of actually
-            # calling the tool. Two detection paths, in order of reliability:
-            #
-            # 1. State-based (works regardless of provider/wording): a tool call
-            #    already succeeded earlier THIS SAME TURN (_tool_succeeded_this_turn),
-            #    yet this later completion claims something went wrong. That's a
-            #    direct contradiction of known fact, so any negative-sounding word
-            #    is enough to catch it — no need to match a specific phrasing.
-            # 2. Wording-based fallback (no prior success to compare against, so we
-            #    can't prove a contradiction — narrower match to avoid false
-            #    positives on genuine "I couldn't find that" answers).
-            tool_succeeded_this_turn = bool(session_patch.get("_tool_succeeded_this_turn"))
-            if tool_succeeded_this_turn:
-                fake_failure = bool(re.search(
-                    r"(sorry|apolog|issue|problem|trouble|unable|couldn.?t|can.?t|fail|wrong|error)",
+            # calling the tool (e.g. claiming a query/PDF/save failed when it was
+            # never attempted this turn). Requires BOTH a failure-declaring phrase
+            # AND a nearby action/task word — narrow on purpose. An earlier version
+            # tried to broaden this by state ("a tool succeeded earlier this turn,
+            # so treat ANY negative word after that as suspect") but that signal
+            # turned out to be armed on nearly every turn once update_draft started
+            # being called routinely, and a bare word-list ("issue", "problem"...)
+            # false-fired on ordinary text — e.g. the model correctly echoing back
+            # a complaint titled "Neighbour issue in flat 307" got flagged as a
+            # fabricated failure. Removed rather than patched further: it was
+            # unreachable anyway once confirm_action's own internal-failure paths
+            # (below) correctly reset state and let an honest failure message
+            # through instead of needing to be "corrected".
+            fake_failure = bool(
+                re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
+                and re.search(
+                    r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
+                    r"register|create|file|book|save|submit|confirm|update|insert)",
                     content, re.IGNORECASE
-                ))
-            else:
-                fake_failure = bool(
-                    re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
-                    and re.search(
-                        r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
-                        r"register|create|file|book|save|submit|confirm|update|insert)",
-                        content, re.IGNORECASE
-                    )
                 )
+            )
             if fake_failure:
-                logger.warning(f"Detected fabricated-failure response — forcing retry (tool_succeeded_this_turn={tool_succeeded_this_turn}): {content[:150]}")
+                logger.warning(f"Detected fabricated-failure response — forcing retry: {content[:150]}")
                 messages.append({"role": "assistant", "content": content})
-                if tool_succeeded_this_turn:
-                    correction = (
-                        "SYSTEM CORRECTION: A tool you called earlier in this same turn already "
-                        "succeeded — there is no real error. Report the actual successful result to "
-                        "the user instead of claiming something went wrong."
-                    )
-                else:
-                    correction = (
+                messages.append({
+                    "role": "user",
+                    "content": (
                         "SYSTEM CORRECTION: You did not actually call any tool — no query or PDF "
                         "generation was run, so there was no real error. If the user is asking for "
                         "data, you MUST call query_database with a real SELECT query. If the user "
@@ -1958,11 +1949,8 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "(re-run query_database first if needed to get the data). Do not apologize "
                         "about a failure unless you actually called the tool and it returned an ERROR."
                     )
-                messages.append({"role": "user", "content": correction})
-                # Only force a tool call when we actually want one: the
-                # tool_succeeded_this_turn=True branch wants plain-text
-                # success reporting, NOT another tool call.
-                force_tool_choice = not tool_succeeded_this_turn
+                })
+                force_tool_choice = True
                 continue  # retry this iteration
 
             # Intercept: LLM narrated/asked about proceeding in plain text instead of
@@ -2163,17 +2151,6 @@ Return ONLY the WhatsApp message text, nothing else."""
             result_str = str(result)[:100] if result else "None"
             print(f"[AGENT] Tool result: {result_str}...")
 
-            # Track whether ANY tool succeeded this turn — used below to catch the
-            # model fabricating a failure message in a LATER completion despite an
-            # earlier tool call in this same turn having actually worked. This is a
-            # state-based check, not a wording-based one: it works regardless of
-            # which provider/model phrases the fabricated failure, unlike matching
-            # on specific apology phrases which only covers whatever phrasing was
-            # last observed from whichever provider happened to be primary then.
-            tool_failed = isinstance(result, str) and result.upper().startswith("ERROR")
-            if not tool_failed:
-                session_patch["_tool_succeeded_this_turn"] = True
-
             # Convert dict results to JSON string for OpenAI API
             content = json.dumps(result) if isinstance(result, dict) else str(result)
             tool_results.append({
@@ -2331,7 +2308,6 @@ Return ONLY the WhatsApp message text, nothing else."""
                         draft.get("intent_key"), user["org_id"], source_key=user["source_key"]
                     )
                     if not workflow_row:
-                        session_patch["_tool_succeeded_this_turn"] = False
                         logger.error(f"confirm_action: workflow '{draft.get('intent_key')}' not found for org {user['org_id']}")
                         tool_results[-1]["content"] = json.dumps({
                             "error": f"Workflow '{draft.get('intent_key')}' not found. Cannot confirm."
@@ -2352,7 +2328,6 @@ Return ONLY the WhatsApp message text, nothing else."""
                         # items[].weight, etc.) — skip calc_rules entirely; unit_price isn't resolved yet.
                         missing, invalid = _validate_schema(entity_schema_for_summary, draft.get("fields", {}))
                         if missing or invalid:
-                            session_patch["_tool_succeeded_this_turn"] = False
                             logger.warning(f"confirm_action: schema validation failed — missing={missing} invalid={invalid}")
                             tool_results[-1]["content"] = json.dumps({
                                 "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
@@ -2365,7 +2340,6 @@ Return ONLY the WhatsApp message text, nothing else."""
                                 dict(workflow_row), draft.get("fields", {}), user["org_id"], user["source_key"]
                             )
                         except VerificationError as e:
-                            session_patch["_tool_succeeded_this_turn"] = False
                             logger.warning(
                                 f"confirm_action: verify_draft failed — missing={e.missing_fields} invalid={e.invalid_fields} "
                                 f"fields={draft.get('fields', {})}"
