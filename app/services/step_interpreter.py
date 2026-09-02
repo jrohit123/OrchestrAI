@@ -197,17 +197,31 @@ def _step_enabled(step: dict, ctx: dict) -> bool:
     return _eval_when_condition(cond, ctx)
 
 
+def _when_value(v, ctx: dict):
+    """
+    A comparison value in a 'when' guard is normally a literal (e.g. "close").
+    If it's a "$..." path instead, resolve it dynamically from ctx first —
+    lets a guard compare two resolved entities against each other, e.g.
+    {"field": "$complainant.phone", "not_equals": "$prior_assignee.phone"}
+    to detect "this is the same person" (self-assigned case) rather than
+    only ever comparing against a fixed string.
+    """
+    if isinstance(v, str) and v.startswith("$"):
+        return _resolve_path(ctx, v)
+    return v
+
+
 def _eval_when_condition(cond: dict, ctx: dict) -> bool:
     actual = _resolve_path(ctx, cond["field"])
 
     if "equals" in cond:
-        return str(actual).lower() == str(cond["equals"]).lower()
+        return str(actual).lower() == str(_when_value(cond["equals"], ctx)).lower()
     if "not_equals" in cond:
-        return str(actual).lower() != str(cond["not_equals"]).lower()
+        return str(actual).lower() != str(_when_value(cond["not_equals"], ctx)).lower()
     if "in" in cond:
-        return str(actual).lower() in [str(v).lower() for v in cond["in"]]
+        return str(actual).lower() in [str(_when_value(v, ctx)).lower() for v in cond["in"]]
     if "not_in" in cond:
-        return str(actual).lower() not in [str(v).lower() for v in cond["not_in"]]
+        return str(actual).lower() not in [str(_when_value(v, ctx)).lower() for v in cond["not_in"]]
     if "exists" in cond:
         present = actual not in (None, "", [], {})
         return present is bool(cond["exists"])

@@ -1836,9 +1836,19 @@ Return ONLY the WhatsApp message text, nothing else."""
                     )
                 })
 
+    # When a corrective retry is triggered below (fake-narration/fake-failure/
+    # etc. detected), this flips to True for exactly the next LLM call. That
+    # call is issued with tool_choice="required" instead of "auto" — an
+    # API-level constraint, not another instruction the model can choose to
+    # ignore. "Please call the tool" as plain text is still just a request;
+    # tool_choice="required" makes it structurally impossible for the model
+    # to respond with narration again on that specific retry, regardless of
+    # provider or how creatively it might phrase a way around a text-only ask.
+    force_tool_choice = False
+
     for iteration in range(max_iterations):
         logger.debug(f"Iteration {iteration + 1}/{max_iterations}")
-        
+
         # Route through central LLM router (see llm_router.py for current provider order)
         response = None
         used_provider = None
@@ -1846,11 +1856,12 @@ Return ONLY the WhatsApp message text, nothing else."""
             response = await _llm_chat(
                 messages=messages,
                 tools=TOOLS,
-                tool_choice="auto",
+                tool_choice=("required" if force_tool_choice else "auto"),
                 max_tokens=8192,
                 temperature=0.1,
                 require_tools=True,  # Skip small models for tool-driven turns
             )
+            force_tool_choice = False
         except Exception as e:
             from app.services.llm_router import AllProvidersFailed
             if isinstance(e, AllProvidersFailed):
@@ -1948,6 +1959,10 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "about a failure unless you actually called the tool and it returned an ERROR."
                     )
                 messages.append({"role": "user", "content": correction})
+                # Only force a tool call when we actually want one: the
+                # tool_succeeded_this_turn=True branch wants plain-text
+                # success reporting, NOT another tool call.
+                force_tool_choice = not tool_succeeded_this_turn
                 continue  # retry this iteration
 
             # Intercept: LLM narrated/asked about proceeding in plain text instead of
@@ -2000,8 +2015,10 @@ Return ONLY the WhatsApp message text, nothing else."""
             ))
             bullet_field_lines = re.findall(r"(?m)^\s*[-•]\s*\**[\w \(\)]+\**\s*:", content)
             invites_confirmation = bool(re.search(
-                r"reply\s+\**yes\**|let'?s confirm the details|confirm the details|"
-                r"let me know if you (?:want to|'?d like to) (?:make any )?change",
+                r"reply\s+\**yes\**|let'?s confirm|confirm(?:ing)? (?:the details|the registration|"
+                r"the action|now)|let me know if you (?:want to|'?d like to) (?:make any )?change|"
+                r"(?:let me|i'll|i will|going to)\s+(?:now\s+)?confirm|please hold on|one moment|"
+                r"before i (?:proceed|register|save|close|assign|confirm)",
                 content, re.IGNORECASE
             ))
             looks_like_manual_confirm_block = len(bullet_field_lines) >= 2 and invites_confirmation
@@ -2021,6 +2038,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "Use the exact same details you just showed. Do it now."
                     )
                 })
+                force_tool_choice = True
                 continue  # retry this iteration
 
             # Intercept: LLM printed a ✅ Scheduled confirmation as plain text instead of
@@ -2043,6 +2061,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "details you just described. Do it now."
                     )
                 })
+                force_tool_choice = True
                 continue  # retry this iteration
 
             # Intercept: LLM claimed the draft was cancelled/cleared in plain text
@@ -2063,6 +2082,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "call the cancel_draft tool now to actually clear it."
                     )
                 })
+                force_tool_choice = True
                 continue  # retry this iteration
 
             # Intercept: LLM fabricated an "already done" claim (registered/saved/created)
@@ -2085,6 +2105,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         "then confirm_action to re-show the updated summary."
                     )
                 })
+                force_tool_choice = True
                 continue  # retry this iteration
 
             logger.info(f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}")
