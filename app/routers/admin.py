@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from app.config import required
-from app.db import fetch_all, fetch_one, execute, get_pool, get_default_source_key
+from app.db import fetch_all, fetch_one, execute, get_pool, get_all_source_keys
 from app.logging_config import get_context_logger
 from openai import AsyncOpenAI
 
@@ -29,21 +29,48 @@ class PublishRequest(BaseModel):
 
 
 def _check_token(request: Request):
+    # Currently unused — no auth on the admin panel for now (multiple orgs,
+    # not yet production-facing). Left in place, not deleted, so it's a
+    # one-line change to re-enable per-request auth later rather than
+    # rebuilding the mechanism from scratch.
     token = request.headers.get("X-Admin-Token")
     if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+async def _resolve_source_key(org_slug: str) -> str:
+    """
+    The URL path segment IS the source_key — data_sources is already the
+    single source of truth for which orgs exist (routing_db), so there's no
+    separate slug-to-org mapping to maintain. Adding a new org later means
+    zero code changes here; it's just another row in data_sources.
+    """
+    valid_keys = await get_all_source_keys()
+    if org_slug not in valid_keys:
+        raise HTTPException(status_code=404, detail=f"Unknown org '{org_slug}'")
+    return org_slug
+
+
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request):
-    # Serve page unauthenticated - JavaScript will prompt for token
+async def admin_index():
+    """Lists every org from data_sources, linking to its own /admin/{source_key} panel."""
+    keys = await get_all_source_keys()
+    links = "\n".join(f'<li><a href="/admin/{k}">{k}</a></li>' for k in keys)
+    return HTMLResponse(
+        content=f"<h2>Select an org</h2><ul>{links}</ul>",
+        media_type="text/html; charset=utf-8"
+    )
+
+
+@router.get("/admin/{org_slug}", response_class=HTMLResponse)
+async def admin_page(org_slug: str):
+    await _resolve_source_key(org_slug)  # 404s on an unknown org
     return HTMLResponse(content=_build_html(), media_type="text/html; charset=utf-8")
 
 
-@router.get("/admin/api/data")
-async def admin_data(request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.get("/admin/{org_slug}/api/data")
+async def admin_data(org_slug: str):
+    source_key = await _resolve_source_key(org_slug)
 
     org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
@@ -90,10 +117,9 @@ async def admin_data(request: Request):
     }
 
 
-@router.post("/admin/api/workflow/{workflow_id}/toggle")
-async def toggle_otp(workflow_id: str, request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.post("/admin/{org_slug}/api/workflow/{workflow_id}/toggle")
+async def toggle_otp(org_slug: str, workflow_id: str):
+    source_key = await _resolve_source_key(org_slug)
     row = await fetch_one(
         "SELECT otp_required, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
     )
@@ -107,14 +133,13 @@ async def toggle_otp(workflow_id: str, request: Request):
     return {"otp_required": new_val}
 
 
-@router.post("/admin/api/workflow/{workflow_id}/threshold")
-async def update_threshold(workflow_id: str, request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow/{workflow_id}/threshold")
+async def update_threshold(org_slug: str, workflow_id: str, request: Request):
     body = await request.json()
     if body.get("threshold") is None:
         raise HTTPException(status_code=400, detail="threshold required")
     threshold = float(body["threshold"])
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     await execute(
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
@@ -122,14 +147,13 @@ async def update_threshold(workflow_id: str, request: Request):
     return {"otp_threshold": threshold}
 
 
-@router.post("/admin/api/workflow/{workflow_id}/approval_threshold")
-async def update_approval_threshold(workflow_id: str, request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow/{workflow_id}/approval_threshold")
+async def update_approval_threshold(org_slug: str, workflow_id: str, request: Request):
     body = await request.json()
     if body.get("threshold") is None:
         raise HTTPException(status_code=400, detail="threshold required")
     threshold = float(body["threshold"])
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     await execute(
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
         threshold, workflow_id, source_key=source_key
@@ -137,32 +161,29 @@ async def update_approval_threshold(workflow_id: str, request: Request):
     return {"approval_threshold": threshold}
 
 
-@router.get("/admin/api/roles")
-async def get_roles(request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.get("/admin/{org_slug}/api/roles")
+async def get_roles(org_slug: str):
+    source_key = await _resolve_source_key(org_slug)
     roles = await fetch_all("SELECT name FROM roles ORDER BY name", source_key=source_key)
     return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
 
 
-@router.get("/admin/api/security")
-async def get_security_settings(request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.get("/admin/{org_slug}/api/security")
+async def get_security_settings(org_slug: str):
+    source_key = await _resolve_source_key(org_slug)
     org = await fetch_one(
         "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
     )
     return {"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
 
 
-@router.post("/admin/api/security/ttl")
-async def update_session_ttl(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/security/ttl")
+async def update_session_ttl(org_slug: str, request: Request):
     body = await request.json()
     minutes = int(body.get("minutes", 480))
     if minutes < 5 or minutes > 10080:  # 5 min to 7 days
         raise HTTPException(status_code=400, detail="TTL must be between 5 and 10080 minutes")
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     org_id = body.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id required")
@@ -172,22 +193,20 @@ async def update_session_ttl(request: Request):
     return {"session_ttl_minutes": minutes}
 
 
-@router.post("/admin/api/sessions/clear")
-async def admin_clear_sessions(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/sessions/clear")
+async def admin_clear_sessions(org_slug: str):
     from app.redis_client import clear_all_sessions
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     await clear_all_sessions(str(org["id"]))
     return {"cleared": True, "message": "All sessions cleared"}
 
 
-@router.post("/admin/api/workflow/generate")
-async def generate_workflow_config(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow/generate")
+async def generate_workflow_config(org_slug: str, request: Request):
     body = await request.json()
     description = body.get("description", "").strip()
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
 
     if not description:
         raise HTTPException(status_code=400, detail="Description is required")
@@ -492,11 +511,10 @@ Return ONLY this JSON, no markdown, no explanation:
     )
 
 
-@router.post("/admin/api/workflow/save")
-async def save_generated_workflow(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow/save")
+async def save_generated_workflow(org_slug: str, request: Request):
     body = await request.json()
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
 
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
@@ -587,14 +605,13 @@ async def save_generated_workflow(request: Request):
     return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
 
-@router.post("/admin/api/gst-rate")
-async def update_gst_rate(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/gst-rate")
+async def update_gst_rate(org_slug: str, request: Request):
     body = await request.json()
     if body.get("gst_rate") is None:
         raise HTTPException(status_code=400, detail="gst_rate required")
     gst = float(body["gst_rate"])
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     org_id = body.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id required")
@@ -606,21 +623,19 @@ async def update_gst_rate(request: Request):
 
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-@router.get("/admin/api/workflow/{workflow_id}/detail")
-async def get_workflow_detail(workflow_id: str, request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.get("/admin/{org_slug}/api/workflow/{workflow_id}/detail")
+async def get_workflow_detail(org_slug: str, workflow_id: str):
+    source_key = await _resolve_source_key(org_slug)
     row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return dict(row)
 
 
-@router.put("/admin/api/workflow/{workflow_id}")
-async def update_workflow(workflow_id: str, request: Request):
-    _check_token(request)
+@router.put("/admin/{org_slug}/api/workflow/{workflow_id}")
+async def update_workflow(org_slug: str, workflow_id: str, request: Request):
     body = await request.json()
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
 
     existing = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     if not existing:
@@ -673,10 +688,9 @@ async def update_workflow(workflow_id: str, request: Request):
     return {"success": True}
 
 
-@router.delete("/admin/api/workflow/{workflow_id}")
-async def delete_workflow(workflow_id: str, request: Request):
-    _check_token(request)
-    source_key = await get_default_source_key()
+@router.delete("/admin/{org_slug}/api/workflow/{workflow_id}")
+async def delete_workflow(org_slug: str, workflow_id: str):
+    source_key = await _resolve_source_key(org_slug)
     row = await fetch_one(
         "SELECT intent_key, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
     )
@@ -690,22 +704,20 @@ async def delete_workflow(workflow_id: str, request: Request):
     return {"success": True, "deleted": row["intent_key"]}
 
 
-@router.post("/admin/api/workflow/validate")
-async def validate_workflow_endpoint(request: Request):
+@router.post("/admin/{org_slug}/api/workflow/validate")
+async def validate_workflow_endpoint(org_slug: str, request: Request):
     """Lint a workflow config without saving — used by the Edit modal Validate button."""
-    _check_token(request)
     body = await request.json()
     from app.services.workflow_validator import validate_workflow_config
     problems = validate_workflow_config(body)
     return {"valid": len(problems) == 0, "problems": problems}
 
 
-@router.get("/admin/api/workflow-builder/preview-pdf/{draft_id}")
-async def preview_workflow_pdf(draft_id: str, request: Request):
+@router.get("/admin/{org_slug}/api/workflow-builder/preview-pdf/{draft_id}")
+async def preview_workflow_pdf(org_slug: str, draft_id: str):
     """Generate a sample PDF from a compiled draft using placeholder data."""
-    _check_token(request)
     from fastapi.responses import Response as FastAPIResponse
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft or not draft.get("pdf_config"):
         raise HTTPException(status_code=404, detail="Nothing to preview yet — compile first")
@@ -720,11 +732,10 @@ async def preview_workflow_pdf(draft_id: str, request: Request):
     return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")
 
 
-@router.post("/admin/api/workflow-builder/chat")
-async def workflow_builder_chat(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow-builder/chat")
+async def workflow_builder_chat(org_slug: str, request: Request):
     body = await request.json()
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
@@ -742,9 +753,8 @@ async def workflow_builder_chat(request: Request):
     return result
 
 
-@router.post("/admin/api/workflow-builder/pdf-extract")
-async def extract_pdf_template_endpoint(request: Request):
-    _check_token(request)
+@router.post("/admin/{org_slug}/api/workflow-builder/pdf-extract")
+async def extract_pdf_template_endpoint(org_slug: str, request: Request):
     form = await request.form()
     upload = form.get("pdf_file")
     doc_type_hint = form.get("doc_type_hint", "")
@@ -759,11 +769,10 @@ async def extract_pdf_template_endpoint(request: Request):
     return spec
 
 
-@router.get("/admin/api/workflow-builder/draft/{draft_id}/publish-info")
-async def get_draft_publish_info(draft_id: str, request: Request):
+@router.get("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/publish-info")
+async def get_draft_publish_info(org_slug: str, draft_id: str):
     """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
-    _check_token(request)
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -792,11 +801,10 @@ async def get_draft_publish_info(draft_id: str, request: Request):
     }
 
 
-@router.post("/admin/api/workflow-builder/publish/{draft_id}")
-async def publish_workflow_endpoint(draft_id: str, body: PublishRequest, request: Request):
+@router.post("/admin/{org_slug}/api/workflow-builder/publish/{draft_id}")
+async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishRequest):
     """Publish a draft to live workflows with structured governance settings."""
-    _check_token(request)
-    source_key = await get_default_source_key()
+    source_key = await _resolve_source_key(org_slug)
     
     draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft or draft["status"] != "ready_for_review":
@@ -1116,30 +1124,18 @@ input:checked+.slider:before{transform:translateX(18px)}
 </div>
 
 <script>
-let adminToken = null;
-const API = path => `/admin/api${path}`;
+// Org is whatever comes after /admin/ in the URL — /admin/baanganga,
+// /admin/godrej_emerald, etc. — so every API call this page makes is
+// automatically scoped to that org with no other change needed.
+const ORG_SLUG = window.location.pathname.split('/')[2] || '';
+const API = path => `/admin/${ORG_SLUG}/api${path}`;
 let chatDraftId = null;
 let chatTyping  = false;
 let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
 
-// ── Security: Prompt for token on first API call ─────────────────────
-async function ensureToken() {
-  if (adminToken) return true;
-  adminToken = prompt('🔐 Enter Admin Token:');
-  return adminToken !== null;
-}
-
+// No auth for now — see _check_token in admin.py for how to re-enable it.
 async function authenticatedFetch(url, options = {}) {
-  if (!await ensureToken()) return null;
-  const headers = options.headers || {};
-  headers['X-Admin-Token'] = adminToken;
-  options.headers = headers;
   const res = await fetch(url, options);
-  if (res.status === 401) {
-    alert('❌ Invalid token. Please try again.');
-    adminToken = null;
-    return null;
-  }
   return res;
 }
 
@@ -1388,8 +1384,10 @@ async function sendChatMsg() {
 // ── Load Data ─────────────────────────────────────────────────────
 async function loadData() {
   const resp = await authenticatedFetch(API('/data'));
-  if (!resp) {
-    document.getElementById('loading').textContent = '⚠️ Authentication required. Please enter your admin token.';
+  if (!resp || !resp.ok) {
+    document.getElementById('loading').textContent = resp && resp.status === 404
+      ? `⚠️ Unknown org '${ORG_SLUG}'.`
+      : '⚠️ Could not load admin data.';
     return;
   }
   try {
