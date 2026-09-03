@@ -31,6 +31,25 @@ class PublishRequest(BaseModel):
     slash_command: str
 
 
+def _parse_jsonb(val, default):
+    """
+    asyncpg returns jsonb columns as raw JSON text — there's no codec
+    registered in app/db.py — so anything read via fetch_all/fetch_one and
+    handed straight to a JSON API response reaches the frontend as a STRING,
+    not the array/object it looks like. gates specifically broke on this
+    (`gates.map is not a function`) because .map()/.length on a JSON-text
+    string doesn't throw the way you'd expect until you actually call .map.
+    """
+    if val is None:
+        return default
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return val
+
+
 def _check_token(request: Request):
     # Currently unused — no auth on the admin panel for now (multiple orgs,
     # not yet production-facing). Left in place, not deleted, so it's a
@@ -131,9 +150,15 @@ async def admin_data(org_slug: str):
         ORDER BY a.created_at DESC LIMIT 8
     """, org_id, source_key=source_key)
 
+    workflows_out = []
+    for w in workflows:
+        wd = dict(w)
+        wd["gates"] = _parse_jsonb(wd.get("gates"), [])
+        workflows_out.append(wd)
+
     return {
         "org": dict(org),
-        "workflows": [dict(w) for w in workflows],
+        "workflows": workflows_out,
         # null (not zeros) when invoices/customers don't exist for this org —
         # "0 invoices" and "this org doesn't track invoices" are different
         # facts, and the frontend hides the stat cards entirely on null
@@ -650,13 +675,23 @@ async def update_gst_rate(org_slug: str, request: Request):
 
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+_JSONB_WORKFLOW_FIELDS = {
+    "training_phrases": [], "entity_schema": {}, "calc_rules": {}, "steps": [],
+    "sql_params_order": [], "business_glossary": {}, "pdf_config": None, "gates": [],
+}
+
+
 @router.get("/admin/{org_slug}/api/workflow/{workflow_id}/detail")
 async def get_workflow_detail(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
     row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return dict(row)
+    wd = dict(row)
+    for field, default in _JSONB_WORKFLOW_FIELDS.items():
+        if field in wd:
+            wd[field] = _parse_jsonb(wd[field], default)
+    return wd
 
 
 @router.put("/admin/{org_slug}/api/workflow/{workflow_id}")
