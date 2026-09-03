@@ -4,9 +4,8 @@ import re
 import hmac
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 from app.config import required
-from app.db import fetch_all, fetch_one, execute, get_pool, get_all_source_keys
+from app.db import fetch_all, fetch_one, execute, get_all_source_keys
 from app.logging_config import get_context_logger
 from openai import AsyncOpenAI
 
@@ -17,18 +16,6 @@ ADMIN_TOKEN = required("ADMIN_TOKEN")
 OPENAI_API_KEY = required("OPENAI_API_KEY")
 
 from app.services.llm_router import chat_completion as _llm_chat
-
-
-class PublishRequest(BaseModel):
-    roles: list[str]
-    # Replaces the old flat otp_required/otp_threshold/approval_required/
-    # approval_threshold fields — a workflow can carry any number of
-    # constraints now (see migrations/011_*_gates_schema.sql), each a plain
-    # dict validated server-side by workflow_validator.validate_workflow_config
-    # (kept as dicts rather than a nested pydantic model so that validator
-    # stays the single source of truth for the shape, not duplicated here).
-    gates: list[dict] = []
-    slash_command: str
 
 
 def _parse_jsonb(val, default):
@@ -691,11 +678,25 @@ async def get_workflow_detail(org_slug: str, workflow_id: str):
     for field, default in _JSONB_WORKFLOW_FIELDS.items():
         if field in wd:
             wd[field] = _parse_jsonb(wd[field], default)
+    granted = await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
+        wd["org_id"], wd["intent_key"], source_key=source_key
+    )
+    wd["granted_roles"] = [r["name"] for r in granted]
     return wd
 
 
 @router.put("/admin/{org_slug}/api/workflow/{workflow_id}")
 async def update_workflow(org_slug: str, workflow_id: str, request: Request):
+    """
+    Structural settings ONLY — name, description, active/inactive, gates
+    (constraints), roles, trigger command. What the workflow actually DOES —
+    steps, entity_schema, calc_rules — is edited exclusively through the
+    chat builder now (see /workflow-builder/edit/{workflow_id}), never
+    through this form-style endpoint: that's logic, not a setting, and
+    editing it later is the same problem as authoring it, which chat already
+    solves.
+    """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
 
@@ -703,32 +704,31 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    allowed = [
-        "name", "description", "is_active", "otp_required", "otp_threshold",
-        "approval_threshold", "gates", "training_phrases", "entity_schema", "calc_rules",
-        "steps", "sql_template", "sql_params_order", "response_format",
-        "business_glossary", "llm_system_prompt", "pdf_config",
-        "response_template", "workflow_type"
-    ]
-    jsonb_fields = {
-        "training_phrases", "entity_schema", "calc_rules", "steps", "gates",
-        "sql_params_order", "business_glossary", "pdf_config"
-    }
+    allowed = ["name", "description", "is_active", "gates", "slash_command"]
+    jsonb_fields = {"gates"}
 
-    # Merge incoming changes with existing row so validation sees the full picture
-    merged = dict(existing)
-    for field in allowed:
-        if field in body:
-            merged[field] = body[field]
-
-    # Validate merged config before writing anything
-    from app.services.workflow_validator import validate_workflow_config
-    problems = validate_workflow_config(merged)
-    if problems:
-        raise HTTPException(status_code=400, detail={
-            "error": "Config is inconsistent — not saved.",
-            "problems": problems
+    if "gates" in body:
+        from app.services.workflow_validator import validate_workflow_config
+        problems = validate_workflow_config({
+            "workflow_type": existing["workflow_type"], "gates": body["gates"],
         })
+        if problems:
+            raise HTTPException(status_code=400, detail={
+                "error": "Constraints are inconsistent — not saved.",
+                "problems": problems
+            })
+
+    if "slash_command" in body:
+        cmd = (body.get("slash_command") or "").strip().lstrip("/").lower()
+        if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
+            raise HTTPException(status_code=400, detail="Command: 2-32 chars, lowercase letters/digits/_")
+        dupe = await fetch_one(
+            "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND id != $3",
+            existing["org_id"], cmd, workflow_id, source_key=source_key
+        )
+        if dupe:
+            raise HTTPException(status_code=409, detail=f"Command '/{cmd}' is already in use")
+        body["slash_command"] = cmd
 
     sets, vals = [], []
     for field in allowed:
@@ -740,13 +740,18 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
                 sets[-1] = f"{field} = ${len(vals)+2}::jsonb"
             vals.append(val)
 
-    if not sets:
+    if sets:
+        await execute(
+            f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
+            workflow_id, *vals, source_key=source_key
+        )
+    elif "roles" not in body:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    await execute(
-        f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
-        workflow_id, *vals, source_key=source_key
-    )
+    if "roles" in body:
+        from app.services.workflow_publisher import sync_role_grants
+        await sync_role_grants(existing["intent_key"], str(existing["org_id"]), body["roles"] or [], source_key)
+
     return {"success": True}
 
 
@@ -815,6 +820,24 @@ async def workflow_builder_chat(org_slug: str, request: Request):
     return result
 
 
+@router.post("/admin/{org_slug}/api/workflow-builder/edit/{workflow_id}")
+async def start_edit_via_chat(org_slug: str, workflow_id: str):
+    """
+    Deterministic entry point for the "Edit the logic" button on a workflow's
+    settings — creates a fresh draft pre-loaded from THIS specific workflow
+    (by id, never guessed by an LLM matching on name) and returns a greeting
+    so the builder chat can open already primed with the current state.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    wf = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    from app.services.workflow_builder_agent import start_edit_draft
+    result = await start_edit_draft(dict(wf), str(wf["org_id"]), source_key)
+    return result
+
+
 @router.post("/admin/{org_slug}/api/workflow-builder/pdf-extract")
 async def extract_pdf_template_endpoint(org_slug: str, request: Request):
     form = await request.form()
@@ -869,27 +892,42 @@ async def get_draft_publish_info(org_slug: str, draft_id: str):
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/publish/{draft_id}")
-async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishRequest):
-    """Publish a draft to live workflows with structured governance settings."""
+async def publish_workflow_endpoint(org_slug: str, draft_id: str):
+    """
+    Publish a draft to live workflows. No request body — fields, constraints,
+    who can use it, and the trigger command were all already gathered
+    conversationally (see workflow_builder_agent.py). This click is the only
+    thing that ever writes to the live `workflows` table; the LLM can't
+    trigger it on its own (there's no publish tool in _TOOLS).
+
+    Also the single path for republishing an EDITED existing workflow (the
+    "Edit the logic" chat flow) — publish_draft's ON CONFLICT DO UPDATE
+    upserts on intent_key, so this doubles as create-or-update.
+    """
     source_key = await _resolve_source_key(org_slug)
-    
+
     draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
     if not draft or draft["status"] != "ready_for_review":
         raise HTTPException(status_code=409, detail="Draft is not ready for review")
-    
-    # Server-side validation
+
+    org_id = str(draft["org_id"])
+    gates = _parse_jsonb(draft.get("gates"), [])
+    roles = draft.get("granted_roles") or []
+    slash_command = draft.get("slash_command")
+
     valid_roles = {r["name"] for r in await fetch_all(
-        "SELECT name FROM roles WHERE org_id = $1", draft["org_id"], source_key=source_key
+        "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
     )}
-    if not body.roles or not set(body.roles) <= valid_roles:
-        raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
+    if not roles or not set(roles) <= valid_roles:
+        raise HTTPException(422, f"Who can use this must be a non-empty subset of {sorted(valid_roles)} — "
+                                  f"go back to chat and say who should be able to use it.")
 
     # Structural gate validation (types, level ordering, etc.) — same checker
     # used at every other write path to workflows (see workflow_validator.py).
     from app.services.workflow_validator import validate_workflow_config
     gate_problems = validate_workflow_config({
         "workflow_type": draft.get("workflow_type") or "action",
-        "gates": body.gates,
+        "gates": gates,
     })
     if gate_problems:
         raise HTTPException(422, {"error": "Constraints are inconsistent", "problems": gate_problems})
@@ -898,7 +936,7 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
     # actually exist in this org — the structural checker above has no DB
     # access, so that reference check lives here instead.
     referenced_roles: set[str] = set()
-    for g in body.gates:
+    for g in gates:
         for lvl in (g.get("levels") or []):
             if lvl.get("role"):
                 referenced_roles.add(lvl["role"])
@@ -908,90 +946,30 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
     if unknown_roles:
         raise HTTPException(422, f"Constraints reference unknown role(s): {sorted(unknown_roles)}")
 
-    cmd = body.slash_command.strip().lstrip("/").lower()
+    if not slash_command:
+        raise HTTPException(422, "No trigger command set yet — go back to chat and say what it should be.")
+    cmd = slash_command.strip().lstrip("/").lower()
     if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
         raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
-    
-    # Check command uniqueness
-    existing = await fetch_one(
-        "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true",
-        draft["org_id"], cmd, source_key=source_key
-    )
-    if existing:
-        raise HTTPException(409, f"Command '/{cmd}' is already in use")
-    
-    # Atomic transaction: insert workflow + grant permissions + mark draft published
-    async with (await get_pool(source_key)).acquire() as conn:
-        async with conn.transaction():
-            # Insert workflow
-            # Legacy otp_required/otp_threshold/approval_threshold columns are
-            # kept in sync as a best-effort mirror (single-level only) purely
-            # so any older reporting that still reads them directly isn't
-            # left silently stale — gates[] is the authoritative source the
-            # execution engine actually reads (step_interpreter.py).
-            legacy_otp = next((g for g in body.gates if g.get("type") == "otp"), None)
-            legacy_appr = next((g for g in body.gates if g.get("type") == "approval_chain"), None)
 
-            wf_id = await conn.fetchval("""
-                INSERT INTO workflows (
-                    org_id, name, intent_key, description, workflow_type,
-                    training_phrases, entity_schema, calc_rules, steps,
-                    sql_template, sql_params_order, response_format,
-                    business_glossary, llm_system_prompt, pdf_config,
-                    response_template, otp_required, otp_threshold, approval_threshold,
-                    gates,
-                    slash_command, command_description, menu_section,
-                    version, is_active, adapter_method, trigger_patterns
-                ) VALUES (
-                    $1, $2, $3, $4, $5,
-                    $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
-                    $10, $11::jsonb, $12,
-                    $13::jsonb, $14, $15::jsonb,
-                    $16, $17, $18, $19,
-                    $20::jsonb,
-                    $21, $22, $23,
-                    1, true, 'generic', '[]'::jsonb
-                ) RETURNING id
-            """,
-                draft["org_id"],
-                draft.get("name") or draft.get("intent_key"),
-                draft["intent_key"],
-                draft.get("description", ""),
-                draft.get("workflow_type") or "action",
-                draft.get("training_phrases", "[]"),
-                draft.get("entity_schema", "{}"),
-                draft.get("calc_rules", "{}"),
-                draft.get("steps", "[]"),
-                draft.get("sql_template"),
-                draft.get("sql_params_order", "[]"),
-                draft.get("response_format") or "generic",
-                draft.get("business_glossary", "{}"),
-                draft.get("llm_system_prompt"),
-                draft.get("pdf_config"),
-                draft.get("response_template"),
-                legacy_otp is not None,
-                (legacy_otp or {}).get("when", {}).get("gte"),
-                (legacy_appr or {}).get("when", {}).get("gte"),
-                json.dumps(body.gates),
-                cmd,
-                draft.get("command_description"),
-                draft.get("menu_section") or "other",
-            )
-            
-            # Grant permissions
-            await conn.execute("""
-                UPDATE roles SET permissions = array_append(permissions, $1)
-                WHERE org_id = $2 AND name = ANY($3) AND NOT permissions @> ARRAY[$1]
-            """, draft["intent_key"], draft["org_id"], body.roles)
-            
-            # Mark draft as published
-            await conn.execute("""
-                UPDATE workflow_drafts
-                SET status = 'published', published_workflow_id = $2, updated_at = now()
-                WHERE id = $1
-            """, draft_id, wf_id)
-    
-    return {"ok": True, "workflow_id": str(wf_id)}
+    # Check command uniqueness (excluding this same workflow, since editing
+    # it via chat and republishing under the same command is expected)
+    dupe = await fetch_one(
+        "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND intent_key != $3",
+        org_id, cmd, draft.get("intent_key") or "", source_key=source_key
+    )
+    if dupe:
+        raise HTTPException(409, f"Command '/{cmd}' is already in use")
+
+    from app.services.workflow_publisher import publish_draft
+    draft_dict = dict(draft)
+    draft_dict["slash_command"] = cmd
+    try:
+        result = await publish_draft(draft_dict, org_id, source_key)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    return {"ok": True, "workflow_id": result["workflow_id"]}
 
 
 
@@ -1126,8 +1104,11 @@ input:checked+.slider:before{transform:translateX(18px)}
     <!-- ── RECENT ACTIVITY ───────────────────────────────────────── -->
     <div class="card">
       <div class="card-title">📋 Recent Activity</div>
-      <table>
-        <thead><tr><th>User</th><th>Action</th><th>Timestamp</th><th>Status</th></tr></thead>
+      <table style="table-layout:fixed">
+        <thead><tr>
+          <th style="width:18%">User</th><th style="width:34%">Action</th>
+          <th style="width:28%">Timestamp</th><th style="width:20%">Status</th>
+        </tr></thead>
         <tbody id="activityTable"></tbody>
       </table>
     </div>
@@ -1135,11 +1116,12 @@ input:checked+.slider:before{transform:translateX(18px)}
   </div><!-- /content -->
 </div><!-- /container -->
 
-<!-- ── WORKFLOW EDIT MODAL ───────────────────────────────────────── -->
+<!-- ── WORKFLOW SETTINGS MODAL (structural only — see PUT /workflow/{id}) ── -->
 <div class="modal-bg" id="editModal">
   <div class="modal">
-    <div class="modal-title">✏️ Edit Workflow</div>
+    <div class="modal-title">⚙️ Workflow Settings</div>
     <input type="hidden" id="editId">
+    <input type="hidden" id="editWorkflowIdForLogic">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div class="field-row">
         <div class="field-label">Name</div>
@@ -1155,11 +1137,12 @@ input:checked+.slider:before{transform:translateX(18px)}
       <textarea class="field-input" id="editDescription" rows="2"></textarea>
     </div>
     <div class="field-row">
-      <div class="field-label">Workflow Type</div>
-      <select class="field-input" id="editType" style="max-width:200px">
-        <option value="action">action</option>
-        <option value="read">read</option>
-      </select>
+      <div class="field-label">Trigger command</div>
+      <input class="field-input" id="editSlashCommand" placeholder="e.g. stock" style="max-width:200px">
+    </div>
+    <div class="field-row">
+      <div class="field-label">Who can use it</div>
+      <div id="editRolesContainer" style="display:flex;flex-wrap:wrap;gap:14px"></div>
     </div>
     <div class="field-row">
       <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
@@ -1168,82 +1151,75 @@ input:checked+.slider:before{transform:translateX(18px)}
       </div>
       <div id="editGatesContainer"></div>
     </div>
-    <div class="field-row">
-      <div class="field-label">steps (JSON array)</div>
-      <textarea class="json-editor" id="editSteps"></textarea>
+
+    <div style="border-top:1px solid #e8edf5;margin-top:16px;padding-top:14px">
+      <div class="field-label">What this workflow actually does — fields it collects, calculations, the step pipeline</div>
+      <div style="font-size:12px;color:#888;margin-bottom:8px">
+        That's logic, not a setting — it's edited by talking, same as building a new workflow.
+      </div>
+      <button class="btn btn-purple" onclick="openEditLogic()">💬 Edit the logic for this workflow</button>
+      <button class="btn btn-gray" onclick="viewRawJson()">🔍 View raw JSON (read-only)</button>
     </div>
-    <div class="field-row">
-      <div class="field-label">calc_rules (JSON)</div>
-      <textarea class="json-editor" id="editCalcRules"></textarea>
-    </div>
-    <div class="field-row">
-      <div class="field-label">entity_schema (JSON)</div>
-      <textarea class="json-editor" id="editEntitySchema"></textarea>
-    </div>
-    <div class="field-row">
-      <div class="field-label">pdf_config (JSON)</div>
-      <textarea class="json-editor" id="editPdfConfig"></textarea>
-    </div>
-    <div class="field-row">
-      <div class="field-label">response_template</div>
-      <textarea class="field-input" id="editResponseTemplate" rows="2"></textarea>
-    </div>
+
     <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn btn-primary" onclick="saveWorkflowEdit()">💾 Save Changes</button>
+      <button class="btn btn-primary" onclick="saveWorkflowEdit()">💾 Save Settings</button>
       <button class="btn btn-gray" onclick="closeModal('editModal')">Cancel</button>
     </div>
   </div>
 </div>
 
-<!-- ── WORKFLOW CHAT BUILDER MODAL ──────────────────────────────── -->
-<div class="modal-bg" id="builderModal">
-  <div class="modal" style="max-width:640px">
+<!-- ── RAW JSON VIEW (read-only — debugging only, not an editing surface) ── -->
+<div class="modal-bg" id="jsonViewModal">
+  <div class="modal" style="max-width:700px">
     <div class="modal-title" style="display:flex;justify-content:space-between">
-      <span>🤖 Build New Workflow</span>
-      <button class="btn btn-gray" onclick="closeModal('builderModal')" style="padding:4px 10px">✕</button>
+      <span>🔍 Raw workflow JSON (read-only)</span>
+      <button class="btn btn-gray" onclick="closeModal('jsonViewModal')" style="padding:4px 10px">✕</button>
     </div>
-    <div id="chatMessages" class="chat-messages"></div>
-    <div class="chat-input-row">
-      <input type="file" id="chatAttachment" accept="application/pdf" style="display:none"
-             onchange="onPdfSelected(this)">
-      <button class="btn btn-gray" onclick="document.getElementById('chatAttachment').click()" title="Attach sample PDF">📎</button>
-      <span id="attachLabel" style="font-size:11px;color:#888;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-      <input id="chatInput" class="field-input" placeholder="Describe your workflow..."
-             style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMsg()}">
-      <button class="btn btn-purple" onclick="sendChatMsg()">Send</button>
-    </div>
-    <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
+    <pre id="jsonViewContent" class="json-editor" style="min-height:400px;background:#fafbfc"></pre>
   </div>
 </div>
 
-<!-- ── PUBLISH PANEL ─────────────────────────────────────────────── -->
-<div class="modal-bg" id="publishModal">
-  <div class="modal" style="max-width:640px">
-    <div class="modal-title">🚀 Publish Workflow</div>
-    <input type="hidden" id="publishDraftId">
-    <div class="summary-card" id="publishSummary" style="margin:0 0 14px 0"></div>
-
-    <div class="field-row">
-      <div class="field-label">Who can use this</div>
-      <div id="publishRolesContainer" style="display:flex;flex-wrap:wrap;gap:14px"></div>
+<!-- ── WORKFLOW CHAT BUILDER MODAL ──────────────────────────────── -->
+<div class="modal-bg" id="builderModal">
+  <div class="modal" style="max-width:920px">
+    <div class="modal-title" style="display:flex;justify-content:space-between">
+      <span id="builderTitle">💬 Build / Edit a Workflow</span>
+      <button class="btn btn-gray" onclick="closeModal('builderModal')" style="padding:4px 10px">✕</button>
     </div>
-
-    <div class="field-row">
-      <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
-        <span>Constraints (OTP / approval / permission)</span>
-        <button class="btn btn-purple" style="padding:4px 10px;font-size:11px" onclick="gateAdd('pub')">+ Add constraint</button>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:14px">
+      <div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <input type="file" id="chatAttachment" accept="application/pdf" style="display:none"
+                 onchange="onPdfSelected(this)">
+          <button class="btn btn-gray" onclick="document.getElementById('chatAttachment').click()" title="Attach sample PDF">📎</button>
+          <span id="attachLabel" style="font-size:11px;color:#888;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          <input id="chatInput" class="field-input" placeholder="Describe your workflow..."
+                 style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMsg()}">
+          <button class="btn btn-purple" onclick="sendChatMsg()">Send</button>
+        </div>
+        <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
       </div>
-      <div id="pubGatesContainer"></div>
+      <div>
+        <div class="field-label">Draft so far</div>
+        <pre id="draftRecap" style="background:#fafbfc;border:1px solid #e8edf5;border-radius:8px;padding:10px;
+             font-size:12px;line-height:1.6;white-space:pre-wrap;font-family:inherit;height:320px;overflow-y:auto;margin:0">Tell me what you want to build...</pre>
+      </div>
     </div>
+  </div>
+</div>
 
-    <div class="field-row">
-      <div class="field-label">Trigger command</div>
-      <input class="field-input" id="publishSlashCommand" placeholder="e.g. stock" style="max-width:200px">
-    </div>
-
-    <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn btn-primary" onclick="publishDraft()">🚀 Publish</button>
-      <button class="btn btn-gray" onclick="closeModal('publishModal')">Cancel</button>
+<!-- ── CONFIRM & PUBLISH — appears once the draft is ready; nothing left to
+     fill in, everything above was already gathered by chatting ──────────── -->
+<div class="modal-bg" id="publishModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-title">🚀 Publish this workflow?</div>
+    <input type="hidden" id="publishDraftId">
+    <pre id="publishRecap" style="background:#f0fdf4;border:2px solid #16a34a;border-radius:8px;padding:14px;
+         font-size:13px;line-height:1.7;white-space:pre-wrap;font-family:inherit;margin:0 0 14px 0"></pre>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="publishDraft()">✅ Publish</button>
+      <button class="btn btn-gray" onclick="backToChat()">✏️ Change something</button>
     </div>
     <div id="publishStatus" style="font-size:11px;color:#888;margin-top:6px"></div>
   </div>
@@ -1317,7 +1293,10 @@ function renderWorkflows(workflows) {
           <span class="slider"></span>
         </label>
       </td>
-      <td>${gateChipsHTML(w.gates)}</td>
+      <td>
+        <div>${gateChipsHTML(w.gates)}</div>
+        <button class="btn btn-gray" style="margin-top:4px;padding:2px 8px;font-size:10px" onclick="openEdit('${w.id}',true)">+ Add / manage</button>
+      </td>
       <td style="white-space:nowrap">
         <button class="btn btn-gray" onclick="openEdit('${w.id}')" style="margin-right:4px">✏️ Edit</button>
         <button class="btn btn-danger" onclick="deleteWorkflow('${w.id}','${w.name}')">🗑️</button>
@@ -1345,7 +1324,7 @@ async function deleteWorkflow(id, name) {
 // fresh draft never share state. Each gate is a plain object matching
 // workflows.gates[] exactly (see migrations/011_*_gates_schema.sql):
 //   {id, type: 'otp'|'approval_chain'|'permission', when:{...}, levels:[...], role_any_of:[...]}
-const gateStores = { edit: [], pub: [] };
+const gateStores = { edit: [] };
 let gateRolesList = [];
 
 async function refreshGateRoles() {
@@ -1481,45 +1460,42 @@ function gateCardHTML(g, idx, storeName) {
 }
 
 // ── Edit Modal ────────────────────────────────────────────────────
-async function openEdit(id) {
+async function openEdit(id, focusGates) {
   const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
   if (!r) return;
   const w = await r.json();
   document.getElementById('editId').value = id;
+  document.getElementById('editWorkflowIdForLogic').value = id;
   document.getElementById('editName').value = w.name || '';
   document.getElementById('editIntentKey').value = w.intent_key || '';
   document.getElementById('editDescription').value = w.description || '';
-  document.getElementById('editType').value = w.workflow_type || 'action';
+  document.getElementById('editSlashCommand').value = w.slash_command || '';
+
   gateStores.edit = w.gates || [];
   renderGates('edit');
-  document.getElementById('editSteps').value = JSON.stringify(w.steps || [], null, 2);
-  document.getElementById('editCalcRules').value = JSON.stringify(w.calc_rules || {}, null, 2);
-  document.getElementById('editEntitySchema').value = JSON.stringify(w.entity_schema || {}, null, 2);
-  document.getElementById('editPdfConfig').value = w.pdf_config ? JSON.stringify(w.pdf_config, null, 2) : '';
-  document.getElementById('editResponseTemplate').value = w.response_template || '';
+  if (focusGates && !gateStores.edit.length) gateAdd('edit');
+
+  const granted = w.granted_roles || [];
+  document.getElementById('editRolesContainer').innerHTML = (gateRolesList || []).map(r => `
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+      <input type="checkbox" value="${r}" class="edit-role-cb" ${granted.includes(r) ? 'checked' : ''}> ${r}
+    </label>`).join('');
+
   openModal('editModal');
+  if (focusGates) {
+    setTimeout(() => document.getElementById('editGatesContainer').scrollIntoView({behavior:'smooth', block:'center'}), 100);
+  }
 }
 
 async function saveWorkflowEdit() {
   const id = document.getElementById('editId').value;
-  let steps, calcRules, entitySchema, pdfConfig;
-  try {
-    steps        = JSON.parse(document.getElementById('editSteps').value || '[]');
-    calcRules    = JSON.parse(document.getElementById('editCalcRules').value || '{}');
-    entitySchema = JSON.parse(document.getElementById('editEntitySchema').value || '{}');
-    const pdfRaw = document.getElementById('editPdfConfig').value.trim();
-    pdfConfig    = pdfRaw ? JSON.parse(pdfRaw) : null;
-  } catch(e) {
-    alert('JSON parse error: ' + e.message);
-    return;
-  }
+  const roles = Array.from(document.querySelectorAll('.edit-role-cb:checked')).map(cb => cb.value);
   const body = {
-    name:                document.getElementById('editName').value,
-    description:         document.getElementById('editDescription').value,
-    workflow_type:       document.getElementById('editType').value,
-    gates:               gateStores.edit,
-    steps, calc_rules: calcRules, entity_schema: entitySchema, pdf_config: pdfConfig,
-    response_template:   document.getElementById('editResponseTemplate').value || null,
+    name:          document.getElementById('editName').value,
+    description:   document.getElementById('editDescription').value,
+    slash_command: document.getElementById('editSlashCommand').value,
+    gates:         gateStores.edit,
+    roles,
   };
   const r = await authenticatedFetch(API(`/workflow/${id}`), {
     method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
@@ -1527,20 +1503,59 @@ async function saveWorkflowEdit() {
   if (r) {
     const d = await r.json();
     if (d.success) { alert('✅ Saved'); closeModal('editModal'); loadData(); }
-    else alert('Error: ' + (d.detail || JSON.stringify(d)));
+    else {
+      const detail = d.detail;
+      const msg = typeof detail === 'object' ? (detail.error + (detail.problems ? '\\n• ' + detail.problems.join('\\n• ') : '')) : detail;
+      alert('Error: ' + msg);
+    }
   }
 }
 
+async function viewRawJson() {
+  const id = document.getElementById('editWorkflowIdForLogic').value;
+  const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
+  if (!r) return;
+  const w = await r.json();
+  const view = {
+    training_phrases: w.training_phrases, entity_schema: w.entity_schema,
+    calc_rules: w.calc_rules, steps: w.steps, sql_template: w.sql_template,
+    business_glossary: w.business_glossary, pdf_config: w.pdf_config,
+    response_template: w.response_template, llm_system_prompt: w.llm_system_prompt,
+  };
+  document.getElementById('jsonViewContent').textContent = JSON.stringify(view, null, 2);
+  openModal('jsonViewModal');
+}
+
 // ── Chat Builder ─────────────────────────────────────────────────
-function openBuilderChat() {
+function _resetBuilderModal() {
   chatDraftId = null;
   chatPdfAnalysis = null;
   document.getElementById('chatMessages').innerHTML = '';
   document.getElementById('chatInput').value = '';
   document.getElementById('attachLabel').textContent = '';
   document.getElementById('builderStatus').textContent = '';
+  document.getElementById('draftRecap').textContent = 'Tell me what you want to build...';
+  document.getElementById('builderTitle').textContent = '💬 Build / Edit a Workflow';
+}
+
+function openBuilderChat() {
+  _resetBuilderModal();
   openModal('builderModal');
   appendBotMsg('Hi! Tell me about the workflow you want to build — what should it do?');
+}
+
+async function openEditLogic() {
+  const id = document.getElementById('editWorkflowIdForLogic').value;
+  const r = await authenticatedFetch(API(`/workflow-builder/edit/${id}`), {method: 'POST'});
+  if (!r || !r.ok) { alert('Could not start edit.'); return; }
+  const data = await r.json();
+  _resetBuilderModal();
+  chatDraftId = data.draft_id;
+  document.getElementById('draftRecap').textContent = data.draft_recap || '';
+  document.getElementById('builderTitle').textContent = '💬 Edit Workflow';
+  closeModal('editModal');
+  openModal('builderModal');
+  appendBotMsg(data.greeting);
 }
 
 async function onPdfSelected(input) {
@@ -1628,15 +1643,16 @@ async function sendChatMsg() {
     const data = await resp.json();
     chatDraftId = data.draft_id;
 
+    // Deterministic, server-rendered — always reflects what's actually
+    // saved, not what the LLM's reply claims (see build_draft_recap).
+    if (data.draft_recap) document.getElementById('draftRecap').textContent = data.draft_recap;
+
     if (data.summary_card) appendSummaryCard(data.summary_card);
     if (data.reply) appendBotMsg(data.reply);
 
-    if (data.published) {
-      document.getElementById('builderStatus').textContent = '✅ Workflow published!';
-      setTimeout(() => { closeModal('builderModal'); loadData(); }, 2000);
-    } else if (data.ready_for_publish) {
+    if (data.ready_for_publish) {
       document.getElementById('builderStatus').textContent = '';
-      await openPublishPanel(data.draft_id);
+      showPublishConfirm(data.draft_id, data.draft_recap);
     } else {
       document.getElementById('builderStatus').textContent = '';
     }
@@ -1647,42 +1663,27 @@ async function sendChatMsg() {
   chatTyping = false;
 }
 
-// ── Publish Panel ────────────────────────────────────────────────
-async function openPublishPanel(draftId) {
-  const r = await authenticatedFetch(API(`/workflow-builder/draft/${draftId}/publish-info`));
-  if (!r || !r.ok) { alert('Could not load publish info.'); return; }
-  const info = await r.json();
-
-  document.getElementById('publishDraftId').value = info.draft_id;
-  document.getElementById('publishSummary').innerHTML =
-    '📋 <strong>Summary</strong><br><br>' + (info.summary || '').split('\\n').join('<br>');
-  document.getElementById('publishSlashCommand').value = info.prefill?.slash_command || '';
-
-  if (info.roles && info.roles.length) gateRolesList = info.roles;
-  document.getElementById('publishRolesContainer').innerHTML = (info.roles || []).map(r => `
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-      <input type="checkbox" value="${r}" class="pub-role-cb" ${r === 'owner' ? 'checked' : ''}> ${r}
-    </label>`).join('');
-
-  gateStores.pub = info.gates || [];
-  renderGates('pub');
-
+// ── Confirm & Publish ───────────────────────────────────────────────
+// Nothing to fill in here — roles, constraints, and the trigger command
+// were all gathered by chatting. This is the one explicit, human click that
+// actually writes to the live workflows table; the LLM can never trigger it.
+function showPublishConfirm(draftId, recap) {
+  document.getElementById('publishDraftId').value = draftId;
+  document.getElementById('publishRecap').textContent = recap || '';
+  document.getElementById('publishStatus').textContent = '';
   closeModal('builderModal');
   openModal('publishModal');
 }
 
+function backToChat() {
+  closeModal('publishModal');
+  openModal('builderModal');
+}
+
 async function publishDraft() {
   const draftId = document.getElementById('publishDraftId').value;
-  const roles = Array.from(document.querySelectorAll('.pub-role-cb:checked')).map(cb => cb.value);
-  const slash = document.getElementById('publishSlashCommand').value.trim();
-  if (!roles.length) { alert('Select at least one role.'); return; }
-  if (!slash) { alert('Trigger command is required.'); return; }
-
   document.getElementById('publishStatus').textContent = 'Publishing...';
-  const r = await authenticatedFetch(API(`/workflow-builder/publish/${draftId}`), {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({roles, gates: gateStores.pub, slash_command: slash})
-  });
+  const r = await authenticatedFetch(API(`/workflow-builder/publish/${draftId}`), {method: 'POST'});
   if (!r) { document.getElementById('publishStatus').textContent = ''; return; }
   const d = await r.json();
   if (r.ok) {
@@ -1769,8 +1770,8 @@ async function loadData() {
     const logs = data.recent_logs || [];
     document.getElementById('activityTable').innerHTML = logs.map(l => `
       <tr>
-        <td>${l.user_name || '—'}</td>
-        <td>${l.intent_key}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.user_name || '—'}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.intent_key}">${l.intent_key}</td>
         <td style="color:#888;font-size:12px">${fmtDate(l.created_at)}</td>
         <td><span class="badge ${l.outcome==='success'?'badge-active':l.outcome==='pending'?'badge-inactive':'badge-inactive'}">${l.outcome}</span></td>
       </tr>

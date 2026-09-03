@@ -1,17 +1,23 @@
 """
 workflow_builder_agent.py — Conversational agent for building workflows via admin panel chat.
 
-Asks one question at a time, builds a structured draft, compiles it, shows a plain-English
-summary, and publishes only after explicit confirmation.
+Everything about a workflow — purpose, fields, constraints, who can use it, and its
+trigger command — is captured by talking, never through a settings form. Asks one
+question at a time, builds a structured draft, compiles it, shows a plain-English
+summary, and publishes only after an explicit confirm click (never something the
+LLM can trigger on its own — see run_builder_agent's "ready_for_publish" vs
+"published" distinction).
+
 Chat history is stored server-side in workflow_drafts.chat_history — never round-tripped
-through the browser.
+through the browser. A deterministic "draft recap" (build_draft_recap, below) is
+returned on every turn so the frontend's live "Draft so far" panel reflects what's
+actually saved, not what the LLM claims it saved.
 """
 import json
 import os
 import base64
 from app.db import fetch_all, fetch_one, execute
 from app.services.workflow_compiler import compile_workflow_spec
-from app.services.workflow_publisher import publish_draft
 from app.services.llm_router import chat_completion as _llm_chat
 
 from app.config import required
@@ -22,9 +28,12 @@ Never show them any technical details.
 
 EXTRACTION-FIRST RULE (highest priority):
 Before replying, extract EVERYTHING from the user's message: purpose,
-workflow type, use cases, fields, rules, thresholds — whatever is present.
-Save all of it via update_builder_draft in ONE call. Then your reply must:
-1. Briefly play back what you understood (so they can correct you)
+workflow type, use cases, fields, rules, thresholds, roles, trigger command —
+whatever is present. Save all of it via the right tool call in ONE turn. Then
+your reply must:
+1. Restate the FULL current state of the draft so far — not just what changed
+   this message — in plain terms, so a message read on its own still makes
+   sense (the admin may only glance at the latest reply, not scroll back).
 2. Ask ONLY about what is genuinely still unknown — never anything
    already stated or already in the draft
 Asking about something the user already told you is the worst failure
@@ -73,43 +82,51 @@ most useful question. Cover these topics (skip what's already answered or not re
    Then confirm back in plain terms: "Got it — OTP above Rs.50,000. Above Rs.5,00,000
    the branch manager approves; above Rs.20,00,000 the owner also approves after
    them." so they can correct you immediately if you misheard.
-   A level's role must be a role that exists in this org — if unsure, ask
-   list_existing_workflows or just use the role name the admin says; the publish
-   panel lets them fix the role picker before it goes live either way.
+   A level's role must be a role that exists in this org — if unsure, call
+   list_existing_workflows or just ask the admin what roles they have.
    NOTE: Do NOT proactively ask about constraints on a workflow the admin hasn't
    indicated needs any. Only capture them if the admin volunteers them.
 5. Does this produce a document? If yes, ask:
    "Do you have a sample PDF you already send? Attach it and I'll match the look."
    If no PDF attached, ask what the document should show.
-6. Before publishing, ask: "What short command should trigger this? I suggest /stock"
+6. Who should be able to use this — which roles? THE MOMENT the admin names one
+   or more roles, call set_roles with the FULL list of roles that should have
+   access (existing ones + new). If they say "anyone"/"all staff", still resolve
+   that to real role names via list_existing_workflows if you're unsure what
+   roles this org has, rather than guessing a name that doesn't exist.
+7. Before publishing, ask: "What short command should trigger this? I suggest /stock"
    (derive suggestion from the name; lowercase, no spaces, ≤32 chars). Save via
    update_builder_draft as slash_command. Set menu_section yourself: 'reports' if
    workflow_type is read, 'create' if action. Also write a one-line
    command_description (≤72 chars) for the menu.
-NOTE: Do NOT ask about which roles should use this workflow. Roles are assigned in the publish panel.
 
 IMPORTANT: If a message in the conversation contains "[Admin uploaded a sample PDF" — that means
 the PDF has already been analyzed and saved. Do NOT ask the admin to upload again.
 When asked about the document format, confirm you'll use the uploaded sample's layout.
 
-Once you have enough information, call compile_and_summarize.
+Once you have enough information — including who can use it and the trigger command,
+both gathered via chat like everything else — call compile_and_summarize.
 Show the summary in plain English and ask if it's correct.
 If they want changes, call revise_draft, then show the new summary.
-Only call mark_ready_for_review after an explicit "yes" on a summary you've already shown.
-The publish panel will then handle roles, fine-tuning constraints, and the final slash command.
+Only call mark_ready_for_review after an explicit "yes" on a summary you've already
+shown AND roles + slash_command are both set. The admin then sees everything you've
+gathered in one place and hits a single Publish button — that's the only thing that
+actually writes to the live workflow; you never trigger that yourself.
 
 If the first message is vague ("help me" / "I want a workflow"), call list_existing_workflows
 first, mention what already exists including unfinished drafts, and ask what to add or change.
 
 If the admin wants to MODIFY something that already exists, call list_existing_workflows to find
 its intent_key if needed, then call load_existing_workflow before asking what to change.
-The normal flow (update_builder_draft, compile_and_summarize, publish_workflow) works identically
-whether the draft started fresh or was loaded from an existing workflow."""
+The normal flow (update_builder_draft, set_gates, set_roles, compile_and_summarize) works
+identically whether the draft started fresh or was loaded from an existing workflow — when
+loaded, restate the FULL current state (including its existing constraints and roles) before
+asking what to change, since the admin may not remember everything that's already configured."""
 
 _TOOLS = [
     {"type": "function", "function": {
         "name": "list_existing_workflows",
-        "description": "List this org's live workflows and any unfinished drafts.",
+        "description": "List this org's live workflows, its roles, and any unfinished drafts.",
         "parameters": {"type": "object", "properties": {}}
     }},
     {"type": "function", "function": {
@@ -191,6 +208,18 @@ _TOOLS = [
         }, "required": ["gates"]}
     }},
     {"type": "function", "function": {
+        "name": "set_roles",
+        "description": (
+            "Set the COMPLETE list of roles allowed to use this workflow, replacing "
+            "whatever was set before. Call this the moment the admin says who should "
+            "be able to use it — always pass the full list, not just an addition."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "roles": {"type": "array", "items": {"type": "string"},
+                      "description": "Role names as they exist in this org, e.g. ['staff', 'branch_manager']"}
+        }, "required": ["roles"]}
+    }},
+    {"type": "function", "function": {
         "name": "analyze_sample_pdf",
         "description": "Analyze an uploaded PDF to extract layout instructions. Call when admin attaches a PDF.",
         "parameters": {"type": "object", "properties": {
@@ -211,7 +240,12 @@ _TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "mark_ready_for_review",
-        "description": "Mark the draft as ready for review. The admin will then use the publish panel to set roles, OTP/approval thresholds, and slash command. Call ONLY after admin said yes to a summary.",
+        "description": (
+            "Mark the draft as ready for review. The admin then sees everything gathered "
+            "so far (fields, constraints, roles, command) and hits one Publish button — "
+            "nothing left to fill in. Call ONLY after admin said yes to a summary AND "
+            "roles and slash_command are both set."
+        ),
         "parameters": {"type": "object", "properties": {}}
     }},
     {"type": "function", "function": {
@@ -222,6 +256,93 @@ _TOOLS = [
         }, "required": ["intent_key"]}
     }},
 ]
+
+
+def _parse_jsonb(val, default):
+    """asyncpg returns jsonb columns as raw JSON text — see app/db.py, no codec registered."""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return val
+
+
+def _describe_when(when: dict) -> str:
+    if not when:
+        return ""
+    field = when.get("field", "") or ""
+    is_amount = "total_amount" in field or "amount" in field
+    if "gte" in when:
+        return f"amount ≥ ₹{when['gte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≥ {when['gte']}"
+    if "lte" in when:
+        return f"amount ≤ ₹{when['lte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≤ {when['lte']}"
+    if "equals" in when:
+        return f"{field.split('.')[-1]} = {when['equals']}"
+    if "not_equals" in when:
+        return f"{field.split('.')[-1]} ≠ {when['not_equals']}"
+    return ""
+
+
+def _describe_gate(g: dict) -> str:
+    if not isinstance(g, dict):
+        return f"• {g}"
+    gtype = g.get("type")
+    when = g.get("when") or {}
+    if gtype == "otp":
+        amt = when.get("gte") if when.get("gte") is not None else when.get("lte")
+        return f"\U0001f510 OTP required above ₹{amt:,.0f}" if amt is not None else "\U0001f510 OTP required"
+    if gtype == "approval_chain":
+        cond = _describe_when(when)
+        lines = [f"\U0001f464 Approval — {cond}:" if cond else "\U0001f464 Approval:"]
+        for lvl in (g.get("levels") or []):
+            ceiling = f", up to ₹{lvl['max_amount']:,.0f}" if lvl.get("max_amount") is not None else " (no ceiling)"
+            lines.append(f"   {lvl.get('level', '?')}. {lvl.get('role') or '(role not set)'}{ceiling}")
+        return "\n".join(lines)
+    if gtype == "permission":
+        roles = ", ".join(g.get("role_any_of") or []) or "(no role set)"
+        return f"\U0001f512 Only {roles} can use this"
+    return f"• {gtype or 'unknown constraint'}"
+
+
+def build_draft_recap(draft: dict) -> str:
+    """
+    Deterministic, server-rendered plain-English recap of a draft's CURRENT
+    state — the "Draft so far" panel shown live next to the chat. Built from
+    the actual draft row, never from what the LLM said in its reply, so it
+    can't drift from what's really going to be saved. Same principle as
+    workflow_validator.py: the thing the admin is trusted to read has to be
+    generated by code, not trusted to an LLM's account of itself.
+    """
+    lines = []
+    title = draft.get("name") or draft.get("purpose") or "(untitled)"
+    lines.append(title)
+    if draft.get("purpose") and draft.get("name"):
+        lines.append(draft["purpose"])
+    if draft.get("workflow_type"):
+        lines.append(f"Type: {draft['workflow_type']}")
+
+    raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
+    if raw_fields:
+        lines.append("Fields: " + ", ".join(raw_fields))
+
+    lines.append("")
+    gates = _parse_jsonb(draft.get("gates"), [])
+    if gates:
+        lines.append("Constraints:")
+        for g in gates:
+            lines.append(_describe_gate(g))
+    else:
+        lines.append("Constraints: none")
+
+    lines.append("")
+    granted_roles = draft.get("granted_roles") or []
+    lines.append("Who can use it: " + (", ".join(granted_roles) if granted_roles else "(not set yet)"))
+    lines.append("Trigger command: " + (f"/{draft['slash_command']}" if draft.get("slash_command") else "(not set yet)"))
+
+    return "\n".join(lines)
 
 
 async def _get_or_create_draft(org_id: str, draft_id: str | None, source_key: str) -> dict:
@@ -240,6 +361,89 @@ async def _get_or_create_draft(org_id: str, draft_id: str | None, source_key: st
     return dict(row)
 
 
+async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list[str], source_key: str) -> None:
+    """
+    Shared by the load_existing_workflow tool (LLM-triggered, matched by name
+    during chat) and start_edit_draft (deterministic, triggered by clicking
+    "Edit the logic" on a specific workflow row — no name-matching involved).
+    Copies every field of a live `workflows` row into a workflow_drafts row
+    so the admin can change it by talking, exactly like building a new one.
+    """
+    steps           = _parse_jsonb(wf.get("steps"), [])
+    gates           = _parse_jsonb(wf.get("gates"), [])
+    entity_schema   = _parse_jsonb(wf.get("entity_schema"), {})
+    calc_rules      = _parse_jsonb(wf.get("calc_rules"), {})
+    sql_params      = _parse_jsonb(wf.get("sql_params_order"), [])
+    business_glossary = _parse_jsonb(wf.get("business_glossary"), {})
+    pdf_config      = _parse_jsonb(wf.get("pdf_config"), None)
+    training_phrases = _parse_jsonb(wf.get("training_phrases"), [])
+
+    await execute("""
+        UPDATE workflow_drafts SET
+            intent_key=$1, name=$2, description=$3, workflow_type=$4,
+            training_phrases=$5::jsonb, entity_schema=$6::jsonb,
+            calc_rules=$7::jsonb, steps=$8::jsonb,
+            sql_template=$9, sql_params_order=$10::jsonb,
+            response_format=$11, business_glossary=$12::jsonb,
+            llm_system_prompt=$13, pdf_config=$14::jsonb,
+            response_template=$15, otp_required=$16,
+            otp_threshold=$17, approval_threshold=$18,
+            gates=$19::jsonb, granted_roles=$20,
+            slash_command=$21, command_description=$22, menu_section=$23,
+            status='chatting', updated_at=now()
+        WHERE id=$24
+    """,
+        wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
+        json.dumps(training_phrases), json.dumps(entity_schema),
+        json.dumps(calc_rules), json.dumps(steps),
+        wf.get("sql_template"), json.dumps(sql_params),
+        wf.get("response_format") or "generic", json.dumps(business_glossary),
+        wf.get("llm_system_prompt"),
+        json.dumps(pdf_config) if pdf_config else None,
+        wf.get("response_template"), wf.get("otp_required", False),
+        wf.get("otp_threshold"), wf.get("approval_threshold"),
+        json.dumps(gates), granted_roles,
+        wf.get("slash_command"), wf.get("command_description"), wf.get("menu_section"),
+        draft_id, source_key=source_key
+    )
+
+
+async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
+    """
+    Deterministic entry point for the admin panel's "Edit the logic" button —
+    creates a fresh draft pre-loaded from a SPECIFIC workflow by id (never
+    guessed by an LLM matching a name), and seeds the chat with a greeting so
+    the builder opens already primed instead of the admin re-explaining which
+    workflow they mean or the LLM misidentifying it.
+    """
+    row = await fetch_one(
+        "INSERT INTO workflow_drafts (org_id, status) VALUES ($1, 'chatting') RETURNING *",
+        org_id, source_key=source_key
+    )
+    draft_id = str(row["id"])
+
+    granted = await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
+        org_id, wf["intent_key"], source_key=source_key
+    )
+    granted_roles = [r["name"] for r in granted]
+
+    await _copy_workflow_into_draft(wf, draft_id, granted_roles, source_key)
+
+    greeting = f"Loaded *{wf['name']}* — tell me what you'd like to change."
+    await execute(
+        "UPDATE workflow_drafts SET chat_history = $1::jsonb WHERE id = $2",
+        json.dumps([{"role": "assistant", "content": greeting}]), draft_id, source_key=source_key
+    )
+
+    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    return {
+        "draft_id":    draft_id,
+        "greeting":    greeting,
+        "draft_recap": build_draft_recap(dict(fresh)),
+    }
+
+
 async def _execute_tool(
     tool_name: str,
     tool_input: dict,
@@ -254,6 +458,9 @@ async def _execute_tool(
             "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 ORDER BY name",
             org_id, source_key=source_key
         )
+        roles = await fetch_all(
+            "SELECT name FROM roles WHERE org_id = $1 ORDER BY name", org_id, source_key=source_key
+        )
         drafts = await fetch_all("""
             SELECT id, name, purpose, status, updated_at
             FROM workflow_drafts
@@ -262,6 +469,7 @@ async def _execute_tool(
         """, org_id, draft["id"], source_key=source_key)
         return {
             "live_workflows":    [dict(r) for r in live],
+            "org_roles":         [r["name"] for r in roles],
             "unfinished_drafts": [dict(r) for r in drafts],
         }
 
@@ -275,9 +483,7 @@ async def _execute_tool(
             existing = draft.get("business_rules") or ""
             updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
         if tool_input.get("raw_fields"):
-            existing_fields = draft.get("raw_fields") or []
-            if isinstance(existing_fields, str):
-                existing_fields = json.loads(existing_fields)
+            existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
             merged = list({*existing_fields, *tool_input["raw_fields"]})
             updates["raw_fields"] = json.dumps(merged)
         if tool_input.get("slash_command"):
@@ -311,6 +517,15 @@ async def _execute_tool(
         )
         draft["gates"] = gates
         return {"saved_gates": len(gates)}
+
+    if tool_name == "set_roles":
+        roles = tool_input.get("roles") or []
+        await execute(
+            "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
+            roles, draft["id"], source_key=source_key
+        )
+        draft["granted_roles"] = roles
+        return {"saved_roles": roles}
 
     if tool_name == "analyze_sample_pdf":
         if not attachment_b64:
@@ -400,6 +615,10 @@ async def _execute_tool(
             return {"error": "Nothing compiled yet. Please describe the workflow first."}
         if not fresh.get("intent_key"):
             return {"error": "Workflow has no name yet — please compile first."}
+        if not fresh.get("granted_roles"):
+            return {"error": "No one's been given access yet — ask who should be able to use this before marking it ready."}
+        if not fresh.get("slash_command"):
+            return {"error": "No trigger command set yet — ask what it should be before marking it ready."}
         await execute(
             "UPDATE workflow_drafts SET status = 'ready_for_review', updated_at = now() WHERE id = $1",
             draft["id"], source_key=source_key
@@ -407,7 +626,7 @@ async def _execute_tool(
         return {
             "_show_publish_panel": True,
             "draft_id": str(draft["id"]),
-            "message": "Draft is ready — review the settings panel and hit Publish."
+            "message": "Everything's gathered — review the recap and hit Publish."
         }
 
     if tool_name == "load_existing_workflow":
@@ -419,61 +638,23 @@ async def _execute_tool(
         if not wf:
             return {"error": f"No workflow found with key '{intent_key}'. Check the name and try again."}
         wf = dict(wf)
-        steps = wf.get("steps")
-        if isinstance(steps, str):
-            try:
-                steps = json.loads(steps)
-            except Exception:
-                steps = []
-        gates = wf.get("gates")
-        if isinstance(gates, str):
-            try:
-                gates = json.loads(gates)
-            except (json.JSONDecodeError, TypeError):
-                gates = []
 
-        await execute("""
-            UPDATE workflow_drafts SET
-                intent_key=$1, name=$2, description=$3, workflow_type=$4,
-                training_phrases=$5::jsonb, entity_schema=$6::jsonb,
-                calc_rules=$7::jsonb, steps=$8::jsonb,
-                sql_template=$9, sql_params_order=$10::jsonb,
-                response_format=$11, business_glossary=$12::jsonb,
-                llm_system_prompt=$13, pdf_config=$14::jsonb,
-                response_template=$15, otp_required=$16,
-                otp_threshold=$17, approval_threshold=$18,
-                gates=$19::jsonb,
-                slash_command=$20, command_description=$21, menu_section=$22,
-                status='chatting', updated_at=now()
-            WHERE id=$23
-        """,
-            wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
-            json.dumps(wf.get("training_phrases") or []),
-            json.dumps(wf.get("entity_schema") or {}),
-            json.dumps(wf.get("calc_rules") or {}),
-            json.dumps(steps or []),
-            wf.get("sql_template"),
-            json.dumps(wf.get("sql_params_order") or []),
-            wf.get("response_format") or "generic",
-            json.dumps(wf.get("business_glossary") or {}),
-            wf.get("llm_system_prompt"),
-            json.dumps(wf.get("pdf_config")) if wf.get("pdf_config") else None,
-            wf.get("response_template"),
-            wf.get("otp_required", False),
-            wf.get("otp_threshold"),
-            wf.get("approval_threshold"),
-            json.dumps(gates or []),
-            wf.get("slash_command"),
-            wf.get("command_description"),
-            wf.get("menu_section"),
-            draft["id"],
-            source_key=source_key
+        granted = await fetch_all(
+            "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
+            org_id, intent_key, source_key=source_key
         )
+        granted_roles = [r["name"] for r in granted]
+
+        await _copy_workflow_into_draft(wf, draft["id"], granted_roles, source_key)
+        draft["granted_roles"] = granted_roles
+        draft["gates"] = _parse_jsonb(wf.get("gates"), [])
+
         return {
             "loaded": True,
             "name": wf["name"],
             "intent_key": intent_key,
-            "gates": gates or [],
+            "current_gates": draft["gates"],
+            "current_roles": granted_roles,
             "message": f"Loaded '{wf['name']}' — tell me what to change."
         }
 
@@ -496,7 +677,9 @@ async def run_builder_agent(
         {
             "reply":               str,      — message to show the admin
             "draft_id":            str,      — use on next call
-            "summary_card":        str|None, — plain-English summary if compiled
+            "draft_recap":         str,      — deterministic "Draft so far" text, always present
+            "summary_card":        str|None, — plain-English summary if just compiled
+            "ready_for_publish":   bool,      — show the confirm-and-publish screen
             "published":           bool,
             "published_intent_key": str|None,
         }
@@ -543,22 +726,14 @@ async def run_builder_agent(
         draft_context += f"Purpose: {draft['purpose']}\n"
     if draft.get("workflow_type"):
         draft_context += f"Workflow Type: {draft['workflow_type']}\n"
-    if draft.get("raw_fields"):
-        raw_fields = draft.get("raw_fields")
-        if isinstance(raw_fields, str):
-            try:
-                raw_fields = json.loads(raw_fields)
-            except (json.JSONDecodeError, TypeError):
-                raw_fields = []
-        draft_context += f"Fields to collect: {', '.join(raw_fields) if raw_fields else 'none'}\n"
-    draft_gates = draft.get("gates")
-    if isinstance(draft_gates, str):
-        try:
-            draft_gates = json.loads(draft_gates)
-        except (json.JSONDecodeError, TypeError):
-            draft_gates = []
+    raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
+    if raw_fields:
+        draft_context += f"Fields to collect: {', '.join(raw_fields)}\n"
+    draft_gates = _parse_jsonb(draft.get("gates"), [])
     if draft_gates:
         draft_context += f"Constraints so far (gates): {json.dumps(draft_gates)}\n"
+    if draft.get("granted_roles"):
+        draft_context += f"Roles allowed so far: {', '.join(draft['granted_roles'])}\n"
     if draft.get("business_rules"):
         draft_context += f"Business Rules: {draft['business_rules']}\n"
     if draft.get("slash_command"):
@@ -579,6 +754,10 @@ async def run_builder_agent(
     published_intent_key = None
     has_pdf_preview = False
     ready_for_publish = False
+
+    async def _recap() -> str:
+        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
+        return build_draft_recap(dict(fresh)) if fresh else build_draft_recap(draft)
 
     for _ in range(max_iterations):
         response = await _llm_chat(
@@ -601,6 +780,7 @@ async def run_builder_agent(
             return {
                 "reply":                reply,
                 "draft_id":             str(draft["id"]),
+                "draft_recap":          await _recap(),
                 "summary_card":         summary_card,
                 "has_pdf_preview":      has_pdf_preview,
                 "published":            published,
@@ -631,10 +811,10 @@ async def run_builder_agent(
                 has_pdf_preview = result.get("has_pdf_preview", False)
 
             # mark_ready_for_review is the deterministic signal that the
-            # publish panel should open — previously this was only ever
-            # visible to the LLM (as a tool result it then paraphrased into
-            # chat text), so the frontend had no reliable way to know a
-            # draft was ready and never actually opened a publish flow.
+            # confirm-and-publish screen should open — previously this was
+            # only ever visible to the LLM (as a tool result it then
+            # paraphrased into chat text), so the frontend had no reliable
+            # way to know a draft was ready.
             if tc.function.name == "mark_ready_for_review" and result.get("_show_publish_panel"):
                 ready_for_publish = True
 
@@ -658,6 +838,7 @@ async def run_builder_agent(
     return {
         "reply":                reply,
         "draft_id":             str(draft["id"]),
+        "draft_recap":          await _recap(),
         "summary_card":         summary_card,
         "has_pdf_preview":      has_pdf_preview,
         "published":            published,

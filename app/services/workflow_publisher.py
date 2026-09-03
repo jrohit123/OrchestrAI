@@ -6,7 +6,7 @@ The old row is NOT versioned (versions table deferred) — the draft row itself
 stays as the history with status='published'.
 """
 import json
-from app.db import fetch_one, execute
+from app.db import fetch_one, fetch_all, execute
 
 
 def _j(val, default=None):
@@ -18,11 +18,42 @@ def _j(val, default=None):
     return val
 
 
-async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> dict:
+async def sync_role_grants(intent_key: str, org_id: str, desired_roles: list[str], source_key: str) -> None:
+    """
+    Set a workflow's role access to EXACTLY desired_roles — grants roles that
+    should now have it, revokes roles that shouldn't. Unlike the old
+    append-only logic (array_append with no removal path), this has to
+    actually revoke now: a role gathered via chat one turn can be dropped by
+    the admin ("actually only staff, not branch_manager") on a later turn,
+    via set_roles replacing the whole list — publishing has to make the live
+    grants match that replacement, not just accumulate onto it.
+    """
+    all_roles = await fetch_all(
+        "SELECT id, name, permissions FROM roles WHERE org_id = $1", org_id, source_key=source_key
+    )
+    desired = set(desired_roles or [])
+    for r in all_roles:
+        has_it = intent_key in (r["permissions"] or [])
+        wants_it = r["name"] in desired
+        if wants_it and not has_it:
+            await execute(
+                "UPDATE roles SET permissions = array_append(permissions, $1) "
+                "WHERE id = $2 AND NOT $1 = ANY(permissions)",
+                intent_key, r["id"], source_key=source_key
+            )
+        elif has_it and not wants_it:
+            await execute(
+                "UPDATE roles SET permissions = array_remove(permissions, $1) WHERE id = $2",
+                intent_key, r["id"], source_key=source_key
+            )
+
+
+async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") -> dict:
     """
     Publish a workflow_drafts row to the live workflows table.
     Returns {"published": True, "intent_key": ..., "is_new": bool}
-    Raises ValueError if the draft is not ready_for_review.
+    Raises ValueError if the draft is not ready_for_review, or if config is
+    inconsistent (see workflow_validator.validate_workflow_config).
     """
     if draft.get("status") not in ("ready_for_review", "chatting"):
         raise ValueError(
@@ -42,11 +73,11 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
 
     existing = await fetch_one(
         "SELECT id, version FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, draft["intent_key"]
+        org_id, draft["intent_key"], source_key=source_key
     )
     new_version = (existing["version"] + 1) if existing else 1
 
-    await execute("""
+    row = await fetch_one("""
         INSERT INTO workflows (
             org_id, name, intent_key, description, workflow_type,
             training_phrases, entity_schema, calc_rules, steps,
@@ -90,6 +121,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
             slash_command       = EXCLUDED.slash_command,
             command_description = EXCLUDED.command_description,
             menu_section        = EXCLUDED.menu_section
+        RETURNING id
     """,
         org_id,
         draft.get("name") or draft.get("intent_key"),
@@ -115,40 +147,25 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
         draft.get("slash_command"),
         draft.get("command_description"),
         draft.get("menu_section") or "other",
+        source_key=source_key
     )
+    workflow_id = row["id"]
 
-    # Grant permissions to specified roles (from draft.granted_roles)
-    granted_roles = draft.get("granted_roles")
-    if granted_roles:
-        if isinstance(granted_roles, str):
-            try:
-                granted_roles = json.loads(granted_roles)
-            except (json.JSONDecodeError, TypeError):
-                granted_roles = []
-        if granted_roles:
-            await execute("""
-                UPDATE roles SET permissions = array_append(permissions, $1)
-                WHERE org_id = $2 AND name = ANY($3)
-                  AND NOT permissions @> ARRAY[$1]
-            """, draft["intent_key"], org_id, granted_roles)
-    else:
-        # Fallback: grant to owner role (minimum — admin can add more later)
-        await execute("""
-            UPDATE roles
-            SET permissions = array_append(permissions, $1)
-            WHERE org_id = $2 AND name = 'owner'
-              AND NOT $1 = ANY(permissions)
-        """, draft["intent_key"], org_id)
+    # granted_roles is a text[] column (asyncpg decodes arrays natively,
+    # unlike jsonb — no _parse_jsonb needed here).
+    granted_roles = draft.get("granted_roles") or []
+    await sync_role_grants(draft["intent_key"], org_id, granted_roles, source_key)
 
     # Mark draft as published
     await execute(
-        "UPDATE workflow_drafts SET status = 'published', updated_at = now() WHERE id = $1",
-        draft["id"]
+        "UPDATE workflow_drafts SET status = 'published', published_workflow_id = $2, updated_at = now() WHERE id = $1",
+        draft["id"], workflow_id, source_key=source_key
     )
 
     return {
         "published": True,
         "intent_key": draft["intent_key"],
+        "workflow_id": str(workflow_id),
         "is_new": existing is None,
         "version": new_version,
     }
