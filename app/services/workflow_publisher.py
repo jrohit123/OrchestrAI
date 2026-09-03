@@ -53,6 +53,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
             sql_template, sql_params_order, response_format,
             business_glossary, llm_system_prompt, pdf_config,
             response_template, otp_required, otp_threshold, approval_threshold,
+            gates,
             adapter_method, version, is_active,
             trigger_patterns, slash_command, command_description, menu_section
         ) VALUES (
@@ -61,8 +62,9 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
             $10,$11::jsonb,$12,
             $13::jsonb,$14,$15::jsonb,
             $16,$17,$18,$19,
-            'generic',$20,true,
-            '[]'::jsonb,$21,$22,$23
+            $20::jsonb,
+            'generic',$21,true,
+            '[]'::jsonb,$22,$23,$24
         )
         ON CONFLICT (org_id, intent_key) DO UPDATE SET
             name                = EXCLUDED.name,
@@ -82,6 +84,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
             otp_required        = EXCLUDED.otp_required,
             otp_threshold       = EXCLUDED.otp_threshold,
             approval_threshold  = EXCLUDED.approval_threshold,
+            gates               = EXCLUDED.gates,
             version             = EXCLUDED.version,
             is_active           = true,
             slash_command       = EXCLUDED.slash_command,
@@ -107,6 +110,7 @@ async def publish_draft(draft: dict, org_id: str, published_by_user_id: str) -> 
         bool(draft.get("otp_required", False)),
         draft.get("otp_threshold"),
         draft.get("approval_threshold"),
+        _j(draft.get("gates"), "[]"),
         new_version,
         draft.get("slash_command"),
         draft.get("command_description"),

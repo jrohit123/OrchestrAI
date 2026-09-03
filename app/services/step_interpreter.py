@@ -211,6 +211,14 @@ def _when_value(v, ctx: dict):
     return v
 
 
+def _to_float(v):
+    """Best-effort numeric coercion for gte/lte/gt/lt comparisons. None on failure."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _eval_when_condition(cond: dict, ctx: dict) -> bool:
     actual = _resolve_path(ctx, cond["field"])
 
@@ -225,9 +233,72 @@ def _eval_when_condition(cond: dict, ctx: dict) -> bool:
     if "exists" in cond:
         present = actual not in (None, "", [], {})
         return present is bool(cond["exists"])
+    # Numeric comparisons — needed for amount-based gates (gates[].when), not
+    # previously expressible through the guard DSL at all (thresholds used to
+    # be hand-coded inline in _op_otp_gate/_op_approval_gate instead).
+    if "gte" in cond:
+        a, b = _to_float(actual), _to_float(_when_value(cond["gte"], ctx))
+        return a is not None and b is not None and a >= b
+    if "lte" in cond:
+        a, b = _to_float(actual), _to_float(_when_value(cond["lte"], ctx))
+        return a is not None and b is not None and a <= b
+    if "gt" in cond:
+        a, b = _to_float(actual), _to_float(_when_value(cond["gt"], ctx))
+        return a is not None and b is not None and a > b
+    if "lt" in cond:
+        a, b = _to_float(actual), _to_float(_when_value(cond["lt"], ctx))
+        return a is not None and b is not None and a < b
 
     logger.warning(f"Unrecognised 'when' guard, running step anyway: {cond}")
     return True
+
+
+def _gate_matches(gate: dict, ctx: dict) -> bool:
+    """A gate with no 'when' always applies. Reuses the same guard evaluator as steps[]."""
+    return _step_enabled({"when": gate.get("when")}, ctx)
+
+
+def _required_levels_for_gate(gate: dict, amount: float) -> list[dict]:
+    """
+    Walk an approval_chain gate's levels[] in order and return only the ones
+    actually required for this amount.
+
+    Level 1 is always required once the gate's own 'when' has matched. Level
+    N (N>1) is only required if the amount exceeds level (N-1)'s max_amount —
+    i.e. max_amount is "this role can clear up to here; beyond it, escalate."
+    max_amount=null means "no ceiling" — the chain stops there since nothing
+    beyond it could ever be required.
+    """
+    levels = sorted((gate.get("levels") or []), key=lambda l: l.get("level", 0))
+    required = []
+    prev_max = None
+    for lvl in levels:
+        if prev_max is not None and amount <= prev_max:
+            break
+        required.append(lvl)
+        prev_max = lvl.get("max_amount")
+        if prev_max is None:
+            break
+    return required
+
+
+async def _find_approver(role_name: str | None, org_id: str, source_key: str) -> dict | None:
+    """Active, phone-having user in the given role. Falls back to any is_approver role if unnamed."""
+    if role_name:
+        return await fetch_one("""
+            SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
+            JOIN roles r ON r.id = u.role_id
+            WHERE u.org_id = $1 AND r.name = $2
+              AND u.is_active = true AND u.phone IS NOT NULL
+            LIMIT 1
+        """, org_id, role_name, source_key=source_key)
+    return await fetch_one("""
+        SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
+        JOIN roles r ON r.id = u.role_id
+        WHERE u.org_id = $1 AND r.is_approver = true
+          AND u.is_active = true AND u.phone IS NOT NULL
+        LIMIT 1
+    """, org_id, source_key=source_key)
 
 
 async def _op_require_permission(params: dict, ctx: dict) -> dict:
@@ -408,17 +479,29 @@ async def _op_compute(params: dict, ctx: dict) -> dict:
 
 async def _op_otp_gate(params: dict, ctx: dict) -> dict:
     """
-    Halt for OTP if total amount >= workflow's otp_threshold.
-    Skipped if already verified.
+    Halt for OTP if any of the workflow's type="otp" gates[] match the current
+    context (usually an amount threshold, but a gate's 'when' can reference
+    any field). Skipped if already verified.
+
+    Falls back to the legacy single otp_threshold column when gates[] is
+    empty — lets workflows published before migration 011 keep working
+    unchanged until they're next edited/republished through the gates UI.
     """
     if ctx.get("otp_verified"):
         return ctx
 
-    amount_path   = params.get("amount_field", "$computed.total_amount")
-    amount        = float(_resolve_path(ctx, amount_path) or 0)
-    otp_threshold = float(_parse_jsonb(ctx["workflow"].get("otp_threshold"), 0) or 0)
+    gates = _parse_jsonb(ctx["workflow"].get("gates"), []) or []
+    otp_gates = [g for g in gates if g.get("type") == "otp"]
 
-    if otp_threshold <= 0 or amount < otp_threshold:
+    if otp_gates:
+        triggered = any(_gate_matches(g, ctx) for g in otp_gates)
+    else:
+        amount_path   = params.get("amount_field", "$computed.total_amount")
+        amount        = float(_resolve_path(ctx, amount_path) or 0)
+        otp_threshold = float(_parse_jsonb(ctx["workflow"].get("otp_threshold"), 0) or 0)
+        triggered = otp_threshold > 0 and amount >= otp_threshold
+
+    if not triggered:
         return ctx
 
     user = ctx["user"]
@@ -444,72 +527,106 @@ async def _op_otp_gate(params: dict, ctx: dict) -> dict:
 
 async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     """
-    Halt for approval if total amount >= workflow's approval_threshold
-    and the user is not in an approver role.
-    Sends approval buttons to the org approver and creates a pending_approvals record.
-    Skipped if already approved.
+    Halt for approval if the workflow's type="approval_chain" gates[] require
+    it. Each matching gate contributes an ordered queue of (gate_id, level,
+    role) entries — see _required_levels_for_gate. All matching gates' queues
+    are concatenated (in gates[] order), then any level the requesting user's
+    own role already satisfies is dropped (you don't need your own sign-off).
+
+    Only the FIRST required level's pending_approvals row is created here —
+    the rest of the chain is walked by app.executor.workflow_executor
+    .handle_approval_response as each level clears, without ever re-entering
+    step_interpreter. That's why the full queue + a queue_index are stored in
+    the pending_approvals.context now, not just a single requester/pending_action
+    pair.
+
+    Falls back to the legacy single approval_threshold column (approver =
+    any is_approver role, one level) when gates[] has no approval_chain
+    entries — same compatibility rationale as _op_otp_gate.
+
+    Skipped entirely if already approved (resume_step always lands AFTER this
+    step once the whole chain clears, so in practice this branch is a safety
+    net, not the normal path).
     """
     if ctx.get("approved"):
         return ctx
 
-    amount_path        = params.get("amount_field", "$computed.total_amount")
-    amount             = float(_resolve_path(ctx, amount_path) or 0)
-    approval_threshold = float(_parse_jsonb(ctx["workflow"].get("approval_threshold"), 0) or 0)
+    amount_path = params.get("amount_field", "$computed.total_amount")
+    amount      = float(_resolve_path(ctx, amount_path) or 0)
 
-    if approval_threshold <= 0 or amount < approval_threshold:
+    gates = _parse_jsonb(ctx["workflow"].get("gates"), []) or []
+    approval_gates = [g for g in gates if g.get("type") == "approval_chain"]
+
+    queue: list[dict] = []
+    if approval_gates:
+        for gate in approval_gates:
+            if not _gate_matches(gate, ctx):
+                continue
+            for lvl in _required_levels_for_gate(gate, amount):
+                queue.append({
+                    "gate_id":    gate.get("id"),
+                    "level":      lvl.get("level"),
+                    "role":       lvl.get("role"),
+                    "max_amount": lvl.get("max_amount"),
+                })
+    else:
+        approval_threshold = float(_parse_jsonb(ctx["workflow"].get("approval_threshold"), 0) or 0)
+        if approval_threshold > 0 and amount >= approval_threshold:
+            queue.append({"gate_id": "legacy", "level": 1, "role": None, "max_amount": None})
+
+    if not queue:
         return ctx
 
-    # Get all approver role IDs for this org
+    # Drop any level the requester's own role already covers — e.g. a branch
+    # manager raising a PO doesn't need their own sign-off at that level, only
+    # whatever level(s) above them still apply.
+    requester_role = ctx["user"].get("role")
+    if requester_role:
+        queue = [q for q in queue if q["role"] != requester_role]
+    if not queue:
+        return ctx
+
     org_id = ctx["org_id"]
-    approver_roles = await fetch_all("""
-        SELECT r.id, r.name FROM roles r
-        WHERE r.org_id = $1 AND r.is_approver = true
-    """, org_id, source_key=ctx["source_key"])
-    
-    approver_role_ids = {role["id"] for role in approver_roles}
-    
-    # Bypass if user is in an approver role
-    if ctx["user"].get("role_id") in approver_role_ids:
-        return ctx
-
-    # Find an active approver user to send approval request to
     user   = ctx["user"]
-    approver = await fetch_one("""
-        SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
-        JOIN roles r ON r.id = u.role_id
-        WHERE u.org_id = $1 AND r.is_approver = true
-          AND u.is_active = true AND u.phone IS NOT NULL
-        LIMIT 1
-    """, org_id, source_key=ctx["source_key"])
+    first  = queue[0]
+    approver = await _find_approver(first["role"], org_id, ctx["source_key"])
+
+    # resume_step must point at the step AFTER this gate, not the start of
+    # the workflow — otherwise approval would re-run resolve_entity/compute/
+    # otp_gate from scratch (and re-halt for OTP if that came first). The
+    # main loop stashes its current index into ctx before calling this op.
+    resume_step = ctx.get("_step_index", 0) + 1
+
+    approval_context = {
+        "pending_action":  {**ctx["workflow"], "fields": ctx["fields"],
+                             "intent_key": ctx["workflow"]["intent_key"],
+                             "resume_step": resume_step},
+        "requester_id":    user["user_id"],
+        "requester_phone": ctx.get("phone", ""),
+        "requester_name":  user.get("user_name", ""),
+        "requester_email": user.get("email", ""),
+        "required_queue":  queue,
+        "queue_index":     0,
+    }
+    approver_role_name = first["role"] or (approver.get("role_name") if approver else "approver")
+
+    approval_row = await execute("""
+        INSERT INTO pending_approvals
+        (org_id, requester_id, approver_role, intent_key, context, status, gate_id, level)
+        VALUES ($1, $2, $3, $4, $5::jsonb, 'pending', $6, $7)
+        RETURNING id
+    """, org_id, user["user_id"], approver_role_name,
+        ctx["workflow"]["intent_key"], json.dumps(approval_context, default=str),
+        first["gate_id"], first["level"], source_key=ctx["source_key"])
+    approval_id = approval_row[0]["id"]
 
     if approver:
         from app.services.messaging import send_buttons as _send_buttons
-        # Store pending_action in approval context so it can be resumed
-        approval_context = {
-            "pending_action":    {**ctx["workflow"], "fields": ctx["fields"],
-                                  "intent_key": ctx["workflow"]["intent_key"],
-                                  "resume_step": 0},
-            "requester_id":      user["user_id"],
-            "requester_phone":   ctx.get("phone", ""),
-            "requester_name":    user.get("user_name", ""),
-            "requester_email":   user.get("email", ""),
-        }
-        # Use the actual resolved role name from the approver
-        approver_role_name = approver.get("role_name", "approver")
-        
-        approval_row = await execute("""
-            INSERT INTO pending_approvals
-            (org_id, requester_id, approver_role, intent_key, context, status)
-            VALUES ($1, $2, $3, $4, $5::jsonb, 'pending')
-            RETURNING id
-        """, org_id, user["user_id"], approver_role_name,
-            ctx["workflow"]["intent_key"], json.dumps(approval_context, default=str), source_key=ctx["source_key"])
-        approval_id = approval_row[0]["id"]
-
+        level_note = f" — level {first['level']} of {len(queue)}" if len(queue) > 1 else ""
         await _send_buttons(
             to=approver["phone"],
             body=(
-                f"📋 *Approval Request*\n\n"
+                f"📋 *Approval Request*{level_note}\n\n"
                 f"From: {user.get('user_name', 'Staff')} ({user.get('role', '')})\n"
                 f"Action: {ctx['workflow'].get('name', ctx['workflow']['intent_key'])}\n"
                 f"Amount: Rs.{amount:,.0f}\n\n"
@@ -1020,8 +1137,27 @@ async def run_workflow_steps(
 
     # Bind context for this workflow execution
     bind_context(org_id_val=str(user["org_id"]), user_id_val=str(user["user_id"]))
-    
+
     steps = _parse_jsonb(workflow.get("steps"), []) or []
+
+    # type="permission" gates are enforced HERE, unconditionally, rather than
+    # via a require_permission step the compiler would need to remember to
+    # insert in the right place — a role-only restriction ("only Finance can
+    # do this at all, regardless of amount") shouldn't depend on the LLM
+    # having authored the step correctly. otp/approval gates stay evaluated
+    # at their own step positions (otp_gate/approval_gate) since those need
+    # $computed.* values that only exist mid-pipeline, after compute has run.
+    gates = _parse_jsonb(workflow.get("gates"), []) or []
+    for gate in [g for g in gates if isinstance(g, dict) and g.get("type") == "permission"]:
+        allowed_roles = set(gate.get("role_any_of") or [])
+        if allowed_roles and user.get("role") not in allowed_roles:
+            return {
+                "status": "error",
+                "message": gate.get("denied_message") or (
+                    f"Only {', '.join(sorted(allowed_roles))} can do that. "
+                    f"Please ask someone in that role."
+                ),
+            }
 
     try:
         for i in range(resume_step, len(steps)):
@@ -1040,6 +1176,11 @@ async def run_workflow_steps(
                 raise StepError(f"Unknown step op: '{op_name}'")
 
             logger.info(f"Step {i+1}/{len(steps)}: {op_name}")
+
+            # Exposed so a halting op (approval_gate) can compute the correct
+            # resume_step for a pending_approvals row that may be actioned
+            # much later, independently of the halt-return path below.
+            ctx["_step_index"] = i
 
             try:
                 ctx = await op_fn(step.get("params", {}), ctx)

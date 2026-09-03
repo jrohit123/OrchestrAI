@@ -116,7 +116,79 @@ def validate_workflow_config(spec: dict) -> list[str]:
         # Warn but don't block — might be intentional
         pass
 
-    # ── 7. status literals in db.insert_row/db.update_row must be lowercase ──
+    # ── 7. gates[] structural checks ──────────────────────────────────────
+    gates = _parse(spec.get("gates"), []) or []
+    if not isinstance(gates, list):
+        problems.append("gates must be a JSON array")
+        gates = []
+
+    if gates and workflow_type == "read":
+        problems.append(
+            "workflow_type is 'read' but gates[] is non-empty — "
+            "OTP/approval/permission gates only apply to action workflows"
+        )
+
+    seen_gate_ids = set()
+    for idx, gate in enumerate(gates):
+        if not isinstance(gate, dict):
+            problems.append(f"gates[{idx}] must be an object")
+            continue
+
+        gate_id = gate.get("id")
+        label = gate_id or f"gates[{idx}]"
+        if not gate_id:
+            problems.append(f"gates[{idx}] is missing 'id'")
+        elif gate_id in seen_gate_ids:
+            problems.append(f"gates[{idx}] has duplicate id '{gate_id}' — gate ids must be unique")
+        else:
+            seen_gate_ids.add(gate_id)
+
+        gate_type = gate.get("type")
+        if gate_type not in ("otp", "approval_chain", "permission"):
+            problems.append(f"{label}: type must be 'otp', 'approval_chain', or 'permission' (got {gate_type!r})")
+            continue
+
+        if gate_type == "approval_chain":
+            levels = gate.get("levels")
+            if not levels or not isinstance(levels, list):
+                problems.append(f"{label}: approval_chain gate must have a non-empty levels[] array")
+                continue
+            prev_level_num = None
+            prev_max = None
+            for lvl_idx, lvl in enumerate(levels):
+                if not isinstance(lvl, dict):
+                    problems.append(f"{label}.levels[{lvl_idx}] must be an object")
+                    continue
+                if not lvl.get("role"):
+                    problems.append(f"{label}.levels[{lvl_idx}] is missing 'role'")
+                level_num = lvl.get("level")
+                if level_num is None:
+                    problems.append(f"{label}.levels[{lvl_idx}] is missing 'level'")
+                elif prev_level_num is not None and level_num <= prev_level_num:
+                    problems.append(
+                        f"{label}.levels[{lvl_idx}]: level numbers must strictly increase "
+                        f"(got {level_num} after {prev_level_num})"
+                    )
+                max_amount = lvl.get("max_amount")
+                if prev_max is None and prev_level_num is not None:
+                    # Previous level had max_amount=null (no ceiling) — nothing
+                    # after it could ever be reached, so a further level is dead code.
+                    problems.append(
+                        f"{label}.levels[{lvl_idx}]: unreachable — the previous level has "
+                        f"max_amount=null (no ceiling), so this level can never trigger"
+                    )
+                if max_amount is not None and prev_max is not None and max_amount <= prev_max:
+                    problems.append(
+                        f"{label}.levels[{lvl_idx}]: max_amount ({max_amount}) must be greater "
+                        f"than the previous level's max_amount ({prev_max})"
+                    )
+                prev_level_num = level_num if level_num is not None else prev_level_num
+                prev_max = max_amount
+        elif gate_type == "permission":
+            if not gate.get("role_any_of"):
+                problems.append(f"{label}: permission gate must have a non-empty role_any_of[] array")
+
+    # ── 8. status literals in db.insert_row/db.update_row must be lowercase ──
     for step in steps:
         if isinstance(step, str):
             try:

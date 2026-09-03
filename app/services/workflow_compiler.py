@@ -294,6 +294,18 @@ Return ONLY this JSON, no markdown:
                 if draft.get("approval_threshold") is not None:
                     spec["approval_threshold"] = float(draft["approval_threshold"])
 
+                # gates[] is captured deterministically by the builder agent's
+                # set_gates tool call (workflow_builder_agent.py) whenever the
+                # admin states a constraint — never guessed by this LLM, so it
+                # always wins verbatim over anything the compiler produced.
+                draft_gates = draft.get("gates")
+                if isinstance(draft_gates, str):
+                    try:
+                        draft_gates = json.loads(draft_gates)
+                    except (json.JSONDecodeError, TypeError):
+                        draft_gates = []
+                spec["gates"] = draft_gates or []
+
             # Validate consistency before accepting this attempt
             from app.services.workflow_validator import validate_workflow_config
             problems = validate_workflow_config(spec)

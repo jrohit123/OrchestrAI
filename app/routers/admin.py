@@ -21,10 +21,13 @@ from app.services.llm_router import chat_completion as _llm_chat
 
 class PublishRequest(BaseModel):
     roles: list[str]
-    otp_required: bool = False
-    otp_threshold: float | None = None
-    approval_required: bool = False
-    approval_threshold: float | None = None
+    # Replaces the old flat otp_required/otp_threshold/approval_required/
+    # approval_threshold fields — a workflow can carry any number of
+    # constraints now (see migrations/011_*_gates_schema.sql), each a plain
+    # dict validated server-side by workflow_validator.validate_workflow_config
+    # (kept as dicts rather than a nested pydantic model so that validator
+    # stays the single source of truth for the shape, not duplicated here).
+    gates: list[dict] = []
     slash_command: str
 
 
@@ -80,7 +83,7 @@ async def admin_data(org_slug: str):
 
     workflows = await fetch_all("""
         SELECT id, name, intent_key, is_active, otp_required,
-               otp_threshold, approval_threshold, last_run, workflow_type
+               otp_threshold, approval_threshold, gates, last_run, workflow_type
         FROM workflows WHERE org_id = $1
         ORDER BY created_at
     """, org_id, source_key=source_key)
@@ -131,7 +134,11 @@ async def admin_data(org_slug: str):
     return {
         "org": dict(org),
         "workflows": [dict(w) for w in workflows],
-        "stats": dict(stats) if stats else {"total_invoices": 0, "total_amount": 0, "pending_invoices": 0, "total_customers": 0},
+        # null (not zeros) when invoices/customers don't exist for this org —
+        # "0 invoices" and "this org doesn't track invoices" are different
+        # facts, and the frontend hides the stat cards entirely on null
+        # instead of showing a misleading Rs.0 for a housing society.
+        "stats": dict(stats) if stats else None,
         "low_stock": [dict(r) for r in low_stock],
         "recent_logs": [dict(r) for r in recent_logs]
     }
@@ -663,13 +670,13 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
 
     allowed = [
         "name", "description", "is_active", "otp_required", "otp_threshold",
-        "approval_threshold", "training_phrases", "entity_schema", "calc_rules",
+        "approval_threshold", "gates", "training_phrases", "entity_schema", "calc_rules",
         "steps", "sql_template", "sql_params_order", "response_format",
         "business_glossary", "llm_system_prompt", "pdf_config",
         "response_template", "workflow_type"
     ]
     jsonb_fields = {
-        "training_phrases", "entity_schema", "calc_rules", "steps",
+        "training_phrases", "entity_schema", "calc_rules", "steps", "gates",
         "sql_params_order", "business_glossary", "pdf_config"
     }
 
@@ -802,20 +809,25 @@ async def get_draft_publish_info(org_slug: str, draft_id: str):
         raise HTTPException(status_code=404, detail="No active org")
     
     roles = await fetch_all("SELECT name FROM roles WHERE org_id = $1 ORDER BY name", str(org["id"]), source_key=source_key)
-    
+
     # Suggest command from intent_key if not set
     suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
-    
+
+    gates = draft.get("gates") or []
+    if isinstance(gates, str):
+        try:
+            gates = json.loads(gates)
+        except (json.JSONDecodeError, TypeError):
+            gates = []
+
     return {
         "draft_id": str(draft["id"]),
         "summary": draft.get("plain_english_summary"),
         "intent_key": draft.get("intent_key"),
         "workflow_type": draft.get("workflow_type"),
         "roles": [r["name"] for r in roles],
+        "gates": gates,
         "prefill": {
-            "otp_required": draft.get("otp_required", False),
-            "otp_threshold": draft.get("otp_threshold"),
-            "approval_threshold": draft.get("approval_threshold"),
             "slash_command": suggested_cmd,
         }
     }
@@ -836,13 +848,31 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
     )}
     if not body.roles or not set(body.roles) <= valid_roles:
         raise HTTPException(422, f"Roles must be a non-empty subset of {sorted(valid_roles)}")
-    
-    if draft["workflow_type"] == "read" and (body.otp_required or body.approval_required):
-        raise HTTPException(422, "OTP/approval don't apply to read workflows")
-    
-    if body.otp_required and not body.otp_threshold:
-        raise HTTPException(422, "OTP enabled but no threshold given")
-    
+
+    # Structural gate validation (types, level ordering, etc.) — same checker
+    # used at every other write path to workflows (see workflow_validator.py).
+    from app.services.workflow_validator import validate_workflow_config
+    gate_problems = validate_workflow_config({
+        "workflow_type": draft.get("workflow_type") or "action",
+        "gates": body.gates,
+    })
+    if gate_problems:
+        raise HTTPException(422, {"error": "Constraints are inconsistent", "problems": gate_problems})
+
+    # Every role a gate names (approval level, or permission role_any_of) must
+    # actually exist in this org — the structural checker above has no DB
+    # access, so that reference check lives here instead.
+    referenced_roles: set[str] = set()
+    for g in body.gates:
+        for lvl in (g.get("levels") or []):
+            if lvl.get("role"):
+                referenced_roles.add(lvl["role"])
+        for r in (g.get("role_any_of") or []):
+            referenced_roles.add(r)
+    unknown_roles = referenced_roles - valid_roles
+    if unknown_roles:
+        raise HTTPException(422, f"Constraints reference unknown role(s): {sorted(unknown_roles)}")
+
     cmd = body.slash_command.strip().lstrip("/").lower()
     if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
         raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
@@ -859,6 +889,14 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
     async with (await get_pool(source_key)).acquire() as conn:
         async with conn.transaction():
             # Insert workflow
+            # Legacy otp_required/otp_threshold/approval_threshold columns are
+            # kept in sync as a best-effort mirror (single-level only) purely
+            # so any older reporting that still reads them directly isn't
+            # left silently stale — gates[] is the authoritative source the
+            # execution engine actually reads (step_interpreter.py).
+            legacy_otp = next((g for g in body.gates if g.get("type") == "otp"), None)
+            legacy_appr = next((g for g in body.gates if g.get("type") == "approval_chain"), None)
+
             wf_id = await conn.fetchval("""
                 INSERT INTO workflows (
                     org_id, name, intent_key, description, workflow_type,
@@ -866,6 +904,7 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
                     sql_template, sql_params_order, response_format,
                     business_glossary, llm_system_prompt, pdf_config,
                     response_template, otp_required, otp_threshold, approval_threshold,
+                    gates,
                     slash_command, command_description, menu_section,
                     version, is_active, adapter_method, trigger_patterns
                 ) VALUES (
@@ -874,7 +913,8 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
                     $10, $11::jsonb, $12,
                     $13::jsonb, $14, $15::jsonb,
                     $16, $17, $18, $19,
-                    $20, $21, $22,
+                    $20::jsonb,
+                    $21, $22, $23,
                     1, true, 'generic', '[]'::jsonb
                 ) RETURNING id
             """,
@@ -894,9 +934,10 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str, body: PublishR
                 draft.get("llm_system_prompt"),
                 draft.get("pdf_config"),
                 draft.get("response_template"),
-                body.otp_required,
-                body.otp_threshold,
-                body.approval_threshold,
+                legacy_otp is not None,
+                (legacy_otp or {}).get("when", {}).get("gte"),
+                (legacy_appr or {}).get("when", {}).get("gte"),
+                json.dumps(body.gates),
                 cmd,
                 draft.get("command_description"),
                 draft.get("menu_section") or "other",
@@ -1019,7 +1060,7 @@ input:checked+.slider:before{transform:translateX(18px)}
       <table>
         <thead><tr>
           <th>Name</th><th>Type</th><th>Active</th>
-          <th>OTP Threshold</th><th>Approval Threshold</th><th>Actions</th>
+          <th>Constraints</th><th>Actions</th>
         </tr></thead>
         <tbody id="workflowsTable"></tbody>
       </table>
@@ -1078,22 +1119,19 @@ input:checked+.slider:before{transform:translateX(18px)}
       <div class="field-label">Description</div>
       <textarea class="field-input" id="editDescription" rows="2"></textarea>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-      <div class="field-row">
-        <div class="field-label">Workflow Type</div>
-        <select class="field-input" id="editType">
-          <option value="action">action</option>
-          <option value="read">read</option>
-        </select>
+    <div class="field-row">
+      <div class="field-label">Workflow Type</div>
+      <select class="field-input" id="editType" style="max-width:200px">
+        <option value="action">action</option>
+        <option value="read">read</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Constraints (OTP / approval / permission)</span>
+        <button class="btn btn-purple" style="padding:4px 10px;font-size:11px" onclick="gateAdd('edit')">+ Add constraint</button>
       </div>
-      <div class="field-row">
-        <div class="field-label">OTP Threshold (Rs.)</div>
-        <input class="field-input" id="editOtpThreshold" type="number">
-      </div>
-      <div class="field-row">
-        <div class="field-label">Approval Threshold (Rs.)</div>
-        <input class="field-input" id="editApprovalThreshold" type="number">
-      </div>
+      <div id="editGatesContainer"></div>
     </div>
     <div class="field-row">
       <div class="field-label">steps (JSON array)</div>
@@ -1143,6 +1181,39 @@ input:checked+.slider:before{transform:translateX(18px)}
   </div>
 </div>
 
+<!-- ── PUBLISH PANEL ─────────────────────────────────────────────── -->
+<div class="modal-bg" id="publishModal">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-title">🚀 Publish Workflow</div>
+    <input type="hidden" id="publishDraftId">
+    <div class="summary-card" id="publishSummary" style="margin:0 0 14px 0"></div>
+
+    <div class="field-row">
+      <div class="field-label">Who can use this</div>
+      <div id="publishRolesContainer" style="display:flex;flex-wrap:wrap;gap:14px"></div>
+    </div>
+
+    <div class="field-row">
+      <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Constraints (OTP / approval / permission)</span>
+        <button class="btn btn-purple" style="padding:4px 10px;font-size:11px" onclick="gateAdd('pub')">+ Add constraint</button>
+      </div>
+      <div id="pubGatesContainer"></div>
+    </div>
+
+    <div class="field-row">
+      <div class="field-label">Trigger command</div>
+      <input class="field-input" id="publishSlashCommand" placeholder="e.g. stock" style="max-width:200px">
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-primary" onclick="publishDraft()">🚀 Publish</button>
+      <button class="btn btn-gray" onclick="closeModal('publishModal')">Cancel</button>
+    </div>
+    <div id="publishStatus" style="font-size:11px;color:#888;margin-top:6px"></div>
+  </div>
+</div>
+
 <script>
 // Org is whatever comes after /admin/ in the URL — /admin/baanganga,
 // /admin/godrej_emerald, etc. — so every API call this page makes is
@@ -1180,10 +1251,25 @@ async function clearSessions() {
 }
 
 // ── Workflow List ─────────────────────────────────────────────────
+function gateChipsHTML(gates) {
+  if (!gates || !gates.length) return '<span style="color:#aaa;font-size:11px">none</span>';
+  return gates.map(g => {
+    if (g.type === 'otp') {
+      const amt = (g.when && (g.when.gte ?? g.when.lte)) ?? '';
+      return `<span class="badge" style="background:#fef3c7;color:#92400e;margin:1px">🔐 OTP ≥${fmtRs(amt)}</span>`;
+    }
+    if (g.type === 'approval_chain') {
+      const n = (g.levels || []).length;
+      return `<span class="badge" style="background:#dbeafe;color:#185FA5;margin:1px">👤 ${n}-level approval</span>`;
+    }
+    return `<span class="badge" style="background:#fee2e2;color:#991b1b;margin:1px">🔒 ${(g.role_any_of||[]).join('/')||'restricted'}-only</span>`;
+  }).join(' ');
+}
+
 function renderWorkflows(workflows) {
   const tbody = document.getElementById('workflowsTable');
   if (!workflows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
     return;
   }
   tbody.innerHTML = workflows.map(w => `
@@ -1196,14 +1282,7 @@ function renderWorkflows(workflows) {
           <span class="slider"></span>
         </label>
       </td>
-      <td>
-        <input class="threshold-input" id="otp_${w.id}" type="number" value="${w.otp_threshold||''}" style="width:90px">
-        <button class="btn btn-primary" style="margin-left:4px" onclick="saveOtp('${w.id}')">Save</button>
-      </td>
-      <td>
-        <input class="threshold-input" id="apr_${w.id}" type="number" value="${w.approval_threshold||''}" style="width:90px">
-        <button class="btn btn-primary" style="margin-left:4px" onclick="saveApr('${w.id}')">Save</button>
-      </td>
+      <td>${gateChipsHTML(w.gates)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-gray" onclick="openEdit('${w.id}')" style="margin-right:4px">✏️ Edit</button>
         <button class="btn btn-danger" onclick="deleteWorkflow('${w.id}','${w.name}')">🗑️</button>
@@ -1214,16 +1293,6 @@ function renderWorkflows(workflows) {
 
 async function toggleActive(id, active) {
   await authenticatedFetch(API(`/workflow/${id}/toggle`), {method:'POST'});
-}
-async function saveOtp(id) {
-  const val = document.getElementById('otp_' + id).value;
-  const res = await authenticatedFetch(API(`/workflow/${id}/threshold`), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold:parseFloat(val)})});
-  if (res && res.ok) alert('✅ OTP threshold saved');
-}
-async function saveApr(id) {
-  const val = document.getElementById('apr_' + id).value;
-  const res = await authenticatedFetch(API(`/workflow/${id}/approval_threshold`), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold:parseFloat(val)})});
-  if (res && res.ok) alert('✅ Approval threshold saved');
 }
 
 async function deleteWorkflow(id, name) {
@@ -1236,6 +1305,146 @@ async function deleteWorkflow(id, name) {
   }
 }
 
+// ── Gate (constraint) editor — shared by Edit modal and Publish panel ──────
+// Two independent stores so editing an existing workflow and publishing a
+// fresh draft never share state. Each gate is a plain object matching
+// workflows.gates[] exactly (see migrations/011_*_gates_schema.sql):
+//   {id, type: 'otp'|'approval_chain'|'permission', when:{...}, levels:[...], role_any_of:[...]}
+const gateStores = { edit: [], pub: [] };
+let gateRolesList = [];
+
+async function refreshGateRoles() {
+  const r = await authenticatedFetch(API('/roles'));
+  if (r && r.ok) gateRolesList = (await r.json()).map(x => x.name);
+}
+
+function renderGates(storeName) {
+  const gates = gateStores[storeName];
+  const container = document.getElementById(storeName + 'GatesContainer');
+  if (!container) return;
+  container.innerHTML = gates.length
+    ? gates.map((g, idx) => gateCardHTML(g, idx, storeName)).join('')
+    : '<div style="color:#aaa;font-size:12px;padding:6px 0">No constraints — anyone with permission can run this freely.</div>';
+}
+
+function gateAdd(storeName) {
+  const n = gateStores[storeName].length + 1;
+  gateStores[storeName].push({id: 'gate' + n, type: 'otp', when: {field: '$computed.total_amount', gte: 0}});
+  renderGates(storeName);
+}
+function gateRemove(storeName, idx) {
+  gateStores[storeName].splice(idx, 1);
+  renderGates(storeName);
+}
+function gateSetType(storeName, idx, val) {
+  const g = gateStores[storeName][idx];
+  g.type = val;
+  delete g.when; delete g.levels; delete g.role_any_of;
+  if (val === 'otp') g.when = {field: '$computed.total_amount', gte: 0};
+  if (val === 'approval_chain') { g.when = {field: '$computed.total_amount', gte: 0}; g.levels = [{level: 1, role: '', max_amount: null}]; }
+  if (val === 'permission') g.role_any_of = [];
+  renderGates(storeName);
+}
+function gateSetCondKind(storeName, idx, kind) {
+  const g = gateStores[storeName][idx];
+  const cur = g.when ? (g.when.gte ?? g.when.lte ?? g.when.equals ?? 0) : 0;
+  if (kind === 'gte') g.when = {field: '$computed.total_amount', gte: cur};
+  else if (kind === 'lte') g.when = {field: '$computed.total_amount', lte: cur};
+  else g.when = {field: '$fields.category', equals: cur};
+  renderGates(storeName);
+}
+function gateSetCondField(storeName, idx, val) { gateStores[storeName][idx].when.field = val; }
+function gateSetCondValue(storeName, idx, val) {
+  const w = gateStores[storeName][idx].when;
+  if ('gte' in w) w.gte = parseFloat(val) || 0;
+  else if ('lte' in w) w.lte = parseFloat(val) || 0;
+  else if ('equals' in w) w.equals = val;
+}
+function gateSetRoleAnyOf(storeName, idx, val) {
+  gateStores[storeName][idx].role_any_of = val.split(',').map(s => s.trim()).filter(Boolean);
+}
+function gateAddLevel(storeName, idx) {
+  const g = gateStores[storeName][idx];
+  g.levels = g.levels || [];
+  g.levels.push({level: g.levels.length + 1, role: '', max_amount: null});
+  renderGates(storeName);
+}
+function gateRemoveLevel(storeName, idx, li) {
+  const levels = gateStores[storeName][idx].levels;
+  levels.splice(li, 1);
+  levels.forEach((l, i) => l.level = i + 1);
+  renderGates(storeName);
+}
+function gateSetLevelField(storeName, idx, li, field, val) {
+  const lvl = gateStores[storeName][idx].levels[li];
+  lvl[field] = field === 'max_amount' ? (val === '' ? null : parseFloat(val)) : val;
+}
+
+function gateCardHTML(g, idx, storeName) {
+  const type = g.type || 'otp';
+  const when = g.when || {};
+  let condKind = 'gte', condVal = 0;
+  if ('lte' in when) { condKind = 'lte'; condVal = when.lte; }
+  else if ('equals' in when) { condKind = 'equals'; condVal = when.equals; }
+  else if ('gte' in when) { condKind = 'gte'; condVal = when.gte; }
+
+  const roleOpts = sel => (gateRolesList || []).map(name =>
+    `<option value="${name}" ${name === sel ? 'selected' : ''}>${name}</option>`).join('');
+
+  let condHTML = '';
+  if (type !== 'permission') {
+    condHTML = `
+      <select class="field-input" style="width:110px" onchange="gateSetCondKind('${storeName}',${idx},this.value)">
+        <option value="gte" ${condKind==='gte'?'selected':''}>Amount ≥</option>
+        <option value="lte" ${condKind==='lte'?'selected':''}>Amount ≤</option>
+        <option value="equals" ${condKind==='equals'?'selected':''}>Field =</option>
+      </select>
+      ${condKind === 'equals' ? `<input class="field-input" style="width:140px" placeholder="$fields.category" value="${when.field||''}" onchange="gateSetCondField('${storeName}',${idx},this.value)">` : ''}
+      <input class="field-input" style="width:110px" placeholder="value" value="${condVal}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">
+    `;
+  }
+
+  let levelsHTML = '';
+  if (type === 'approval_chain') {
+    const levels = g.levels || [];
+    levelsHTML = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e8edf5">
+      <div class="field-label">Approval levels (in order — level 2+ only kicks in above the level before it's ceiling)</div>
+      ${levels.map((lvl, li) => `
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:#888;width:14px">${li+1}</span>
+          <select class="field-input" style="flex:1" onchange="gateSetLevelField('${storeName}',${idx},${li},'role',this.value)">
+            <option value="">— role —</option>${roleOpts(lvl.role)}
+          </select>
+          <input class="field-input" style="width:150px" type="number" placeholder="ceiling (blank = no limit)"
+                 value="${lvl.max_amount ?? ''}" onchange="gateSetLevelField('${storeName}',${idx},${li},'max_amount',this.value)">
+          <button class="btn btn-gray" style="padding:4px 8px" onclick="gateRemoveLevel('${storeName}',${idx},${li})">✕</button>
+        </div>`).join('')}
+      <button class="btn btn-gray" style="font-size:11px;padding:4px 10px" onclick="gateAddLevel('${storeName}',${idx})">+ Level</button>
+    </div>`;
+  }
+
+  let permHTML = '';
+  if (type === 'permission') {
+    permHTML = `<div style="margin-top:8px">
+      <div class="field-label">Role(s) allowed to trigger this at all (comma-separated)</div>
+      <input class="field-input" value="${(g.role_any_of||[]).join(', ')}" onchange="gateSetRoleAnyOf('${storeName}',${idx},this.value)">
+    </div>`;
+  }
+
+  return `<div style="border:1px solid #e8edf5;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafbfc">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select class="field-input" style="width:150px" onchange="gateSetType('${storeName}',${idx},this.value)">
+        <option value="otp" ${type==='otp'?'selected':''}>🔐 OTP</option>
+        <option value="approval_chain" ${type==='approval_chain'?'selected':''}>👤 Approval chain</option>
+        <option value="permission" ${type==='permission'?'selected':''}>🔒 Permission only</option>
+      </select>
+      ${condHTML}
+      <button class="btn btn-danger" style="margin-left:auto;padding:4px 10px" onclick="gateRemove('${storeName}',${idx})">✕</button>
+    </div>
+    ${levelsHTML}${permHTML}
+  </div>`;
+}
+
 // ── Edit Modal ────────────────────────────────────────────────────
 async function openEdit(id) {
   const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
@@ -1246,8 +1455,8 @@ async function openEdit(id) {
   document.getElementById('editIntentKey').value = w.intent_key || '';
   document.getElementById('editDescription').value = w.description || '';
   document.getElementById('editType').value = w.workflow_type || 'action';
-  document.getElementById('editOtpThreshold').value = w.otp_threshold || '';
-  document.getElementById('editApprovalThreshold').value = w.approval_threshold || '';
+  gateStores.edit = w.gates || [];
+  renderGates('edit');
   document.getElementById('editSteps').value = JSON.stringify(w.steps || [], null, 2);
   document.getElementById('editCalcRules').value = JSON.stringify(w.calc_rules || {}, null, 2);
   document.getElementById('editEntitySchema').value = JSON.stringify(w.entity_schema || {}, null, 2);
@@ -1273,8 +1482,7 @@ async function saveWorkflowEdit() {
     name:                document.getElementById('editName').value,
     description:         document.getElementById('editDescription').value,
     workflow_type:       document.getElementById('editType').value,
-    otp_threshold:       parseFloat(document.getElementById('editOtpThreshold').value) || null,
-    approval_threshold:  parseFloat(document.getElementById('editApprovalThreshold').value) || null,
+    gates:               gateStores.edit,
     steps, calc_rules: calcRules, entity_schema: entitySchema, pdf_config: pdfConfig,
     response_template:   document.getElementById('editResponseTemplate').value || null,
   };
@@ -1391,6 +1599,9 @@ async function sendChatMsg() {
     if (data.published) {
       document.getElementById('builderStatus').textContent = '✅ Workflow published!';
       setTimeout(() => { closeModal('builderModal'); loadData(); }, 2000);
+    } else if (data.ready_for_publish) {
+      document.getElementById('builderStatus').textContent = '';
+      await openPublishPanel(data.draft_id);
     } else {
       document.getElementById('builderStatus').textContent = '';
     }
@@ -1399,6 +1610,56 @@ async function sendChatMsg() {
     document.getElementById('builderStatus').textContent = '';
   }
   chatTyping = false;
+}
+
+// ── Publish Panel ────────────────────────────────────────────────
+async function openPublishPanel(draftId) {
+  const r = await authenticatedFetch(API(`/workflow-builder/draft/${draftId}/publish-info`));
+  if (!r || !r.ok) { alert('Could not load publish info.'); return; }
+  const info = await r.json();
+
+  document.getElementById('publishDraftId').value = info.draft_id;
+  document.getElementById('publishSummary').innerHTML =
+    '📋 <strong>Summary</strong><br><br>' + (info.summary || '').split('\\n').join('<br>');
+  document.getElementById('publishSlashCommand').value = info.prefill?.slash_command || '';
+
+  if (info.roles && info.roles.length) gateRolesList = info.roles;
+  document.getElementById('publishRolesContainer').innerHTML = (info.roles || []).map(r => `
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+      <input type="checkbox" value="${r}" class="pub-role-cb" ${r === 'owner' ? 'checked' : ''}> ${r}
+    </label>`).join('');
+
+  gateStores.pub = info.gates || [];
+  renderGates('pub');
+
+  closeModal('builderModal');
+  openModal('publishModal');
+}
+
+async function publishDraft() {
+  const draftId = document.getElementById('publishDraftId').value;
+  const roles = Array.from(document.querySelectorAll('.pub-role-cb:checked')).map(cb => cb.value);
+  const slash = document.getElementById('publishSlashCommand').value.trim();
+  if (!roles.length) { alert('Select at least one role.'); return; }
+  if (!slash) { alert('Trigger command is required.'); return; }
+
+  document.getElementById('publishStatus').textContent = 'Publishing...';
+  const r = await authenticatedFetch(API(`/workflow-builder/publish/${draftId}`), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({roles, gates: gateStores.pub, slash_command: slash})
+  });
+  if (!r) { document.getElementById('publishStatus').textContent = ''; return; }
+  const d = await r.json();
+  if (r.ok) {
+    alert('✅ Workflow published!');
+    closeModal('publishModal');
+    loadData();
+  } else {
+    const detail = d.detail;
+    const msg = typeof detail === 'object' ? (detail.error + (detail.problems ? '\\n• ' + detail.problems.join('\\n• ') : '')) : detail;
+    alert('Error: ' + msg);
+    document.getElementById('publishStatus').textContent = '';
+  }
 }
 
 // ── Load Data ─────────────────────────────────────────────────────
@@ -1419,6 +1680,7 @@ async function loadData() {
     }
 
     document.getElementById('orgName').textContent = data.org.name;
+    refreshGateRoles();  // fire-and-forget — populates role pickers for the gate editor
 
     try {
       const sec = await authenticatedFetch(API('/security'));
@@ -1434,8 +1696,11 @@ async function loadData() {
       }
     } catch(e) {}
 
+    // stats is null for an org with no invoices/customers tables (e.g. a
+    // housing society) — hide the cards entirely rather than show a
+    // meaningless Rs.0 / 0 that looks like real data.
     const s = data.stats;
-    document.getElementById('statsGrid').innerHTML = `
+    document.getElementById('statsGrid').innerHTML = s ? `
       <div class="stat-card"><div class="stat-label">Paid Invoices</div>
         <div class="stat-value">${s.total_invoices||0}</div></div>
       <div class="stat-card" style="border-color:#16a34a">
@@ -1447,7 +1712,7 @@ async function loadData() {
       <div class="stat-card" style="border-color:#3b82f6">
         <div class="stat-label">Customers</div>
         <div class="stat-value" style="color:#3b82f6">${s.total_customers||0}</div></div>
-    `;
+    ` : '';
 
     renderWorkflows(data.workflows || []);
 

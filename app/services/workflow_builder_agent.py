@@ -46,10 +46,10 @@ Reply in the user's language mix. Hinglish in → Hinglish out. Numbers:
 understand 50k = 50,000, 2L / 2 lakh = 2,00,000.
 
 READ-WORKFLOW SHORTCUT:
-If the workflow is clearly read-only, don't ask about OTP or approval
-thresholds — state "no OTP/approval needed since this only shows data"
-in the summary and move on. Only ask about safety gates for action
-workflows.
+If the workflow is clearly read-only, don't ask about OTP, approval, or
+any other constraint — state "no safety checks needed since this only
+shows data" in the summary and move on. Only ask about constraints for
+action workflows.
 
 Ask ONE question at a time. After each answer, briefly restate what you understood, then ask the next
 most useful question. Cover these topics (skip what's already answered or not relevant):
@@ -59,13 +59,25 @@ most useful question. Cover these topics (skip what's already answered or not re
 2. What information needs to be collected or looked up?
 3. Should anything be CALCULATED automatically? (tax, total, discount)
    Get the business rule in plain terms: "GST is 3% of item value" is enough.
-4. Any safety rules — verification code or someone's approval above a certain amount?
-   THE MOMENT the admin gives a number, call update_builder_draft with otp_threshold
-   and/or approval_threshold set to that exact number — convert "1 lakh" to 100000,
-   "50k" to 50000 yourself. Then confirm back: "Got it — OTP above Rs.50,000,
-   approval above Rs.1,00,000." so they can correct you immediately if you misheard.
-   NOTE: Do NOT proactively ask about OTP/approval thresholds. Only save them if the admin
-   volunteers them. These will be set in the publish panel.
+4. Any safety rules — verification code, someone's approval above a certain amount,
+   multi-level sign-off, or a rule that only certain roles can even trigger this?
+   Constraints are NOT limited to "OTP above X" and "approval above Y" — the admin
+   might describe several independent rules, multi-level chains ("branch manager
+   first, then owner above 20L"), non-amount conditions ("anything touching the
+   lift needs the secretary, regardless of amount"), or role-only gates ("only
+   Finance can do this"). Capture EXACTLY what they describe as one or more
+   entries in gates[] via set_gates — never force it into just two numbers.
+   THE MOMENT the admin gives a number or names an approver, call set_gates with
+   the FULL current list of constraints (existing ones + the new/changed one) —
+   convert "1 lakh" to 100000, "50k" to 50000, "20L"/"20 lakh" to 2000000 yourself.
+   Then confirm back in plain terms: "Got it — OTP above Rs.50,000. Above Rs.5,00,000
+   the branch manager approves; above Rs.20,00,000 the owner also approves after
+   them." so they can correct you immediately if you misheard.
+   A level's role must be a role that exists in this org — if unsure, ask
+   list_existing_workflows or just use the role name the admin says; the publish
+   panel lets them fix the role picker before it goes live either way.
+   NOTE: Do NOT proactively ask about constraints on a workflow the admin hasn't
+   indicated needs any. Only capture them if the admin volunteers them.
 5. Does this produce a document? If yes, ask:
    "Do you have a sample PDF you already send? Attach it and I'll match the look."
    If no PDF attached, ask what the document should show.
@@ -84,7 +96,7 @@ Once you have enough information, call compile_and_summarize.
 Show the summary in plain English and ask if it's correct.
 If they want changes, call revise_draft, then show the new summary.
 Only call mark_ready_for_review after an explicit "yes" on a summary you've already shown.
-The publish panel will then handle roles, OTP/approval thresholds, and the final slash command.
+The publish panel will then handle roles, fine-tuning constraints, and the final slash command.
 
 If the first message is vague ("help me" / "I want a workflow"), call list_existing_workflows
 first, mention what already exists including unfinished drafts, and ask what to add or change.
@@ -108,15 +120,7 @@ _TOOLS = [
             "workflow_type": {"type": "string", "enum": ["action", "read"]},
             "raw_fields":    {"type": "array", "items": {"type": "string"},
                               "description": "Fields to collect, e.g. ['customer name', 'item description', 'GST — auto']"},
-            "otp_threshold": {
-                "type": "number",
-                "description": "Amount above which OTP verification is required. Set THE MOMENT admin gives a number. Convert 'lakh'=100000, 'k'=1000. Omit if not mentioned."
-            },
-            "approval_threshold": {
-                "type": "number",
-                "description": "Amount above which owner approval is required. Convert 'lakh'=100000, '1 crore'=10000000. Omit if not mentioned."
-            },
-            "business_rules": {"type": "string", "description": "Any OTHER rule not covered by the two threshold fields above."},
+            "business_rules": {"type": "string", "description": "Any OTHER rule not covered by set_gates (calculations, formatting, etc.)."},
             "slash_command": {
                 "type": "string",
                 "description": "Short command to trigger this workflow (e.g., 'stock', 'quote'). Lowercase, no spaces, ≤32 chars. Include the / prefix."
@@ -131,6 +135,60 @@ _TOOLS = [
                 "description": "Menu section: 'reports' for read workflows, 'create' for action workflows."
             },
         }}
+    }},
+    {"type": "function", "function": {
+        "name": "set_gates",
+        "description": (
+            "Set the COMPLETE list of safety/approval constraints for this workflow, "
+            "replacing whatever was there before. Call this every time the admin adds, "
+            "changes, or removes a constraint — always pass the full list that should "
+            "apply going forward, not just the one that changed. Not limited to two "
+            "numbers: a workflow can have zero, one, or several independent constraints "
+            "of different kinds (OTP, single- or multi-level approval, role-only gates)."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "gates": {
+                "type": "array",
+                "description": "Every constraint that should apply. Convert lakh/crore/k to plain numbers.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":   {"type": "string", "description": "short stable id, e.g. 'otp1', 'appr1', 'appr_lift'"},
+                        "type": {"type": "string", "enum": ["otp", "approval_chain", "permission"]},
+                        "when": {
+                            "type": "object",
+                            "description": (
+                                "Condition that triggers this gate. Amount-based: "
+                                "{\"field\":\"$computed.total_amount\",\"gte\":50000}. "
+                                "Non-amount field: {\"field\":\"$fields.category\",\"equals\":\"lift_elevator\"}. "
+                                "Omit only for a 'permission' gate that always applies."
+                            ),
+                        },
+                        "levels": {
+                            "type": "array",
+                            "description": (
+                                "Required for type='approval_chain'. Ordered stages — level 1 is always "
+                                "required once 'when' matches; level 2+ is only required once the amount "
+                                "exceeds the PREVIOUS level's max_amount (i.e. max_amount is the ceiling "
+                                "that role can clear alone; null = no ceiling, final level)."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "level":      {"type": "integer"},
+                                    "role":       {"type": "string", "description": "role name required to approve at this level"},
+                                    "max_amount": {"type": ["number", "null"]},
+                                }
+                            }
+                        },
+                        "role_any_of": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Required only for type='permission' — the only role(s) allowed to trigger this workflow at all, regardless of amount."
+                        }
+                    }
+                }
+            }
+        }, "required": ["gates"]}
     }},
     {"type": "function", "function": {
         "name": "analyze_sample_pdf",
@@ -213,11 +271,6 @@ async def _execute_tool(
             updates["purpose"] = tool_input["purpose"]
         if tool_input.get("workflow_type"):
             updates["workflow_type"] = tool_input["workflow_type"]
-        if tool_input.get("otp_threshold") is not None:
-            updates["otp_threshold"] = float(tool_input["otp_threshold"])
-            updates["otp_required"]  = True
-        if tool_input.get("approval_threshold") is not None:
-            updates["approval_threshold"] = float(tool_input["approval_threshold"])
         if tool_input.get("business_rules"):
             existing = draft.get("business_rules") or ""
             updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
@@ -244,6 +297,20 @@ async def _execute_tool(
             for k, v in updates.items():
                 draft[k] = v
         return {"saved": list(updates.keys())}
+
+    if tool_name == "set_gates":
+        gates = tool_input.get("gates") or []
+        # Backfill missing ids so the validator's uniqueness/reference checks
+        # never choke on an LLM omission — deterministic, not a guess.
+        for i, g in enumerate(gates):
+            if isinstance(g, dict) and not g.get("id"):
+                g["id"] = f"{g.get('type', 'gate')}{i+1}"
+        await execute(
+            "UPDATE workflow_drafts SET gates = $1::jsonb, updated_at = now() WHERE id = $2",
+            json.dumps(gates), draft["id"], source_key=source_key
+        )
+        draft["gates"] = gates
+        return {"saved_gates": len(gates)}
 
     if tool_name == "analyze_sample_pdf":
         if not attachment_b64:
@@ -279,10 +346,11 @@ async def _execute_tool(
                 business_glossary=$12::jsonb, llm_system_prompt=$13,
                 pdf_config=$14::jsonb, response_template=$15,
                 otp_required=$16, otp_threshold=$17, approval_threshold=$18,
-                plain_english_summary=$19,
-                slash_command=$20, command_description=$21, menu_section=$22,
+                gates=$19::jsonb,
+                plain_english_summary=$20,
+                slash_command=$21, command_description=$22, menu_section=$23,
                 status = 'ready_for_review', updated_at = now()
-            WHERE id = $23
+            WHERE id = $24
         """,
             spec["name"], spec["intent_key"], spec["description"],
             spec.get("workflow_type") or "action",
@@ -300,6 +368,7 @@ async def _execute_tool(
             bool(spec.get("otp_required", False)),
             spec.get("otp_threshold"),
             spec.get("approval_threshold"),
+            json.dumps(spec.get("gates") or draft.get("gates") or []),
             spec["plain_english_summary"],
             draft.get("slash_command"),
             draft.get("command_description"),
@@ -356,6 +425,13 @@ async def _execute_tool(
                 steps = json.loads(steps)
             except Exception:
                 steps = []
+        gates = wf.get("gates")
+        if isinstance(gates, str):
+            try:
+                gates = json.loads(gates)
+            except (json.JSONDecodeError, TypeError):
+                gates = []
+
         await execute("""
             UPDATE workflow_drafts SET
                 intent_key=$1, name=$2, description=$3, workflow_type=$4,
@@ -366,9 +442,10 @@ async def _execute_tool(
                 llm_system_prompt=$13, pdf_config=$14::jsonb,
                 response_template=$15, otp_required=$16,
                 otp_threshold=$17, approval_threshold=$18,
-                slash_command=$19, command_description=$20, menu_section=$21,
+                gates=$19::jsonb,
+                slash_command=$20, command_description=$21, menu_section=$22,
                 status='chatting', updated_at=now()
-            WHERE id=$22
+            WHERE id=$23
         """,
             wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
             json.dumps(wf.get("training_phrases") or []),
@@ -385,6 +462,7 @@ async def _execute_tool(
             wf.get("otp_required", False),
             wf.get("otp_threshold"),
             wf.get("approval_threshold"),
+            json.dumps(gates or []),
             wf.get("slash_command"),
             wf.get("command_description"),
             wf.get("menu_section"),
@@ -395,6 +473,7 @@ async def _execute_tool(
             "loaded": True,
             "name": wf["name"],
             "intent_key": intent_key,
+            "gates": gates or [],
             "message": f"Loaded '{wf['name']}' — tell me what to change."
         }
 
@@ -472,10 +551,14 @@ async def run_builder_agent(
             except (json.JSONDecodeError, TypeError):
                 raw_fields = []
         draft_context += f"Fields to collect: {', '.join(raw_fields) if raw_fields else 'none'}\n"
-    if draft.get("otp_threshold"):
-        draft_context += f"OTP Threshold: {draft['otp_threshold']}\n"
-    if draft.get("approval_threshold"):
-        draft_context += f"Approval Threshold: {draft['approval_threshold']}\n"
+    draft_gates = draft.get("gates")
+    if isinstance(draft_gates, str):
+        try:
+            draft_gates = json.loads(draft_gates)
+        except (json.JSONDecodeError, TypeError):
+            draft_gates = []
+    if draft_gates:
+        draft_context += f"Constraints so far (gates): {json.dumps(draft_gates)}\n"
     if draft.get("business_rules"):
         draft_context += f"Business Rules: {draft['business_rules']}\n"
     if draft.get("slash_command"):
@@ -495,6 +578,7 @@ async def run_builder_agent(
     published = False
     published_intent_key = None
     has_pdf_preview = False
+    ready_for_publish = False
 
     for _ in range(max_iterations):
         response = await _llm_chat(
@@ -521,6 +605,7 @@ async def run_builder_agent(
                 "has_pdf_preview":      has_pdf_preview,
                 "published":            published,
                 "published_intent_key": published_intent_key,
+                "ready_for_publish":    ready_for_publish,
             }
 
         # Process tool calls
@@ -544,6 +629,14 @@ async def run_builder_agent(
             if result.get("_show_confirm_buttons"):
                 summary_card = result.get("summary")
                 has_pdf_preview = result.get("has_pdf_preview", False)
+
+            # mark_ready_for_review is the deterministic signal that the
+            # publish panel should open — previously this was only ever
+            # visible to the LLM (as a tool result it then paraphrased into
+            # chat text), so the frontend had no reliable way to know a
+            # draft was ready and never actually opened a publish flow.
+            if tc.function.name == "mark_ready_for_review" and result.get("_show_publish_panel"):
+                ready_for_publish = True
 
             if tc.function.name == "publish_workflow" and result.get("published"):
                 published = True
@@ -569,4 +662,5 @@ async def run_builder_agent(
         "has_pdf_preview":      has_pdf_preview,
         "published":            published,
         "published_intent_key": published_intent_key,
+        "ready_for_publish":    ready_for_publish,
     }
