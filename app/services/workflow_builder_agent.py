@@ -519,13 +519,49 @@ async def _execute_tool(
         return {"saved_gates": len(gates)}
 
     if tool_name == "set_roles":
-        roles = tool_input.get("roles") or []
+        # Validate against the org's REAL roles the moment the LLM names
+        # them, rather than only at publish time. Caught live: the model
+        # said "members"/"resident" (plausible English, wrong exact name —
+        # this org's roles are admin/committee/member/staff) and that only
+        # surfaced as a confusing error on the publish confirm screen,
+        # several turns after the mistake was actually made. Tolerate case
+        # and simple pluralization ("members" -> "member") since those are
+        # unambiguous; anything else comes back as an error so the LLM asks
+        # the admin instead of guessing, in the same turn it went wrong.
+        requested = tool_input.get("roles") or []
+        org_roles = await fetch_all(
+            "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
+        )
+        valid_names = {r["name"] for r in org_roles}
+        valid_lower = {n.lower(): n for n in valid_names}
+
+        resolved, unknown = [], []
+        for r in requested:
+            if r in valid_names:
+                resolved.append(r)
+            elif r.lower() in valid_lower:
+                resolved.append(valid_lower[r.lower()])
+            elif r.lower().rstrip("s") in valid_lower:
+                resolved.append(valid_lower[r.lower().rstrip("s")])
+            else:
+                unknown.append(r)
+
+        if unknown:
+            return {
+                "error": (
+                    f"{unknown} — not real roles in this org, so nothing was saved. "
+                    f"The actual roles here are: {sorted(valid_names)}. Ask the admin "
+                    f"which of these they meant, then call set_roles again with the exact name(s)."
+                )
+            }
+
+        resolved = list(dict.fromkeys(resolved))
         await execute(
             "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
-            roles, draft["id"], source_key=source_key
+            resolved, draft["id"], source_key=source_key
         )
-        draft["granted_roles"] = roles
-        return {"saved_roles": roles}
+        draft["granted_roles"] = resolved
+        return {"saved_roles": resolved}
 
     if tool_name == "analyze_sample_pdf":
         if not attachment_b64:

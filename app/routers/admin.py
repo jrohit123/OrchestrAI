@@ -964,6 +964,13 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
         result = await publish_draft(draft_dict, org_id, source_key)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    except Exception as e:
+        # A bare 500 with no detail here means the admin (and whoever's
+        # debugging this) has no idea what actually broke — log the full
+        # traceback server-side and surface the real error message instead
+        # of Starlette's generic "Internal Server Error".
+        logger.error(f"publish_draft failed for draft {draft_id}: {e}", exc_info=True)
+        raise HTTPException(500, f"Publish failed: {type(e).__name__}: {e}")
 
     return {"ok": True, "workflow_id": result["workflow_id"]}
 
