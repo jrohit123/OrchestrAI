@@ -583,7 +583,16 @@ async def _execute_tool(
             bool(spec.get("otp_required", False)),
             spec.get("otp_threshold"),
             spec.get("approval_threshold"),
-            json.dumps(spec.get("gates") or draft.get("gates") or []),
+            # draft.get("gates") is raw jsonb TEXT from asyncpg (no codec
+            # registered — see _parse_jsonb's docstring), not a parsed list.
+            # Using it unparsed here double-encodes it: json.dumps("[]")
+            # produces the JSON string "\"[]\"", which every later reader
+            # (including this same draft's own recap) then parses back into
+            # the STRING "[]" instead of an empty list — iterating that
+            # string character-by-character produced "Constraints: • [ • ]"
+            # in the live "Draft so far" panel. Caught by actually testing
+            # the chat builder end-to-end against Godrej Emerald.
+            json.dumps(spec.get("gates") or _parse_jsonb(draft.get("gates"), None) or []),
             spec["plain_english_summary"],
             draft.get("slash_command"),
             draft.get("command_description"),

@@ -901,6 +901,13 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
 
     org_id = str(draft["org_id"])
     gates = _parse_jsonb(draft.get("gates"), [])
+    # Defense-in-depth: a malformed/corrupted gates value (e.g. from a stale
+    # double-encoded row) must never crash this endpoint with a raw 500 —
+    # iterating it below assumes a list of dicts. validate_workflow_config
+    # already guards this same way; mirror it here since this loop runs
+    # before that function ever sees the value.
+    if not isinstance(gates, list):
+        gates = []
     roles = draft.get("granted_roles") or []
     slash_command = draft.get("slash_command")
 

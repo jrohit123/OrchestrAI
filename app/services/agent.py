@@ -66,47 +66,17 @@ except ImportError:
 # ── Schema cache (per org, reloaded on restart) ──────────────────────────────
 _schema_cache: dict[str, str] = {}
 
-# ── Greeting & help detection patterns ────────────────────────────────────────
-_GREETING_PATTERNS = {
-    # English
-    "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-    "good night", "howdy", "greetings", "what's up", "sup",
-    # Hindi / Hinglish
-    "namaste", "namaskar", "namasté", "pranam", "jai shri krishna",
-    "ram ram", "jai jinendra", "sat sri akal", "salaam", "adaab",
-    "kya haal", "kya hal", "kaise ho", "kya chal raha", "hello ji",
-    "hi ji", "bhai", "sir", "boss",
-}
-
-_HELP_PATTERNS = {
-    "help", "what can i do", "what can i ask",
-    "kya kar sakta hoon", "kya pooch sakta hoon", "kya help milegi",
-    "kya karna hai", "guide", "guide me", "start", "get started",
-    "capabilities", "features", "what do you do", "tell me what you can do",
-    "commands", "list commands", "how to use",
-}
-
-
-def _is_pure_greeting(message: str) -> bool:
-    """Return True if the message is ONLY a greeting (≤4 words, no query body)."""
-    clean = message.strip().lower().rstrip("!.?,")
-    # Direct pattern match
-    if clean in _GREETING_PATTERNS:
-        return True
-    # 1-4 word message where first word is a greeting
-    words = clean.split()
-    if len(words) <= 4 and words[0] in _GREETING_PATTERNS:
-        return True
-    return False
-
-
-def _is_help_request(message: str) -> bool:
-    """Return True if user is asking what the system can do."""
-    clean = message.strip().lower()
-    for pattern in _HELP_PATTERNS:
-        if pattern in clean:
-            return True
-    return False
+# ── Greeting & help handling ──────────────────────────────────────────────────
+# Previously this was a hardcoded keyword/regex fast-path (_GREETING_PATTERNS /
+# _HELP_PATTERNS + _is_pure_greeting() / _is_help_request()) that ran BEFORE
+# the LLM ever saw the message, to skip a model call for trivial "hi"/"help"
+# turns. It was fragile by construction — a real complaint containing the
+# word "help" ("...need HELP to get it plastered...") got intercepted and
+# short-circuited straight to the canned menu, never reaching the real
+# intent classifier (reported live against Godrej Emerald). Removed in favor
+# of letting the main tool-calling agent decide — via show_menu/show_help
+# tools below — based on actual understanding of the whole message, not a
+# keyword scan. See MENU REQUESTS / HELP REQUESTS in the system prompt.
 
 
 def _time_of_day_greeting(ist_hour: int) -> str:
@@ -118,47 +88,6 @@ def _time_of_day_greeting(ist_hour: int) -> str:
         return "Good evening"
     else:
         return "Namaskar"
-
-
-async def _build_greeting_response(user: dict, message: str) -> str:
-    """Build a personalised greeting. Reads workflow names from DB — no hardcoded labels."""
-    from app.db import fetch_all as _fetch_all
-    now_ist   = _dt.datetime.now(_IST)
-    tod       = _time_of_day_greeting(now_ist.hour)
-    first_name = user["user_name"].split()[0]
-    role      = user.get("role", "user").title()
-    org       = user.get("org_name", "")
-
-    # Build capability list from workflows the user has permission for
-    perms = set(user.get("permissions", []))
-    workflows = await _fetch_all(
-        "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"], source_key=user["source_key"]
-    )
-    capability_lines = []
-    seen = set()
-    for wf in workflows:
-        if wf["intent_key"] in perms or not perms:
-            if wf["name"] not in seen:
-                emoji = "⚡" if wf["workflow_type"] == "action" else "🔍"
-                capability_lines.append(f"  {emoji} {wf['name']}")
-                seen.add(wf["name"])
-
-    # Fallback for non-workflow permissions
-    if not capability_lines:
-        capability_lines = ["  • Query data and run reports"]
-
-    caps_block = "\n".join(capability_lines)
-
-    return (
-        f"{tod}, *{first_name}!* 👋\n\n"
-        f"I'm your ERP assistant for *{org}*.\n"
-        f"You're logged in as *{role}*.\n\n"
-        f"*Here's what I can help you with:*\n"
-        f"{caps_block}\n\n"
-        f"Just ask me in plain language — English, Hindi, or any mix. 😊\n\n"
-        f"_Type *menu* to see all available options._"
-    )
 
 
 async def _build_greeting_response_with_menu(user: dict, message: str) -> dict:
@@ -441,6 +370,27 @@ TOOLS = [
                 "'show me options', 'menu dikhao', 'kya options hain', 'go back to menu', 'main menu bhejo'. "
                 "Always prefer this over describing options as plain text when the user wants to SEE/SELECT "
                 "from a menu (as opposed to a general 'what can you do' capability question, which can be text)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_help",
+            "description": (
+                "Show a detailed guide to what this assistant can do — every workflow the user has "
+                "access to, with a one-line description of each. Call this ONLY when the user is "
+                "genuinely asking what the system can do or how to use it — 'what can you do', "
+                "'how do I use this', 'guide me', 'kya kar sakta hoon', 'capabilities', a bare 'help' "
+                "with nothing else. Do NOT call this just because a word like 'help', 'guide', or "
+                "'start' appears somewhere inside an otherwise normal request — read the WHOLE message: "
+                "'need help to get it plastered' is a repair complaint, not a request for this guide. "
+                "If the message describes an actual problem, request, or business detail, handle it "
+                "with the relevant workflow tool instead, even if it contains one of those words."
             ),
             "parameters": {
                 "type": "object",
@@ -823,6 +773,20 @@ TODAY: {today}
 MENU REQUESTS:
 If the user asks to see the menu/options in ANY phrasing or language, at ANY point —
 call the show_menu tool. Do not describe the options as plain text in that case.
+This also applies to a bare opening greeting ("hi", "namaste", "hello ji") with
+nothing else in it — greet them and call show_menu, don't just reply with text.
+
+HELP REQUESTS:
+If the user is genuinely asking what this system can do or how to use it — call
+show_help. A genuine help request is short and has no other content: "help",
+"what can you do", "guide me", "kya kar sakta hoon". It is NEVER a message that
+happens to contain a word like "help", "guide", "start", or "features" while
+actually describing a real problem or request — "need help to get it plastered",
+"please start the repair" are complaints/requests, not help requests. When in
+doubt, read the message as a whole: does it describe something happening in the
+real world (an issue, an amount, a name, a date)? If yes, that's a real request —
+handle it with the matching workflow tool, never show_help, even if it contains
+one of those words.
 
 RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
 Before asking for information, check the WORKFLOW SCHEMAS section above.
@@ -1018,6 +982,9 @@ async def _execute_tool(
 
     elif tool_name == "show_menu":
         return {"type": "show_menu"}
+
+    elif tool_name == "show_help":
+        return {"type": "show_help"}
 
     elif tool_name == "generate_pdf":
         from app.services.pdf_engine import generate_pdf as _gen_pdf
@@ -1480,25 +1447,12 @@ async def run_agent(
 
     session_patch = {}
 
-    # ── Fast-path: greetings and help (no LLM call needed) ──────────────────
+    # Greetings and help requests are no longer a keyword fast-path here —
+    # the main agent loop below decides, via genuine understanding of the
+    # message, whether to call show_menu or show_help (both defined in
+    # _TOOLS). See the note above _time_of_day_greeting for why.
     msg_stripped = message.strip()
 
-    if _is_pure_greeting(msg_stripped):
-        greeting_data = await _build_greeting_response_with_menu(user, msg_stripped)
-        history_to_save = [{"role": "user", "content": message}]
-        # Return special marker for webhook to send interactive menu
-        return greeting_data["text"], history_to_save, {
-            "_send_menu": True,
-            "menu_sections": greeting_data["menu_sections"],
-            "button_label": greeting_data["button_label"]
-        }
-
-    if _is_help_request(msg_stripped):
-        help_text = await _build_help_response(user)
-        history_to_save = [{"role": "user", "content": message},
-                           {"role": "assistant", "content": help_text}]
-        return help_text, history_to_save, {}
-    
     # ── Fast-path: direct workflow execution by intent_key ─────────────────
     # If message is exactly a workflow intent_key the user has permission for, execute it
     from app.db import fetch_all as _fetch_all
@@ -2187,16 +2141,21 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             # If this was a show_menu call, return menu data
             if tool_call.function.name == "show_menu":
-                from app.services.menu import build_menu_sections
-                sections = await build_menu_sections(user["org_id"], user)
-                menu_text = "📋 Here's what you can do:"
+                greeting_data = await _build_greeting_response_with_menu(user, message)
                 history_to_save = _serialize_history(messages)
-                history_to_save.append({"role": "assistant", "content": menu_text})
-                return menu_text, history_to_save, {
+                history_to_save.append({"role": "assistant", "content": greeting_data["text"]})
+                return greeting_data["text"], history_to_save, {
                     "_send_menu": True,
-                    "menu_sections": sections,
-                    "button_label": "📋 Menu"
+                    "menu_sections": greeting_data["menu_sections"],
+                    "button_label": greeting_data["button_label"]
                 }
+
+            # If this was a show_help call, return the detailed capability guide
+            if tool_call.function.name == "show_help":
+                help_text = await _build_help_response(user)
+                history_to_save = _serialize_history(messages)
+                history_to_save.append({"role": "assistant", "content": help_text})
+                return help_text, history_to_save, session_patch
 
             # If this was a cancel_draft call, confirm and stop — the draft is gone
             if tool_call.function.name == "cancel_draft":
