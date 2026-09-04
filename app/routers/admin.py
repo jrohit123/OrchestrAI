@@ -1074,8 +1074,7 @@ input:checked+.slider:before{transform:translateX(18px)}
       </div>
       <table>
         <thead><tr>
-          <th>Name</th><th>Type</th><th>Active</th>
-          <th>Constraints</th><th>Actions</th>
+          <th>Name</th><th>Type</th><th>Active</th><th>Actions</th>
         </tr></thead>
         <tbody id="workflowsTable"></tbody>
       </table>
@@ -1264,25 +1263,10 @@ async function clearSessions() {
 }
 
 // ── Workflow List ─────────────────────────────────────────────────
-function gateChipsHTML(gates) {
-  if (!gates || !gates.length) return '<span style="color:#aaa;font-size:11px">none</span>';
-  return gates.map(g => {
-    if (g.type === 'otp') {
-      const amt = (g.when && (g.when.gte ?? g.when.lte)) ?? '';
-      return `<span class="badge" style="background:#fef3c7;color:#92400e;margin:1px">🔐 OTP ≥${fmtRs(amt)}</span>`;
-    }
-    if (g.type === 'approval_chain') {
-      const n = (g.levels || []).length;
-      return `<span class="badge" style="background:#dbeafe;color:#185FA5;margin:1px">👤 ${n}-level approval</span>`;
-    }
-    return `<span class="badge" style="background:#fee2e2;color:#991b1b;margin:1px">🔒 ${(g.role_any_of||[]).join('/')||'restricted'}-only</span>`;
-  }).join(' ');
-}
-
 function renderWorkflows(workflows) {
   const tbody = document.getElementById('workflowsTable');
   if (!workflows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
     return;
   }
   tbody.innerHTML = workflows.map(w => `
@@ -1294,10 +1278,6 @@ function renderWorkflows(workflows) {
           <input type="checkbox" ${w.is_active ? 'checked' : ''} onchange="toggleActive('${w.id}',this.checked)">
           <span class="slider"></span>
         </label>
-      </td>
-      <td>
-        <div>${gateChipsHTML(w.gates)}</div>
-        <button class="btn btn-gray" style="margin-top:4px;padding:2px 8px;font-size:10px" onclick="openEdit('${w.id}',true)">+ Add / manage</button>
       </td>
       <td style="white-space:nowrap">
         <button class="btn btn-gray" onclick="openEdit('${w.id}')" style="margin-right:4px">✏️ Edit</button>
@@ -1462,7 +1442,7 @@ function gateCardHTML(g, idx, storeName) {
 }
 
 // ── Edit Modal ────────────────────────────────────────────────────
-async function openEdit(id, focusGates) {
+async function openEdit(id) {
   const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
   if (!r) return;
   const w = await r.json();
@@ -1475,7 +1455,6 @@ async function openEdit(id, focusGates) {
 
   gateStores.edit = w.gates || [];
   renderGates('edit');
-  if (focusGates && !gateStores.edit.length) gateAdd('edit');
 
   const granted = w.granted_roles || [];
   document.getElementById('editRolesContainer').innerHTML = (gateRolesList || []).map(r => `
@@ -1484,9 +1463,6 @@ async function openEdit(id, focusGates) {
     </label>`).join('');
 
   openModal('editModal');
-  if (focusGates) {
-    setTimeout(() => document.getElementById('editGatesContainer').scrollIntoView({behavior:'smooth', block:'center'}), 100);
-  }
 }
 
 async function saveWorkflowEdit() {
