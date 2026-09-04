@@ -77,6 +77,14 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     )
     new_version = (existing["version"] + 1) if existing else 1
 
+    # NOTE: adapter_method / trigger_patterns are NOT real columns on
+    # workflows in either org's database — checked both orgs' actual
+    # CREATE TABLE definitions. They were carried forward from older legacy
+    # code that referenced them, but this INSERT had literally never been
+    # executed before this session (publish_draft was dead code), so the
+    # mismatch was never caught until it ran for the first time live:
+    # UndefinedColumnError: column "adapter_method" of relation "workflows"
+    # does not exist. Do not add them back without adding the columns first.
     row = await fetch_one("""
         INSERT INTO workflows (
             org_id, name, intent_key, description, workflow_type,
@@ -85,8 +93,8 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
             business_glossary, llm_system_prompt, pdf_config,
             response_template, otp_required, otp_threshold, approval_threshold,
             gates,
-            adapter_method, version, is_active,
-            trigger_patterns, slash_command, command_description, menu_section
+            version, is_active,
+            slash_command, command_description, menu_section
         ) VALUES (
             $1,$2,$3,$4,$5,
             $6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,
@@ -94,8 +102,8 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
             $13::jsonb,$14,$15::jsonb,
             $16,$17,$18,$19,
             $20::jsonb,
-            'generic',$21,true,
-            '[]'::jsonb,$22,$23,$24
+            $21,true,
+            $22,$23,$24
         )
         ON CONFLICT (org_id, intent_key) DO UPDATE SET
             name                = EXCLUDED.name,

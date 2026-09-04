@@ -572,13 +572,19 @@ async def save_generated_workflow(org_slug: str, request: Request):
         raise HTTPException(status_code=400, detail="llm_system_prompt cannot be empty")
 
     try:
+        # trigger_patterns / adapter_method were never real columns on
+        # workflows in either org's database (checked both orgs' actual
+        # CREATE TABLE definitions — zero matches for either name). Same
+        # phantom-column bug as workflow_publisher.py's INSERT, found there
+        # first by actually running it live. This endpoint has carried the
+        # identical bug the whole time — nothing suggests it was ever
+        # exercised successfully either.
         await execute("""
             INSERT INTO workflows (
                 org_id, name, intent_key, description,
                 workflow_type, training_phrases, entity_schema,
                 sql_template, sql_params_order, response_format,
                 business_glossary, llm_system_prompt,
-                trigger_patterns, adapter_method,
                 otp_required, otp_threshold, approval_threshold,
                 is_active, steps,
                 pdf_config, response_template, calc_rules
@@ -587,10 +593,9 @@ async def save_generated_workflow(org_slug: str, request: Request):
                 $5, $6::jsonb, $7::jsonb,
                 $8, $9::jsonb, $10,
                 $11::jsonb, $12,
-                '[]'::jsonb, $13,
-                $14, $15, $16,
-                true, $17::jsonb,
-                $18::jsonb, $19, $20::jsonb
+                $13, $14, $15,
+                true, $16::jsonb,
+                $17::jsonb, $18, $19::jsonb
             )
         """,
             org_id,
@@ -605,7 +610,6 @@ async def save_generated_workflow(org_slug: str, request: Request):
             body.get("response_format") or "generic",
             json.dumps(body.get("business_glossary", {})),
             body.get("llm_system_prompt"),
-            body.get("adapter_method") or "generic",
             body.get("otp_required", False),
             body.get("otp_threshold"),
             body.get("approval_threshold"),
