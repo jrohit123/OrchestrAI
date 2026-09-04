@@ -60,17 +60,6 @@ async def _resolve_source_key(org_slug: str) -> str:
     return org_slug
 
 
-@router.get("/admin", response_class=HTMLResponse)
-async def admin_index():
-    """Lists every org from data_sources, linking to its own /admin/{source_key} panel."""
-    keys = await get_all_source_keys()
-    links = "\n".join(f'<li><a href="/admin/{k}">{k}</a></li>' for k in keys)
-    return HTMLResponse(
-        content=f"<h2>Select an org</h2><ul>{links}</ul>",
-        media_type="text/html; charset=utf-8"
-    )
-
-
 @router.get("/admin/{org_slug}", response_class=HTMLResponse)
 async def admin_page(org_slug: str):
     await _resolve_source_key(org_slug)  # 404s on an unknown org
@@ -1045,12 +1034,7 @@ input:checked+.slider:before{transform:translateX(18px)}
   <span id="orgName">Loading...</span>
 </div>
 <div class="container">
-  <div id="loading" class="loading">
-    Loading...
-    <div style="margin-top:16px">
-      <button class="btn btn-primary" onclick="loadData()">🔄 Retry</button>
-    </div>
-  </div>
+  <div id="loading" class="loading"></div>
   <div id="content" style="display:none">
 
     <div class="stats" id="statsGrid"></div>
