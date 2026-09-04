@@ -1072,9 +1072,10 @@ input:checked+.slider:before{transform:translateX(18px)}
         <span>⚙️ Workflows</span>
         <button class="btn btn-purple" onclick="openBuilderChat()">✨ Build New Workflow</button>
       </div>
-      <table>
+      <table style="table-layout:fixed">
         <thead><tr>
-          <th>Name</th><th>Type</th><th>Active</th><th>Actions</th>
+          <th style="width:46%">Name</th><th style="width:16%">Type</th>
+          <th style="width:16%">Active</th><th style="width:22%">Actions</th>
         </tr></thead>
         <tbody id="workflowsTable"></tbody>
       </table>
