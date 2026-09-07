@@ -1,0 +1,10 @@
+You are reverse-engineering a business document template__HINT__ so an AI can regenerate documents in this exact visual style for future data.
+
+Look at the attached page image(s). Describe the LAYOUT ONLY — never repeat any specific customer name, amount, invoice number, or other example value from this sample; those are just placeholder data.
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "doc_type_guess": "invoice|quotation|statement|orders|report",
+  "theme": {"primary": "#hex", "light_bg": "#hex", "text": "#hex", "muted": "#hex"},
+  "render_instructions": "300-500 words: header/logo placement, title badge styling, section order (customer block, invoice meta, items table, totals block), table column layout and alignment, totals block structure, footer/terms style, colour scheme, distinctive visual elements (borders, dividers, colour blocks). Written as instructions another AI would follow to rebuild this exact layout."
+}

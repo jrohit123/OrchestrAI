@@ -9,7 +9,10 @@ import json
 import os
 from app.db import fetch_all
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR, _read
 from app.config import required
+
+_COMPILER_RULES = _read(PROMPTS_DIR / "workflow_compiler_rules.txt")
 
 
 def _parse(val, default):
@@ -67,154 +70,7 @@ ADMIN DESCRIPTION:
 DATABASE SCHEMA (available tables):
 {schema_text}
 
-══════════════════════════ RULES ══════════════════════════════════
-
-RULE 1 — workflow_type: read or action. When uncertain, prefer "read".
-
-RULE 2 — training_phrases: 8-12 realistic WhatsApp-style phrases, English + Hinglish.
-  Use {{slot_name}} for entity placeholders.
-
-RULE 3 — entity_schema: Only entities actually needed. Per field:
-  table, column, match (ILIKE/exact), required, format (wildcard/exact), type (string/integer/float)
-  CRITICAL: Mark computed fields with "computed": true — these are NEVER collected from the user.
-  For items arrays, include item_schema with per-item field definitions.
-  Example for an invoice with computed GST:
-  {{
-    "customer_name": {{"type":"string","required":true,"table":"customers","column":"name","match":"ILIKE","format":"wildcard"}},
-    "items": {{
-      "type":"array","required":true,
-      "item_schema": {{
-        "description": {{"type":"string","required":true}},
-        "qty":         {{"type":"integer","required":true}},
-        "unit_price":  {{"type":"float","required":true}},
-        "gst":         {{"type":"float","required":false,"computed":true}},
-        "total":       {{"type":"float","required":false,"computed":true}}
-      }}
-    }},
-    "total_amount": {{"type":"float","required":false,"computed":true}}
-  }}
-  RULE: Every field produced by calc_rules MUST appear in entity_schema with "computed":true.
-  RULE: Never mark a computed field as "required":true — the user never provides it.
-
-RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id, $2+ for entities).
-  null for action workflows.
-
-RULE 5 — sql_params_order: entity_schema keys in $2,$3... order. [] for action workflows.
-
-RULE 6 — response_format: "table" (short uniform list) or "generic" (default JSON-style
-  formatting — use for everything else). null for action workflows.
-
-RULE 7 — business_glossary: 3-6 term mappings for this specific workflow.
-
-RULE 8 — llm_system_prompt: Under 300 words. What it does, tables involved, 3 example inputs,
-  1 disambiguation rule. Include the exact intent_key so the agent knows which workflow to use.
-
-RULE 9 — adapter_method: "generic" for all workflows (execution is driven by steps[]).
-
-RULE 10 — intent_key: unique snake_case derived from the workflow purpose.
-  Use descriptive verbs (create, generate, update, get, set, delete) followed by the object.
-  Examples: create_complaint, generate_invoice, update_order_status, get_customer_dues.
-  Keep it short, clear, and domain-agnostic.
-
-RULE 11 — pdf_config: doc_type, title_template, aging_analysis, show_key_insights, insight_focus.
-  For action workflows also add theme and render_instructions (RULE 15).
-
-RULE 12 — response_template: WhatsApp message after action. Use {{variable}} placeholders. null for reads.
-
-RULE 13 — calc_rules (action workflows with computed fields):
-  item_rules: per-line-item expressions using item fields + org columns (e.g. gst_rate from orgs).
-  aggregate_rules: top-level expressions (e.g. sum of items).
-  Available functions: round(x,n), abs(x), min(a,b), max(a,b), sum_field(items,'field'), count_field(items).
-  CRITICAL: Every field produced here MUST have "computed":true in entity_schema.
-  CRITICAL: NEVER hardcode tax rates as decimals (0.03, 0.1). ALWAYS use org column names
-  from the orgs table — for GST use "gst_rate" which is the actual column name:
-    CORRECT: "round(unit_price * qty * gst_rate / 100, 2)"
-    WRONG:   "round(unit_price * qty * 0.03, 2)"
-  Example for GST invoice:
-  {{
-    "item_rules": {{
-      "gst":   "round(unit_price * qty * gst_rate / 100, 2)",
-      "total": "round(unit_price * qty + gst, 2)"
-    }},
-    "aggregate_rules": {{
-      "total_amount": "round(sum_field(items, 'total'), 2)"
-    }}
-  }}
-  {{}} for read workflows.
-
-RULE 14 — steps (action workflows — this IS the execution logic):
-  Ordered array of {{"op":"...", "params":{{...}}}}.
-  Available ops:
-    resolve_entity  — {{"table","name_from":"$fields.X","into":"alias","match_column":"name"}}
-                      optional: "expose":{{"ctx_alias":"db_column"}} to copy row values into fields
-    compute         — {{}} — REQUIRED whenever calc_rules is non-empty
-    otp_gate        — {{"amount_field":"$computed.total_amount"}}
-    approval_gate   — {{"amount_field":"$computed.total_amount"}}
-    db.insert_row   — {{"table","values":{{"col":"$fields.X|$computed.X|$alias.id|$org_id|$user.user_id|literal"}},
-                       "sequence":{{"field":"doc_number_col","prefix":"INV-","start":100}}}}
-    db.update_row   — {{"table","set":{{"col":"$fields.X|NOW()"}},"where":{{"col":"$alias.id"}}}}
-    db.upsert_row   — {{"table","values":{{...}},"conflict_columns":["col1","col2"]}}
-    pdf.generate    — {{"subtitle":""}}
-    notify.whatsapp — {{"attach_pdf":true}}
-
-  CRITICAL DB INSERT RULES:
-  - status values MUST be lowercase: "pending" NOT "PENDING", "sent" NOT "SENT"
-  - For due dates use the special literal "TODAY+30" (30 days from today) or "TODAY"
-    NEVER use SQL expressions like "NOW() + INTERVAL '30 days'" — they don't work as string literals
-  - Never include columns that have DB defaults (created_at, updated_at) — let the DB handle them
-
-  Example invoice insert:
-  {{"op":"db.insert_row","params":{{"table":"invoices","values":{{
-    "org_id":"$org_id","customer_id":"$customer.id","created_by":"$user.user_id",
-    "items":"$fields.items","amount":"$computed.total_amount",
-    "status":"pending","due_date":"TODAY+30"
-  }},"sequence":{{"field":"invoice_number","prefix":"INV-","start":100}}}}}}
-
-  Typical pipeline for invoice/quotation:
-    resolve_entity → compute → otp_gate → approval_gate → db.insert_row → pdf.generate → notify.whatsapp
-  For status update: resolve_entity → db.update_row → notify.whatsapp
-  [] for read workflows.
-
-RULE 15 — pdf_config theme + render_instructions (action workflows):
-  "theme": {{"primary":"#hex","light_bg":"#hex","text":"#hex","muted":"#hex"}}
-  "render_instructions": "200-400 words — exact layout instructions for the PDF:
-    header style (badges, org name placement), customer/recipient block,
-    items table columns with alignment (right-align amounts, center qty),
-    totals block structure (subtotal, tax, grand total),
-    footer text, any special visual elements.
-    Written so an AI can rebuild this exact layout with new data."
-
-RULE 16 — plain_english_summary (always required):
-  2-5 short lines a non-technical business owner can read in one glance.
-  - What it's called and when it triggers (example phrases)
-  - What it collects, in plain words
-  - What's calculated automatically, if anything
-  - Any OTP/approval rule, in plain words
-  - What document it produces, if any
-  End with: "Shall I create this?"
-  No JSON, no field names, no technical jargon.
-
-══════════════════ MANDATORY VALIDATION ═══════════════════════════
-BEFORE generating the final JSON, verify:
-  1. Every field in calc_rules item_rules/aggregate_rules appears in entity_schema with "computed":true
-  2. No computed field has "required":true
-  3. Action workflows have at least resolve_entity + db.insert_row in steps (unless it's an update/upsert)
-  4. training_phrases has ≥ 8 phrases
-  5. plain_english_summary is present and ends with "Shall I create this?"
-
-══════════════════ OUTPUT ══════════════════════════════════════════
-Return ONLY this JSON, no markdown:
-{{
-  "name":"...", "intent_key":"...", "workflow_type":"read|action",
-  "description":"...", "training_phrases":[...], "entity_schema":{{}},
-  "calc_rules":{{}}, "steps":[...], "sql_template":null, "sql_params_order":[],
-  "response_format":null, "business_glossary":{{}}, "llm_system_prompt":"...",
-  "adapter_method":"generic", "otp_required":false, "otp_threshold":null,
-  "approval_threshold":null,
-  "pdf_config":{{"doc_type":"...","title_template":"...","theme":{{}},"render_instructions":"..."}},
-  "response_template":"...",
-  "plain_english_summary":"..."
-}}"""
+{_COMPILER_RULES}"""
 
     last_error = "Unknown error"
     for attempt in range(3):

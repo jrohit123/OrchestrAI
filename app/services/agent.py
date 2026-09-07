@@ -805,9 +805,6 @@ TODAY: {today}
 
 # ── Draft validation helper ────────────────────────────────────────────────────
 
-# Fields that are resolved by the executor, not supplied by the LLM
-_EXECUTOR_RESOLVED_FIELDS = {"customer_id", "org_id", "created_by"}
-
 # Stale draft thresholds in minutes
 _DRAFT_STALE_MINUTES   = 30   # collecting stage — abandon after 30 min of inactivity
 _CONFIRM_STALE_MINUTES = 10   # awaiting_confirmation — shorter: stale unconfirmed writes are riskier

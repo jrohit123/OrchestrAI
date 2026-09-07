@@ -32,24 +32,10 @@ VERIFY_TOKEN      = required("WHATSAPP_VERIFY_TOKEN")
 APP_SECRET        = required("WHATSAPP_APP_SECRET")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 
-_CONFIRM_WORDS = frozenset({
-    "yes", "y", "haan", "ha", "ok", "confirm", "confirmed",
-    "theek hai", "thik hai", "sahi hai", "go ahead", "proceed", "👍",
-})
-_CANCEL_WORDS = frozenset({
-    "no", "n", "nahi", "na", "cancel", "stop",
-    "start over", "restart", "forget it", "scrap it", "scrap that",
-    "discard", "discard it", "reset", "never mind", "nevermind",
-})
-# Word-boundary tokens only. NEVER substring-match these — "case" matches
-# inside "staircase", "new" inside "renewal" (we have a case titled
-# "AMC renewal overdue for Wing 2 lift"), "file" inside "profile".
-_CANCEL_TOKENS = frozenset({
-    "cancel", "/cancel", "stop", "abort", "quit", "exit",
-    "reset", "restart", "discard", "nevermind", "never mind",
-    "forget it", "scrap it", "start over", "start again",
-    "rehne do", "chhodo", "chodo", "band karo isko", "radd karo",
-})
+# Confirm/cancel/self-reference vocabulary is per-org config now — see
+# app/services/vocabulary.py. What used to be hardcoded here is that
+# module's built-in default, applied when an org hasn't overridden it via
+# orgs.settings->'vocabulary'.
 
 
 async def _clear_stuck_draft(user: dict, session: dict, session_id: str, session_ttl: int,
@@ -182,6 +168,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
             # Step 2: user is replying with the OTP code
             if pending_link.get("state") == "awaiting_link_otp":
+                # Deliberately NOT org-vocabulary-driven like the other "retry"
+                # checks below — this fires before the phone is linked to any
+                # org (resolve_identity above returned None), so there is no
+                # org_id yet to look up a vocabulary override for. This is
+                # platform-level linking protocol text, not business content.
                 if text.strip().lower() == "retry":
                     await delete_session(link_session_id)
                     await send_text(phone, "🔄 Cancelled. Please send your email again to restart linking.")
@@ -313,6 +304,9 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     )
     ttl_minutes = org_row["session_ttl_minutes"] if org_row else 480
 
+    from app.services.vocabulary import get_vocabulary
+    vocab = await get_vocabulary(user["org_id"], user["source_key"])
+
     # 3. Security auth check
     sec_session_id = f"sec:{user['org_id']}:{phone}"
     is_authenticated = await check_auth_token(user["org_id"], phone)
@@ -322,7 +316,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         if pre_session.get("state") == "awaiting_security_otp":
             # Handle explicit retry — generate a fresh OTP instead of re-checking the stale one
-            if text.strip().lower() == "retry":
+            if text.strip().lower() in vocab["retry_words"]:
                 pending_text = pre_session.get("pending_text", "")
                 result = await generate_and_send_otp(
                     user_id=user["user_id"],
@@ -415,7 +409,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     _t = text.strip().lower().rstrip("!.?")
     _tokens = set(re.findall(r"[a-z/]+", _t))
 
-    if _t in _CANCEL_TOKENS or (_tokens & {"cancel", "/cancel"} and len(_tokens) <= 3):
+    if _t in vocab["cancel_tokens"] or (_tokens & {"cancel", "/cancel"} and len(_tokens) <= 3):
         had_draft = bool(session.get("pending_action"))
         if not had_draft:
             from app.services.draft_store import get_active_draft
@@ -567,7 +561,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 8. Pending action confirmation
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
         text_lower = text.strip().lower()
-        if text_lower in _CONFIRM_WORDS:
+        if text_lower in vocab["confirm_words"]:
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
@@ -601,7 +595,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 await send_text(phone, result.get("message", "Action failed"))
             return
 
-        if text_lower in _CANCEL_WORDS:
+        if text_lower in vocab["cancel_words"]:
             await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
             await send_text(phone, "❌ Action cancelled.")
             return
@@ -651,7 +645,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # 9. OTP reply for pending action
     elif pending_action and pending_action.get("stage") == "awaiting_otp":
-        if text.strip().lower() == "retry":
+        if text.strip().lower() in vocab["retry_words"]:
             session.pop("pending_action", None)
             session.pop("state", None)
             await set_session(session_id, session, ttl=session_ttl)
@@ -836,7 +830,9 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
 
 # ── OTP REPLY HANDLER (invoice high value) ────────────
 async def _handle_otp_reply(phone, text, user, session, session_id):
-    if text.strip().lower() == "retry":
+    from app.services.vocabulary import get_vocabulary
+    vocab = await get_vocabulary(user["org_id"], user["source_key"])
+    if text.strip().lower() in vocab["retry_words"]:
         await set_session(session_id, {})
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return

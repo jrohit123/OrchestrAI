@@ -7,15 +7,11 @@ from fastapi.responses import HTMLResponse
 from app.config import required
 from app.db import fetch_all, fetch_one, execute, get_all_source_keys
 from app.logging_config import get_context_logger
-from openai import AsyncOpenAI
 
 logger = get_context_logger(__name__)
 router = APIRouter()
 
 ADMIN_TOKEN = required("ADMIN_TOKEN")
-OPENAI_API_KEY = required("OPENAI_API_KEY")
-
-from app.services.llm_router import chat_completion as _llm_chat
 
 
 def _parse_jsonb(val, default):
@@ -337,402 +333,6 @@ async def admin_clear_sessions(org_slug: str):
     org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     await clear_all_sessions(str(org["id"]))
     return {"cleared": True, "message": "All sessions cleared"}
-
-
-@router.post("/admin/{org_slug}/api/workflow/generate")
-async def generate_workflow_config(org_slug: str, request: Request):
-    body = await request.json()
-    description = body.get("description", "").strip()
-    source_key = await _resolve_source_key(org_slug)
-
-    if not description:
-        raise HTTPException(status_code=400, detail="Description is required")
-
-    # Load schema for context using shared business schema function
-    from app.services.schema_utils import get_business_schema_with_types, format_schema_text
-    
-    table_cols = await get_business_schema_with_types(source_key=source_key)
-    schema_text = format_schema_text(table_cols, include_types=True)
-
-    prompt = f"""You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
-
-The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
-
-ADMIN DESCRIPTION:
-"{description}"
-
-DATABASE SCHEMA (available tables):
-{schema_text}
-
-WORKFLOW TYPES:
-- "read": Query the DB and return data. Use when the intent is to VIEW/CHECK/GET/SHOW/LIST/REPORT information.
-- "action": Call a business function. Use when the intent is to CREATE/UPDATE/SEND/GENERATE/DELETE/SET something.
-
-YOUR TASK: Generate a complete workflow record as JSON. Follow these rules exactly.
-
-─────────────────────────────────────────────────────────────────────────────────────── RULES ───────────────────────────────────────────────────────────────────────────────────────
-
-RULE 1 — workflow_type:
-  Detect from the description: read or action.
-  When uncertain, prefer "read".
-
-RULE 2 — training_phrases (CRITICAL — this is how users will trigger this workflow):
-  Generate 8-12 realistic user phrases in WhatsApp style.
-  Include English, Hinglish, and abbreviated forms.
-  Use {{slot_name}} for entity placeholders.
-  Example for "check customer dues": [
-    "{{customer_name}} ka baaki", "dues {{customer_name}}",
-    "{{customer_name}} outstanding", "{{customer_name}} ka udhaar",
-    "{{customer_name}} pending amount", "check dues {{customer_name}}",
-    "{{customer_name}} ka kitna baaki hai", "balance {{customer_name}}",
-    "{{customer_name}} owes how much"
-  ]
-  Be realistic — think about how non-technical WhatsApp users actually type.
-  Include common abbreviations and short forms.
-
-RULE 3 — entity_schema:
-  Only include entities ACTUALLY needed to answer the query.
-  For each entity:
-    "table": which DB table it comes from (or null for computed values)
-    "column": which column to match against
-    "match": "ILIKE" for text search, "exact" for status/codes
-    "required": true/false
-    "format": "wildcard" for ILIKE (adds % wrapping), "exact" for = comparisons
-    "type": "string" (default) | "integer" | "float"
-    "default": optional default value if not provided
-  Example: {{"customer_name": {{"table": "customers", "column": "name", "match": "ILIKE", "required": true, "format": "wildcard"}}}}
-
-RULE 4 â€” sql_template (ONLY for workflow_type = "read"):
-  Write a complete, parameterized PostgreSQL SELECT query.
-  ALWAYS use $1 for org_id.
-  Use $2, $3, ... for entity params in the order listed in sql_params_order.
-  For ILIKE, DO NOT add % in the SQL â€” the executor adds wildcards based on entity_schema.format.
-  Include appropriate JOINs, WHERE clauses, GROUP BY, ORDER BY, and LIMIT.
-  NEVER use subqueries unless absolutely necessary â€” prefer JOINs.
-  Default LIMIT = 20 unless the query is inherently aggregate.
-  Example: "SELECT c.name, SUM(i.amount) AS total_outstanding FROM invoices i JOIN customers c ON c.id=i.customer_id WHERE i.org_id=$1 AND c.name ILIKE $2 AND i.status IN ('pending','overdue') GROUP BY c.id, c.name ORDER BY total_outstanding DESC"
-
-RULE 5 â€” sql_params_order:
-  List entity_schema keys in the order they appear as $2, $3, etc. in sql_template.
-  Example: ["customer_name"] or ["limit", "status"]
-  Must be empty [] for action workflows.
-
-RULE 6 — response_format:
-  "table" — render results as a plain aligned table (good for short, uniform rows).
-  "generic" — default JSON-style formatting for anything else. Use this unless
-    the result is a short, uniform list where a table reads better.
-  null — for action workflows.
-
-RULE 7 â€” business_glossary:
-  Map common user terms FOR THIS SPECIFIC WORKFLOW to what they mean.
-  Include the 3-6 most likely alternative phrasings users might type.
-  Example for dues workflow: {{"baaki": "outstanding", "udhaar": "unpaid dues", "pending": "pending/overdue invoices", "payment baki": "outstanding balance"}}
-
-RULE 8 â€” llm_system_prompt:
-  Write a focused system prompt that an LLM would use ONLY for this workflow when keyword matching is ambiguous.
-  Include:
-  a) One sentence: what this workflow does
-  b) The DB tables and JOIN pattern involved
-  c) Business glossary for this workflow
-  d) 3 concrete example inputs and what entity to extract
-  e) One disambiguation rule (what this workflow is NOT)
-  Keep under 300 words.
-
-RULE 9 â€” adapter_method (ONLY for workflow_type = "action"):
-  Format: "module.function"
-  Derive it from the admin's description. Use sensible module names.
-  Examples: "accounting.create_invoice", "inventory.check_stock", "orders.create_order"
-  For read workflows: null.
-
-RULE 10 â€” intent_key:
-  Must be unique, snake_case, descriptive.
-  For reads: describe the data (get_outstanding, check_stock, list_items_by_status)
-  For actions: describe the action (create_invoice, update_status, send_statement)
-  Use descriptive verbs (create, generate, update, get, set, delete) followed by the object.
-
-RULE 11 â€” pdf_config (for all workflows):
-  How should PDFs look when generated from this workflow's data?
-  "doc_type": one of report/invoice/statement/orders/quotation
-    - statement: single customer's dues with aging + customer header
-    - report: multi-customer lists, inventory, order lists
-    - invoice: ONLY single specific Tax Invoice (not lists)
-    - quotation: price quotations
-    - orders: production order lists
-  "title_template": e.g. "Outstanding Statement â€” {{customer_name}}"
-  "aging_analysis": true if data has due_date and risk bucketing makes sense
-  "show_key_insights": true for financial/operational summaries
-  "insight_focus": ONE sentence â€” what Key Actions should focus on
-  For action workflows: null
-
-RULE 12 â€” response_template (for action workflows):
-  WhatsApp response format after action completes.
-  Use {{variable}} placeholders. Use *bold* for key values. Include emoji.
-  Example: "âœ… *Invoice Created*\\n\\nInvoice #: *{{invoice_number}}*\\nCustomer: {{customer_name}}\\nAmount: *Rs.{{amount}}*\\n\\nðŸ“„ PDF sent above â†‘"
-  For read workflows: null
-
-RULE 13 â€” calc_rules (REQUIRED for action workflows with computed numeric fields):
-  Defines how the system calculates derived values deterministically.
-  The LLM NEVER fills computed fields â€” it only collects raw inputs.
-  {{
-    "item_rules": {{
-      "<computed_field>": "<expression using raw item fields + org columns>"
-    }},
-    "aggregate_rules": {{
-      "<computed_field>": "<expression using top-level fields>"
-    }}
-  }}
-  Available names: every field on the item/draft + every column on the orgs table.
-  Available functions ONLY: round(x, n), abs(x), min(a,b), max(a,b),
-    sum_field(items, 'field_name'), count_field(items).
-  Mark every field these rules produce as "computed": true in entity_schema.
-  Example for a GST invoice:
-    calc_rules = {{
-      "item_rules": {{
-        "gst": "round(unit_price * qty * gst_rate / 100, 2)",
-        "total": "round(unit_price * qty + gst, 2)"
-      }},
-      "aggregate_rules": {{
-        "total_amount": "round(sum_field(items, 'total'), 2)"
-      }}
-    }}
-  For read workflows: {{}}.
-
-RULE 14 â€” steps (REQUIRED for workflow_type="action"):
-  Ordered array of {{"op": ..., "params": {{...}}}} â€” this IS the execution logic.
-  Available ops:
-    resolve_entity   â€” look up a named entity (customer, vendorâ€¦) from any table
-      params: {{table, name_from: "$fields.<field>", into: "<alias>", match_column: "name"}}
-    compute          â€” run QA verification + recompute all calc_rules
-      params: {{}}
-    otp_gate         â€” halt for OTP if amount >= otp_threshold
-      params: {{amount_field: "$computed.<total_field>"}}
-    approval_gate    â€” halt for approval if amount >= approval_threshold
-      params: {{amount_field: "$computed.<total_field>"}}
-    db.insert_row    â€” insert one row into any table
-      params: {{
-        table: "<table_name>",
-        values: {{
-          "<column>": "$fields.<field>" | "$computed.<field>" | "$<alias>.id" | "$org_id" | "$user.user_id" | "literal_value"
-        }},
-        sequence: {{field: "<doc_number_column>", prefix: "INV-", start: 100}}
-      }}
-    pdf.generate     â€” generate PDF from pdf_config
-      params: {{subtitle: ""}}
-    notify.whatsapp  â€” send PDF + success message
-      params: {{attach_pdf: true}}
-  Typical pipeline for an invoice/quotation:
-    resolve_entity â†’ compute â†’ otp_gate â†’ approval_gate â†’ db.insert_row â†’ pdf.generate â†’ notify.whatsapp
-  For read workflows: [].
-
-RULE 15 â€” pdf_config render_instructions and theme (for action workflows):
-  Add these two keys to pdf_config:
-  "theme": {{"primary": "#hex", "light_bg": "#hex", "text": "#hex", "muted": "#hex"}}
-  "render_instructions": "200-400 words describing the exact document layout â€”
-    badge/header style, customer block, items table columns and alignment,
-    totals block structure, footer text, any special formatting.
-    Written as instructions for an LLM to follow when building the HTML."
-
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• MANDATORY FIELDS â€” NEVER EMPTY â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-CRITICAL: The following fields MUST ALWAYS be populated with valid content. Never return empty arrays or null for these:
-- training_phrases: MUST have 8-12 phrases. Never empty [].
-- entity_schema: MUST include all entities mentioned in training_phrases. Never empty {{}}.
-- business_glossary: MUST have 3-6 term mappings. Never empty {{}}.
-- llm_system_prompt: MUST be a focused prompt under 300 words. Never null or empty string.
-
-If you cannot determine appropriate values for these fields from the description, make reasonable assumptions based on the workflow type and database schema.
-
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• OUTPUT FORMAT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-Return ONLY this JSON, no markdown, no explanation:
-{{
-  "name": "2-4 word display name",
-  "intent_key": "snake_case_unique_key",
-  "workflow_type": "read|action",
-  "description": "One clear sentence: what does this workflow do and for whom.",
-  "training_phrases": ["phrase1", "phrase2", "...8-12 phrases total"],
-  "entity_schema": {{}},
-  "sql_template": "SELECT ... (null for action workflows)",
-  "sql_params_order": [],
-  "response_format": "format_name or null",
-  "business_glossary": {{}},
-  "llm_system_prompt": "...",
-  "adapter_method": "module.function or null",
-  "steps": ["Step 1", "Step 2", "Step 3"],
-  "otp_required": false,
-  "otp_threshold": null,
-  "approval_threshold": null,
-  "pdf_config": {{
-    "doc_type": "report|invoice|statement|orders|quotation",
-    "title_template": "...",
-    "aging_analysis": true/false,
-    "show_key_insights": true/false,
-    "insight_focus": "..."
-  }} or null,
-  "response_template": "..." or null
-}}"""
-
-    last_error = "Unknown error"
-    for attempt in range(3):
-        try:
-            # Route through central LLM router (Gemini x3 → Groq → Cerebras → OpenAI)
-            response = await _llm_chat(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=8192,
-                temperature=0.1 + (attempt * 0.1),
-            )
-
-            if not response:
-                raise Exception("No response from any LLM provider")
-
-            content = response.choices[0].message.content.strip()
-            if "```" in content:
-                start = content.find("{")
-                end   = content.rfind("}") + 1
-                content = content[start:end]
-
-            config = json.loads(content)
-            config["trigger_patterns"] = []
-
-            raw_steps = config.get("steps", [])
-            if isinstance(raw_steps, str):
-                raw_steps = json.loads(raw_steps)
-            config["steps"] = [s if isinstance(s, str) else json.dumps(s) for s in raw_steps]
-
-            # Validate — if any field is missing, retry instead of crashing
-            phrases = config.get("training_phrases", [])
-            if not phrases or len(phrases) < 5:
-                last_error = f"Attempt {attempt+1}: only {len(phrases)} training_phrases (need ≥5)"
-                logger.warning(f"{last_error} — retrying")
-                continue
-            if not config.get("entity_schema"):
-                last_error = f"Attempt {attempt+1}: empty entity_schema"
-                logger.warning(f"{last_error} — retrying")
-                continue
-            if not config.get("business_glossary"):
-                last_error = f"Attempt {attempt+1}: empty business_glossary"
-                logger.warning(f"{last_error} — retrying")
-                continue
-            if not config.get("llm_system_prompt"):
-                last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
-                logger.warning(f"{last_error} — retrying")
-                continue
-            # Action workflows must have steps[]
-            if config.get("workflow_type") == "action" and not config.get("steps"):
-                last_error = f"Attempt {attempt+1}: action workflow missing steps[]"
-                logger.warning(f"{last_error} — retrying")
-                continue
-
-            logger.info(f"Workflow generation succeeded on attempt {attempt+1}")
-            return config
-
-        except json.JSONDecodeError as e:
-            last_error = f"Attempt {attempt+1}: invalid JSON — {e}"
-            logger.warning(f"{last_error} — retrying")
-            continue
-
-    raise HTTPException(
-        status_code=500,
-        detail=f"Failed after 3 attempts. Last error: {last_error}"
-    )
-
-
-@router.post("/admin/{org_slug}/api/workflow/save")
-async def save_generated_workflow(org_slug: str, request: Request):
-    body = await request.json()
-    source_key = await _resolve_source_key(org_slug)
-
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
-    if not org:
-        raise HTTPException(status_code=404, detail="No active org found")
-    org_id = str(org["id"])
-
-    existing = await fetch_one(
-        "SELECT id FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, body.get("intent_key"), source_key=source_key
-    )
-    if existing:
-        raise HTTPException(status_code=400, detail="Intent key already exists")
-
-    # Validate mandatory fields are not empty
-    training_phrases = body.get("training_phrases", [])
-    entity_schema = body.get("entity_schema", {})
-    business_glossary = body.get("business_glossary", {})
-    llm_system_prompt = body.get("llm_system_prompt")
-
-    if not training_phrases or len(training_phrases) < 5:
-        raise HTTPException(status_code=400, detail="training_phrases must have at least 5 phrases")
-    if not entity_schema:
-        raise HTTPException(status_code=400, detail="entity_schema cannot be empty")
-    if not business_glossary:
-        raise HTTPException(status_code=400, detail="business_glossary cannot be empty")
-    if not llm_system_prompt:
-        raise HTTPException(status_code=400, detail="llm_system_prompt cannot be empty")
-
-    try:
-        # trigger_patterns / adapter_method were never real columns on
-        # workflows in either org's database (checked both orgs' actual
-        # CREATE TABLE definitions — zero matches for either name). Same
-        # phantom-column bug as workflow_publisher.py's INSERT, found there
-        # first by actually running it live. This endpoint has carried the
-        # identical bug the whole time — nothing suggests it was ever
-        # exercised successfully either.
-        await execute("""
-            INSERT INTO workflows (
-                org_id, name, intent_key, description,
-                workflow_type, training_phrases, entity_schema,
-                sql_template, sql_params_order, response_format,
-                business_glossary, llm_system_prompt,
-                otp_required, otp_threshold, approval_threshold,
-                is_active, steps,
-                pdf_config, response_template, calc_rules
-            ) VALUES (
-                $1, $2, $3, $4,
-                $5, $6::jsonb, $7::jsonb,
-                $8, $9::jsonb, $10,
-                $11::jsonb, $12,
-                $13, $14, $15,
-                true, $16::jsonb,
-                $17::jsonb, $18, $19::jsonb
-            )
-        """,
-            org_id,
-            body.get("name"),
-            body.get("intent_key"),
-            body.get("description"),
-            body.get("workflow_type", "action"),
-            json.dumps(body.get("training_phrases", [])),
-            json.dumps(body.get("entity_schema", {})),
-            body.get("sql_template"),
-            json.dumps(body.get("sql_params_order", [])),
-            body.get("response_format") or "generic",
-            json.dumps(body.get("business_glossary", {})),
-            body.get("llm_system_prompt"),
-            body.get("otp_required", False),
-            body.get("otp_threshold"),
-            body.get("approval_threshold"),
-            json.dumps(body.get("steps", [])),
-            json.dumps(body.get("pdf_config")) if body.get("pdf_config") else None,
-            body.get("response_template"),
-            json.dumps(body.get("calc_rules", {})),
-            source_key=source_key
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error saving workflow: {e}")
-
-    # Grant permissions to selected roles
-    intent_key = body.get("intent_key")
-    org_id = body.get("org_id")
-    if not org_id:
-        raise HTTPException(status_code=400, detail="org_id required")
-    for role_name in body.get("roles", ["owner"]):
-        await execute("""
-            UPDATE roles
-            SET permissions = array_append(permissions, $1)
-            WHERE org_id = $2 AND name = $3 AND NOT $1 = ANY(permissions)
-        """, intent_key, org_id, role_name, source_key=source_key)
-
-    return {"success": True, "message": f"Workflow '{body.get('name')}' created successfully"}
 
 
 @router.post("/admin/{org_slug}/api/gst-rate")
@@ -1406,6 +1006,11 @@ async function deleteWorkflow(id, name) {
 // workflows.gates[] exactly (see migrations/011_*_gates_schema.sql):
 //   {id, type: 'otp'|'approval_chain'|'permission', when:{...}, levels:[...], role_any_of:[...]}
 const gateStores = { edit: [] };
+// This workflow's own entity_schema, set alongside gateStores.edit whenever
+// a workflow loads (see openEdit) — the field/operator/value picker below
+// is driven entirely by it: no new schema, no API call, just reading the
+// type/enum/computed metadata that's already sitting on every field.
+const gateFieldSchemas = { edit: {} };
 let gateRolesList = [];
 
 async function refreshGateRoles() {
@@ -1422,9 +1027,56 @@ function renderGates(storeName) {
     : '<div style="color:#aaa;font-size:12px;padding:6px 0">No constraints — anyone with permission can run this freely.</div>';
 }
 
+// Every entity_schema field this workflow declares, as {path, label, type,
+// enum}. computed fields resolve through $computed.*, everything else
+// through $fields.* — matches how step_interpreter._resolve_path reads
+// them at runtime. items[]-typed fields (line items) are skipped: "when"
+// conditions compare a single value, not a list of rows.
+function gateFieldList(storeName) {
+  const schema = gateFieldSchemas[storeName] || {};
+  return Object.entries(schema)
+    .filter(([, spec]) => spec && spec.type !== 'array')
+    .map(([key, spec]) => ({
+      path: (spec.computed ? '$computed.' : '$fields.') + key,
+      label: spec.label || key.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase()),
+      type: spec.type || 'string',
+      enum: spec.enum || null,
+    }));
+}
+
+// Which operators make sense for a field depends on its declared type — an
+// enum field (e.g. action: assign/comment/close) only ever needs "is one
+// of" style checks, a number needs comparisons, a plain string needs
+// equality. Unknown field (not in this workflow's entity_schema — e.g. a
+// gate authored via chat referencing $case.priority from a resolve_entity
+// step) falls back to the full vocabulary rather than guessing wrong.
+function gateOperatorsForField(field) {
+  if (!field) return GATE_COND_KINDS;
+  if (field.enum) return ['in', 'not_in', 'exists'];
+  if (field.type === 'float' || field.type === 'integer') return ['gte', 'lte', 'gt', 'lt', 'equals', 'not_equals'];
+  if (field.type === 'boolean') return ['equals', 'exists'];
+  return ['equals', 'not_equals', 'exists'];
+}
+
+// Builds a sensible {field, <operator>: <default value>} for a freshly
+// picked field — first operator valid for its type, with that operator's
+// natural empty value (0 for numbers, [] for list-style, '' for text).
+function gateDefaultWhen(storeName, fieldPath) {
+  const fields = gateFieldList(storeName);
+  const meta = fieldPath ? fields.find(f => f.path === fieldPath) : fields[0];
+  const field = meta ? meta.path : (fieldPath || '$computed.total_amount');
+  const kind = gateOperatorsForField(meta)[0] || 'gte';
+  const when = {field};
+  if (kind === 'exists') when.exists = true;
+  else if (GATE_COND_LIST.includes(kind)) when[kind] = [];
+  else if (GATE_COND_NUMERIC.includes(kind)) when[kind] = 0;
+  else when[kind] = '';
+  return when;
+}
+
 function gateAdd(storeName) {
   const n = gateStores[storeName].length + 1;
-  gateStores[storeName].push({id: 'gate' + n, type: 'otp', when: {field: '$computed.total_amount', gte: 0}});
+  gateStores[storeName].push({id: 'gate' + n, type: 'otp', when: gateDefaultWhen(storeName)});
   renderGates(storeName);
 }
 function gateRemove(storeName, idx) {
@@ -1433,27 +1085,71 @@ function gateRemove(storeName, idx) {
 }
 function gateSetType(storeName, idx, val) {
   const g = gateStores[storeName][idx];
+  const prevField = g.when && g.when.field;
   g.type = val;
   delete g.when; delete g.levels; delete g.role_any_of;
-  if (val === 'otp') g.when = {field: '$computed.total_amount', gte: 0};
-  if (val === 'approval_chain') { g.when = {field: '$computed.total_amount', gte: 0}; g.levels = [{level: 1, role: '', max_amount: null}]; }
+  if (val === 'otp') g.when = gateDefaultWhen(storeName, prevField);
+  if (val === 'approval_chain') { g.when = gateDefaultWhen(storeName, prevField); g.levels = [{level: 1, role: '', max_amount: null}]; }
   if (val === 'permission') g.role_any_of = [];
   renderGates(storeName);
 }
+// Full condition vocabulary step_interpreter._eval_when_condition already
+// supports on the backend — the UI used to expose only gte/lte/equals on
+// an implicit amount field. Kept in one place so gateCardHTML, gateSetCondKind
+// and gateSetCondValue all agree on what a "kind" is.
+// NOTE: this list must stay in sync BY HAND with step_interpreter.py's
+// _eval_when_condition (the real authority) and workflow_builder_agent.py's
+// _describe_when (the chat builder's "Draft so far" recap text) — an
+// operator missing from one of the three doesn't error, it just silently
+// can't be built here, or silently disappears from the recap there.
+const GATE_COND_KINDS = ['gte', 'lte', 'gt', 'lt', 'equals', 'not_equals', 'in', 'not_in', 'exists'];
+const GATE_COND_NUMERIC = ['gte', 'lte', 'gt', 'lt'];
+const GATE_COND_LIST = ['in', 'not_in'];
+
+function gateCondKind(when) {
+  for (const k of GATE_COND_KINDS) {
+    if (when && k in when) return k;
+  }
+  return 'gte';
+}
+
 function gateSetCondKind(storeName, idx, kind) {
   const g = gateStores[storeName][idx];
-  const cur = g.when ? (g.when.gte ?? g.when.lte ?? g.when.equals ?? 0) : 0;
-  if (kind === 'gte') g.when = {field: '$computed.total_amount', gte: cur};
-  else if (kind === 'lte') g.when = {field: '$computed.total_amount', lte: cur};
-  else g.when = {field: '$fields.category', equals: cur};
+  const field = (g.when && g.when.field) || '$computed.total_amount';
+  if (kind === 'exists') {
+    g.when = {field, exists: true};
+  } else if (GATE_COND_LIST.includes(kind)) {
+    g.when = {field, [kind]: []};
+  } else if (GATE_COND_NUMERIC.includes(kind)) {
+    g.when = {field, [kind]: 0};
+  } else {
+    g.when = {field, [kind]: ''};
+  }
   renderGates(storeName);
 }
-function gateSetCondField(storeName, idx, val) { gateStores[storeName][idx].when.field = val; }
+// Changing the field resets the operator+value to that field's own default
+// (e.g. switching from a numeric field to an enum field must drop "≥ 50000"
+// in favour of "is one of", not keep an operator the new field can't use).
+function gateSetCondField(storeName, idx, val) {
+  gateStores[storeName][idx].when = gateDefaultWhen(storeName, val);
+  renderGates(storeName);
+}
+// Checkbox toggle for enum-valued "in"/"not_in" conditions — mutates the
+// array directly rather than re-rendering, so ticking one box doesn't
+// rebuild (and lose focus on) the whole card.
+function gateToggleEnumValue(storeName, idx, kind, value, checked) {
+  const w = gateStores[storeName][idx].when;
+  const set = new Set(w[kind] || []);
+  if (checked) set.add(value); else set.delete(value);
+  w[kind] = Array.from(set);
+}
 function gateSetCondValue(storeName, idx, val) {
   const w = gateStores[storeName][idx].when;
-  if ('gte' in w) w.gte = parseFloat(val) || 0;
-  else if ('lte' in w) w.lte = parseFloat(val) || 0;
-  else if ('equals' in w) w.equals = val;
+  const kind = gateCondKind(w);
+  if (GATE_COND_NUMERIC.includes(kind)) w[kind] = parseFloat(val) || 0;
+  else if (GATE_COND_LIST.includes(kind)) w[kind] = val.split(',').map(s => s.trim()).filter(Boolean);
+  else if (kind === 'exists') w.exists = (val === 'true');
+  else w[kind] = val;
 }
 function gateSetRoleAnyOf(storeName, idx, val) {
   gateStores[storeName][idx].role_any_of = val.split(',').map(s => s.trim()).filter(Boolean);
@@ -1475,27 +1171,83 @@ function gateSetLevelField(storeName, idx, li, field, val) {
   lvl[field] = field === 'max_amount' ? (val === '' ? null : parseFloat(val)) : val;
 }
 
+const GATE_COND_LABELS = {
+  gte: '≥', lte: '≤', gt: '>', lt: '<', equals: '=', not_equals: '≠',
+  in: 'in list', not_in: 'not in list', exists: 'is set / empty',
+};
+// "in list"/"not in list" reads fine for a free-typed value, but for an
+// enum field the values are already visible as checkboxes right next to
+// the label — "is one of" / "is none of" reads as a sentence there instead.
+function gateCondLabel(kind, fieldMeta) {
+  if (fieldMeta && fieldMeta.enum) {
+    if (kind === 'in') return 'is one of';
+    if (kind === 'not_in') return 'is none of';
+  }
+  return GATE_COND_LABELS[kind];
+}
+
 function gateCardHTML(g, idx, storeName) {
   const type = g.type || 'otp';
   const when = g.when || {};
-  let condKind = 'gte', condVal = 0;
-  if ('lte' in when) { condKind = 'lte'; condVal = when.lte; }
-  else if ('equals' in when) { condKind = 'equals'; condVal = when.equals; }
-  else if ('gte' in when) { condKind = 'gte'; condVal = when.gte; }
+  const condKind = gateCondKind(when);
+  const fields = gateFieldList(storeName);
+  const fieldMeta = fields.find(f => f.path === when.field) || null;
+  const availableOps = gateOperatorsForField(fieldMeta);
 
   const roleOpts = sel => (gateRolesList || []).map(name =>
     `<option value="${name}" ${name === sel ? 'selected' : ''}>${name}</option>`).join('');
 
   let condHTML = '';
   if (type !== 'permission') {
+    let valueHTML;
+    if (condKind === 'exists') {
+      valueHTML = `
+        <select class="field-input" style="width:110px" onchange="gateSetCondValue('${storeName}',${idx},this.value)">
+          <option value="true" ${when.exists === true ? 'selected' : ''}>is set</option>
+          <option value="false" ${when.exists === false ? 'selected' : ''}>is empty</option>
+        </select>`;
+    } else if (fieldMeta && fieldMeta.enum && GATE_COND_LIST.includes(condKind)) {
+      // Enum field: checkboxes of the field's own declared values — nothing
+      // to type, nothing to typo, can't select a value that doesn't exist.
+      const selected = new Set(when[condKind] || []);
+      valueHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">` +
+        fieldMeta.enum.map(v => `
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:normal">
+            <input type="checkbox" value="${v}" ${selected.has(v) ? 'checked' : ''}
+              onchange="gateToggleEnumValue('${storeName}',${idx},'${condKind}','${v}',this.checked)"> ${v}
+          </label>`).join('') +
+        `</div>`;
+    } else if (GATE_COND_LIST.includes(condKind)) {
+      valueHTML = `<input class="field-input" style="width:170px" placeholder="comma, separated, values"
+        value="${(when[condKind]||[]).join(', ')}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
+    } else if (GATE_COND_NUMERIC.includes(condKind)) {
+      valueHTML = `<input class="field-input" style="width:110px" type="number" placeholder="value"
+        value="${when[condKind] ?? 0}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
+    } else {
+      valueHTML = `<input class="field-input" style="width:110px" placeholder="value"
+        value="${when[condKind] ?? ''}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
+    }
+
+    // Field dropdown: this workflow's own entity_schema fields, human-
+    // labelled — never a raw $fields.x path to type. A gate can still
+    // reference a field this workflow doesn't declare (authored via chat
+    // against a resolve_entity alias like $case.priority, or a legacy raw
+    // path) — keep it selectable as a labelled "(custom)" option instead
+    // of silently discarding it when the card re-renders.
+    const knownPaths = new Set(fields.map(f => f.path));
+    const fieldOptionsHTML = fields.map(f =>
+      `<option value="${f.path}" ${f.path === when.field ? 'selected' : ''}>${f.label}</option>`
+    ).join('') + (when.field && !knownPaths.has(when.field)
+      ? `<option value="${when.field}" selected>${when.field} (custom)</option>` : '');
+
     condHTML = `
-      <select class="field-input" style="width:110px" onchange="gateSetCondKind('${storeName}',${idx},this.value)">
-        <option value="gte" ${condKind==='gte'?'selected':''}>Amount ≥</option>
-        <option value="lte" ${condKind==='lte'?'selected':''}>Amount ≤</option>
-        <option value="equals" ${condKind==='equals'?'selected':''}>Field =</option>
+      <select class="field-input" style="width:160px" onchange="gateSetCondField('${storeName}',${idx},this.value)">
+        ${fieldOptionsHTML || `<option value="">(no fields on this workflow)</option>`}
       </select>
-      ${condKind === 'equals' ? `<input class="field-input" style="width:140px" placeholder="$fields.category" value="${when.field||''}" onchange="gateSetCondField('${storeName}',${idx},this.value)">` : ''}
-      <input class="field-input" style="width:110px" placeholder="value" value="${condVal}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">
+      <select class="field-input" style="width:140px" onchange="gateSetCondKind('${storeName}',${idx},this.value)">
+        ${availableOps.map(k => `<option value="${k}" ${condKind===k?'selected':''}>${gateCondLabel(k, fieldMeta)}</option>`).join('')}
+      </select>
+      ${valueHTML}
     `;
   }
 
@@ -1552,6 +1304,7 @@ async function openEdit(id) {
   document.getElementById('editDescription').value = w.description || '';
   document.getElementById('editSlashCommand').value = w.slash_command || '';
 
+  gateFieldSchemas.edit = w.entity_schema || {};
   gateStores.edit = w.gates || [];
   renderGates('edit');
 

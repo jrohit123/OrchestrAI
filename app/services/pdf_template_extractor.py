@@ -12,8 +12,11 @@ import base64
 import json
 import os
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR, _read
 
 from app.config import required
+
+_EXTRACTION_PROMPT_TEMPLATE = _read(PROMPTS_DIR / "pdf_template_extraction.txt")
 
 
 def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
@@ -78,23 +81,7 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
     content = [
         {
             "type": "text",
-            "text": (
-                f"You are reverse-engineering a business document template{hint_text} "
-                "so an AI can regenerate documents in this exact visual style for future data.\n\n"
-                "Look at the attached page image(s). Describe the LAYOUT ONLY — "
-                "never repeat any specific customer name, amount, invoice number, or other "
-                "example value from this sample; those are just placeholder data.\n\n"
-                "Return ONLY this JSON (no markdown, no explanation):\n"
-                "{\n"
-                '  "doc_type_guess": "invoice|quotation|statement|orders|report",\n'
-                '  "theme": {"primary": "#hex", "light_bg": "#hex", "text": "#hex", "muted": "#hex"},\n'
-                '  "render_instructions": "300-500 words: header/logo placement, title badge '
-                "styling, section order (customer block, invoice meta, items table, totals block), "
-                "table column layout and alignment, totals block structure, footer/terms style, "
-                "colour scheme, distinctive visual elements (borders, dividers, colour blocks). "
-                'Written as instructions another AI would follow to rebuild this exact layout."\n'
-                "}"
-            )
+            "text": _EXTRACTION_PROMPT_TEMPLATE.replace("__HINT__", hint_text),
         }
     ]
 

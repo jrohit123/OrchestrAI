@@ -2,7 +2,8 @@
 pdf_engine.py — LLM-powered PDF generator using WeasyPrint.
 
 When a workflow has pdf_config.render_instructions, those instructions drive the layout.
-When not, the hardcoded doc_type branches below are used as defaults.
+When not, the default per-doc_type templates in
+app/prompts/pdf_doctype_instructions.txt are used instead.
 This way existing behaviour is preserved and new DB-configured workflows get custom layouts.
 """
 import json
@@ -17,6 +18,27 @@ from app.logging_config import get_context_logger
 logger = get_context_logger(__name__)
 
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR
+
+
+def _load_doctype_templates() -> dict:
+    """
+    Parses app/prompts/pdf_doctype_instructions.txt into
+    {doctype_name: template_text}. Each section is introduced by a
+    "===DOCTYPE:<name>===" marker; the text up to the next marker (or EOF)
+    is that doctype's template, verbatim (including its own leading/trailing
+    whitespace) — deliberately NOT using prompt_loader._read()'s whole-file
+    .strip(), which would corrupt the last section's trailing newline.
+    """
+    raw = (PROMPTS_DIR / "pdf_doctype_instructions.txt").read_text(encoding="utf-8")
+    templates: dict[str, str] = {}
+    for part in raw.split("===DOCTYPE:")[1:]:
+        name, _, body = part.partition("===")
+        templates[name.strip()] = body
+    return templates
+
+
+_DOCTYPE_TEMPLATES = _load_doctype_templates()
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
@@ -56,136 +78,26 @@ async def generate_pdf(
     return _html_to_pdf(html)
 
 
+def _fill(template: str, primary: str, light_bg: str, today_long: str) -> str:
+    return (
+        template
+        .replace("{primary}", primary)
+        .replace("{light_bg}", light_bg)
+        .replace("{today_long}", today_long)
+    )
+
+
 def _build_doctype_instructions(doc_type: str, risk_mode: bool,
                                  extra_context: dict, today_long: str,
                                  org_name: str, primary: str, light_bg: str) -> str:
-    """Build the doc-type specific section of the PDF prompt (default/fallback path)."""
+    """Build the doc-type specific section of the PDF prompt (default/fallback path).
+    Templates live in app/prompts/pdf_doctype_instructions.txt."""
 
     if risk_mode:
-        return f"""
-── AGING REPORT (risk_bucket data detected) ──
+        return _fill(_DOCTYPE_TEMPLATES["risk_mode"], primary, light_bg, today_long)
 
-The rows already have `risk_bucket` (HIGH / MEDIUM / LOW / UPCOMING) and
-`days_overdue` pre-computed. Use this to render THREE colour-coded sections.
-
-STRUCTURE:
-1. EXECUTIVE SUMMARY BOX (light blue bg, rounded corners, 8px padding):
-   Show grand_total, high_risk_total, medium_risk_total from extra_context.
-   If top_debtors in extra_context, list them here.
-   Format: "Total Outstanding: Rs.X | High Risk: Rs.X | Medium Risk: Rs.X"
-
-2. THREE SECTION BLOCKS (render only non-empty buckets):
-
-   HIGH RISK — Over 90 Days
-   Header row bg: #B71C1C, white text, bold
-   Data rows bg: #FFEBEE (light red)
-   Show: Invoice # | Customer | Amount | Days Overdue | Status
-
-   MEDIUM RISK — 31 to 90 Days
-   Header row bg: #E65100, white text, bold
-   Data rows bg: #FFF3E0 (light orange)
-
-   LOW RISK — Up to 30 Days
-   Header row bg: #2E7D32, white text, bold
-   Data rows bg: #F1F8E9 (light green)
-
-   UPCOMING — Not Yet Due
-   Header row bg: {primary}, white text, bold
-   Data rows bg: {light_bg}
-
-3. KEY ACTIONS SECTION (below all tables):
-   Heading: "Key Actions" in {primary} bold
-   Bullet list of 3-5 specific, actionable items based on the data.
-   Use the top_debtors from extra_context if available.
-"""
-
-    doctype_map = {
-        "report": f"""
-── REPORT (multi-row table) ──
-- Header row bg: {primary}, white text. Alternating row stripes (white / {light_bg})
-- All numeric amount/total columns: right-align, Indian comma formatting (Rs.X,XX,XXX)
-- Summary row at bottom (bold, light blue bg): row count + SUM of any amount/total column
-- KEY INSIGHTS section: 2-4 bullet points synthesising notable patterns in the data
-""",
-        "invoice": f"""
-── TAX INVOICE ──
-- TOP RIGHT badge: <div style="background:{primary};color:#fff;padding:4px 12px;font-weight:700;display:inline-block">TAX INVOICE</div>
-- BILL TO section (left): customer_name, city, GSTIN from extra_context
-- Invoice meta (right): Invoice #, Date, Due Date, STATUS from extra_context
-  Status badge colours: paid=#16a34a, overdue=#dc2626, pending=#f59e0b
-- Items table: Description | Qty | Unit Price (ex-tax) | Tax | Total
-- Totals block (right-align, 40% width):
-    Subtotal  : use subtotal from extra_context if present
-    Tax       : use tax_amount from extra_context if present
-    TOTAL     : use total_amount or amount from extra_context
-    CRITICAL: Follow the tax calculation rules for this domain.
-- TOTAL in words (Indian number system)
-- Payment terms: domain-specific payment terms from extra_context or standard terms.
-""",
-        "quotation": f"""
-── PRICE QUOTATION — PROFESSIONAL BLUE colour scheme ──
-
-COLOUR SCHEME: Primary #1E40AF, Light bg #EFF6FF, Accent #3B82F6, Text #1E3A8A
-HEADER OVERRIDE: Use #1E40AF for header rule and org name. Sub-label: "Price Quotation"
-
-BADGE (top right, PROMINENT):
-  background:#1E40AF, white text, bold, font-size:13pt, letter-spacing:1px
-  Text: PRICE QUOTATION
-
-DOCUMENT META (two-column table):
-  Left (40%): "PREPARED FOR:", customer_name bold 13pt, city, GSTIN muted 10pt
-  Right (60%): Quote # from extra_context quotation_number (bold)
-               Date: {today_long}
-               Valid Until: extra_context valid_until (RED bold if within 2 days)
-
-ITEM DETAILS CARD:
-  Full-width box, background #EFF6FF, border 2px solid #3B82F6, border-radius 8px:
-  Heading "ITEM DETAILS" #1E40AF bold.
-  Left: Item Code (monospace bold), Item Name (bold)
-  Right: Quantity, Unit Price, Additional Charges
-
-PRICING BREAKDOWN TABLE (right-aligned, width 55%):
-  Border: 1px solid #3B82F6
-  Row 1: Base Cost      | Rs.X from extra_context base_cost
-  Row 2: Additional Charges  | Rs.X from extra_context additional_charges
-         sub-note: any percentage breakdown muted 9pt
-  Row 3: Subtotal        | Rs.X from extra_context subtotal
-  Row 4: GST (gst_pct%)  | Rs.X from extra_context gst_amount
-  TOTAL ROW bold background:#1E40AF white text 13pt | Rs.X from total_amount
-
-ALL values from extra_context. Do NOT recalculate. Indian comma formatting.
-
-VALIDITY BOX: background #FFF3CD, border-left 4px solid #1E40AF
-  Warning about validity period and price/terms if applicable.
-
-TERMS: payment terms, delivery conditions, any applicable taxes or fees.
-
-ACCEPTANCE SECTION: Customer signature + date (left), Authorised Signatory (right)
-FOOTER NOTE (red small): "This is a QUOTATION, not a Tax Invoice."
-""",
-        "statement": """
-── DUES / ACCOUNT STATEMENT ──
-- Heading: ACCOUNT STATEMENT (bold, large)
-- Customer block: name, city, GSTIN, total_outstanding from extra_context
-- Invoices table with colour-coded rows: overdue=light red, pending=light yellow
-  Columns: Invoice # | Date | Due Date | Amount | Status | Days Overdue
-- AGING ANALYSIS box: 0-30 days, 31-90 days, >90 days amounts
-- Terms: "Please clear outstanding at the earliest."
-""",
-        "orders": """
-── PRODUCTION ORDERS ──
-- Orders table: Order # | Customer | Description | Metal | Status | Est. Amount
-- STATUS column coloured cells:
-    confirmed=light blue, in_production=light amber, quality_check=light purple,
-    ready=light green (highlight boldly), delivered=grey
-- Summary row: total orders, count by status
-""",
-    }
-
-    return doctype_map.get(doc_type, """
-── GENERIC REPORT ──
-Clean table with blue header, alternating stripes, summary row.
-""")
+    template = _DOCTYPE_TEMPLATES.get(doc_type, _DOCTYPE_TEMPLATES["generic"])
+    return _fill(template, primary, light_bg, today_long)
 
 
 async def _build_html(rows, title, org_name, subtitle, doc_type,

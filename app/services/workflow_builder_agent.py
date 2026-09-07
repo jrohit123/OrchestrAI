@@ -19,109 +19,11 @@ import base64
 from app.db import fetch_all, fetch_one, execute
 from app.services.workflow_compiler import compile_workflow_spec
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR, _read
 
 from app.config import required
 
-_SYSTEM_PROMPT = """You are helping a non-technical business owner describe a business process
-so it becomes a working WhatsApp workflow. They think in plain terms — not schemas, not JSON, not code.
-Never show them any technical details.
-
-EXTRACTION-FIRST RULE (highest priority):
-Before replying, extract EVERYTHING from the user's message: purpose,
-workflow type, use cases, fields, rules, thresholds, roles, trigger command —
-whatever is present. Save all of it via the right tool call in ONE turn. Then
-your reply must:
-1. Restate the FULL current state of the draft so far — not just what changed
-   this message — in plain terms, so a message read on its own still makes
-   sense (the admin may only glance at the latest reply, not scroll back).
-2. Ask ONLY about what is genuinely still unknown — never anything
-   already stated or already in the draft
-Asking about something the user already told you is the worst failure
-mode of this system.
-
-PROPOSE, DON'T INTERROGATE:
-When a detail is missing but has an obvious sensible default, propose it
-and ask for confirmation instead of asking open-ended questions.
-"Should low stock use each item's own reorder level? (that's what I'd
-suggest)" beats "how should low stock be defined?"
-
-SILENT STATE CHECKS:
-Check for existing drafts silently. Mention a draft ONLY if one exists.
-Never say "we don't have any drafts/workflows" — the user doesn't care
-about your internal lookups.
-
-LANGUAGE MIRRORING:
-Reply in the user's language mix. Hinglish in → Hinglish out. Numbers:
-understand 50k = 50,000, 2L / 2 lakh = 2,00,000.
-
-READ-WORKFLOW SHORTCUT:
-If the workflow is clearly read-only, don't ask about OTP, approval, or
-any other constraint — state "no safety checks needed since this only
-shows data" in the summary and move on. Only ask about constraints for
-action workflows.
-
-Ask ONE question at a time. After each answer, briefly restate what you understood, then ask the next
-most useful question. Cover these topics (skip what's already answered or not relevant):
-
-1. What does this do — what will people type or ask to trigger it?
-   Does it CREATE/CHANGE something (action) or just SHOW information (read)?
-2. What information needs to be collected or looked up?
-3. Should anything be CALCULATED automatically? (tax, total, discount)
-   Get the business rule in plain terms: "GST is 3% of item value" is enough.
-4. Any safety rules — verification code, someone's approval above a certain amount,
-   multi-level sign-off, or a rule that only certain roles can even trigger this?
-   Constraints are NOT limited to "OTP above X" and "approval above Y" — the admin
-   might describe several independent rules, multi-level chains ("branch manager
-   first, then owner above 20L"), non-amount conditions ("anything touching the
-   lift needs the secretary, regardless of amount"), or role-only gates ("only
-   Finance can do this"). Capture EXACTLY what they describe as one or more
-   entries in gates[] via set_gates — never force it into just two numbers.
-   THE MOMENT the admin gives a number or names an approver, call set_gates with
-   the FULL current list of constraints (existing ones + the new/changed one) —
-   convert "1 lakh" to 100000, "50k" to 50000, "20L"/"20 lakh" to 2000000 yourself.
-   Then confirm back in plain terms: "Got it — OTP above Rs.50,000. Above Rs.5,00,000
-   the branch manager approves; above Rs.20,00,000 the owner also approves after
-   them." so they can correct you immediately if you misheard.
-   A level's role must be a role that exists in this org — if unsure, call
-   list_existing_workflows or just ask the admin what roles they have.
-   NOTE: Do NOT proactively ask about constraints on a workflow the admin hasn't
-   indicated needs any. Only capture them if the admin volunteers them.
-5. Does this produce a document? If yes, ask:
-   "Do you have a sample PDF you already send? Attach it and I'll match the look."
-   If no PDF attached, ask what the document should show.
-6. Who should be able to use this — which roles? THE MOMENT the admin names one
-   or more roles, call set_roles with the FULL list of roles that should have
-   access (existing ones + new). If they say "anyone"/"all staff", still resolve
-   that to real role names via list_existing_workflows if you're unsure what
-   roles this org has, rather than guessing a name that doesn't exist.
-7. Before publishing, ask: "What short command should trigger this? I suggest /stock"
-   (derive suggestion from the name; lowercase, no spaces, ≤32 chars). Save via
-   update_builder_draft as slash_command. Set menu_section yourself: 'reports' if
-   workflow_type is read, 'create' if action. Also write a one-line
-   command_description (≤72 chars) for the menu.
-
-IMPORTANT: If a message in the conversation contains "[Admin uploaded a sample PDF" — that means
-the PDF has already been analyzed and saved. Do NOT ask the admin to upload again.
-When asked about the document format, confirm you'll use the uploaded sample's layout.
-
-Once you have enough information — including who can use it and the trigger command,
-both gathered via chat like everything else — call compile_and_summarize.
-Show the summary in plain English and ask if it's correct.
-If they want changes, call revise_draft, then show the new summary.
-Only call mark_ready_for_review after an explicit "yes" on a summary you've already
-shown AND roles + slash_command are both set. The admin then sees everything you've
-gathered in one place and hits a single Publish button — that's the only thing that
-actually writes to the live workflow; you never trigger that yourself.
-
-If the first message is vague ("help me" / "I want a workflow"), call list_existing_workflows
-first, mention what already exists including unfinished drafts, and ask what to add or change.
-
-If the admin wants to MODIFY something that already exists, call list_existing_workflows to find
-its intent_key if needed, then call load_existing_workflow before asking what to change.
-The normal flow (update_builder_draft, set_gates, set_roles, compile_and_summarize) works
-identically whether the draft started fresh or was loaded from an existing workflow — when
-loaded, restate the FULL current state (including its existing constraints and roles) before
-asking what to change, since the admin may not remember everything that's already configured."""
+_SYSTEM_PROMPT = _read(PROMPTS_DIR / "workflow_builder_system.txt")
 
 _TOOLS = [
     {"type": "function", "function": {
@@ -271,6 +173,12 @@ def _parse_jsonb(val, default):
 
 
 def _describe_when(when: dict) -> str:
+    # Every branch here must have a matching operator in step_interpreter.py's
+    # _eval_when_condition AND in admin.py's GATE_COND_KINDS (the edit-modal
+    # dropdown) — those three lists have to stay in sync by hand; there's no
+    # single source of truth. A condition using an operator missing here
+    # silently disappears from the "Draft so far" panel instead of erroring,
+    # which is how gt/lt/in/not_in/exists went unnoticed until traced deliberately.
     if not when:
         return ""
     field = when.get("field", "") or ""
@@ -279,10 +187,22 @@ def _describe_when(when: dict) -> str:
         return f"amount ≥ ₹{when['gte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≥ {when['gte']}"
     if "lte" in when:
         return f"amount ≤ ₹{when['lte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≤ {when['lte']}"
+    if "gt" in when:
+        return f"amount > ₹{when['gt']:,.0f}" if is_amount else f"{field.split('.')[-1]} > {when['gt']}"
+    if "lt" in when:
+        return f"amount < ₹{when['lt']:,.0f}" if is_amount else f"{field.split('.')[-1]} < {when['lt']}"
     if "equals" in when:
         return f"{field.split('.')[-1]} = {when['equals']}"
     if "not_equals" in when:
         return f"{field.split('.')[-1]} ≠ {when['not_equals']}"
+    if "in" in when:
+        vals = ", ".join(str(v) for v in (when["in"] or []))
+        return f"{field.split('.')[-1]} is one of: {vals}"
+    if "not_in" in when:
+        vals = ", ".join(str(v) for v in (when["not_in"] or []))
+        return f"{field.split('.')[-1]} is none of: {vals}"
+    if "exists" in when:
+        return f"{field.split('.')[-1]} is set" if when["exists"] else f"{field.split('.')[-1]} is not set"
     return ""
 
 
@@ -292,8 +212,15 @@ def _describe_gate(g: dict) -> str:
     gtype = g.get("type")
     when = g.get("when") or {}
     if gtype == "otp":
-        amt = when.get("gte") if when.get("gte") is not None else when.get("lte")
-        return f"\U0001f510 OTP required above ₹{amt:,.0f}" if amt is not None else "\U0001f510 OTP required"
+        # OTP gates are near-universally amount thresholds (gte/lte) in practice,
+        # but fall back to the generic describer for anything else (gt/lt/equals/
+        # in/etc.) rather than silently showing a bare "OTP required".
+        if when.get("gte") is not None:
+            return f"\U0001f510 OTP required above ₹{when['gte']:,.0f}"
+        if when.get("lte") is not None:
+            return f"\U0001f510 OTP required above ₹{when['lte']:,.0f}"
+        cond = _describe_when(when)
+        return f"\U0001f510 OTP required — {cond}" if cond else "\U0001f510 OTP required"
     if gtype == "approval_chain":
         cond = _describe_when(when)
         lines = [f"\U0001f464 Approval — {cond}:" if cond else "\U0001f464 Approval:"]

@@ -32,8 +32,8 @@ IDENTIFIER_PATTERN = re.compile(r'^[a-z_][a-z0-9_]*$')
 # Format: {source_key: {table: set(columns)}}
 _schema_allowlist: dict = {}
 
-# Self-reference words for deterministic self-assignment
-_SELF_REFERENCE_WORDS = {"myself", "me", "self", "mujhe", "khud", "mera", "apne aap"}
+# Self-reference words for deterministic self-assignment are per-org config —
+# see app/services/vocabulary.py (orgs.settings->'vocabulary'.self_reference_words).
 
 
 def _fix_stray_escapes(s: str) -> str:
@@ -220,6 +220,12 @@ def _to_float(v):
 
 
 def _eval_when_condition(cond: dict, ctx: dict) -> bool:
+    # This is the actual authority on which operators exist. Two other places
+    # have to be kept in sync by hand whenever an operator is added here:
+    # admin.py's GATE_COND_KINDS (the edit-modal dropdown) and
+    # workflow_builder_agent.py's _describe_when (the "Draft so far" recap
+    # text) — an operator missing from either silently can't be built, or
+    # silently disappears from the human-readable summary, rather than erroring.
     actual = _resolve_path(ctx, cond["field"])
 
     if "equals" in cond:
@@ -357,10 +363,12 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
 
     # Deterministic self-assignment — don't depend on the LLM having
     # substituted "myself"/"me" with the caller's exact name string.
+    from app.services.vocabulary import get_vocabulary
+    vocab = await get_vocabulary(ctx["org_id"], ctx["source_key"])
     if (
         table == "users"
         and match_col == "name"
-        and name_val.strip().lower() in _SELF_REFERENCE_WORDS
+        and name_val.strip().lower() in vocab["self_reference_words"]
     ):
         row = await fetch_one(
             "SELECT * FROM users WHERE id = $1 AND org_id = $2",
