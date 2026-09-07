@@ -797,7 +797,14 @@ async def run_builder_agent(
             messages.append({
                 "tool_call_id": tc.id,
                 "role":         "tool",
-                "content":      json.dumps(result),
+                # default=str: some tool results include raw DB rows (e.g.
+                # list_existing_workflows' unfinished_drafts carries id/
+                # updated_at straight from asyncpg) — UUID and datetime
+                # aren't JSON-serializable by default, and this is the one
+                # place ALL tool results funnel through, so it's the right
+                # place to guard every tool at once rather than sanitizing
+                # each one individually.
+                "content":      json.dumps(result, default=str),
             })
 
     # Max iterations hit

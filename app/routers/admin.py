@@ -490,6 +490,30 @@ async def preview_workflow_pdf(org_slug: str, draft_id: str):
     return FastAPIResponse(content=pdf_bytes, media_type="application/pdf")
 
 
+@router.post("/admin/{org_slug}/api/workflow-builder/clear-drafts")
+async def clear_unfinished_drafts(org_slug: str):
+    """
+    Marks every 'chatting' (unfinished/stuck) workflow_drafts row for this
+    org as 'abandoned' — the escape hatch for a draft left mid-conversation
+    (a closed tab, a crashed session, an experiment that went nowhere) that
+    would otherwise sit in list_existing_workflows' unfinished_drafts list
+    forever and get offered back to the admin on every new chat. A status
+    change, not a hard delete — workflow_drafts already has 'abandoned' in
+    its own status enum for exactly this, so this stays consistent with the
+    table's existing state machine instead of destroying rows.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org found")
+    rows = await fetch_all("""
+        UPDATE workflow_drafts SET status = 'abandoned', updated_at = now()
+        WHERE org_id = $1 AND status = 'chatting'
+        RETURNING id
+    """, str(org["id"]), source_key=source_key)
+    return {"cleared": len(rows)}
+
+
 @router.post("/admin/{org_slug}/api/workflow-builder/chat")
 async def workflow_builder_chat(org_slug: str, request: Request):
     body = await request.json()
@@ -768,7 +792,10 @@ input:checked+.slider:before{transform:translateX(18px)}
     <div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
         <span>⚙️ Workflows</span>
-        <button class="btn btn-purple" onclick="openBuilderChat()">✨ Build New Workflow</button>
+        <span>
+          <button class="btn btn-gray" style="margin-right:6px" onclick="clearUnfinishedDrafts()">🧹 Clear unfinished drafts</button>
+          <button class="btn btn-purple" onclick="openBuilderChat()">✨ Build New Workflow</button>
+        </span>
       </div>
       <table style="table-layout:fixed">
         <thead><tr>
@@ -1080,6 +1107,14 @@ function openBuilderChat() {
   _resetBuilderModal();
   openModal('builderModal');
   appendBotMsg('Hi! Tell me about the workflow you want to build — what should it do?');
+}
+
+async function clearUnfinishedDrafts() {
+  if (!confirm('Clear all unfinished workflow drafts for this org?\nThis abandons every in-progress "Build New Workflow" chat that was never published — it does not touch any live workflow.')) return;
+  const r = await authenticatedFetch(API('/workflow-builder/clear-drafts'), {method: 'POST'});
+  if (!r) return;
+  const d = await r.json();
+  alert(d.cleared > 0 ? `✅ Cleared ${d.cleared} unfinished draft(s).` : 'No unfinished drafts to clear.');
 }
 
 async function openEditLogic() {
