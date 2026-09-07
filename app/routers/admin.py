@@ -1110,7 +1110,7 @@ function openBuilderChat() {
 }
 
 async function clearUnfinishedDrafts() {
-  if (!confirm('Clear all unfinished workflow drafts for this org?\nThis abandons every in-progress "Build New Workflow" chat that was never published — it does not touch any live workflow.')) return;
+  if (!confirm('Clear all unfinished workflow drafts for this org?\\nThis abandons every in-progress "Build New Workflow" chat that was never published — it does not touch any live workflow.')) return;
   const r = await authenticatedFetch(API('/workflow-builder/clear-drafts'), {method: 'POST'});
   if (!r) return;
   const d = await r.json();
