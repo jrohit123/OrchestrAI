@@ -101,8 +101,8 @@ RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id
 
 RULE 5 — sql_params_order: entity_schema keys in $2,$3... order. [] for action workflows.
 
-RULE 6 — response_format: outstanding_summary|inventory|orders|customers|quotations|invoices|users|generic
-  null for action workflows.
+RULE 6 — response_format: "table" (short uniform list) or "generic" (default JSON-style
+  formatting — use for everything else). null for action workflows.
 
 RULE 7 — business_glossary: 3-6 term mappings for this specific workflow.
 

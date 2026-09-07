@@ -172,16 +172,14 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
         return _schema_cache[cache_key]
 
     # Get column structure
+    from app.services.schema_utils import SYSTEM_TABLE_BLOCKLIST
     cols = await fetch_all("""
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
-          AND table_name NOT IN (
-              'audit_log', 'otp_tokens', 'pending_approvals',
-              'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
-          )
+          AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
-    """, source_key=source_key)
+    """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
 
     table_cols: dict[str, list] = {}
     for c in cols:
@@ -334,7 +332,15 @@ TOOLS = [
                 "Ask the user a clarifying question when their request is ambiguous. "
                 "Use when: a name matches multiple records, the request is incomplete, "
                 "or you need one more piece of information before proceeding. "
-                "Do NOT use this for every message — only when genuinely unclear."
+                "IMPORTANT: also use this when a message plausibly matches one of the "
+                "workflows in WORKFLOW SCHEMAS (compare against each workflow's 'Matches "
+                "messages like' examples) but you are not fully certain which one, or "
+                "whether the user wants it actioned at all — e.g. a free-text message "
+                "describing a problem/request with no explicit command. Confirm before "
+                "proceeding: 'Are you trying to register a complaint about this?' — do "
+                "NOT fall back to show_help/show_menu just because the message wasn't a "
+                "recognised command. Do NOT use this for every message — only when "
+                "genuinely unclear."
             ),
             "parameters": {
                 "type": "object",
@@ -390,7 +396,12 @@ TOOLS = [
                 "'start' appears somewhere inside an otherwise normal request — read the WHOLE message: "
                 "'need help to get it plastered' is a repair complaint, not a request for this guide. "
                 "If the message describes an actual problem, request, or business detail, handle it "
-                "with the relevant workflow tool instead, even if it contains one of those words."
+                "with the relevant workflow tool instead, even if it contains one of those words. "
+                "HARD RULE: if the message contains ANY concrete real-world detail — a location/unit "
+                "number, a description of an issue, a person's name, an amount, a date — it is NEVER "
+                "a help request, no matter what words it also contains. In that case either call the "
+                "matching workflow tool directly, or call clarify to confirm which workflow it matches. "
+                "show_help is reserved for messages with NO other content at all."
             ),
             "parameters": {
                 "type": "object",
@@ -653,7 +664,7 @@ async def _build_system_prompt(user: dict) -> str:
 
     # Load workflows entity_schema for slot-filling guidance
     workflows = await fetch_all("""
-        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt
+        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases
         FROM workflows
         WHERE org_id = $1 AND is_active = true
     """, user["org_id"], source_key=user["source_key"])
@@ -667,6 +678,7 @@ async def _build_system_prompt(user: dict) -> str:
             entity_schema = wf.get("entity_schema", {})
             business_glossary = wf.get("business_glossary", {})
             llm_prompt = wf.get("llm_system_prompt", "")
+            training_phrases = wf.get("training_phrases", [])
 
             # Parse JSONB if it's a string
             if isinstance(entity_schema, str):
@@ -679,9 +691,28 @@ async def _build_system_prompt(user: dict) -> str:
                     business_glossary = json.loads(business_glossary)
                 except (json.JSONDecodeError, TypeError):
                     business_glossary = {}
+            if isinstance(training_phrases, str):
+                try:
+                    training_phrases = json.loads(training_phrases)
+                except (json.JSONDecodeError, TypeError):
+                    training_phrases = []
+
+            # Header + example phrases are emitted for every workflow that has
+            # anything to show, not gated behind entity_schema — a workflow with
+            # no required fields (e.g. a plain list/read) still needs its
+            # matching examples visible, and previously lost them entirely.
+            if entity_schema or business_glossary or llm_prompt or training_phrases:
+                workflow_schema_text += f"\n{intent_key}:\n"
+
+            if training_phrases:
+                examples = "; ".join(f'"{p}"' for p in training_phrases[:8])
+                workflow_schema_text += (
+                    f"  Matches messages like: {examples}\n"
+                    f"  A real user message doesn't have to match these words exactly — "
+                    f"treat any message describing the same kind of situation as this intent.\n"
+                )
 
             if entity_schema:
-                workflow_schema_text += f"\n{intent_key}:\n"
                 workflow_schema_text += f"  Required fields:\n"
                 for field_name, field_def in entity_schema.items():
                     if field_def.get("required"):
@@ -769,45 +800,6 @@ TODAY: {today}
 {workflow_schema_text}
 
 {domain_prompt}
-
-MENU REQUESTS:
-If the user asks to see the menu/options in ANY phrasing or language, at ANY point —
-call the show_menu tool. Do not describe the options as plain text in that case.
-This also applies to a bare opening greeting ("hi", "namaste", "hello ji") with
-nothing else in it — greet them and call show_menu, don't just reply with text.
-
-HELP REQUESTS:
-If the user is genuinely asking what this system can do or how to use it — call
-show_help. A genuine help request is short and has no other content: "help",
-"what can you do", "guide me", "kya kar sakta hoon". It is NEVER a message that
-happens to contain a word like "help", "guide", "start", or "features" while
-actually describing a real problem or request — "need help to get it plastered",
-"please start the repair" are complaints/requests, not help requests. When in
-doubt, read the message as a whole: does it describe something happening in the
-real world (an issue, an amount, a name, a date)? If yes, that's a real request —
-handle it with the matching workflow tool, never show_help, even if it contains
-one of those words.
-
-RULE 7 — WORKFLOW SCHEMAS GUIDE REQUIRED FIELDS:
-Before asking for information, check the WORKFLOW SCHEMAS section above.
-Each workflow lists its required fields with types and whether they're required
-(including conditionally-required fields, shown as "REQUIRED WHEN ..."). Use
-this to give accurate guidance on what's missing.
-
-RULE 8 — WORKFLOW-SPECIFIC FIELD STRUCTURE:
-Every field a workflow needs — including nested item fields and which ones are
-computed automatically — is defined in WORKFLOW SCHEMAS above, plus that
-workflow's own llm_system_prompt. Follow that schema exactly.
-Never invent a field structure not declared in the workflow's entity_schema.
-Fields marked [COMPUTED] are calculated by the system — do NOT ask the user
-for them and do NOT fill them in update_draft.
-
-RULE 9 — NEVER CALL generate_pdf WHEN CREATING OR CHANGING A RECORD:
-If a workflow writes to the database, always follow:
-  1. update_draft → accumulate fields per that workflow's entity_schema
-  2. confirm_action → trigger execution
-The system generates any PDF automatically after the write.
-generate_pdf is ONLY for re-sending a document from an EXISTING record.
 """
 
 

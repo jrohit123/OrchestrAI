@@ -276,14 +276,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await cancel_user_draft(user, phone, confirm=False)
             return
         if text_stripped.lower() in ("/help", "/h"):
-            await send_text(phone,
-                "📖 *How to use OrchestrAI*\n\n"
-                "• Type / or 'menu' to see available workflows\n"
-                "• Use slash commands for quick actions\n"
-                "• Ask questions in plain English or Hindi\n"
-                "• Say 'pdf' after any result to get a document\n"
-                "• Tap /cancel to clear a draft in progress"
-            )
+            from app.services.agent import _build_help_response
+            await send_text(phone, await _build_help_response(user))
             return
         if text_stripped.lower() in ("/status", "/mystatus", "/s"):
             from app.services.draft_store import get_active_draft
@@ -813,14 +807,8 @@ async def handle_system_row(text: str, user: dict, phone: str):
         await cancel_user_draft(user, phone, confirm=True)
     
     elif text == "sys:help":
-        await send_text(phone,
-            "📖 *How to use OrchestrAI*\n\n"
-            "• Type / or 'menu' to see available workflows\n"
-            "• Use slash commands for quick actions\n"
-            "• Ask questions in plain English or Hindi\n"
-            "• Say 'pdf' after any result to get a document\n"
-            "• Tap /cancel to clear a draft in progress"
-        )
+        from app.services.agent import _build_help_response
+        await send_text(phone, await _build_help_response(user))
 
 async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
     """Cancel the user's active draft. This always cancels immediately —

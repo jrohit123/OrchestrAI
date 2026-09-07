@@ -30,17 +30,14 @@ async def get_business_schema(source_key: str) -> dict:
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
-          AND table_name NOT IN (
-              'audit_log', 'otp_tokens', 'pending_approvals',
-              'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
-          )
+          AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
-    """, source_key=source_key)
+    """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
 
     table_cols: dict = {}
     for r in cols:
         table_cols.setdefault(r["table_name"], []).append(r["column_name"])
-    
+
     return table_cols
 
 
@@ -58,19 +55,16 @@ async def get_business_schema_with_types(source_key: str) -> dict:
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
-          AND table_name NOT IN (
-              'audit_log', 'otp_tokens', 'pending_approvals',
-              'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
-          )
+          AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
-    """, source_key=source_key)
+    """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
 
     table_cols: dict = {}
     for r in cols:
         table_cols.setdefault(r["table_name"], []).append(
             (r["column_name"], r["data_type"])
         )
-    
+
     return table_cols
 
 

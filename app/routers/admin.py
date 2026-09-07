@@ -66,14 +66,148 @@ async def admin_page(org_slug: str):
     return HTMLResponse(content=_build_html(), media_type="text/html; charset=utf-8")
 
 
+# ── Dashboard stat cards — config-driven, zero business-table hardcoding ──
+#
+# There is no code here that knows "jewellery orgs have invoices/customers"
+# or "housing societies have cases/residents". A card is entirely described
+# by orgs.settings->'dashboard_stats' (same JSONB config pattern already used
+# by case_reminders in scheduler/jobs.py) and every table/column name in it
+# is checked against the org's OWN live schema before it ever reaches SQL —
+# same allowlist step_interpreter.py's write path already trusts, reused
+# here rather than re-invented.
+#
+# Example config, set once per org as data (see backfill note below):
+#   {"dashboard_stats": {
+#     "cards": [
+#       {"key": "total_invoices",  "label": "Paid Invoices",  "table": "invoices",
+#        "agg": "count", "where": {"status": "paid"}},
+#       {"key": "total_amount",    "label": "Total Revenue",  "table": "invoices",
+#        "agg": "sum", "column": "amount", "where": {"status": "paid"},
+#        "format": "currency_inr", "color": "#16a34a"},
+#       {"key": "pending_invoices","label": "Pending Invoices","table": "invoices",
+#        "agg": "count", "where": {"status": "pending"}, "color": "#f59e0b"},
+#       {"key": "total_customers", "label": "Customers",       "table": "customers",
+#        "agg": "count", "color": "#3b82f6"}
+#     ],
+#     "low_stock": {"label": "Low Stock Alert", "table": "inventory",
+#                    "qty_column": "qty", "reorder_column": "reorder_level",
+#                    "display_columns": ["name", "qty", "reorder_level"]}
+#   }}
+# label/format/color are cosmetic only (format: "currency_inr" | "number",
+# default "number") — the frontend renders whatever cards/columns are given,
+# it does not know their names in advance. An org with no dashboard_stats
+# config simply gets no stat cards / no low stock table — same "null means
+# not tracked, never a misleading fake zero" rule the frontend already
+# honours.
+
+async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> list | None:
+    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier, StepError
+
+    cards = cfg.get("cards") or []
+    if not cards:
+        return None
+
+    allowlist = await _load_schema_allowlist(source_key)
+    out: list = []
+    for card in cards:
+        try:
+            table  = card["table"]
+            key    = card["key"]
+            agg    = card.get("agg", "count")
+            column = card.get("column")
+            where  = card.get("where") or {}
+
+            _validate_identifier(table, "table name")
+            if table not in allowlist:
+                continue
+            if column:
+                _validate_identifier(column, "column name")
+                if column not in allowlist[table]:
+                    continue
+            for col in where:
+                _validate_identifier(col, "column name")
+                if col not in allowlist[table]:
+                    raise StepError(f"unknown column '{col}' on '{table}'")
+
+            where_cols   = list(where.keys())
+            where_clause = " AND ".join(f"{c} = ${i+2}" for i, c in enumerate(where_cols))
+            where_sql    = f"WHERE org_id = $1 AND {where_clause}" if where_clause else "WHERE org_id = $1"
+
+            if agg == "sum" and column:
+                sql = f"SELECT COALESCE(SUM({column}), 0) AS val FROM {table} {where_sql}"
+            else:
+                sql = f"SELECT COUNT(*) AS val FROM {table} {where_sql}"
+
+            row = await fetch_one(sql, org_id, *where.values(), source_key=source_key)
+            value = row["val"] if row else 0
+            # Cards are returned as a self-describing list (key/label/value/
+            # format/color), not a bare {key: value} dict — so the frontend
+            # renders whatever cards this org configured with zero hardcoded
+            # knowledge of what a "stat card" for this org looks like.
+            out.append({
+                "key":    key,
+                "label":  card.get("label") or key.replace("_", " ").title(),
+                "value":  value,
+                "format": card.get("format", "number"),
+                "color":  card.get("color"),
+            })
+        except (KeyError, StepError) as e:
+            logger.warning(f"dashboard_stats: skipping malformed card {card}: {e}")
+            continue
+
+    return out or None
+
+
+async def _compute_low_stock(cfg: dict, org_id: str, source_key: str) -> dict | None:
+    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier, StepError
+
+    ls = cfg.get("low_stock")
+    if not ls:
+        return None
+
+    try:
+        table        = ls["table"]
+        qty_col      = ls["qty_column"]
+        reorder_col  = ls["reorder_column"]
+        display_cols = ls.get("display_columns") or [qty_col, reorder_col]
+
+        allowlist = await _load_schema_allowlist(source_key)
+        _validate_identifier(table, "table name")
+        if table not in allowlist:
+            return None
+        for c in {qty_col, reorder_col, *display_cols}:
+            _validate_identifier(c, "column name")
+            if c not in allowlist[table]:
+                return None
+
+        cols_sql = ", ".join(display_cols)
+        rows = await fetch_all(
+            f"SELECT {cols_sql} FROM {table} WHERE org_id = $1 AND {qty_col} <= {reorder_col}",
+            org_id, source_key=source_key
+        )
+        # Row-shaped output the frontend renders generically: a title,
+        # ordered {key, label} columns, and rows keyed by those same column
+        # names — never a hardcoded "name/qty/reorder_level" assumption.
+        return {
+            "title":   ls.get("label", "Low Stock Alert"),
+            "columns": [{"key": c, "label": c.replace("_", " ").title()} for c in display_cols],
+            "rows":    [dict(r) for r in rows],
+        }
+    except (KeyError, StepError) as e:
+        logger.warning(f"dashboard_stats.low_stock: skipping malformed config {ls}: {e}")
+        return None
+
+
 @router.get("/admin/{org_slug}/api/data")
 async def admin_data(org_slug: str):
     source_key = await _resolve_source_key(org_slug)
 
-    org = await fetch_one("SELECT id, name FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one("SELECT id, name, settings FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
     if not org:
         return {"error": "No active org found"}
 
+    org_dict = dict(org)
+    org_settings = _parse_jsonb(org_dict.pop("settings", None), {})
     org_id = str(org["id"])
 
     workflows = await fetch_all("""
@@ -83,39 +217,13 @@ async def admin_data(org_slug: str):
         ORDER BY created_at
     """, org_id, source_key=source_key)
 
-    # invoices/customers/inventory are jewelry-business tables (Baanganga) —
-    # they don't exist on a housing-society org's database (Godrej Emerald
-    # has cases/residents/staff instead). This dashboard was only ever
-    # exercised against Baanganga before the panel became reachable per-org,
-    # so the mismatch never surfaced. Check what actually exists rather than
-    # assume every org has the same schema.
-    existing = {
-        r["table_name"] for r in await fetch_all(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_name = ANY($1)",
-            ["invoices", "customers", "inventory"], source_key=source_key
-        )
-    }
-
-    if "invoices" in existing and "customers" in existing:
-        stats = await fetch_one("""
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'paid') AS total_invoices,
-                COALESCE(SUM(amount) FILTER (WHERE status = 'paid'), 0) AS total_amount,
-                COUNT(*) FILTER (WHERE status = 'pending') AS pending_invoices,
-                (SELECT COUNT(*) FROM customers WHERE org_id = $1) AS total_customers
-            FROM invoices WHERE org_id = $1
-        """, org_id, source_key=source_key)
-    else:
-        stats = None
-
-    low_stock = (
-        await fetch_all("""
-            SELECT name, qty, reorder_level FROM inventory
-            WHERE org_id = $1 AND qty <= reorder_level
-        """, org_id, source_key=source_key)
-        if "inventory" in existing else []
-    )
+    # Dashboard stat cards and the low-stock table are entirely config-driven
+    # (orgs.settings->'dashboard_stats') — see the helpers above. An org that
+    # hasn't configured this simply gets no cards, never a guess at what
+    # tables it might have.
+    dashboard_cfg = org_settings.get("dashboard_stats") or {}
+    stats     = await _compute_dashboard_stats(dashboard_cfg, org_id, source_key)
+    low_stock = await _compute_low_stock(dashboard_cfg, org_id, source_key)
 
     recent_logs = await fetch_all("""
         SELECT a.intent_key, a.outcome, a.otp_used,
@@ -133,14 +241,15 @@ async def admin_data(org_slug: str):
         workflows_out.append(wd)
 
     return {
-        "org": dict(org),
+        "org": org_dict,
         "workflows": workflows_out,
-        # null (not zeros) when invoices/customers don't exist for this org —
+        # null (not zeros) when this org has no dashboard_stats config —
         # "0 invoices" and "this org doesn't track invoices" are different
         # facts, and the frontend hides the stat cards entirely on null
-        # instead of showing a misleading Rs.0 for a housing society.
-        "stats": dict(stats) if stats else None,
-        "low_stock": [dict(r) for r in low_stock],
+        # instead of showing a misleading Rs.0 for an org that doesn't
+        # track that metric at all.
+        "stats": stats,
+        "low_stock": low_stock,
         "recent_logs": [dict(r) for r in recent_logs]
     }
 
@@ -245,11 +354,6 @@ async def generate_workflow_config(org_slug: str, request: Request):
     table_cols = await get_business_schema_with_types(source_key=source_key)
     schema_text = format_schema_text(table_cols, include_types=True)
 
-    # Detect if this is read or action
-    action_keywords = ["create", "update", "send", "generate", "delete", "set",
-                       "change", "make", "add", "produce", "dispatch", "mark"]
-    is_likely_action = any(kw in description.lower() for kw in action_keywords)
-
     prompt = f"""You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
 
 The admin wants to add a workflow to their system. You must generate a COMPLETE, STRUCTURED workflow record that will be saved to the database. This record will make the system fully autonomous for this type of query — no hardcoding anywhere in the codebase.
@@ -313,17 +417,11 @@ RULE 5 â€” sql_params_order:
   Example: ["customer_name"] or ["limit", "status"]
   Must be empty [] for action workflows.
 
-RULE 6 â€” response_format:
-  Choose the most appropriate formatter:
-  "outstanding_summary" â€” customer + outstanding amounts (from invoices aggregation)
-  "inventory" â€” product name + qty + location
-  "orders" â€” order_number + customer + status
-  "customers" â€” customer name + city + credit_limit
-  "quotations" â€” quotation_number + customer_id + total_amount + status + items
-  "invoices" â€” invoice_number + amount + status + due_date
-  "users" â€” user name + role
-  "generic" â€” use for anything else
-  null â€” for action workflows
+RULE 6 — response_format:
+  "table" — render results as a plain aligned table (good for short, uniform rows).
+  "generic" — default JSON-style formatting for anything else. Use this unless
+    the result is a short, uniform list where a table reads better.
+  null — for action workflows.
 
 RULE 7 â€” business_glossary:
   Map common user terms FOR THIS SPECIFIC WORKFLOW to what they mean.
@@ -1057,11 +1155,11 @@ input:checked+.slider:before{transform:translateX(18px)}
 
     <div class="stats" id="statsGrid"></div>
 
-    <!-- ── LOW STOCK ALERT ───────────────────────────────────────── -->
+    <!-- ── LOW STOCK ALERT — title/columns filled in from dashboard_stats config ── -->
     <div class="card" id="lowStockCard" style="display:none;border-left:4px solid #f59e0b">
-      <div class="card-title" style="color:#f59e0b">⚠️ Low Stock Alert</div>
+      <div class="card-title" style="color:#f59e0b" id="lowStockTitle">⚠️ Low Stock Alert</div>
       <table>
-        <thead><tr><th>Item</th><th>Current Qty</th><th>Reorder Level</th></tr></thead>
+        <thead><tr id="lowStockHead"></tr></thead>
         <tbody id="lowStockTable"></tbody>
       </table>
     </div>
@@ -1711,36 +1809,36 @@ async function loadData() {
       }
     } catch(e) {}
 
-    // stats is null for an org with no invoices/customers tables (e.g. a
-    // housing society) — hide the cards entirely rather than show a
-    // meaningless Rs.0 / 0 that looks like real data.
+    // stats is null when this org has no dashboard_stats config set (e.g. no
+    // one has configured cards for it yet) — hide the grid entirely rather
+    // than show a meaningless Rs.0 / 0 that looks like real data. Cards are
+    // a self-describing list (key/label/value/format/color) from the
+    // backend — this renders whatever the org's config says, nothing here
+    // knows in advance what a "stat card" for this org looks like.
+    const fmtStat = (value, format) => {
+      const n = Number(value || 0);
+      return format === 'currency_inr' ? 'Rs.' + n.toLocaleString('en-IN') : n.toLocaleString('en-IN');
+    };
     const s = data.stats;
-    document.getElementById('statsGrid').innerHTML = s ? `
-      <div class="stat-card"><div class="stat-label">Paid Invoices</div>
-        <div class="stat-value">${s.total_invoices||0}</div></div>
-      <div class="stat-card" style="border-color:#16a34a">
-        <div class="stat-label">Total Revenue</div>
-        <div class="stat-value" style="color:#16a34a;font-size:20px">Rs.${Number(s.total_amount||0).toLocaleString('en-IN')}</div></div>
-      <div class="stat-card" style="border-color:#f59e0b">
-        <div class="stat-label">Pending Invoices</div>
-        <div class="stat-value" style="color:#f59e0b">${s.pending_invoices||0}</div></div>
-      <div class="stat-card" style="border-color:#3b82f6">
-        <div class="stat-label">Customers</div>
-        <div class="stat-value" style="color:#3b82f6">${s.total_customers||0}</div></div>
-    ` : '';
+    document.getElementById('statsGrid').innerHTML = (s && s.length) ? s.map(card => `
+      <div class="stat-card" ${card.color ? `style="border-color:${card.color}"` : ''}>
+        <div class="stat-label">${card.label}</div>
+        <div class="stat-value" ${card.color ? `style="color:${card.color}"` : ''}>${fmtStat(card.value, card.format)}</div>
+      </div>
+    `).join('') : '';
 
     renderWorkflows(data.workflows || []);
 
-    // Low stock alert
-    const lowStock = data.low_stock || [];
-    if (lowStock.length > 0) {
+    // Low stock alert — title/columns come from the same config-driven
+    // low_stock block; nothing here assumes a fixed name/qty/reorder shape.
+    const lowStock = data.low_stock;
+    if (lowStock && lowStock.rows && lowStock.rows.length > 0) {
       document.getElementById('lowStockCard').style.display = 'block';
-      document.getElementById('lowStockTable').innerHTML = lowStock.map(item => `
-        <tr>
-          <td><strong>${item.name}</strong></td>
-          <td style="color:#f59e0b;font-weight:600">${item.qty}</td>
-          <td>${item.reorder_level}</td>
-        </tr>
+      document.getElementById('lowStockTitle').textContent = '⚠️ ' + lowStock.title;
+      document.getElementById('lowStockHead').innerHTML =
+        lowStock.columns.map(c => `<th>${c.label}</th>`).join('');
+      document.getElementById('lowStockTable').innerHTML = lowStock.rows.map(row => `
+        <tr>${lowStock.columns.map(c => `<td>${row[c.key]}</td>`).join('')}</tr>
       `).join('');
     } else {
       document.getElementById('lowStockCard').style.display = 'none';
