@@ -108,7 +108,7 @@ Recent:
 • CS-{num}: {title} — {priority} — {status}
 • CS-{num}: {title} — {priority} — {status}
 
-_📥 Full report PDF chahiye? Reply karo *pdf*_"
+_📥 Want the full report as a PDF? Reply *pdf*_"
 
 New complaint confirmation:
 "✅ *Complaint Registered*
@@ -119,7 +119,7 @@ Location: {location}
 Priority: {priority}
 Status: reported
 
-_Committee ko notify kar diya gaya hai._"
+_The committee has been notified._"
 
 ─────────────────────────────────────────────
 SECTION E — QUERY EXAMPLES

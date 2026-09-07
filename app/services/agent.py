@@ -87,7 +87,7 @@ def _time_of_day_greeting(ist_hour: int) -> str:
     elif 17 <= ist_hour < 21:
         return "Good evening"
     else:
-        return "Namaskar"
+        return "Hello"
 
 
 async def _build_greeting_response_with_menu(user: dict, message: str) -> dict:
