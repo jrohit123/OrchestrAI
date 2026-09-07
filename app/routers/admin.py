@@ -844,16 +844,9 @@ input:checked+.slider:before{transform:translateX(18px)}
       <div class="field-label">Who can use it</div>
       <div id="editRolesContainer" style="display:flex;flex-wrap:wrap;gap:14px"></div>
     </div>
-    <div class="field-row">
-      <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
-        <span>Constraints (OTP / approval / permission)</span>
-        <button class="btn btn-purple" style="padding:4px 10px;font-size:11px" onclick="gateAdd('edit')">+ Add constraint</button>
-      </div>
-      <div id="editGatesContainer"></div>
-    </div>
 
     <div style="border-top:1px solid #e8edf5;margin-top:16px;padding-top:14px">
-      <div class="field-label">What this workflow actually does — fields it collects, calculations, the step pipeline</div>
+      <div class="field-label">What this workflow actually does — fields it collects, calculations, constraints (OTP / approval / permission), the step pipeline</div>
       <div style="font-size:12px;color:#888;margin-bottom:8px">
         That's logic, not a setting — it's edited by talking, same as building a new workflow.
       </div>
@@ -1005,291 +998,11 @@ async function deleteWorkflow(id, name) {
 // fresh draft never share state. Each gate is a plain object matching
 // workflows.gates[] exactly (see migrations/011_*_gates_schema.sql):
 //   {id, type: 'otp'|'approval_chain'|'permission', when:{...}, levels:[...], role_any_of:[...]}
-const gateStores = { edit: [] };
-// This workflow's own entity_schema, set alongside gateStores.edit whenever
-// a workflow loads (see openEdit) — the field/operator/value picker below
-// is driven entirely by it: no new schema, no API call, just reading the
-// type/enum/computed metadata that's already sitting on every field.
-const gateFieldSchemas = { edit: {} };
-let gateRolesList = [];
+let orgRolesList = [];
 
-async function refreshGateRoles() {
+async function refreshOrgRoles() {
   const r = await authenticatedFetch(API('/roles'));
-  if (r && r.ok) gateRolesList = (await r.json()).map(x => x.name);
-}
-
-function renderGates(storeName) {
-  const gates = gateStores[storeName];
-  const container = document.getElementById(storeName + 'GatesContainer');
-  if (!container) return;
-  container.innerHTML = gates.length
-    ? gates.map((g, idx) => gateCardHTML(g, idx, storeName)).join('')
-    : '<div style="color:#aaa;font-size:12px;padding:6px 0">No constraints — anyone with permission can run this freely.</div>';
-}
-
-// Every entity_schema field this workflow declares, as {path, label, type,
-// enum}. computed fields resolve through $computed.*, everything else
-// through $fields.* — matches how step_interpreter._resolve_path reads
-// them at runtime. items[]-typed fields (line items) are skipped: "when"
-// conditions compare a single value, not a list of rows.
-function gateFieldList(storeName) {
-  const schema = gateFieldSchemas[storeName] || {};
-  return Object.entries(schema)
-    .filter(([, spec]) => spec && spec.type !== 'array')
-    .map(([key, spec]) => ({
-      path: (spec.computed ? '$computed.' : '$fields.') + key,
-      label: spec.label || key.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase()),
-      type: spec.type || 'string',
-      enum: spec.enum || null,
-    }));
-}
-
-// Which operators make sense for a field depends on its declared type — an
-// enum field (e.g. action: assign/comment/close) only ever needs "is one
-// of" style checks, a number needs comparisons, a plain string needs
-// equality. Unknown field (not in this workflow's entity_schema — e.g. a
-// gate authored via chat referencing $case.priority from a resolve_entity
-// step) falls back to the full vocabulary rather than guessing wrong.
-function gateOperatorsForField(field) {
-  if (!field) return GATE_COND_KINDS;
-  if (field.enum) return ['in', 'not_in', 'exists'];
-  if (field.type === 'float' || field.type === 'integer') return ['gte', 'lte', 'gt', 'lt', 'equals', 'not_equals'];
-  if (field.type === 'boolean') return ['equals', 'exists'];
-  return ['equals', 'not_equals', 'exists'];
-}
-
-// Builds a sensible {field, <operator>: <default value>} for a freshly
-// picked field — first operator valid for its type, with that operator's
-// natural empty value (0 for numbers, [] for list-style, '' for text).
-function gateDefaultWhen(storeName, fieldPath) {
-  const fields = gateFieldList(storeName);
-  const meta = fieldPath ? fields.find(f => f.path === fieldPath) : fields[0];
-  const field = meta ? meta.path : (fieldPath || '$computed.total_amount');
-  const kind = gateOperatorsForField(meta)[0] || 'gte';
-  const when = {field};
-  if (kind === 'exists') when.exists = true;
-  else if (GATE_COND_LIST.includes(kind)) when[kind] = [];
-  else if (GATE_COND_NUMERIC.includes(kind)) when[kind] = 0;
-  else when[kind] = '';
-  return when;
-}
-
-function gateAdd(storeName) {
-  const n = gateStores[storeName].length + 1;
-  gateStores[storeName].push({id: 'gate' + n, type: 'otp', when: gateDefaultWhen(storeName)});
-  renderGates(storeName);
-}
-function gateRemove(storeName, idx) {
-  gateStores[storeName].splice(idx, 1);
-  renderGates(storeName);
-}
-function gateSetType(storeName, idx, val) {
-  const g = gateStores[storeName][idx];
-  const prevField = g.when && g.when.field;
-  g.type = val;
-  delete g.when; delete g.levels; delete g.role_any_of;
-  if (val === 'otp') g.when = gateDefaultWhen(storeName, prevField);
-  if (val === 'approval_chain') { g.when = gateDefaultWhen(storeName, prevField); g.levels = [{level: 1, role: '', max_amount: null}]; }
-  if (val === 'permission') g.role_any_of = [];
-  renderGates(storeName);
-}
-// Full condition vocabulary step_interpreter._eval_when_condition already
-// supports on the backend — the UI used to expose only gte/lte/equals on
-// an implicit amount field. Kept in one place so gateCardHTML, gateSetCondKind
-// and gateSetCondValue all agree on what a "kind" is.
-// NOTE: this list must stay in sync BY HAND with step_interpreter.py's
-// _eval_when_condition (the real authority) and workflow_builder_agent.py's
-// _describe_when (the chat builder's "Draft so far" recap text) — an
-// operator missing from one of the three doesn't error, it just silently
-// can't be built here, or silently disappears from the recap there.
-const GATE_COND_KINDS = ['gte', 'lte', 'gt', 'lt', 'equals', 'not_equals', 'in', 'not_in', 'exists'];
-const GATE_COND_NUMERIC = ['gte', 'lte', 'gt', 'lt'];
-const GATE_COND_LIST = ['in', 'not_in'];
-
-function gateCondKind(when) {
-  for (const k of GATE_COND_KINDS) {
-    if (when && k in when) return k;
-  }
-  return 'gte';
-}
-
-function gateSetCondKind(storeName, idx, kind) {
-  const g = gateStores[storeName][idx];
-  const field = (g.when && g.when.field) || '$computed.total_amount';
-  if (kind === 'exists') {
-    g.when = {field, exists: true};
-  } else if (GATE_COND_LIST.includes(kind)) {
-    g.when = {field, [kind]: []};
-  } else if (GATE_COND_NUMERIC.includes(kind)) {
-    g.when = {field, [kind]: 0};
-  } else {
-    g.when = {field, [kind]: ''};
-  }
-  renderGates(storeName);
-}
-// Changing the field resets the operator+value to that field's own default
-// (e.g. switching from a numeric field to an enum field must drop "≥ 50000"
-// in favour of "is one of", not keep an operator the new field can't use).
-function gateSetCondField(storeName, idx, val) {
-  gateStores[storeName][idx].when = gateDefaultWhen(storeName, val);
-  renderGates(storeName);
-}
-// Checkbox toggle for enum-valued "in"/"not_in" conditions — mutates the
-// array directly rather than re-rendering, so ticking one box doesn't
-// rebuild (and lose focus on) the whole card.
-function gateToggleEnumValue(storeName, idx, kind, value, checked) {
-  const w = gateStores[storeName][idx].when;
-  const set = new Set(w[kind] || []);
-  if (checked) set.add(value); else set.delete(value);
-  w[kind] = Array.from(set);
-}
-function gateSetCondValue(storeName, idx, val) {
-  const w = gateStores[storeName][idx].when;
-  const kind = gateCondKind(w);
-  if (GATE_COND_NUMERIC.includes(kind)) w[kind] = parseFloat(val) || 0;
-  else if (GATE_COND_LIST.includes(kind)) w[kind] = val.split(',').map(s => s.trim()).filter(Boolean);
-  else if (kind === 'exists') w.exists = (val === 'true');
-  else w[kind] = val;
-}
-function gateSetRoleAnyOf(storeName, idx, val) {
-  gateStores[storeName][idx].role_any_of = val.split(',').map(s => s.trim()).filter(Boolean);
-}
-function gateAddLevel(storeName, idx) {
-  const g = gateStores[storeName][idx];
-  g.levels = g.levels || [];
-  g.levels.push({level: g.levels.length + 1, role: '', max_amount: null});
-  renderGates(storeName);
-}
-function gateRemoveLevel(storeName, idx, li) {
-  const levels = gateStores[storeName][idx].levels;
-  levels.splice(li, 1);
-  levels.forEach((l, i) => l.level = i + 1);
-  renderGates(storeName);
-}
-function gateSetLevelField(storeName, idx, li, field, val) {
-  const lvl = gateStores[storeName][idx].levels[li];
-  lvl[field] = field === 'max_amount' ? (val === '' ? null : parseFloat(val)) : val;
-}
-
-const GATE_COND_LABELS = {
-  gte: '≥', lte: '≤', gt: '>', lt: '<', equals: '=', not_equals: '≠',
-  in: 'in list', not_in: 'not in list', exists: 'is set / empty',
-};
-// "in list"/"not in list" reads fine for a free-typed value, but for an
-// enum field the values are already visible as checkboxes right next to
-// the label — "is one of" / "is none of" reads as a sentence there instead.
-function gateCondLabel(kind, fieldMeta) {
-  if (fieldMeta && fieldMeta.enum) {
-    if (kind === 'in') return 'is one of';
-    if (kind === 'not_in') return 'is none of';
-  }
-  return GATE_COND_LABELS[kind];
-}
-
-function gateCardHTML(g, idx, storeName) {
-  const type = g.type || 'otp';
-  const when = g.when || {};
-  const condKind = gateCondKind(when);
-  const fields = gateFieldList(storeName);
-  const fieldMeta = fields.find(f => f.path === when.field) || null;
-  const availableOps = gateOperatorsForField(fieldMeta);
-
-  const roleOpts = sel => (gateRolesList || []).map(name =>
-    `<option value="${name}" ${name === sel ? 'selected' : ''}>${name}</option>`).join('');
-
-  let condHTML = '';
-  if (type !== 'permission') {
-    let valueHTML;
-    if (condKind === 'exists') {
-      valueHTML = `
-        <select class="field-input" style="width:110px" onchange="gateSetCondValue('${storeName}',${idx},this.value)">
-          <option value="true" ${when.exists === true ? 'selected' : ''}>is set</option>
-          <option value="false" ${when.exists === false ? 'selected' : ''}>is empty</option>
-        </select>`;
-    } else if (fieldMeta && fieldMeta.enum && GATE_COND_LIST.includes(condKind)) {
-      // Enum field: checkboxes of the field's own declared values — nothing
-      // to type, nothing to typo, can't select a value that doesn't exist.
-      const selected = new Set(when[condKind] || []);
-      valueHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">` +
-        fieldMeta.enum.map(v => `
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:normal">
-            <input type="checkbox" value="${v}" ${selected.has(v) ? 'checked' : ''}
-              onchange="gateToggleEnumValue('${storeName}',${idx},'${condKind}','${v}',this.checked)"> ${v}
-          </label>`).join('') +
-        `</div>`;
-    } else if (GATE_COND_LIST.includes(condKind)) {
-      valueHTML = `<input class="field-input" style="width:170px" placeholder="comma, separated, values"
-        value="${(when[condKind]||[]).join(', ')}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
-    } else if (GATE_COND_NUMERIC.includes(condKind)) {
-      valueHTML = `<input class="field-input" style="width:110px" type="number" placeholder="value"
-        value="${when[condKind] ?? 0}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
-    } else {
-      valueHTML = `<input class="field-input" style="width:110px" placeholder="value"
-        value="${when[condKind] ?? ''}" onchange="gateSetCondValue('${storeName}',${idx},this.value)">`;
-    }
-
-    // Field dropdown: this workflow's own entity_schema fields, human-
-    // labelled — never a raw $fields.x path to type. A gate can still
-    // reference a field this workflow doesn't declare (authored via chat
-    // against a resolve_entity alias like $case.priority, or a legacy raw
-    // path) — keep it selectable as a labelled "(custom)" option instead
-    // of silently discarding it when the card re-renders.
-    const knownPaths = new Set(fields.map(f => f.path));
-    const fieldOptionsHTML = fields.map(f =>
-      `<option value="${f.path}" ${f.path === when.field ? 'selected' : ''}>${f.label}</option>`
-    ).join('') + (when.field && !knownPaths.has(when.field)
-      ? `<option value="${when.field}" selected>${when.field} (custom)</option>` : '');
-
-    condHTML = `
-      <select class="field-input" style="width:160px" onchange="gateSetCondField('${storeName}',${idx},this.value)">
-        ${fieldOptionsHTML || `<option value="">(no fields on this workflow)</option>`}
-      </select>
-      <select class="field-input" style="width:140px" onchange="gateSetCondKind('${storeName}',${idx},this.value)">
-        ${availableOps.map(k => `<option value="${k}" ${condKind===k?'selected':''}>${gateCondLabel(k, fieldMeta)}</option>`).join('')}
-      </select>
-      ${valueHTML}
-    `;
-  }
-
-  let levelsHTML = '';
-  if (type === 'approval_chain') {
-    const levels = g.levels || [];
-    levelsHTML = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e8edf5">
-      <div class="field-label">Approval levels (in order — level 2+ only kicks in above the level before it's ceiling)</div>
-      ${levels.map((lvl, li) => `
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-          <span style="font-size:11px;color:#888;width:14px">${li+1}</span>
-          <select class="field-input" style="flex:1" onchange="gateSetLevelField('${storeName}',${idx},${li},'role',this.value)">
-            <option value="">— role —</option>${roleOpts(lvl.role)}
-          </select>
-          <input class="field-input" style="width:150px" type="number" placeholder="ceiling (blank = no limit)"
-                 value="${lvl.max_amount ?? ''}" onchange="gateSetLevelField('${storeName}',${idx},${li},'max_amount',this.value)">
-          <button class="btn btn-gray" style="padding:4px 8px" onclick="gateRemoveLevel('${storeName}',${idx},${li})">✕</button>
-        </div>`).join('')}
-      <button class="btn btn-gray" style="font-size:11px;padding:4px 10px" onclick="gateAddLevel('${storeName}',${idx})">+ Level</button>
-    </div>`;
-  }
-
-  let permHTML = '';
-  if (type === 'permission') {
-    permHTML = `<div style="margin-top:8px">
-      <div class="field-label">Role(s) allowed to trigger this at all (comma-separated)</div>
-      <input class="field-input" value="${(g.role_any_of||[]).join(', ')}" onchange="gateSetRoleAnyOf('${storeName}',${idx},this.value)">
-    </div>`;
-  }
-
-  return `<div style="border:1px solid #e8edf5;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafbfc">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select class="field-input" style="width:150px" onchange="gateSetType('${storeName}',${idx},this.value)">
-        <option value="otp" ${type==='otp'?'selected':''}>🔐 OTP</option>
-        <option value="approval_chain" ${type==='approval_chain'?'selected':''}>👤 Approval chain</option>
-        <option value="permission" ${type==='permission'?'selected':''}>🔒 Permission only</option>
-      </select>
-      ${condHTML}
-      <button class="btn btn-danger" style="margin-left:auto;padding:4px 10px" onclick="gateRemove('${storeName}',${idx})">✕</button>
-    </div>
-    ${levelsHTML}${permHTML}
-  </div>`;
+  if (r && r.ok) orgRolesList = (await r.json()).map(x => x.name);
 }
 
 // ── Edit Modal ────────────────────────────────────────────────────
@@ -1304,12 +1017,8 @@ async function openEdit(id) {
   document.getElementById('editDescription').value = w.description || '';
   document.getElementById('editSlashCommand').value = w.slash_command || '';
 
-  gateFieldSchemas.edit = w.entity_schema || {};
-  gateStores.edit = w.gates || [];
-  renderGates('edit');
-
   const granted = w.granted_roles || [];
-  document.getElementById('editRolesContainer').innerHTML = (gateRolesList || []).map(r => `
+  document.getElementById('editRolesContainer').innerHTML = (orgRolesList || []).map(r => `
     <label style="display:flex;align-items:center;gap:6px;font-size:12px">
       <input type="checkbox" value="${r}" class="edit-role-cb" ${granted.includes(r) ? 'checked' : ''}> ${r}
     </label>`).join('');
@@ -1324,7 +1033,6 @@ async function saveWorkflowEdit() {
     name:          document.getElementById('editName').value,
     description:   document.getElementById('editDescription').value,
     slash_command: document.getElementById('editSlashCommand').value,
-    gates:         gateStores.edit,
     roles,
   };
   const r = await authenticatedFetch(API(`/workflow/${id}`), {
@@ -1546,7 +1254,7 @@ async function loadData() {
     }
 
     document.getElementById('orgName').textContent = data.org.name;
-    refreshGateRoles();  // fire-and-forget — populates role pickers for the gate editor
+    refreshOrgRoles();  // fire-and-forget — populates the "Who can use it" role checkboxes
 
     try {
       const sec = await authenticatedFetch(API('/security'));
