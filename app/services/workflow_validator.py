@@ -39,7 +39,17 @@ def validate_workflow_config(spec: dict) -> list[str]:
     items_def       = entity_schema.get("items") or {}
     item_schema     = (items_def.get("item_schema") if isinstance(items_def, dict) else None) or {}
     steps           = _parse(spec.get("steps"), []) or []
-    workflow_type   = spec.get("workflow_type", "action")
+    # Every place that WRITES workflow_type (compile_and_summarize,
+    # workflow_publisher.py) defaults a missing/empty value to "action" via
+    # `spec.get("workflow_type") or "action"`. If this check used a plain
+    # dict.get(..., "action") default instead, an explicit "" or null from
+    # the compiler LLM would read here as falsy-but-not-"action", skip the
+    # action/steps consistency check below, and only surface as a broken
+    # publish once the same value got defaulted to "action" downstream —
+    # the exact "workflow_type is 'action' but steps[] is empty" failure
+    # this function exists to catch. Normalize the same way here so it's
+    # caught at the true point of origin instead of one write later.
+    workflow_type   = spec.get("workflow_type") or "action"
 
     # ── 1. Every calc_rules output must be declared computed:true ────────────
     for field in item_rules:

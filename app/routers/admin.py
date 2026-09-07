@@ -402,6 +402,10 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
         from app.services.workflow_validator import validate_workflow_config
         problems = validate_workflow_config({
             "workflow_type": existing["workflow_type"], "gates": body["gates"],
+            # Same fix as the publish endpoint below: omitting steps here
+            # reads as steps=[] every time, false-positiving on every
+            # action-type workflow regardless of what it actually has.
+            "steps": existing.get("steps"),
         })
         if problems:
             raise HTTPException(status_code=400, detail={
@@ -650,6 +654,14 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     gate_problems = validate_workflow_config({
         "workflow_type": draft.get("workflow_type") or "action",
         "gates": gates,
+        # steps must come along too — validate_workflow_config's action/steps
+        # consistency check has no way to know steps[] is actually populated
+        # if it's never in the spec it's given, and reads the omission as
+        # "empty steps" every time, false-positiving on every action-type
+        # publish regardless of what the draft actually contains. Found live:
+        # this rejected a from-scratch action workflow (create_resident_record)
+        # with a fully valid, non-empty steps[] already saved on the draft.
+        "steps": draft.get("steps"),
     })
     if gate_problems:
         raise HTTPException(422, {"error": "Constraints are inconsistent", "problems": gate_problems})

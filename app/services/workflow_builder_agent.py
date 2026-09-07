@@ -591,6 +591,23 @@ async def _execute_tool(
             return {"error": "No one's been given access yet — ask who should be able to use this before marking it ready."}
         if not fresh.get("slash_command"):
             return {"error": "No trigger command set yet — ask what it should be before marking it ready."}
+
+        # Same structural check the publish endpoint runs — run it HERE too,
+        # before the publish panel ever opens. Without this, "intent_key set"
+        # was treated as proof compile_and_summarize had produced a fully
+        # consistent spec, but nothing actually re-verified that: an
+        # intent_key survives from an earlier compile (or a loaded existing
+        # workflow) even if a later turn changed workflow_type without
+        # recompiling steps[] to match. That inconsistency was only ever
+        # caught at the final Publish click, as a raw validator error with
+        # no way to recover except starting over — instead of here, where
+        # the LLM can still explain the problem and try compile_and_summarize
+        # again in the same conversation.
+        from app.services.workflow_validator import validate_workflow_config
+        problems = validate_workflow_config(dict(fresh))
+        if problems:
+            return {"error": "This draft isn't consistent yet — recompile before marking it ready: " + "; ".join(problems)}
+
         await execute(
             "UPDATE workflow_drafts SET status = 'ready_for_review', updated_at = now() WHERE id = $1",
             draft["id"], source_key=source_key
