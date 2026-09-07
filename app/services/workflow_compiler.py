@@ -40,10 +40,26 @@ async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "pla
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):
         raw_fields = _parse(draft.get("raw_fields"), [])
+        # Gates are captured deterministically by the builder agent's set_gates
+        # tool call, separately from this compile step — the compiler LLM never
+        # otherwise sees them. Without this, RULE 16 (plain_english_summary
+        # must state "any OTP/approval rule") had nothing to go on and
+        # defaulted to "There are no OTP or approval rules" even when a real
+        # gate existed, contradicting the actual (correct) gates saved on the
+        # draft. Found live: reproduced on two separate test workflows, one
+        # with an approval gate and one with an OTP threshold.
+        from app.services.workflow_builder_agent import _describe_gate
+        draft_gates_for_prompt = _parse(draft.get("gates"), [])
+        gates_text = (
+            "\n".join(_describe_gate(g) for g in draft_gates_for_prompt)
+            if draft_gates_for_prompt else "(none set)"
+        )
         description_block = f"""PURPOSE: {draft.get('purpose', '')}
 WORKFLOW TYPE HINT: {draft.get('workflow_type', 'unclear — infer from purpose')}
 FIELDS DISCUSSED WITH THE ADMIN: {', '.join(raw_fields) if raw_fields else '(none specified yet)'}
-BUSINESS RULES MENTIONED: {draft.get('business_rules') or '(none)'}"""
+BUSINESS RULES MENTIONED: {draft.get('business_rules') or '(none)'}
+CONSTRAINTS ALREADY SET (state these accurately in plain_english_summary — do not say "no OTP or approval rules" if any are listed here):
+{gates_text}"""
         # Always check for PDF analysis regardless of how the draft was built
         pdf_analysis = _parse(draft.get("pdf_sample_analysis"), None)
     else:
