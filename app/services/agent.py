@@ -245,7 +245,13 @@ TOOLS = [
                 "ILIKE for name searches. LIMIT 50 max. "
                 "CRITICAL: params[] must contain EXACTLY one value per placeholder from $2 "
                 "onward, in order — nothing more. If the query has no filter (e.g. 'show all X'), "
-                "params must be an empty array []."
+                "params must be an empty array []. "
+                "CRITICAL: every item in params[] must be a REAL value (a name, id, number, date) "
+                "— never the literal text '$1', '$2', etc. Those placeholders only belong inside "
+                "the sql string itself. "
+                "For 'my own X' / 'complaints I filed' / anything scoped to the person asking: use "
+                "the User ID given under CURRENT USER above as the literal param value — do not "
+                "guess, join on name, or leave it out."
             ),
             "parameters": {
                 "type": "object",
@@ -788,6 +794,7 @@ async def _build_system_prompt(user: dict) -> str:
 
 CURRENT USER:
 - Name: {user["user_name"]}
+- User ID: {user["user_id"]}
 - Role: {user["role"]}
 - Permissions: {", ".join(user.get("permissions", [])[:15])}
 
