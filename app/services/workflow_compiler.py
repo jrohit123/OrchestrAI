@@ -24,6 +24,26 @@ def _parse(val, default):
     return val if val is not None else default
 
 
+async def dry_run_sql_template(sql_template: str, sql_params_order: list, org_id: str, source_key: str) -> str | None:
+    """
+    Plan a compiled read-workflow query against the REAL schema via EXPLAIN —
+    this parses and plans the query (checking every table/column reference
+    and join) but never executes it, returns no rows, and mutates nothing.
+    $1 is always org_id per RULE 4; every other placeholder gets NULL, which
+    Postgres can still type-check against its context in the query (the same
+    binding mechanism used at real runtime, so a query that fails to plan
+    here would also fail for a real user).
+    Returns an error message string, or None if the query plans cleanly.
+    """
+    from app.db import fetch_one
+    params = [org_id] + [None] * len(sql_params_order)
+    try:
+        await fetch_one(f"EXPLAIN {sql_template}", *params, source_key=source_key)
+        return None
+    except Exception as e:
+        return f"sql_template does not run against the live schema — {type(e).__name__}: {e}"
+
+
 async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "platform") -> dict:
     """
     Compile a workflow_drafts row (or legacy {"description":"..."} dict) into
@@ -185,6 +205,23 @@ DATABASE SCHEMA (available tables):
                 last_error = f"Attempt {attempt+1}: " + "; ".join(problems)
                 logger.warning(f"Validation failed — retrying: {last_error}")
                 continue
+
+            # Actually plan the compiled query against the live schema (EXPLAIN —
+            # no execution, no rows, nothing mutated) instead of trusting the LLM
+            # got table/column names and joins right. workflow_validator's check
+            # only catches placeholder-syntax mistakes (e.g. a sentinel like
+            # "$current_user" leaking into the SQL text); it can't catch a typo'd
+            # column, a bad join, or a type mismatch — the class of error that
+            # otherwise only surfaces when a real user triggers the workflow and
+            # Postgres rejects it live.
+            if spec.get("workflow_type") == "read" and spec.get("sql_template"):
+                dry_run_error = await dry_run_sql_template(
+                    spec["sql_template"], spec.get("sql_params_order") or [], org_id, source_key
+                )
+                if dry_run_error:
+                    last_error = f"Attempt {attempt+1}: {dry_run_error}"
+                    logger.warning(f"SQL dry-run failed — retrying: {last_error}")
+                    continue
 
             # Validate mandatory fields
             if not spec.get("training_phrases") or len(spec["training_phrases"]) < 5:

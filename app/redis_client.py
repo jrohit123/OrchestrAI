@@ -37,7 +37,7 @@ async def get_session(session_id: str) -> dict:
 
 
 async def set_session(session_id: str, data: dict, ttl: int = 600):
-    await _redis.setex(f"session:{session_id}", ttl, json.dumps(data))
+    await _redis.setex(f"session:{session_id}", ttl, json.dumps(data, default=str))
 
 
 async def delete_session(session_id: str):

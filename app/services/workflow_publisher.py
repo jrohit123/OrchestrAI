@@ -71,6 +71,22 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
             "\n".join(f"  • {p}" for p in problems)
         )
 
+    # Belt-and-suspenders: compile_workflow_spec already dry-runs the query
+    # (see workflow_compiler.dry_run_sql_template) inside its own retry loop,
+    # but publish is the actual gate that writes to the live workflows table
+    # — checked again here so a draft that reaches this function through any
+    # other path (a resumed old draft, a direct edit) can't ship a query
+    # that fails against the real schema.
+    if draft.get("workflow_type") == "read" and draft.get("sql_template"):
+        from app.services.workflow_compiler import dry_run_sql_template
+        from app.services.json_utils import parse_jsonb
+        sql_params_order = parse_jsonb(draft.get("sql_params_order"), []) or []
+        dry_run_error = await dry_run_sql_template(
+            draft["sql_template"], sql_params_order, org_id, source_key
+        )
+        if dry_run_error:
+            raise ValueError(f"Cannot publish — {dry_run_error}")
+
     existing = await fetch_one(
         "SELECT id, version FROM workflows WHERE org_id = $1 AND intent_key = $2",
         org_id, draft["intent_key"], source_key=source_key
