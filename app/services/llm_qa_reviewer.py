@@ -18,11 +18,13 @@ OpenAI one. If both sides used the shared fallback ladder they could
 resolve to the same underlying model, and the cross-check would validate
 nothing. Provider independence is the whole point of this module.
 """
-import os
 import json
 from openai import AsyncOpenAI
 
 from app.config import required
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 _openai_client = AsyncOpenAI(
     api_key=required("OPENAI_API_KEY"),
@@ -76,7 +78,7 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
         cerebras_result = await _cerebras_interpret(rate_text, weight, qty)
     except Exception as e:
         cerebras_failed = True
-        print(f"[LLM_QA] Cerebras failed, falling back to OpenAI: {e}")
+        logger.warning(f"Cerebras failed, falling back to OpenAI: {e}")
     
     # Try OpenAI (always)
     try:
@@ -90,7 +92,7 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
             )
         }
     except Exception as e:
-        print(f"[LLM_QA] OpenAI failed: {e}")
+        logger.error(f"OpenAI failed: {e}")
         return {
             "agreed": False,
             "message": (
@@ -111,7 +113,7 @@ async def dual_verify_price(rate_text: str, weight: float, qty: int) -> dict:
                     "explicitly, e.g. 'Rs.45,000 per gram' or 'Rs.11,25,000 total'."
                 )
             }
-        print(f"[LLM_QA] Using OpenAI result (Cerebras failed): {o_price}")
+        logger.info(f"Using OpenAI result (Cerebras failed): {o_price}")
         return {"agreed": True, "unit_price": round(o_price, 2)}
     
     # Both succeeded - do QA check

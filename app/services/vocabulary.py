@@ -26,21 +26,12 @@ crash, no guessed English/Hindi words); the message just falls through to
 the normal LLM agent turn instead. See migrations/seed_vocabulary.sql for
 the one-time data seed that gives existing orgs their current behaviour.
 """
-import json
 from app.db import fetch_one
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 _VOCAB_KEYS = ("confirm_words", "cancel_words", "cancel_tokens", "self_reference_words", "retry_words")
 
 _cache: dict[str, dict] = {}   # org_id -> {key: frozenset}
-
-
-def _parse_jsonb(val, default):
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            return default
-    return val if val is not None else default
 
 
 async def get_vocabulary(org_id: str, source_key: str) -> dict:

@@ -9,6 +9,9 @@ import json
 from app.services.calc_engine import compute_draft, CalcError
 from app.services.pdf_engine import generate_pdf
 from app.db import fetch_one
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 
 def _parse(val, default=None):
@@ -86,7 +89,7 @@ async def generate_preview_pdf(spec: dict, org_id: str, source_key: str) -> byte
         try:
             sample_fields = compute_draft(calc_rules, sample_fields, context)
         except CalcError as e:
-            print(f"[PREVIEWER] calc error (non-fatal): {e}")
+            logger.warning(f"calc error (non-fatal): {e}")
             # Non-fatal — show the PDF with un-computed values
 
     # Build title

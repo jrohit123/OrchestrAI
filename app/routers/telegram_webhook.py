@@ -9,7 +9,6 @@ Register this webhook with Telegram once after deploy:
 import hmac
 import os
 from fastapi import APIRouter, Request, Response, Header
-from app.config import required
 from app.redis_client import get_redis
 from app.logging_config import get_context_logger, bind_context
 
@@ -67,12 +66,18 @@ async def telegram_webhook(
         from app.routers.webhook import handle_message
         await handle_message(phone=phone, text=text, msg_type=msg_type)
     except Exception as e:
-        logger.error(f"Telegram handle_message error: {e}", exc_info=True)
-        try:
-            from app.services.telegram import send_text
-            await send_text(chat_id, "❌ Something went wrong. Please try again.")
-        except Exception:
-            pass
+        from app.services.telegram import TelegramRateLimitedError
+        if isinstance(e, TelegramRateLimitedError):
+            # handle_message already gave up on this send because Telegram
+            # is flood-controlling the bot — don't pile on another attempt.
+            logger.warning(f"Telegram handle_message rate-limited for {phone} (retry_after={e.retry_after}s)")
+        else:
+            logger.error(f"Telegram handle_message error: {e}", exc_info=True)
+            try:
+                from app.services.telegram import send_text
+                await send_text(chat_id, "❌ Something went wrong. Please try again.")
+            except Exception:
+                pass
 
     return {"status": "ok"}
 

@@ -7,8 +7,8 @@ from fastapi import APIRouter, Request, Response
 from dotenv import load_dotenv
 
 from app.config import required
-from app.logging_config import get_context_logger, bind_context
-from app.services.identity import resolve_identity, check_permission, check_route_permission
+from app.logging_config import get_context_logger
+from app.services.identity import resolve_identity
 from app.services.messaging import send_text
 from app.services.otp_service import verify_otp, generate_and_send_otp
 from app.services.agent import run_agent
@@ -695,7 +695,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         from app.services.agent import _MAX_REPROMPT_COUNT
         reprompt_count = pending_action.get("reprompt_count", 0)
         if reprompt_count >= _MAX_REPROMPT_COUNT:
-            print(f"[WEBHOOK] Collecting-stage reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
+            logger.warning(f"Collecting-stage reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft")
             await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
             await send_text(phone,
                 "🤔 I'm having trouble understanding the details for this request. "
@@ -763,6 +763,15 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
 
     except Exception as e:
+        # If this came from a Telegram send that's already flood-controlled
+        # (429), sending a fallback "something went wrong" message would
+        # just hit the same lock again — log and stop instead of cascading
+        # into more failed sends.
+        from app.services.telegram import TelegramRateLimitedError
+        if isinstance(e, TelegramRateLimitedError):
+            logger.warning(f"handle_message: Telegram rate-limited, dropping reply to {phone} (retry_after={e.retry_after}s)")
+            return
+
         logger.error(f"handle_message error: {e}", exc_info=True)
         correlation_id = ""
         try:
@@ -770,9 +779,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             correlation_id = get_correlation_id.get()
         except:
             pass
-        await send_text(phone,
-            f"❌ Something went wrong. Error ID: {correlation_id}. Please try again or contact support."
-        )
+        try:
+            await send_text(phone,
+                f"❌ Something went wrong. Error ID: {correlation_id}. Please try again or contact support."
+            )
+        except TelegramRateLimitedError:
+            logger.warning(f"handle_message: Telegram rate-limited while sending error fallback to {phone}")
 
 
 # ── SYSTEM ROW HANDLERS ─────────────────────────────────

@@ -2,8 +2,11 @@ import httpx
 import os
 from dotenv import load_dotenv
 from app.config import required
+from app.logging_config import get_context_logger
 
 load_dotenv()
+
+logger = get_context_logger(__name__)
 
 WHATSAPP_TOKEN    = required("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
@@ -27,7 +30,7 @@ async def send_text(to: str, message: str):
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
         if resp.status_code >= 400:
-            print(f"[WHATSAPP] send_text failed ({resp.status_code}): {resp.text}")
+            logger.error(f"send_text failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -56,7 +59,7 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
         if resp.status_code >= 400:
-            print(f"[WHATSAPP] send_buttons failed ({resp.status_code}): {resp.text}")
+            logger.error(f"send_buttons failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -76,7 +79,7 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
             files={"file": (filename, pdf_bytes, "application/pdf")}
         )
         if upload_resp.status_code >= 400:
-            print(f"[WHATSAPP] upload_media failed ({upload_resp.status_code}): {upload_resp.text}")
+            logger.error(f"upload_media failed ({upload_resp.status_code}): {upload_resp.text}")
         upload_resp.raise_for_status()
         media_id = upload_resp.json()["id"]
 
@@ -94,7 +97,7 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
         if resp.status_code >= 400:
-            print(f"[WHATSAPP] send_document failed ({resp.status_code}): {resp.text}")
+            logger.error(f"send_document failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
 
@@ -114,6 +117,6 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
         if resp.status_code >= 400:
-            print(f"[WHATSAPP] send_list failed ({resp.status_code}): {resp.text}")
+            logger.error(f"send_list failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()

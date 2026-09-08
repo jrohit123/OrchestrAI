@@ -43,7 +43,7 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
             -- D2: an actively-used draft must not silently expire.
             -- TTL follows the org's own session_ttl_minutes, not a fixed window.
             expires_at = now() + make_interval(mins => (SELECT COALESCE(session_ttl_minutes, 480) FROM orgs WHERE id = $1))
-    """, org_id, user_id, intent_key, json.dumps(fields), stage, summary,
+    """, org_id, user_id, intent_key, json.dumps(fields, default=str), stage, summary,
          reset_fields, source_key=source_key)
 
 async def close_draft(org_id, user_id, final_stage: str, source_key: str):

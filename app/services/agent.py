@@ -8,27 +8,20 @@ import os
 import re
 import datetime as _dt
 from openai import AsyncOpenAI
-from app.db import fetch_all, fetch_one
+from app.db import fetch_all, fetch_one, execute
 from app.config import required
-from app.services.prompt_loader import load_prompt
+from app.services.prompt_loader import load_prompt, PROMPTS_DIR, _read
 from app.services.query_engine import _safe, SENSITIVE_COLS
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.logging_config import get_context_logger
+from app.services.llm_router import chat_completion as _llm_chat
 
 logger = get_context_logger(__name__)
 
-from app.services.llm_router import chat_completion as _llm_chat
+_RESPONSE_FORMATTING_PROMPT = _read(PROMPTS_DIR / "response_formatting.txt")
 
 # Keep for any legacy direct usage
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
-
-def _parse_jsonb(val, default=None):
-    """Parse JSONB values from Postgres (may be string or already parsed)."""
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            return default
-    return val if val is not None else default
 
 
 def _build_confirm_summary_lines(entity_schema: dict, fields: dict) -> list[str] | None:
@@ -1663,31 +1656,11 @@ async def run_agent(
                 except (json.JSONDecodeError, TypeError):
                     glossary = {}
 
-            format_prompt = f"""Format this data as a WhatsApp reply for a business ERP assistant.
-
-WORKFLOW: {wf['name']}
-BUSINESS GLOSSARY: {json.dumps(glossary)}
-
-RAW DATA (already fetched — this IS the current, correct data, do not question it):
-{raw_result}
-
-FORMATTING RULES:
-- *bold* for key names/values, _italic_ for notes/footers, no HTML
-- Indian comma format for money: Rs.1,45,000 (not Rs.145000, not ₹)
-- If 5+ rows: lead with a one-line summary before listing details
-- CRITICAL: You MUST list EVERY row in the data above — never skip, truncate,
-  or summarize-only. Missing items is a serious error.
-- Keep each item to ONE compact line, not a multi-line block — e.g.:
-  *22kt Gold Ring* — 41 pcs — Rack B-3 (reorder at 50)
-  Do NOT put SKU, location, qty, price each on their own line per item —
-  that wastes space and will get truncated before all items are shown.
-- If data says "EMPTY: No rows returned": say so naturally, don't apologize about an error
-- If data says "No results found.": same as above
-- After listing, append: _📥 Reply *pdf* to get this as a downloadable document._
-- Never mention SQL, tables, columns, or JSON — this is a WhatsApp message to a business owner
-- Be concise per item, but complete across all items — do not drop any row
-
-Return ONLY the WhatsApp message text, nothing else."""
+            format_prompt = _RESPONSE_FORMATTING_PROMPT.format(
+                workflow_name=wf['name'],
+                glossary_json=json.dumps(glossary),
+                raw_data=raw_result,
+            )
 
             try:
                 format_response = await _llm_chat(
@@ -1715,8 +1688,6 @@ Return ONLY the WhatsApp message text, nothing else."""
 
             # Save both user message and assistant response to history for PDF generation context
             history_to_save.append({"role": "assistant", "content": formatted})
-            # Also store raw data in a special field for PDF generation
-            history_to_save.append({"role": "system", "content": f"_RAW_DATA_FOR_PDF: {json.dumps(raw_result)}"})
 
             return formatted, history_to_save, {}
         else:
@@ -2251,14 +2222,13 @@ Return ONLY the WhatsApp message text, nothing else."""
                     pending_action=pending_action
                 )
             except Exception as tool_err:
-                print(f"[AGENT] Tool {tool_call.function.name} raised: {tool_err}")
-                import traceback as _tb; _tb.print_exc()
+                logger.error(f"Tool {tool_call.function.name} raised: {tool_err}", exc_info=True)
                 result = f"ERROR: {tool_err}"
             result_str = str(result)[:100] if result else "None"
-            print(f"[AGENT] Tool result: {result_str}...")
+            logger.debug(f"Tool result: {result_str}...")
 
             # Convert dict results to JSON string for OpenAI API
-            content = json.dumps(result) if isinstance(result, dict) else str(result)
+            content = json.dumps(result, default=str) if isinstance(result, dict) else str(result)
             tool_results.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
@@ -2346,7 +2316,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                         except (json.JSONDecodeError, TypeError):
                             old_fields = {}
                     if not isinstance(old_fields, dict):
-                        print(f"[AGENT] Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting")
+                        logger.warning(f"Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting")
                         old_fields = {}
                     new_fields = result.get("fields", {})
 
@@ -2468,7 +2438,7 @@ Return ONLY the WhatsApp message text, nothing else."""
                     # Log any corrections the QA layer made
                     mismatches = diff_for_audit(draft.get("fields", {}), verified_fields)
                     if mismatches:
-                        print(f"[QA] Corrected LLM-drafted values before confirmation: {mismatches}")
+                        logger.info(f"Corrected LLM-drafted values before confirmation: {mismatches}")
 
                     # Store verified fields — these are what gets executed, not the LLM's originals
                     draft["fields"] = verified_fields

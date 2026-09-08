@@ -1,7 +1,6 @@
 import random
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -9,8 +8,11 @@ from dotenv import load_dotenv
 from app.db import fetch_one, execute
 
 from app.config import required
+from app.logging_config import get_context_logger
 
 load_dotenv()
+
+logger = get_context_logger(__name__)
 
 BREVO_API_KEY = required("BREVO_API_KEY")
 SENDER_EMAIL  = required("SENDER_EMAIL")
@@ -87,7 +89,7 @@ async def generate_and_send_otp(
     await execute("""
         INSERT INTO otp_tokens (user_id, otp_hash, action_context, expires_at, used, org_id)
         VALUES ($1, $2, $3, $4, false, $5)
-    """, user_id, otp_hash, json.dumps(action_context), expiry, org_id, source_key=source_key)
+    """, user_id, otp_hash, json.dumps(action_context, default=str), expiry, org_id, source_key=source_key)
 
     # Send via Brevo — raw OTP only lives here
     success = await _send_brevo_email(
@@ -262,5 +264,5 @@ async def send_email_with_pdf(
             )
             return resp.status_code == 201
     except Exception as e:
-        print(f"[EMAIL] Failed to send PDF email: {e}")
+        logger.error(f"Failed to send PDF email: {e}")
         return False

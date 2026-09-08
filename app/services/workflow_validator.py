@@ -13,6 +13,7 @@ Distinct from qa_verifier.py:
   Different layers, both needed.
 """
 import json
+import re
 
 
 def _parse(val, default=None):
@@ -217,5 +218,39 @@ def validate_workflow_config(spec: dict) -> list[str]:
                         f"step '{op}' sets status='{val}' — status values must be "
                         f"lowercase (e.g. 'pending' not 'PENDING')"
                     )
+
+    # ── 9. sql_template must only use numeric $N placeholders ───────────────
+    # RULE 4a/5 (workflow_compiler_rules.txt): sentinels like "$current_user"
+    # belong ONLY in sql_params_order, resolved at runtime by
+    # agent._resolve_sql_params. If one leaks into the SQL text itself,
+    # Postgres can't parse it ("$current_user" isn't a valid bind parameter)
+    # and the query fails for every real user who triggers it — found live
+    # on godrej's /my_cases workflow, which shipped with
+    # "complainant_id = $current_user" instead of "complainant_id = $2".
+    sql_template = spec.get("sql_template")
+    if workflow_type == "read" and sql_template:
+        sql_params_order = _parse(spec.get("sql_params_order"), []) or []
+        numeric_placeholders = []
+        for token in re.findall(r"\$(\w+)", sql_template):
+            if not token.isdigit():
+                problems.append(
+                    f"sql_template contains non-numeric placeholder '${token}' — "
+                    f"parameter values (including sentinels like \"$current_user\") "
+                    f"must be passed positionally as $1, $2... with the actual "
+                    f"name/sentinel only in sql_params_order, never inlined in the SQL text"
+                )
+            else:
+                numeric_placeholders.append(int(token))
+
+        if numeric_placeholders:
+            expected_max = 1 + len(sql_params_order)
+            actual_max = max(numeric_placeholders)
+            if actual_max != expected_max:
+                problems.append(
+                    f"sql_template's highest placeholder is ${actual_max} but "
+                    f"sql_params_order has {len(sql_params_order)} entries — "
+                    f"expected highest placeholder ${expected_max} "
+                    f"($1 is always org_id, $2.. map 1:1 to sql_params_order in order)"
+                )
 
     return problems

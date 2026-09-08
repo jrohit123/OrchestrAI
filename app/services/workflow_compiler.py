@@ -6,11 +6,11 @@ call the same logic. Takes either a workflow_drafts row OR a plain {"description
 dict and returns a full workflow spec + plain_english_summary.
 """
 import json
-import os
-from app.db import fetch_all
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
-from app.config import required
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 _COMPILER_RULES = _read(PROMPTS_DIR / "workflow_compiler_rules.txt")
 
@@ -183,7 +183,7 @@ DATABASE SCHEMA (available tables):
             problems = validate_workflow_config(spec)
             if problems:
                 last_error = f"Attempt {attempt+1}: " + "; ".join(problems)
-                print(f"[COMPILER] Validation failed — retrying: {last_error}")
+                logger.warning(f"Validation failed — retrying: {last_error}")
                 continue
 
             # Validate mandatory fields

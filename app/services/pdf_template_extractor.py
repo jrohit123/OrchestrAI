@@ -8,13 +8,14 @@ documents in the same visual style with new data.
 
 Runs ONCE at workflow-authoring time — never on the message-time hot path.
 """
+import asyncio
 import base64
 import json
-import os
+from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
 
-from app.config import required
+logger = get_context_logger(__name__)
 
 _EXTRACTION_PROMPT_TEMPLATE = _read(PROMPTS_DIR / "pdf_template_extraction.txt")
 
@@ -35,10 +36,10 @@ def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
         return images
     except ImportError:
         # PyMuPDF not installed — return empty list, extractor will skip vision
-        print("[PDF_EXTRACTOR] PyMuPDF not installed — cannot rasterize PDF")
+        logger.warning("PyMuPDF not installed — cannot rasterize PDF")
         return []
     except Exception as e:
-        print(f"[PDF_EXTRACTOR] Could not rasterize PDF: {e}")
+        logger.warning(f"Could not rasterize PDF: {e}")
         return []
 
 
@@ -55,7 +56,10 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
 
     The returned dict can be merged directly into a workflow's pdf_config.
     """
-    images = _pdf_to_images(pdf_bytes)
+    # Rasterization (PyMuPDF) is synchronous and CPU-bound — off the event
+    # loop, same reasoning as pdf_engine.py's WeasyPrint call. Lower-traffic
+    # path (authoring-time only) but the same fix is free here.
+    images = await asyncio.to_thread(_pdf_to_images, pdf_bytes)
 
     if not images:
         # No images — return a generic fallback

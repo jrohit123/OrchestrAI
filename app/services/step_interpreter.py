@@ -20,6 +20,7 @@ import re
 from app.db import fetch_one, fetch_all, execute
 from app.services.qa_verifier import verify_draft, VerificationError
 from app.services.otp_service import generate_and_send_otp
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.logging_config import get_context_logger, bind_context
 
 logger = get_context_logger(__name__)
@@ -101,15 +102,6 @@ def _validate_table_and_columns(table: str, columns: set, source_key: str) -> No
 
 class StepError(Exception):
     pass
-
-
-def _parse_jsonb(val, default=None):
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except Exception:
-            return default
-    return val if val is not None else default
 
 
 def _resolve_path(ctx: dict, path):
@@ -1218,7 +1210,7 @@ async def run_workflow_steps(
                 # don't tell the user the whole thing failed if only
                 # delivery (PDF/WhatsApp) broke after the DB write succeeded.
                 if op_name in ("pdf.generate", "notify.whatsapp") and ctx.get("inserted"):
-                    print(f"[STEP_INTERP] Non-fatal failure in '{op_name}' after successful insert: {e}")
+                    logger.warning(f"Non-fatal failure in '{op_name}' after successful insert: {e}")
                     doc_number = next(iter(ctx.get("generated", {}).values()), None)
                     return {
                         "status": "done",

@@ -14,6 +14,9 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.db import fetch_all, execute, fetch_one
 from app.services.messaging import send_text
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 _IST = ZoneInfo("Asia/Kolkata")
@@ -88,7 +91,7 @@ async def run_scheduled_reports():
     """
     from app.db import get_all_source_keys
     now = datetime.datetime.now(datetime.timezone.utc)
-    print(f"[SCHEDULER] Tick at {now.strftime('%H:%M:%S')} UTC")
+    logger.debug(f"Tick at {now.strftime('%H:%M:%S')} UTC")
 
     # Get all source keys and query each one
     source_keys = await get_all_source_keys()
@@ -122,7 +125,7 @@ async def run_scheduled_reports():
     if not all_due:
         return
 
-    print(f"[SCHEDULER] {len(all_due)} report(s) due")
+    logger.info(f"{len(all_due)} report(s) due")
 
     from app.services.agent import run_agent
 
@@ -134,7 +137,7 @@ async def run_scheduled_reports():
         delivery   = row["delivery"]
 
         try:
-            print(f"[SCHEDULER] Running '{label}' for {phone}")
+            logger.info(f"Running '{label}' for {phone}")
 
             user = {
                 "user_id":    str(row["user_id"]),
@@ -179,11 +182,11 @@ async def run_scheduled_reports():
                 WHERE id = $3
             """, now, next_run, report_id, source_key=row.get("source_key", "platform"))
 
-            print(f"[SCHEDULER] ✅ '{label}' done. Next: {next_run.astimezone(_IST).strftime('%d %b %H:%M IST')}")
+            logger.info(f"'{label}' done. Next: {next_run.astimezone(_IST).strftime('%d %b %H:%M IST')}")
 
         except Exception as e:
             import traceback
-            print(f"[SCHEDULER] ❌ Error running '{label}' for {phone}: {e}")
+            logger.error(f"Error running '{label}' for {phone}: {e}")
             traceback.print_exc()
             try:
                 next_run = compute_next_run(dict(row), from_dt=now)
@@ -273,6 +276,24 @@ async def _run_case_notification_pass(
         if c not in allowlist[table]:
             return
 
+    # The SLA-rules table name used to be a hardcoded literal ("priority_tat_rules")
+    # in the JOIN below — every other identifier in this query is config-driven
+    # and schema-validated, this one wasn't. An org that enables case_reminders
+    # without a matching table (or with different column names) would raise a
+    # SQL error here that propagated straight up through run_case_reminders'
+    # for-loop, aborting the notification pass for every org still queued in
+    # that same minute-tick. Config-driven + validated like the rest, and a
+    # missing/mismatched table now skips just this org's pass instead.
+    tat_table = cfg.get("tat_rules_table", "priority_tat_rules")
+    _validate_identifier(tat_table, "table name")
+    if (
+        tat_table not in allowlist
+        or "org_id" not in allowlist[tat_table]
+        or "priority" not in allowlist[tat_table]
+        or minutes_col not in allowlist[tat_table]
+    ):
+        return
+
     closed_values = cfg.get("closed_values", ["closed"])
 
     sql = f"""
@@ -284,7 +305,7 @@ async def _run_case_notification_pass(
                t.{cfg['complainant_id_column']} AS complainant_id,
                t.id AS row_id
         FROM {table} t
-        JOIN priority_tat_rules ptr
+        JOIN {tat_table} ptr
           ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg['priority_column']}
         WHERE t.org_id = $1
           AND t.{cfg['status_column']} != ALL($2)
@@ -425,7 +446,7 @@ def start_scheduler():
         max_instances=1,
     )
     scheduler.start()
-    print("[SCHEDULER] Started — universal runner + case reminders every minute")
+    logger.info("Started — universal runner + case reminders every minute")
 
 
 def stop_scheduler():

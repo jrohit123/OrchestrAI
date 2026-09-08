@@ -11,8 +11,8 @@ Called:
 Returns verified fields with computed values overwritten from calc_rules.
 The LLM's own arithmetic is discarded and recomputed from the authoritative rules.
 """
-import json
 from app.services.calc_engine import compute_draft, CalcError
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.db import fetch_one
 
 # Columns we never pass into calc_rules namespace (security + noise)
@@ -25,15 +25,6 @@ class VerificationError(Exception):
         self.invalid_fields  = invalid_fields or []
         self.message         = message or "Draft failed verification"
         super().__init__(self.message)
-
-
-def _parse_jsonb(val, default):
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except Exception:
-            return default
-    return val if val is not None else default
 
 
 async def _build_context(org_id: str, source_key: str) -> dict:

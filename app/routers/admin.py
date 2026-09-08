@@ -1,4 +1,3 @@
-import os
 import json
 import re
 import hmac
@@ -7,30 +6,12 @@ from fastapi.responses import HTMLResponse
 from app.config import required
 from app.db import fetch_all, fetch_one, execute, get_all_source_keys
 from app.logging_config import get_context_logger
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 logger = get_context_logger(__name__)
 router = APIRouter()
 
 ADMIN_TOKEN = required("ADMIN_TOKEN")
-
-
-def _parse_jsonb(val, default):
-    """
-    asyncpg returns jsonb columns as raw JSON text — there's no codec
-    registered in app/db.py — so anything read via fetch_all/fetch_one and
-    handed straight to a JSON API response reaches the frontend as a STRING,
-    not the array/object it looks like. gates specifically broke on this
-    (`gates.map is not a function`) because .map()/.length on a JSON-text
-    string doesn't throw the way you'd expect until you actually call .map.
-    """
-    if val is None:
-        return default
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            return default
-    return val
 
 
 def _check_token(request: Request):
@@ -375,6 +356,22 @@ async def get_workflow_detail(org_slug: str, workflow_id: str):
     )
     wd["granted_roles"] = [r["name"] for r in granted]
     return wd
+
+
+@router.get("/admin/{org_slug}/api/workflow/{workflow_id}/explain")
+async def get_workflow_explain(org_slug: str, workflow_id: str):
+    """
+    Plain-English rendering of what this workflow actually does — the
+    default view behind "View workflow details" for admins who aren't
+    going to read a JSON dump. Raw JSON is still one click away for anyone
+    who needs it.
+    """
+    from app.services.workflow_builder_agent import describe_workflow_logic
+    source_key = await _resolve_source_key(org_slug)
+    row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return {"text": describe_workflow_logic(dict(row))}
 
 
 @router.put("/admin/{org_slug}/api/workflow/{workflow_id}")
@@ -885,12 +882,8 @@ input:checked+.slider:before{transform:translateX(18px)}
     </div>
 
     <div style="border-top:1px solid #e8edf5;margin-top:16px;padding-top:14px">
-      <div class="field-label">What this workflow actually does — fields it collects, calculations, constraints (OTP / approval / permission), the step pipeline</div>
-      <div style="font-size:12px;color:#888;margin-bottom:8px">
-        That's logic, not a setting — it's edited by talking, same as building a new workflow.
-      </div>
       <button class="btn btn-purple" onclick="openEditLogic()">💬 Edit the logic for this workflow</button>
-      <button class="btn btn-gray" onclick="viewRawJson()">🔍 View raw JSON (read-only)</button>
+      <button class="btn btn-gray" onclick="viewWorkflowLogic()">🔍 View workflow details</button>
     </div>
 
     <div style="display:flex;gap:8px;margin-top:16px">
@@ -900,14 +893,17 @@ input:checked+.slider:before{transform:translateX(18px)}
   </div>
 </div>
 
-<!-- ── RAW JSON VIEW (read-only — debugging only, not an editing surface) ── -->
+<!-- ── WORKFLOW DETAILS VIEW (read-only — plain English by default, raw JSON for anyone who needs it) ── -->
 <div class="modal-bg" id="jsonViewModal">
   <div class="modal" style="max-width:700px">
     <div class="modal-title" style="display:flex;justify-content:space-between">
-      <span>🔍 Raw workflow JSON (read-only)</span>
+      <span id="jsonViewTitle">🔍 What this workflow does</span>
       <button class="btn btn-gray" onclick="closeModal('jsonViewModal')" style="padding:4px 10px">✕</button>
     </div>
-    <pre id="jsonViewContent" class="json-editor" style="min-height:400px;background:#fafbfc"></pre>
+    <pre id="jsonViewContent" class="json-editor" style="min-height:400px;background:#fafbfc;white-space:pre-wrap;font-family:inherit"></pre>
+    <div style="margin-top:10px;text-align:right">
+      <a href="#" id="jsonViewToggle" onclick="toggleJsonView();return false" style="font-size:12px;color:#888">Show raw JSON instead</a>
+    </div>
   </div>
 </div>
 
@@ -929,6 +925,9 @@ input:checked+.slider:before{transform:translateX(18px)}
           <input id="chatInput" class="field-input" placeholder="Describe your workflow..."
                  style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMsg()}">
           <button class="btn btn-purple" onclick="sendChatMsg()">Send</button>
+        </div>
+        <div style="margin-top:8px;text-align:right">
+          <button class="btn btn-primary" onclick="manualPublish()" title="Open the publish screen with whatever's in Draft so far right now — you don't have to wait for the assistant to say it's ready">💾 Save / update changes</button>
         </div>
         <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
       </div>
@@ -1088,19 +1087,54 @@ async function saveWorkflowEdit() {
   }
 }
 
-async function viewRawJson() {
+// Plain English by default (non-technical admins couldn't make sense of a
+// raw JSON dump); raw JSON stays one click away for anyone who needs it.
+let _jsonViewPlainText = '';
+let _jsonViewRawText   = '';
+let _jsonViewShowingRaw = false;
+
+async function viewWorkflowLogic() {
   const id = document.getElementById('editWorkflowIdForLogic').value;
-  const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
-  if (!r) return;
-  const w = await r.json();
-  const view = {
+  const [explainRes, detailRes] = await Promise.all([
+    authenticatedFetch(API(`/workflow/${id}/explain`)),
+    authenticatedFetch(API(`/workflow/${id}/detail`)),
+  ]);
+  if (!explainRes || !detailRes) return;
+  const explain = await explainRes.json();
+  const w = await detailRes.json();
+  const rawView = {
     training_phrases: w.training_phrases, entity_schema: w.entity_schema,
     calc_rules: w.calc_rules, steps: w.steps, sql_template: w.sql_template,
     business_glossary: w.business_glossary, pdf_config: w.pdf_config,
     response_template: w.response_template, llm_system_prompt: w.llm_system_prompt,
   };
-  document.getElementById('jsonViewContent').textContent = JSON.stringify(view, null, 2);
+  _jsonViewPlainText = explain.text || '(nothing to show)';
+  _jsonViewRawText   = JSON.stringify(rawView, null, 2);
+  _jsonViewShowingRaw = false;
+  _renderJsonView();
   openModal('jsonViewModal');
+}
+
+function _renderJsonView() {
+  const pre = document.getElementById('jsonViewContent');
+  if (_jsonViewShowingRaw) {
+    pre.textContent = _jsonViewRawText;
+    pre.style.whiteSpace = 'pre';
+    pre.style.fontFamily = 'monospace';
+    document.getElementById('jsonViewTitle').textContent = '🔍 Raw workflow JSON (read-only)';
+    document.getElementById('jsonViewToggle').textContent = 'Show plain English instead';
+  } else {
+    pre.textContent = _jsonViewPlainText;
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.style.fontFamily = 'inherit';
+    document.getElementById('jsonViewTitle').textContent = '🔍 What this workflow does';
+    document.getElementById('jsonViewToggle').textContent = 'Show raw JSON instead';
+  }
+}
+
+function toggleJsonView() {
+  _jsonViewShowingRaw = !_jsonViewShowingRaw;
+  _renderJsonView();
 }
 
 // ── Chat Builder ─────────────────────────────────────────────────
@@ -1246,6 +1280,15 @@ async function sendChatMsg() {
     document.getElementById('builderStatus').textContent = '';
   }
   chatTyping = false;
+}
+
+// Lets the admin open the publish screen on demand instead of waiting for
+// the assistant to decide the draft is "ready" — the chat has no explicit
+// save/update button otherwise, which read as broken when editing an
+// existing workflow's logic and just wanting to commit a small change.
+function manualPublish() {
+  if (!chatDraftId) { alert("Nothing to save yet — describe the workflow first."); return; }
+  showPublishConfirm(chatDraftId, document.getElementById('draftRecap').textContent);
 }
 
 // ── Confirm & Publish ───────────────────────────────────────────────

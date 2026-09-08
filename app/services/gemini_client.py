@@ -5,12 +5,14 @@ This is the "generator" half of the dual-LLM QA pipeline. It is NEVER
 trusted alone — see llm_qa_reviewer.py, which cross-checks this against
 an independent OpenAI interpretation before either number is used.
 """
-import os
 import json
 import asyncio
 from openai import AsyncOpenAI
 
 from app.config import required
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 _api_key = required("CEREBRAS_API_KEY")
 
@@ -59,7 +61,7 @@ Return ONLY this JSON, no markdown, no explanation:
             if "429" in error_str or "too_many_requests" in error_str or "queue_exceeded" in error_str:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # exponential backoff
-                    print(f"[CEREBRAS] Rate limited (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Rate limited (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                     continue
                 else:
