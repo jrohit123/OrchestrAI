@@ -358,22 +358,6 @@ async def get_workflow_detail(org_slug: str, workflow_id: str):
     return wd
 
 
-@router.get("/admin/{org_slug}/api/workflow/{workflow_id}/explain")
-async def get_workflow_explain(org_slug: str, workflow_id: str):
-    """
-    Plain-English rendering of what this workflow actually does — the
-    default view behind "View workflow details" for admins who aren't
-    going to read a JSON dump. Raw JSON is still one click away for anyone
-    who needs it.
-    """
-    from app.services.workflow_builder_agent import describe_workflow_logic
-    source_key = await _resolve_source_key(org_slug)
-    row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
-    if not row:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-    return {"text": describe_workflow_logic(dict(row))}
-
-
 @router.put("/admin/{org_slug}/api/workflow/{workflow_id}")
 async def update_workflow(org_slug: str, workflow_id: str, request: Request):
     """
@@ -766,6 +750,11 @@ input:checked+.slider:before{transform:translateX(18px)}
 .field-input{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}
 .field-input:focus{outline:none;border-color:#8b5cf6}
 .json-editor{width:100%;border:1px solid #e8edf5;border-radius:6px;padding:8px;font-size:12px;font-family:monospace;min-height:120px;resize:vertical}
+.jv-key{color:#8b5cf6}
+.jv-str{color:#1a7f37}
+.jv-num{color:#185FA5}
+.jv-bool{color:#b45309}
+.jv-null{color:#999}
 /* Chat builder */
 .chat-messages{height:320px;overflow-y:auto;border:1px solid #e8edf5;border-radius:8px;padding:12px;background:#fafbfc;margin-bottom:10px}
 .chat-msg{margin-bottom:10px;display:flex}
@@ -883,7 +872,7 @@ input:checked+.slider:before{transform:translateX(18px)}
 
     <div style="border-top:1px solid #e8edf5;margin-top:16px;padding-top:14px">
       <button class="btn btn-purple" onclick="openEditLogic()">💬 Edit the logic for this workflow</button>
-      <button class="btn btn-gray" onclick="viewWorkflowLogic()">🔍 View workflow details</button>
+      <button class="btn btn-gray" onclick="viewRawJson()">🔍 View workflow JSON</button>
     </div>
 
     <div style="display:flex;gap:8px;margin-top:16px">
@@ -893,17 +882,14 @@ input:checked+.slider:before{transform:translateX(18px)}
   </div>
 </div>
 
-<!-- ── WORKFLOW DETAILS VIEW (read-only — plain English by default, raw JSON for anyone who needs it) ── -->
+<!-- ── RAW JSON VIEW (read-only — the real saved data, formatted for readability) ── -->
 <div class="modal-bg" id="jsonViewModal">
   <div class="modal" style="max-width:700px">
     <div class="modal-title" style="display:flex;justify-content:space-between">
-      <span id="jsonViewTitle">🔍 What this workflow does</span>
+      <span>🔍 Workflow JSON (read-only)</span>
       <button class="btn btn-gray" onclick="closeModal('jsonViewModal')" style="padding:4px 10px">✕</button>
     </div>
-    <pre id="jsonViewContent" class="json-editor" style="min-height:400px;background:#fafbfc;white-space:pre-wrap;font-family:inherit"></pre>
-    <div style="margin-top:10px;text-align:right">
-      <a href="#" id="jsonViewToggle" onclick="toggleJsonView();return false" style="font-size:12px;color:#888">Show raw JSON instead</a>
-    </div>
+    <div id="jsonViewContent" class="json-editor" style="min-height:400px;max-height:70vh;overflow-y:auto;background:#fafbfc"></div>
   </div>
 </div>
 
@@ -1087,54 +1073,74 @@ async function saveWorkflowEdit() {
   }
 }
 
-// Plain English by default (non-technical admins couldn't make sense of a
-// raw JSON dump); raw JSON stays one click away for anyone who needs it.
-let _jsonViewPlainText = '';
-let _jsonViewRawText   = '';
-let _jsonViewShowingRaw = false;
+// Same raw data as before (training_phrases, entity_schema, calc_rules,
+// steps, sql_template, business_glossary, pdf_config, response_template,
+// llm_system_prompt) — just laid out as labeled, indented sections with
+// syntax-colored JSON per field instead of one undifferentiated blob, so
+// it's actually readable without changing what's shown.
+function _escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-async function viewWorkflowLogic() {
+function _highlightJson(value) {
+  const json = _escapeHtml(JSON.stringify(value, null, 2));
+  return json.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    (match) => {
+      let cls = 'jv-num';
+      if (/^"/.test(match)) cls = /:$/.test(match) ? 'jv-key' : 'jv-str';
+      else if (/true|false/.test(match)) cls = 'jv-bool';
+      else if (/null/.test(match)) cls = 'jv-null';
+      return `<span class="${cls}">${match}</span>`;
+    }
+  );
+}
+
+// Plain-text fields (already strings, not JSON structures) — shown as-is,
+// not JSON.stringify'd, so a SQL query doesn't show up wrapped in quotes
+// with \n escaped.
+const _JSON_VIEW_TEXT_FIELDS = new Set(['sql_template', 'response_template', 'llm_system_prompt']);
+
+const _JSON_VIEW_FIELDS = [
+  ['sql_template',        'SQL query'],
+  ['entity_schema',       'Fields (entity_schema)'],
+  ['calc_rules',          'Calculations (calc_rules)'],
+  ['steps',               'Execution steps'],
+  ['training_phrases',    'Training phrases'],
+  ['business_glossary',   'Business glossary'],
+  ['pdf_config',          'PDF config'],
+  ['response_template',   'Response template'],
+  ['llm_system_prompt',   'LLM system prompt'],
+];
+
+async function viewRawJson() {
   const id = document.getElementById('editWorkflowIdForLogic').value;
-  const [explainRes, detailRes] = await Promise.all([
-    authenticatedFetch(API(`/workflow/${id}/explain`)),
-    authenticatedFetch(API(`/workflow/${id}/detail`)),
-  ]);
-  if (!explainRes || !detailRes) return;
-  const explain = await explainRes.json();
-  const w = await detailRes.json();
-  const rawView = {
-    training_phrases: w.training_phrases, entity_schema: w.entity_schema,
-    calc_rules: w.calc_rules, steps: w.steps, sql_template: w.sql_template,
-    business_glossary: w.business_glossary, pdf_config: w.pdf_config,
-    response_template: w.response_template, llm_system_prompt: w.llm_system_prompt,
-  };
-  _jsonViewPlainText = explain.text || '(nothing to show)';
-  _jsonViewRawText   = JSON.stringify(rawView, null, 2);
-  _jsonViewShowingRaw = false;
-  _renderJsonView();
+  const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
+  if (!r) return;
+  const w = await r.json();
+
+  const html = _JSON_VIEW_FIELDS.map(([field, label]) => {
+    const val = w[field];
+    const isEmpty = val === null || val === undefined ||
+      (Array.isArray(val) && val.length === 0) ||
+      (typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0) ||
+      val === '';
+    let body;
+    if (isEmpty) {
+      body = '<span style="color:#aaa">(none)</span>';
+    } else if (_JSON_VIEW_TEXT_FIELDS.has(field)) {
+      body = `<pre style="margin:4px 0 0;white-space:pre-wrap;font-family:monospace">${_escapeHtml(String(val))}</pre>`;
+    } else {
+      body = `<pre style="margin:4px 0 0;white-space:pre-wrap;font-family:monospace">${_highlightJson(val)}</pre>`;
+    }
+    return `<div style="margin-bottom:14px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:#888;font-weight:600">${label}</div>
+      ${body}
+    </div>`;
+  }).join('');
+
+  document.getElementById('jsonViewContent').innerHTML = html;
   openModal('jsonViewModal');
-}
-
-function _renderJsonView() {
-  const pre = document.getElementById('jsonViewContent');
-  if (_jsonViewShowingRaw) {
-    pre.textContent = _jsonViewRawText;
-    pre.style.whiteSpace = 'pre';
-    pre.style.fontFamily = 'monospace';
-    document.getElementById('jsonViewTitle').textContent = '🔍 Raw workflow JSON (read-only)';
-    document.getElementById('jsonViewToggle').textContent = 'Show plain English instead';
-  } else {
-    pre.textContent = _jsonViewPlainText;
-    pre.style.whiteSpace = 'pre-wrap';
-    pre.style.fontFamily = 'inherit';
-    document.getElementById('jsonViewTitle').textContent = '🔍 What this workflow does';
-    document.getElementById('jsonViewToggle').textContent = 'Show raw JSON instead';
-  }
-}
-
-function toggleJsonView() {
-  _jsonViewShowingRaw = !_jsonViewShowingRaw;
-  _renderJsonView();
 }
 
 // ── Chat Builder ─────────────────────────────────────────────────
