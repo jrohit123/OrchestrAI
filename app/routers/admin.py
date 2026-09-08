@@ -1098,7 +1098,7 @@ function _highlightJson(value) {
 
 // Plain-text fields (already strings, not JSON structures) — shown as-is,
 // not JSON.stringify'd, so a SQL query doesn't show up wrapped in quotes
-// with \n escaped.
+// with its line breaks escaped.
 const _JSON_VIEW_TEXT_FIELDS = new Set(['sql_template', 'response_template', 'llm_system_prompt']);
 
 const _JSON_VIEW_FIELDS = [
