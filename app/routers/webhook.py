@@ -630,7 +630,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     await send_text(phone,
                         "🤔 I'm having trouble understanding the details for this request. "
                         "Let's start fresh — please send your request again with all the details "
-                        "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+                        "in one message."
                     )
                     return
                 pending_action["stage"] = "collecting"
@@ -700,7 +700,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             await send_text(phone,
                 "🤔 I'm having trouble understanding the details for this request. "
                 "Let's start fresh — please send your request again with all the details "
-                "in one message, e.g. *\"invoice Mehta Enterprises Rs.92,000\"*."
+                "in one message."
             )
             return
         # Increment reprompt_count each turn we stay in collecting mode

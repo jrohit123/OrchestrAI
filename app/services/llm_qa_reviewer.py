@@ -33,7 +33,7 @@ _TOLERANCE_PCT = 0.5  # 0.5% relative difference counts as "agreement"
 
 
 async def _openai_interpret_price(rate_text: str, weight: float, qty: int) -> dict:
-    prompt = f"""A jeweller said this about pricing an item:
+    prompt = f"""A business owner said this about pricing an item:
 "{rate_text}"
 Item weight: {weight} grams. Quantity: {qty}.
 

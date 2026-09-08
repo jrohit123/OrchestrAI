@@ -27,7 +27,7 @@ async def interpret_price(rate_text: str, weight: float, qty: int) -> dict:
     (ex-GST, ex-making-charges, price for ONE unit of this item).
     Returns {"unit_price": float, "reasoning": str}.
     """
-    prompt = f"""A jeweller said this about pricing an item:
+    prompt = f"""A business owner said this about pricing an item:
 "{rate_text}"
 Item weight: {weight} grams. Quantity: {qty}.
 

@@ -278,8 +278,9 @@ TOOLS = [
                 "Read rows from a Google Sheets tab. Use this ONLY for tabs listed under "
                 "'GOOGLE SHEETS DATA' in the system prompt — this is a SEPARATE data source "
                 "from Postgres (query_database). Never use query_database for these tabs, "
-                "and never use query_sheet for customers/invoices/orders/inventory (those "
-                "are Postgres — use query_database).\n\n"
+                "and never use query_sheet for anything that actually lives in Postgres — "
+                "check the DATABASE SCHEMA block in the system prompt; if a table there "
+                "already covers what's being asked, use query_database instead.\n\n"
                 "filters does a case-insensitive PARTIAL match on each column given — "
                 "similar to ILIKE '%value%'."
             ),
@@ -439,13 +440,13 @@ TOOLS = [
                 "  1. User asks question → query_database → return TEXT\n"
                 "  2. Append to text: '_📥 Reply *pdf* to get this as a document._'\n"
                 "  3. Only when user replies 'pdf' → THEN call generate_pdf\n\n"
-                "DOC_TYPE:\n"
-                "  'report'    → any multi-row result (DEFAULT)\n"
-                "  'invoice'   → single Tax Invoice by INV-XXXX\n"
-                "  'statement' → account statement for one customer\n"
-                "  'orders'    → production orders list\n"
-                "  'quotation' → price quotation\n"
-                "NEVER use 'invoice' for lists of invoices — always 'report'."
+                "DOC_TYPE: use 'report' for any multi-row result — that's the safe default "
+                "for every sector. A single-record document (an invoice, a quotation, a "
+                "formal statement for one specific person/entity — whatever this workflow's "
+                "own pdf_config.doc_type calls it) should pass that same value here, not "
+                "'report'. NEVER pass a single-record doc_type for a LIST of those records — "
+                "a list of invoices is still a 'report', only ONE invoice by its own number "
+                "is 'invoice'."
             ),
             "parameters": {
                 "type": "object",
@@ -522,8 +523,8 @@ TOOLS = [
             "description": (
                 "Create, list, pause, resume, or delete a scheduled report.\n\n"
                 "Use 'create' when the user asks to automatically send any report/query "
-                "on a recurring basis — e.g. 'send me outstanding report every day at 8am', "
-                "'low stock alert every hour', 'inventory summary every Monday at 9am'.\n\n"
+                "on a recurring basis — e.g. 'send me this every day at 8am', "
+                "'run it every hour', 'a summary every Monday at 9am'.\n\n"
                 "Use 'list' when user asks 'what reports am I getting?' or 'show my schedules'.\n"
                 "Use 'pause'/'resume'/'delete' when user wants to stop or manage a schedule.\n\n"
                 "schedule_type values:\n"
@@ -545,7 +546,7 @@ TOOLS = [
                     },
                     "query_text": {
                         "type": "string",
-                        "description": "The exact query to run on schedule (e.g. 'outstanding report', 'low stock items', 'pending orders'). Required for create."
+                        "description": "The exact query to run on schedule, in the user's own words (whatever they asked to see repeated). Required for create."
                     },
                     "report_label": {
                         "type": "string",
@@ -599,10 +600,10 @@ TOOLS = [
                 "Send a report, summary, or any data to another user in the same org via WhatsApp.\n\n"
                 "Use this when the current user asks to forward, share, or send something to a colleague.\n\n"
                 "Examples:\n"
-                "  'send inventory summary to Rohit'\n"
-                "  'forward this outstanding report to Ravi'\n"
-                "  'share low stock alert with Priya'\n"
-                "  'send pdf of pending orders to Rajeswari'\n\n"
+                "  'send this to Rohit'\n"
+                "  'forward this report to Ravi'\n"
+                "  'share this with Priya'\n"
+                "  'send this as a pdf to Rajeswari'\n\n"
                 "Steps:\n"
                 "  1. Look up the recipient in the users table by name\n"
                 "  2. Run the requested query (query_database or generate_pdf)\n"
@@ -1012,7 +1013,7 @@ async def _execute_tool(
                 subtotal   = round(raw_amount / (1 + gst_rate / 100), 2)
                 gst_val    = round(raw_amount - subtotal, 2)
                 rows = [{
-                    "description": "Jewellery — As Per Order",
+                    "description": extra_context.get("item_description") or "As per order",
                     "qty": 1,
                     "unit_price": subtotal,    # ex-GST unit price
                     "gst": gst_val,
@@ -1025,25 +1026,16 @@ async def _execute_tool(
             else:
                 return "ERROR: No data to generate PDF from"
 
-        # Use explicit doc_type if agent passed it; otherwise infer carefully.
-        # NEVER infer "invoice" just because the word appears in the title —
-        # "Overdue Invoices" is a report, not a single Tax Invoice.
-        if "doc_type" in tool_input:
-            doc_type = tool_input["doc_type"]
-        else:
-            title_lower = title.lower()
-            # Single specific tax invoice: must mention exact INV-number or "Tax Invoice"
-            if re.search(r'\btax invoice\b|inv-\d+', title_lower):
-                doc_type = "invoice"
-            elif "quotation" in title_lower or re.search(r'\bquote\b', title_lower):
-                doc_type = "quotation"
-            elif "dues statement" in title_lower or "account statement" in title_lower:
-                doc_type = "statement"
-            elif re.search(r'\borders? report\b|\borders? list\b|\bproduction orders?\b', title_lower):
-                doc_type = "orders"
-            else:
-                # Everything else — invoice lists, customer lists, inventory, etc. — is "report"
-                doc_type = "report"
+        # doc_type is already set from tool_input above (default "report").
+        # This used to re-derive it from title-word regexes ("tax invoice",
+        # "quotation", "production orders") whenever the agent omitted it —
+        # correct for a jewellery org's vocabulary, silently wrong for any
+        # other sector's PDF titles. Each workflow already declares its own
+        # doc_type in pdf_config and the compiled llm_system_prompt tells the
+        # model to pass it explicitly; when it's genuinely missing (a
+        # free-form query_database → generate_pdf call with no configured
+        # workflow behind it), "report" is the only safe sector-agnostic
+        # default — no guessing.
 
         # NOTE: Quotation records are created exclusively by action_executor._create_quotation
         # via the update_draft → confirm_action → execute_pending_action flow.
@@ -1629,7 +1621,7 @@ Return ONLY the WhatsApp message text, nothing else."""
 
         if "🤔" in last_assistant:
             # User is responding to a clarify menu
-            if msg_stripped.lower() in ("all", "all of them", "summary", "all customers", "sab"):
+            if msg_stripped.lower() in ("all", "all of them", "summary", "everyone", "sab"):
                 # User wants all options - append this context
                 message = "Show results for all options (summary)"
             elif msg_stripped.isdigit():

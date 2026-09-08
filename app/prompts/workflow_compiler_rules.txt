@@ -53,19 +53,25 @@ RULE 11 — pdf_config: doc_type, title_template, aging_analysis, show_key_insig
 RULE 12 — response_template: WhatsApp message after action. Use {variable} placeholders. null for reads.
 
 RULE 13 — calc_rules (action workflows with computed fields):
-  item_rules: per-line-item expressions using item fields + org columns (e.g. gst_rate from orgs).
+  item_rules: per-line-item expressions using item fields + org columns.
   aggregate_rules: top-level expressions (e.g. sum of items).
   Available functions: round(x,n), abs(x), min(a,b), max(a,b), sum_field(items,'field'), count_field(items).
   CRITICAL: Every field produced here MUST have "computed":true in entity_schema.
-  CRITICAL: NEVER hardcode tax rates as decimals (0.03, 0.1). ALWAYS use org column names
-  from the orgs table — for GST use "gst_rate" which is the actual column name:
-    CORRECT: "round(unit_price * qty * gst_rate / 100, 2)"
-    WRONG:   "round(unit_price * qty * 0.03, 2)"
-  Example for GST invoice:
+  CRITICAL: NEVER hardcode a tax/rate/fee value as a literal decimal (0.03, 0.1) —
+  ALWAYS reference the actual column name for it, exactly as it appears in the
+  DATABASE SCHEMA block above (the orgs table's own columns, injected fresh
+  every time this prompt runs). Do not assume any particular org has a column
+  called "gst_rate" or any other fixed name — read whatever rate/tax/fee column
+  the live schema actually shows for THIS org, and use that name. If this org's
+  orgs table has no such column at all, the workflow has nothing to compute a
+  rate from — leave the fee/tax out of calc_rules rather than inventing a
+  column or a hardcoded percentage.
+  Example shape only — substitute the real column name from schema_text, this
+  is not a fixed name to reuse verbatim:
   {
     "item_rules": {
-      "gst":   "round(unit_price * qty * gst_rate / 100, 2)",
-      "total": "round(unit_price * qty + gst, 2)"
+      "tax":   "round(unit_price * qty * <org's actual rate column> / 100, 2)",
+      "total": "round(unit_price * qty + tax, 2)"
     },
     "aggregate_rules": {
       "total_amount": "round(sum_field(items, 'total'), 2)"

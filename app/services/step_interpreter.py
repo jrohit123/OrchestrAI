@@ -337,7 +337,7 @@ async def _op_require_permission(params: dict, ctx: dict) -> dict:
 
     raise StepError(
         params.get("denied_message")
-        or "You don't have permission to do that. Please ask a committee member."
+        or "You don't have permission to do that. Please contact someone with the required access."
     )
 
 
@@ -378,6 +378,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
             raise StepError("Could not resolve your own user record for self-assignment")
         resolved = dict(row)
         ctx[into] = resolved
+        ctx.setdefault("_resolved_entities", []).append(into)
         for alias, column in (params.get("expose") or {}).items():
             ctx["fields"][alias] = resolved.get(column)
         return ctx
@@ -464,6 +465,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
 
     resolved = dict(rows[0])
     ctx[into] = resolved
+    ctx.setdefault("_resolved_entities", []).append(into)
 
     # expose: copy named columns from resolved row into ctx["fields"]
     # so calc_rules can reference them as if they were user-provided inputs
@@ -790,15 +792,21 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
     inserted  = list(ctx.get("inserted", {}).values())
     row_data  = {**(inserted[0] if inserted else {}), **ctx["fields"], **ctx.get("computed", {})}
 
-    # Merge resolved entities (e.g. customer) into extra_context so PDF can show
-    # customer name, city, GSTIN etc. without needing a separate DB query
-    for entity_key in ("customer", "order", "vendor"):
-        if ctx.get(entity_key):
-            entity = ctx[entity_key]
-            # Prefix with entity key to avoid collisions e.g. customer_name, customer_city
+    # Merge EVERY entity this workflow's own steps[] actually resolved (e.g.
+    # customer, resident, case — whatever `into` aliases were used) into
+    # extra_context, so the PDF can show their columns without a separate
+    # query. Driven by _resolved_entities (populated by resolve_entity as it
+    # runs), not a fixed guess at entity names — a hardcoded ("customer",
+    # "order", "vendor") tuple here silently dropped every field for any
+    # workflow whose resolve_entity aliased into something else (e.g. a
+    # housing-society workflow resolving into "resident" or "case").
+    for entity_key in ctx.get("_resolved_entities", []):
+        entity = ctx.get(entity_key)
+        if isinstance(entity, dict):
+            # Prefix with entity key to avoid collisions e.g. customer_name, resident_name
             for col, val in entity.items():
                 if col not in ("id", "org_id") and val is not None:
-                    row_data.setdefault(f"customer_{col}" if entity_key == "customer" else col, val)
+                    row_data.setdefault(f"{entity_key}_{col}", val)
 
     rows, analysis = preprocess_rows([row_data], pdf_config.get("doc_type", "report"))
 
