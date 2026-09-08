@@ -29,8 +29,31 @@ RULE 3 — entity_schema: Only entities actually needed. Per field:
 
 RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id, $2+ for entities).
   null for action workflows.
+  This query is what actually RUNS in production every time someone uses this
+  workflow — it is not a hint or an example, treat it with the same care as
+  a query a senior engineer would ship. Two things make that possible:
 
-RULE 5 — sql_params_order: entity_schema keys in $2,$3... order. [] for action workflows.
+  a) SELF-SCOPED WORKFLOWS ("my own X", "complaints I filed", "cases assigned
+     to me", anything whose whole point is filtering to the person asking):
+     use the literal sentinel value "$current_user" in sql_params_order at
+     the position of that filter — NOT a real column value, NOT a field name
+     from entity_schema. The runtime resolves "$current_user" to the actual
+     requesting user's own ID automatically. Do not invent an entity_schema
+     field for "who's asking" and do not try to join on a name — there is no
+     reliable name value available at query time, only this sentinel.
+     Example: "...WHERE cc.complainant_id = $2" with sql_params_order =
+     ["$current_user"].
+
+  b) OPTIONAL FILTERS (any entity_schema field feeding a param that is NOT
+     required — the user might or might not mention it): write the WHERE
+     clause so a NULL param means "don't filter on this," not "match
+     nothing." Pattern: "AND ($3::text IS NULL OR case_number = $3)" —
+     never a bare "AND case_number = $3", which returns zero rows the
+     instant that filter isn't supplied. Required fields don't need this —
+     only ones where the user might reasonably omit the filter.
+
+RULE 5 — sql_params_order: entity_schema keys in $2,$3... order, OR the literal
+  sentinel "$current_user" wherever RULE 4(a) applies. [] for action workflows.
 
 RULE 6 — response_format: "table" (short uniform list) or "generic" (default JSON-style
   formatting — use for everything else). null for action workflows.

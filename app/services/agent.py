@@ -239,8 +239,12 @@ TOOLS = [
         "function": {
             "name": "query_database",
             "description": (
-                "Run a SELECT query against the database. "
-                "Use this to fetch any data the user is asking about. "
+                "Run a SELECT query you write yourself against the database. "
+                "CHECK THE WORKFLOW SCHEMAS SECTION FIRST — if the message matches a workflow "
+                "marked 'PRE-COMPILED QUERY AVAILABLE', call run_workflow_query for that intent "
+                "instead of this tool; that query has already been reviewed and is more reliable "
+                "than one written fresh on every call. Use query_database only when no configured "
+                "workflow covers the question — a genuinely ad-hoc lookup. "
                 "Always use $1 for org_id. Use $2, $3... for additional params. "
                 "ILIKE for name searches. LIMIT 50 max. "
                 "CRITICAL: params[] must contain EXACTLY one value per placeholder from $2 "
@@ -267,6 +271,43 @@ TOOLS = [
                     }
                 },
                 "required": ["sql"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_workflow_query",
+            "description": (
+                "Run the pre-compiled, already-reviewed query for a specific read workflow — "
+                "the reliable alternative to writing SQL yourself in query_database. Use this "
+                "whenever the WORKFLOW SCHEMAS section marks the matching intent_key as "
+                "'PRE-COMPILED QUERY AVAILABLE'. "
+                "Your job is only to pick the right intent_key and pull out any filter values "
+                "the user actually mentioned — you are not writing SQL here. "
+                "Omit any param the user didn't mention; an omitted param means 'don't filter "
+                "on this,' not zero or empty string. Never guess a value that wasn't said. "
+                "Any param this workflow needs from the requesting user's own identity (shown "
+                "in WORKFLOW SCHEMAS as the sentinel entry, not a real field) is filled in "
+                "automatically — never pass a value for it yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_key": {
+                        "type": "string",
+                        "description": "The exact intent_key of the matching workflow, from WORKFLOW SCHEMAS"
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Field name → extracted value, only for fields the user actually "
+                            "mentioned. Use the exact field names listed under that workflow's "
+                            "'Params to extract' — omit anything not mentioned."
+                        )
+                    }
+                },
+                "required": ["intent_key"]
             }
         }
     },
@@ -671,7 +712,8 @@ async def _build_system_prompt(user: dict) -> str:
 
     # Load workflows entity_schema for slot-filling guidance
     workflows = await fetch_all("""
-        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases
+        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases,
+               workflow_type, sql_template, sql_params_order
         FROM workflows
         WHERE org_id = $1 AND is_active = true
     """, user["org_id"], source_key=user["source_key"])
@@ -752,6 +794,35 @@ async def _build_system_prompt(user: dict) -> str:
             if llm_prompt:
                 workflow_schema_text += f"  Workflow-specific instructions: {llm_prompt}\n"
 
+            # Pre-compiled query: a tested SELECT this workflow's own creator
+            # already reviewed, versus query_database's freshly-improvised SQL
+            # on every call. Research on this exact tradeoff shows raw
+            # LLM-written SQL against a schema lands ~40% accuracy versus
+            # 83-95% when grounded in a pre-modeled query — so whenever one
+            # exists for the matching workflow, call run_workflow_query with
+            # it INSTEAD of query_database, not as well as it.
+            sql_template = wf.get("sql_template")
+            if wf.get("workflow_type") == "read" and sql_template:
+                params_order = wf.get("sql_params_order") or []
+                if isinstance(params_order, str):
+                    try:
+                        params_order = json.loads(params_order)
+                    except (json.JSONDecodeError, TypeError):
+                        params_order = []
+                real_params = [p for p in params_order if p != "$current_user"]
+                workflow_schema_text += (
+                    f"  PRE-COMPILED QUERY AVAILABLE — for this intent, call "
+                    f"run_workflow_query(intent_key=\"{intent_key}\", params={{...}}) "
+                    f"instead of query_database. Do not write raw SQL for this workflow.\n"
+                )
+                if real_params:
+                    workflow_schema_text += (
+                        f"    Params to extract from the message (omit any not mentioned — "
+                        f"omitted means \"don't filter on this\"): {', '.join(real_params)}\n"
+                    )
+                else:
+                    workflow_schema_text += "    No params needed — call with params={}.\n"
+
         workflow_schema_text += "\n=== END WORKFLOW SCHEMAS ===\n"
 
     # Load layered domain prompt from files
@@ -809,6 +880,50 @@ TODAY: {today}
 
 {domain_prompt}
 """
+
+
+# ── Pre-compiled read-workflow query resolution ──────────────────────────────
+# Shared by the deterministic fast path (exact intent_key match) and the
+# run_workflow_query tool (LLM-driven natural-language / slash-command-with-
+# args match) — both end up running the SAME stored sql_template the same
+# way, rather than each having its own half-implementation of "how do I turn
+# params_order into real bind values."
+
+def _resolve_sql_params(params_order: list, user: dict, extracted: dict | None = None) -> list:
+    """
+    Turn a workflow's sql_params_order into real $2, $3... bind values.
+    "$current_user" is a compiler-emitted sentinel (see workflow_compiler_rules.txt
+    RULE 4a) — resolved here to the actual requesting user's id, never left for
+    the LLM to guess or fill in from tool_input. Anything else comes from
+    `extracted` (LLM-supplied filter values) or stays None ("don't filter on
+    this" — relies on the NULL-tolerant WHERE clause pattern from RULE 4b).
+    """
+    extracted = extracted or {}
+    resolved = []
+    for name in params_order:
+        if name == "$current_user":
+            resolved.append(user["user_id"])
+        else:
+            resolved.append(extracted.get(name))
+    return resolved
+
+
+def _params_resolvable_without_message(params_order: list, entity_schema: dict) -> bool:
+    """
+    True if every param this workflow needs can be resolved with NO filter
+    values extracted from a message — i.e. safe to run on a bare intent_key
+    match (a menu tap or slash command with no arguments), where there's no
+    message content to extract anything from. "$current_user" always
+    qualifies (resolved from the session, not the message); any other param
+    only qualifies if its entity_schema field is genuinely optional.
+    """
+    for name in params_order:
+        if name == "$current_user":
+            continue
+        field = entity_schema.get(name) or {}
+        if field.get("required"):
+            return False
+    return True
 
 
 # ── Draft validation helper ────────────────────────────────────────────────────
@@ -954,6 +1069,46 @@ async def _execute_tool(
         except Exception as e:
             logger.error(f"query_database failed: {e}", exc_info=True)
             return f"ERROR: {str(e)}"
+
+    elif tool_name == "run_workflow_query":
+        intent_key = tool_input.get("intent_key", "")
+        extracted  = tool_input.get("params") or {}
+
+        wf = await fetch_one(
+            "SELECT workflow_type, sql_template, sql_params_order, entity_schema, business_glossary "
+            "FROM workflows WHERE org_id = $1 AND intent_key = $2 AND is_active = true",
+            user["org_id"], intent_key, source_key=user["source_key"]
+        )
+        if not wf:
+            return f"ERROR: no active workflow with intent_key '{intent_key}'"
+        if intent_key not in set(user.get("permissions", [])):
+            return "ERROR: not permitted to use this workflow"
+        if wf["workflow_type"] != "read" or not wf.get("sql_template"):
+            return f"ERROR: '{intent_key}' has no pre-compiled query — use query_database instead"
+
+        params_order = wf.get("sql_params_order") or []
+        if isinstance(params_order, str):
+            try:
+                params_order = json.loads(params_order)
+            except (json.JSONDecodeError, TypeError):
+                params_order = []
+
+        glossary = wf.get("business_glossary") or {}
+        if isinstance(glossary, str):
+            try:
+                glossary = json.loads(glossary)
+            except (json.JSONDecodeError, TypeError):
+                glossary = {}
+
+        from app.services.query_engine import execute_query
+        params = _resolve_sql_params(params_order, user, extracted)
+        return await execute_query(
+            sql=wf["sql_template"],
+            params=params,
+            user=user,
+            response_format="generic",
+            business_glossary=glossary
+        )
 
     elif tool_name == "query_sheet":
         from app.services.sheets_client import sheet_fetch_filtered
@@ -1469,15 +1624,24 @@ async def run_agent(
             not (spec.get("required")) for spec in entity_schema.values()
         ) if entity_schema else True
 
-        if wf["workflow_type"] == "read" and wf.get("sql_template") and all_optional:
+        read_params_order = wf.get("sql_params_order") or []
+        if isinstance(read_params_order, str):
+            try:
+                read_params_order = json.loads(read_params_order)
+            except (json.JSONDecodeError, TypeError):
+                read_params_order = []
+
+        if (
+            wf["workflow_type"] == "read" and wf.get("sql_template")
+            and _params_resolvable_without_message(read_params_order, entity_schema)
+        ):
             from app.services.query_engine import execute_query
-            params_order = wf.get("sql_params_order") or []
-            if isinstance(params_order, str):
-                try:
-                    params_order = json.loads(params_order)
-                except (json.JSONDecodeError, TypeError):
-                    params_order = []
-            params = [None for _ in params_order]
+            # A bare intent_key match (menu tap / slash command, no message
+            # content to extract from) can still resolve "$current_user" —
+            # that comes from the session, not the message — everything else
+            # in read_params_order was already confirmed optional above, so
+            # None ("don't filter on this") is the correct value for it.
+            params = _resolve_sql_params(read_params_order, user)
 
             raw_result = await execute_query(
                 sql=wf["sql_template"],
