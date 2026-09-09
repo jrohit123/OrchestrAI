@@ -11,6 +11,7 @@ logger = get_context_logger(__name__)
 
 _routing_pool = None
 _pools: dict[str, "asyncpg.Pool"] = {}   # source_key -> pool, cached
+#pool
 
 
 async def init_db():
