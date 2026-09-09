@@ -12,7 +12,7 @@ from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
-_COMPILER_RULES = _read(PROMPTS_DIR / "workflow_compiler_rules.txt")
+_COMPILER_WRAPPER, _, _COMPILER_RULES = _read(PROMPTS_DIR / "workflow_compiler.txt").partition("\n===RULES===\n")
 
 
 def _parse(val, default):
@@ -96,17 +96,11 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
   render_instructions: {pdf_analysis.get('render_instructions', '')}
 """
 
-    prompt = f"""You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
-The admin wants to add a workflow. Generate a COMPLETE structured workflow record as JSON.
-
-ADMIN DESCRIPTION:
-{description_block}
-{pdf_context}
-
-DATABASE SCHEMA (available tables):
-{schema_text}
-
-{_COMPILER_RULES}"""
+    prompt = _COMPILER_WRAPPER.format(
+        description_block=description_block,
+        pdf_context=pdf_context,
+        schema_text=schema_text,
+    ) + "\n" + _COMPILER_RULES
 
     last_error = "Unknown error"
     for attempt in range(3):

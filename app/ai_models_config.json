@@ -1,0 +1,6 @@
+{
+  "provider_order": ["openai", "gemini", "groq"],
+  "openai_models": ["gpt-4o-mini"],
+  "gemini_models": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+  "groq_models": ["openai/gpt-oss-20b"]
+}

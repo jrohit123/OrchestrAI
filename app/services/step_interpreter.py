@@ -941,12 +941,12 @@ async def _op_delete_row(params: dict, ctx: dict) -> dict:
 
 async def _op_ai_price_interpret(params: dict, ctx: dict) -> dict:
     """
-    Dual-LLM (Gemini + OpenAI) price interpretation for items carrying a raw
-    `rate_text` instead of an already-resolved `unit_price`. Runs BEFORE
-    `compute` — once unit_price is settled here, calc_engine (never an LLM)
-    does all the arithmetic downstream. See llm_qa_reviewer.py.
+    LLM price interpretation for items carrying a raw `rate_text` instead of
+    an already-resolved `unit_price`. Runs BEFORE `compute` — once unit_price
+    is settled here, calc_engine (never an LLM) does all the arithmetic
+    downstream. See price_interpreter.py.
     """
-    from app.services.llm_qa_reviewer import dual_verify_price
+    from app.services.price_interpreter import interpret_price
 
     items = ctx["fields"].get("items", [])
     resolved_items = []
@@ -955,7 +955,7 @@ async def _op_ai_price_interpret(params: dict, ctx: dict) -> dict:
             resolved_items.append(item)
             continue
 
-        result = await dual_verify_price(
+        result = await interpret_price(
             rate_text=item["rate_text"],
             weight=float(item.get("weight") or 1),
             qty=float(item.get("qty") or 1),

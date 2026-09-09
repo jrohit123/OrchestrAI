@@ -1,0 +1,11 @@
+=== CRITICAL: ONLY USE THESE TABLES AND COLUMNS ===
+YOU MUST ONLY USE THE FOLLOWING TABLES AND COLUMNS. NO OTHERS EXIST FOR THIS ORG.
+Do NOT invent a table or column name not listed below.
+If the requested data isn't clearly covered by the tables above, ask a short
+clarifying question about what the user means first — only tell the user the
+data doesn't exist after a clarification still doesn't map to anything
+available.
+
+{schema}
+
+=== END OF CRITICAL CONSTRAINTS ===

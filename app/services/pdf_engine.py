@@ -2,8 +2,8 @@
 pdf_engine.py — LLM-powered PDF generator using WeasyPrint.
 
 When a workflow has pdf_config.render_instructions, those instructions drive the layout.
-When not, the default per-doc_type templates in
-app/prompts/pdf_doctype_instructions.txt are used instead.
+When not, the default per-doc_type templates in the ===ALL_DOCTYPES=== section of
+app/prompts/pdf_generation_instructions.txt are used instead.
 This way existing behaviour is preserved and new DB-configured workflows get custom layouts.
 """
 import asyncio
@@ -21,16 +21,15 @@ from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR
 
 
-def _load_doctype_templates() -> dict:
+def _load_doctype_templates(raw: str) -> dict:
     """
-    Parses app/prompts/pdf_doctype_instructions.txt into
-    {doctype_name: template_text}. Each section is introduced by a
+    Parses the ===ALL_DOCTYPES=== section of pdf_generation_instructions.txt
+    into {doctype_name: template_text}. Each section is introduced by a
     "===DOCTYPE:<name>===" marker; the text up to the next marker (or EOF)
     is that doctype's template, verbatim (including its own leading/trailing
     whitespace) — deliberately NOT using prompt_loader._read()'s whole-file
     .strip(), which would corrupt the last section's trailing newline.
     """
-    raw = (PROMPTS_DIR / "pdf_doctype_instructions.txt").read_text(encoding="utf-8")
     templates: dict[str, str] = {}
     for part in raw.split("===DOCTYPE:")[1:]:
         name, _, body = part.partition("===")
@@ -38,8 +37,9 @@ def _load_doctype_templates() -> dict:
     return templates
 
 
-_DOCTYPE_TEMPLATES = _load_doctype_templates()
-_GENERATION_PROMPT = (PROMPTS_DIR / "pdf_generation_instructions.txt").read_text(encoding="utf-8")
+_RAW_PDF_PROMPT = (PROMPTS_DIR / "pdf_generation_instructions.txt").read_text(encoding="utf-8")
+_GENERATION_PROMPT, _, _DOCTYPE_RAW = _RAW_PDF_PROMPT.partition("\n===ALL_DOCTYPES===\n")
+_DOCTYPE_TEMPLATES = _load_doctype_templates(_DOCTYPE_RAW)
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
@@ -96,7 +96,8 @@ def _build_doctype_instructions(doc_type: str, risk_mode: bool,
                                  extra_context: dict, today_long: str,
                                  org_name: str, primary: str, light_bg: str) -> str:
     """Build the doc-type specific section of the PDF prompt (default/fallback path).
-    Templates live in app/prompts/pdf_doctype_instructions.txt."""
+    Templates live in the ===ALL_DOCTYPES=== section of
+    app/prompts/pdf_generation_instructions.txt."""
 
     if risk_mode:
         return _fill(_DOCTYPE_TEMPLATES["risk_mode"], primary, light_bg, today_long)

@@ -19,6 +19,8 @@ from app.services.llm_router import chat_completion as _llm_chat
 logger = get_context_logger(__name__)
 
 _RESPONSE_FORMATTING_PROMPT = _read(PROMPTS_DIR / "response_formatting.txt")
+_CRITICAL_TABLES_BLOCK_TEMPLATE = _read(PROMPTS_DIR / "critical_tables_block.txt")
+_AGENT_SYSTEM_WRAPPER_TEMPLATE = _read(PROMPTS_DIR / "agent_system_wrapper.txt")
 
 # Keep for any legacy direct usage
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
@@ -823,14 +825,7 @@ async def _build_system_prompt(user: dict) -> str:
 
     # Build critical-tables block dynamically from the org's real schema
     if schema and schema.strip():
-        critical_tables_block = (
-            "=== CRITICAL: ONLY USE THESE TABLES AND COLUMNS ===\n"
-            "YOU MUST ONLY USE THE FOLLOWING TABLES AND COLUMNS. NO OTHERS EXIST FOR THIS ORG.\n"
-            "Do NOT invent a table or column name not listed below. "
-            "If you need data not listed here, tell the user you cannot find that data.\n\n"
-            + schema
-            + "\n\n=== END OF CRITICAL CONSTRAINTS ==="
-        )
+        critical_tables_block = _CRITICAL_TABLES_BLOCK_TEMPLATE.format(schema=schema)
     else:
         critical_tables_block = ""
 
@@ -853,26 +848,19 @@ async def _build_system_prompt(user: dict) -> str:
         f"{sheets_schema}"
     ) if sheets_schema else ""
 
-    return f"""You are a messaging ERP assistant for {user["org_name"]}.
-
-{critical_tables_block}
-
-CURRENT USER:
-- Name: {user["user_name"]}
-- User ID: {user["user_id"]}
-- Role: {user["role"]}
-- Permissions: {", ".join(user.get("permissions", [])[:15])}
-
-TODAY: {today}
-
-{org_defaults_line}
-
-{sheets_block}
-
-{workflow_schema_text}
-
-{domain_prompt}
-"""
+    return _AGENT_SYSTEM_WRAPPER_TEMPLATE.format(
+        org_name=user["org_name"],
+        critical_tables_block=critical_tables_block,
+        user_name=user["user_name"],
+        user_id=user["user_id"],
+        role=user["role"],
+        permissions=", ".join(user.get("permissions", [])[:15]),
+        today=today,
+        org_defaults_line=org_defaults_line,
+        sheets_block=sheets_block,
+        workflow_schema_text=workflow_schema_text,
+        domain_prompt=domain_prompt,
+    )
 
 
 # ── Pre-compiled read-workflow query resolution ──────────────────────────────
@@ -885,7 +873,7 @@ TODAY: {today}
 def _resolve_sql_params(params_order: list, user: dict, extracted: dict | None = None) -> list:
     """
     Turn a workflow's sql_params_order into real $2, $3... bind values.
-    "$current_user" is a compiler-emitted sentinel (see workflow_compiler_rules.txt
+    "$current_user" is a compiler-emitted sentinel (see workflow_compiler.txt
     RULE 4a) — resolved here to the actual requesting user's id, never left for
     the LLM to guess or fill in from tool_input. Anything else comes from
     `extracted` (LLM-supplied filter values) or stays None ("don't filter on

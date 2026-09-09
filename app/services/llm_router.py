@@ -1,11 +1,9 @@
 """
 llm_router.py — Centralised multi-provider LLM client with key rotation and fallback.
 
-Provider order:
-  1. OpenAI  (1 key, gpt-4o-mini — paid tier)
-  2. Groq    (1 key, llama-3.1-8b-instant — free tier with daily reset, 128k context)
-  3. Gemini  (3 keys, round-robin rotation, gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-flash-lite)
-  4. Cerebras (1 key, gpt-oss-120b — requires payment method after Aug 17, large context)
+Provider order, and which models each provider tries (in order), are read
+from app/ai_models_config.json — not hardcoded here. To change the fallback
+order or swap a model, edit that file; no code change needed.
 
 Usage:
     from app.services.llm_router import chat_completion
@@ -21,10 +19,12 @@ Usage:
 """
 
 import os
+import json
 import itertools
 import time
 import asyncio
 import random
+from pathlib import Path
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from app.logging_config import get_context_logger
@@ -90,41 +90,22 @@ def _bench(label: str, kind: str) -> None:
 
 @dataclass
 class _Attempt:
-    label:   str
-    client:  object
-    model:   str
-    strip:   tuple = field(default=())   # kwargs this provider rejects
+    label:     str
+    client:    object
+    model:     str
+    provider:  str                # "openai" | "gemini" | "groq" — for tool-reliability checks
+    key_group: str                # attempts sharing this get benched together on a quota error
+    strip:     tuple = field(default=())   # kwargs this provider rejects
 
 
-def _build_ladder() -> list[_Attempt]:
-    """
-    Ordered attempt list: OpenAI -> Groq -> Gemini -> Cerebras.
-    Gemini keys are rotated so we don't always start at key 1; everything
-    else is fixed priority.
-    """
-    ladder: list[_Attempt] = []
+# ── Model roster + fallback order — all data-driven, see app/ai_models_config.json ──
+_CONFIG_PATH = Path(__file__).parent.parent / "ai_models_config.json"
+_MODELS_CONFIG = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
 
-    if _openai_client:
-        ladder.append(_Attempt("openai", _openai_client, OPENAI_MODEL,
-                               strip=("parallel_tool_calls",)))
-    if _groq_client:
-        ladder.append(_Attempt("groq", _groq_client, GROQ_MODEL,
-                               strip=("parallel_tool_calls",)))
-    if _gemini_clients:
-        n = len(_gemini_clients)
-        start = next(_gemini_cycle)
-        for ki in range(n):
-            idx = (start + ki) % n
-            for model in GEMINI_MODELS:
-                ladder.append(_Attempt(
-                    label=f"gemini_k{idx+1}_{model}",
-                    client=_gemini_clients[idx],
-                    model=model,
-                ))
-    if _cerebras_client:
-        ladder.append(_Attempt("cerebras", _cerebras_client, CEREBRAS_MODEL))
-    return ladder
-
+PROVIDER_ORDER = _MODELS_CONFIG["provider_order"]
+OPENAI_MODELS  = _MODELS_CONFIG["openai_models"]
+GEMINI_MODELS  = _MODELS_CONFIG["gemini_models"]
+GROQ_MODELS    = _MODELS_CONFIG["groq_models"]
 
 # Providers whose tool/function-calling is not dependable enough to drive
 # the agent's tool loop. They remain available for plain-text formatting.
@@ -150,10 +131,6 @@ for _env in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
 
 # Round-robin iterator over Gemini keys
 _gemini_cycle = itertools.cycle(range(len(_gemini_clients))) if _gemini_clients else None
-_gemini_index = 0  # track current index for logging
-
-# Models to try on each Gemini key (in order)
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
 
 # ── Groq ─────────────────────────────────────────────────────────────────────
 _groq_client: AsyncOpenAI | None = None
@@ -169,35 +146,59 @@ if _groq_key:
     except Exception as e:
         logger.warning(f"Failed to init Groq client: {e}")
 
-GROQ_MODEL = "llama-3.1-8b-instant"
-
-# ── Cerebras ─────────────────────────────────────────────────────────────────
-_cerebras_client: AsyncOpenAI | None = None
-_cerebras_key = os.getenv("CEREBRAS_API_KEY")
-if _cerebras_key:
-    try:
-        _cerebras_client = AsyncOpenAI(
-            api_key=_cerebras_key,
-            base_url="https://api.cerebras.ai/v1",
-            timeout=30.0,
-        )
-        logger.info("Cerebras client registered")
-    except Exception as e:
-        logger.warning(f"Failed to init Cerebras client: {e}")
-
-CEREBRAS_MODEL = "gpt-oss-120b"
-
-# ── OpenAI (primary) ─────────────────────────────────────────────────────────
+# ── OpenAI ───────────────────────────────────────────────────────────────────
 _openai_client: AsyncOpenAI | None = None
 _openai_key = os.getenv("OPENAI_API_KEY")
 if _openai_key:
     try:
         _openai_client = AsyncOpenAI(api_key=_openai_key, timeout=30.0)
-        logger.info("OpenAI client registered (primary)")
+        logger.info("OpenAI client registered")
     except Exception as e:
         logger.warning(f"Failed to init OpenAI client: {e}")
 
-OPENAI_MODEL = "gpt-4o-mini"
+
+def _build_ladder() -> list[_Attempt]:
+    """
+    Ordered attempt list, driven entirely by PROVIDER_ORDER (from
+    app/ai_models_config.json). Gemini keys are rotated so we don't always
+    start at key 1; every provider tries its configured models in order on
+    each available key.
+    """
+    ladder: list[_Attempt] = []
+
+    for provider in PROVIDER_ORDER:
+        if provider == "openai" and _openai_client:
+            for model in OPENAI_MODELS:
+                ladder.append(_Attempt(
+                    label=f"openai_{model}", client=_openai_client, model=model,
+                    provider="openai", key_group="openai",
+                    strip=("parallel_tool_calls",),
+                ))
+
+        elif provider == "groq" and _groq_client:
+            for model in GROQ_MODELS:
+                ladder.append(_Attempt(
+                    label=f"groq_{model}", client=_groq_client, model=model,
+                    provider="groq", key_group="groq",
+                    strip=("parallel_tool_calls",),
+                ))
+
+        elif provider == "gemini" and _gemini_clients:
+            n = len(_gemini_clients)
+            start = next(_gemini_cycle)
+            for ki in range(n):
+                idx = (start + ki) % n
+                key_group = f"gemini_k{idx + 1}"
+                for model in GEMINI_MODELS:
+                    ladder.append(_Attempt(
+                        label=f"{key_group}_{model}",
+                        client=_gemini_clients[idx],
+                        model=model,
+                        provider="gemini",
+                        key_group=key_group,
+                    ))
+
+    return ladder
 
 
 async def chat_completion(
@@ -236,7 +237,7 @@ async def chat_completion(
             if pass_no == 1 and _cooled_down(att.label):
                 errors.setdefault(att.label, "skipped (cooling down)")
                 continue
-            if require_tools and att.label in _NO_RELIABLE_TOOLS:
+            if require_tools and att.provider in _NO_RELIABLE_TOOLS:
                 continue
 
             kwargs = {k: v for k, v in base_kwargs.items() if k not in att.strip}
@@ -259,12 +260,11 @@ async def chat_completion(
                     _bench(att.label, "auth")
                     continue
                 if kind == "quota":
-                    # Bench every remaining model on the SAME key too: a quota
-                    # ceiling is per-key, not per-model. This is the single
-                    # biggest latency win.
-                    key_prefix = att.label.rsplit("_", 1)[0]
+                    # Bench every remaining model sharing this key_group too: a
+                    # quota ceiling is per-key, not per-model. This is the
+                    # single biggest latency win.
                     for other in ladder:
-                        if other.label.startswith(key_prefix):
+                        if other.key_group == att.key_group:
                             _bench(other.label, "quota")
                     continue
                 _bench(att.label, kind)

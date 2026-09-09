@@ -129,23 +129,6 @@ SECTION E — QUERY EXAMPLES
 → register_complaint: title='Stray dog in Wing B', location='Wing B'
   (there is no separate animal_type field — fold the animal into the title)
 
-"meri open complaints dikhao"
-→ SELECT cc.*, u.name as complainant_name FROM cases cc
-  JOIN users u ON u.id = cc.complainant_id
-  WHERE cc.org_id=$1 AND cc.complainant_id=$2 AND cc.status != 'closed'
-  ORDER BY cc.created_at DESC
-
-"CS-26-08-00001 ka status kya hai"
-→ SELECT cc.*, c1.name as complainant_name, c2.name as assigned_name
-  FROM cases cc
-  LEFT JOIN users c1 ON c1.id = cc.complainant_id
-  LEFT JOIN users c2 ON c2.id = cc.assigned_to_id
-  WHERE cc.org_id=$1 AND cc.case_number=$2
-
-"kitne urgent cases open hain"
-→ SELECT COUNT(*) FROM cases
-  WHERE org_id=$1 AND priority='urgent' AND status != 'closed'
-
 "Ravi ko CS-26-08-00003 assign karo"
 → assign_case: action='assign', case_number='CS-26-08-00003', assignee_name='Ravi'
 
@@ -169,44 +152,7 @@ close an existing case) — accept whatever format they type (with or without
 dashes/spaces); the system normalises it when matching.
 
 ─────────────────────────────────────────────
-SECTION G — CASES SQL PATTERNS
-─────────────────────────────────────────────
-
-All cases for org with names:
-SELECT cc.id, cc.case_number, cc.title, cc.status, cc.priority, cc.location,
-       cc.created_at, cc.closed_at,
-       u1.name as complainant_name,
-       u2.name as assigned_name
-FROM cases cc
-LEFT JOIN users u1 ON u1.id = cc.complainant_id
-LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
-WHERE cc.org_id = $1
-
-With status filter:
-... AND cc.status = $2
-
-With priority filter:
-... AND cc.priority = $2
-
-Open cases (not closed):
-... AND cc.status != 'closed'
-ORDER BY CASE cc.priority
-  WHEN 'urgent' THEN 1
-  WHEN 'high' THEN 2
-  WHEN 'medium' THEN 3
-  WHEN 'low' THEN 4
-END, cc.created_at ASC
-
-COUNT by status:
-SELECT status, COUNT(*) FROM cases
-WHERE org_id=$1 GROUP BY status ORDER BY status
-
-COUNT by priority (open only):
-SELECT priority, COUNT(*) FROM cases
-WHERE org_id=$1 AND status != 'closed' GROUP BY priority
-
-─────────────────────────────────────────────
-SECTION H — SLA / OVERDUE QUERIES
+SECTION G — SLA / OVERDUE GUIDANCE
 ─────────────────────────────────────────────
 
 Note: cases have no category/subcategory classification — register_complaint
@@ -214,24 +160,14 @@ only collects title, location, and priority. Do not reference categories or
 subcategories anywhere; they are not part of this workflow.
 
 "overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
-→ SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
-         u2.name as assigned_name
-  FROM cases cc
-  LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
-  WHERE cc.org_id = $1 AND cc.due_date < now() AND cc.status != 'closed'
-  ORDER BY cc.due_date ASC
+→ filter on cases.due_date < now() AND status != 'closed'.
 
 "cases due soon" / "SLA at risk"
-→ SELECT cc.case_number, cc.title, cc.priority, cc.due_date,
-         u2.name as assigned_name
-  FROM cases cc
-  JOIN priority_tat_rules ptr ON ptr.org_id = cc.org_id AND ptr.priority = cc.priority
-  LEFT JOIN users u2 ON u2.id = cc.assigned_to_id
-  WHERE cc.org_id = $1 AND cc.status != 'closed'
-    AND cc.due_date BETWEEN now() AND now() + (ptr.reminder_threshold_minutes || ' minutes')::interval
-  ORDER BY cc.due_date ASC
-  -- "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
-  -- NOT a flat hardcoded window — matches app/scheduler/jobs.py's reminder logic.
+→ the "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
+  NOT a flat hardcoded window — matches app/scheduler/jobs.py's reminder logic.
+  Join priority_tat_rules on org_id + priority to get that org's threshold for
+  the case's own priority, then filter to due_date falling within
+  [now, now + that threshold].
 
 RESPONSE TEMPLATE ADDITION — SLA-aware case status:
 "*Case #{case_number}*

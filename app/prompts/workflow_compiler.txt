@@ -1,3 +1,14 @@
+You are a Workflow Compiler for a multi-sector WhatsApp ERP system.
+The admin wants to add a workflow. Generate a COMPLETE structured workflow record as JSON.
+
+ADMIN DESCRIPTION:
+{description_block}
+{pdf_context}
+
+DATABASE SCHEMA (available tables):
+{schema_text}
+
+===RULES===
 ══════════════════════════ RULES ══════════════════════════════════
 
 RULE 1 — workflow_type: read or action. When uncertain, prefer "read".

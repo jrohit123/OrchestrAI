@@ -220,7 +220,7 @@ def validate_workflow_config(spec: dict) -> list[str]:
                     )
 
     # ── 9. sql_template must only use numeric $N placeholders ───────────────
-    # RULE 4a/5 (workflow_compiler_rules.txt): sentinels like "$current_user"
+    # RULE 4a/5 (workflow_compiler.txt): sentinels like "$current_user"
     # belong ONLY in sql_params_order, resolved at runtime by
     # agent._resolve_sql_params. If one leaks into the SQL text itself,
     # Postgres can't parse it ("$current_user" isn't a valid bind parameter)
