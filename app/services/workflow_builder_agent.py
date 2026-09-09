@@ -521,6 +521,22 @@ async def _execute_tool(
         except ValueError as e:
             return {"error": str(e)}
 
+        # Preserve identity across an edit. This draft already has an
+        # intent_key iff it was seeded from a live workflow (load_existing_workflow
+        # / start_edit_draft, via _copy_workflow_into_draft) — a brand-new draft
+        # starts with intent_key=NULL. The compiler derives intent_key fresh from
+        # the current purpose text on every call (workflow_compiler_rules RULE 10)
+        # with no awareness that a draft it's recompiling is actually an edit of
+        # something already published. Left alone, a purpose-text tweak during an
+        # edit can silently derive a DIFFERENT intent_key, and since
+        # workflow_publisher.publish_draft matches on (org_id, intent_key) via
+        # ON CONFLICT, a drifted key makes publish INSERT a second workflow
+        # instead of UPDATing the original — reproduced live: editing
+        # "manage_residents" recompiled to "update_or_add_resident" and publish
+        # created a duplicate instead of updating it in place.
+        if fresh.get("intent_key"):
+            spec["intent_key"] = fresh["intent_key"]
+
         # Save compiled spec back into the draft
         await execute("""
             UPDATE workflow_drafts SET
