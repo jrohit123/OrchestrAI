@@ -146,6 +146,27 @@ RULE 14 — steps (action workflows — this IS the execution logic):
   For status update: resolve_entity → db.update_row → notify.whatsapp
   [] for read workflows.
 
+  CONDITIONAL STEPS — ONE WORKFLOW THAT DOES DIFFERENT THINGS PER ACTION VALUE:
+  Any step may carry a "when" guard — the step only runs if the condition is
+  true, otherwise it's skipped entirely. This is how a single workflow
+  branches its behaviour off an enum field (e.g. an "action" field with
+  values like "add"/"update_status", or "assign"/"comment"/"close") instead
+  of needing a separate workflow per branch:
+    {"op":"db.insert_row","when":{"field":"$fields.action","equals":"add"},"params":{...}}
+    {"op":"resolve_entity","when":{"field":"$fields.action","equals":"update_status"},"params":{...}}
+    {"op":"db.update_row","when":{"field":"$fields.action","equals":"update_status"},"params":{...}}
+  Guard syntax (same shape as gates[].when): {"field":"$fields.X","equals":"..."},
+  "not_equals", "in":[...], "not_in":[...], "exists":true/false, "gte"/"lte"/"gt"/"lt"
+  for numbers, or {"and":[cond1,cond2]} to require several at once. A step with
+  no "when" always runs.
+  CRITICAL: whenever entity_schema has a field whose whole purpose is to pick
+  between different behaviours (an action/type/mode enum), every step that
+  should only happen for ONE of those values MUST carry a matching "when" —
+  omitting it means that step runs unconditionally on every invocation
+  regardless of which value was chosen, which for db.insert_row/db.update_row
+  means silently doing the wrong database operation (e.g. inserting a
+  duplicate row when the admin only meant to update an existing one).
+
 RULE 15 — pdf_config theme + render_instructions (action workflows):
   "theme": {"primary":"#hex","light_bg":"#hex","text":"#hex","muted":"#hex"}
   "render_instructions": "200-400 words — exact layout instructions for the PDF:
