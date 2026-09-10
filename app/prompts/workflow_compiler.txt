@@ -173,6 +173,20 @@ RULE 14 — steps (action workflows — this IS the execution logic):
     approval_gate   — {"amount_field":"$computed.total_amount"}
     db.insert_row   — {"table","values":{"col":"$fields.X|$computed.X|$alias.id|$org_id|$user.user_id|literal"},
                        "sequence":{"field":"doc_number_col","prefix":"INV-","start":100}}
+                      TWO-TABLE INSERTS (a parent row + a child row that references it via a
+                      foreign key — e.g. a meeting + its minutes, an event + a registration):
+                      every db.insert_row automatically exposes its OWN inserted row as
+                      "$inserted.<table_name>.<column>" for any LATER step in the same
+                      pipeline to reference. So insert the parent table FIRST, then insert the
+                      child table with its foreign-key column set to "$inserted.<parent_table>.id":
+                        {"op":"db.insert_row","params":{"table":"meetings","values":{
+                          "meeting_type":"$fields.meeting_type","meeting_date":"$fields.date",
+                          "agenda":"$fields.agenda"}}}
+                        {"op":"db.insert_row","params":{"table":"meeting_minutes","values":{
+                          "meeting_id":"$inserted.meetings.id","content":"$fields.content"}}}
+                      Do NOT try to cram a child table's fields onto the parent table's
+                      db.insert_row — if the schema shows two separate tables with a foreign
+                      key between them, that means two separate db.insert_row steps.
     db.update_row   — {"table","set":{"col":"$fields.X|NOW()"},"where":{"col":"$alias.id"}}
     db.upsert_row   — {"table","values":{...},"conflict_columns":["col1","col2"]}
     pdf.generate    — {"subtitle":""}
