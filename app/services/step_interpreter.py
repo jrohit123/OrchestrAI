@@ -167,6 +167,56 @@ async def _normalize_enum_values(table: str, values: dict, source_key: str) -> N
             )
 
 
+# Formats tried in order — ISO first (already-correct values pass through
+# unchanged), then the common human phrasings a chat agent is likely to
+# produce. Deliberately stdlib-only (no new dependency) — covers the
+# realistic range of what "15 Sep 2026" / "15/09/2026" / "September 15 2026"
+# etc. look like without pulling in dateutil for what's a bounded problem.
+_DATE_FORMATS = [
+    "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y",
+    "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d",
+]
+
+
+async def _normalize_date_values(table: str, values: dict, source_key: str) -> None:
+    """
+    Mutates `values` in place: for any column that's actually a date/
+    timestamp type in Postgres (see schema_utils.get_column_types), parse a
+    human-phrased string ("15 Sep 2026") into a real date/datetime object
+    before it reaches asyncpg — a raw string reaching a date column crashes
+    with "'str' object has no attribute 'toordinal'", a confusing error with
+    no path for the user to self-correct. Same deterministic-last-line-of-
+    defense role _normalize_enum_values plays for CHECK constraints;
+    entity_schema now carries "format":"date" (see workflow_compiler.txt)
+    so the runtime agent normalizes at capture time in the first place —
+    this catches whatever still slips through that.
+    """
+    import datetime as _dt
+    from app.services.schema_utils import get_column_types
+    types = await get_column_types(source_key)
+    if not types:
+        return
+    for col, val in list(values.items()):
+        if not isinstance(val, str):
+            continue
+        col_type = types.get((table, col))
+        if col_type not in ("date", "timestamp without time zone", "timestamp with time zone"):
+            continue
+        parsed = None
+        for fmt in _DATE_FORMATS:
+            try:
+                parsed = _dt.datetime.strptime(val.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            raise UserFacingStepError(
+                f"'{val}' isn't a date I can understand for {col.replace('_', ' ')} — "
+                f"please resend using a clear format like '15 September 2026' or '2026-09-15'."
+            )
+        values[col] = parsed.date() if col_type == "date" else parsed
+
+
 def _resolve_path(ctx: dict, path):
     """
     Resolve a $path reference into a value from ctx.
@@ -785,6 +835,14 @@ async def _op_insert_row(params: dict, ctx: dict) -> dict:
         elif v == "NOW()":
             values[k] = _dt.datetime.now(_dt.timezone.utc)
 
+    # Parse free-text dates into real date/datetime objects (or raise a
+    # clear, user-safe message) before we ever hit Postgres. MUST run after
+    # the TODAY/NOW() literal resolution above — those are already real
+    # date/datetime objects by now, not strings, so they're correctly
+    # skipped rather than mistaken for unparseable user input.
+    if not table.startswith("sheet:"):
+        await _normalize_date_values(table, values, ctx["source_key"])
+
     # NEW: sheet-backed insert
     if table.startswith("sheet:"):
         from app.services.sheets_client import sheet_insert_row, sheet_count_rows
@@ -992,6 +1050,7 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     # free text, and normalizing them could silently match the wrong row.
     if not table.startswith("sheet:"):
         await _normalize_enum_values(table, set_vals, ctx["source_key"])
+        await _normalize_date_values(table, set_vals, ctx["source_key"])
 
     # NEW: sheet-backed update
     if table.startswith("sheet:"):

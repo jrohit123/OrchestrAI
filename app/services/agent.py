@@ -779,7 +779,11 @@ async def _build_system_prompt(user: dict) -> str:
                         f" (map whatever the user said to the matching one of these, "
                         f"don't pass their literal words through)"
                     ) if enum_vals else ""
-                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}{enum_hint}\n"
+                    date_hint = (
+                        f" — MUST be normalized to YYYY-MM-DD before saving, regardless of "
+                        f"how the user phrased it ('15 sept', '15 Sep 2026', 'next Tuesday')"
+                    ) if field_def.get("format") == "date" else ""
+                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}{enum_hint}{date_hint}\n"
 
                 # Add note about computed fields if any exist
                 has_computed = any(v.get("computed") for v in entity_schema.values())

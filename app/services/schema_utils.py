@@ -70,6 +70,35 @@ async def get_column_descriptions(org_id: str, source_key: str) -> dict:
     return (settings or {}).get("column_descriptions") or {}
 
 
+_COLUMN_TYPE_CACHE: dict = {}
+
+
+async def get_column_types(source_key: str) -> dict:
+    """
+    {(table, column): postgres_data_type} — e.g. ('meetings','meeting_date')
+    -> 'date'. entity_schema's type vocabulary is only string/integer/float
+    (see workflow_compiler.txt RULE 3), so a date-typed column has no way to
+    signal that at compile time without this — the runtime chat agent then
+    has no idea a free-text date needs normalizing to ISO before it becomes
+    a SQL value, and whatever the user actually typed ("15 Sep 2026") goes
+    straight into an insert/update and crashes against asyncpg's date codec.
+    Used by workflow_compiler.txt (to mark entity_schema fields with
+    "format":"date") and step_interpreter.py (as the deterministic
+    normalization safety net, same role get_enum_constraints plays for
+    CHECK-constraint columns).
+    """
+    if source_key in _COLUMN_TYPE_CACHE:
+        return _COLUMN_TYPE_CACHE[source_key]
+    rows = await fetch_all("""
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+    """, source_key=source_key)
+    types = {(r["table_name"], r["column_name"]): r["data_type"] for r in rows}
+    _COLUMN_TYPE_CACHE[source_key] = types
+    return types
+
+
 _ENUM_CONSTRAINT_CACHE: dict = {}
 
 
@@ -118,10 +147,14 @@ async def get_enum_constraints(source_key: str) -> dict:
     return parsed
 
 
+_DATE_TYPES = {"date", "timestamp without time zone", "timestamp with time zone"}
+
+
 def format_schema_text(
     table_cols: dict,
     column_descriptions: dict | None = None,
     enum_constraints: dict | None = None,
+    column_types: dict | None = None,
 ) -> str:
     """
     Format schema dict into human-readable text for LLM prompts.
@@ -135,12 +168,17 @@ def format_schema_text(
         enum_constraints: Optional {(table, column): [values]} from
             get_enum_constraints() — shown inline as "(options: a, b, c)" so
             the compiler knows to carry these into entity_schema's "enum".
+        column_types: Optional {(table, column): postgres_data_type} from
+            get_column_types() — a date/timestamp column is shown inline as
+            "(date field)" so the compiler knows to carry a "format":"date"
+            hint into entity_schema for it.
 
     Returns:
         Formatted string representation of the schema
     """
     column_descriptions = column_descriptions or {}
     enum_constraints = enum_constraints or {}
+    column_types = column_types or {}
     lines = []
     for t, cs in sorted(table_cols.items()):
         table_desc = column_descriptions.get(t) or {}
@@ -152,6 +190,8 @@ def format_schema_text(
             options = enum_constraints.get((t, c))
             if options:
                 parts.append(f"options: {', '.join(options)}")
+            if column_types.get((t, c)) in _DATE_TYPES:
+                parts.append("date field")
             col_strs.append(f"{c} ({'; '.join(parts)})" if parts else c)
         lines.append(f"  {t}: {', '.join(col_strs)}")
     return "\n".join(lines)
