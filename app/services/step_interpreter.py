@@ -117,62 +117,22 @@ class UserFacingStepError(StepError):
     pass
 
 
-# CHECK-constraint enum cache. Format: {source_key: {(table, column): [values]}}
-_enum_constraints: dict = {}
-
-
-async def _load_enum_constraints(source_key: str) -> dict:
-    """
-    Introspect simple `column IN (...)` / `column = ANY(ARRAY[...])` CHECK
-    constraints so free-text values captured from a chat message (e.g.
-    "first owner") can be normalized/validated against the DB's actual
-    allowed values (e.g. "first_owner") before an insert/update — instead
-    of the request reaching Postgres, failing with a raw CheckViolationError,
-    and the user seeing nothing more useful than "something went wrong" with
-    no way to self-correct. Best-effort: constraints this regex can't parse
-    (ranges, multi-column expressions, etc.) are silently skipped, never
-    raise — this is reinforcement on top of the DB's own constraint, not a
-    replacement for it.
-    """
-    if source_key in _enum_constraints:
-        return _enum_constraints[source_key]
-
-    rows = await fetch_all("""
-        SELECT rel.relname AS table_name, pg_get_constraintdef(con.oid) AS def
-        FROM pg_constraint con
-        JOIN pg_class rel ON rel.oid = con.conrelid
-        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-        WHERE con.contype = 'c' AND nsp.nspname = 'public'
-    """, source_key=source_key)
-
-    parsed: dict = {}
-    pattern = re.compile(
-        r'\(?"?(\w+)"?\)?(?:::[\w\s]+)?\s*=\s*ANY\s*\(*ARRAY\[(.*?)\]', re.IGNORECASE
-    )
-    literal_pattern = re.compile(r"'((?:[^'\\]|\\.)*)'")
-    for row in rows:
-        m = pattern.search(row["def"] or "")
-        if not m:
-            continue
-        column, array_body = m.group(1), m.group(2)
-        values = literal_pattern.findall(array_body)
-        if values:
-            parsed[(row["table_name"], column)] = values
-
-    _enum_constraints[source_key] = parsed
-    return parsed
-
-
 async def _normalize_enum_values(table: str, values: dict, source_key: str) -> None:
     """
     Mutates `values` in place: for any column with a known CHECK-constraint
-    enum, snap a loosely-matching string (case/space/hyphen-insensitive) to
-    the DB's canonical value. If the column is enum-constrained but nothing
+    enum (see schema_utils.get_enum_constraints), snap a loosely-matching
+    string (case/space/hyphen-insensitive) to the DB's canonical value. This
+    is the deterministic LAST line of defense — entity_schema now carries
+    each field's real enum options (see workflow_compiler.txt) so the
+    runtime chat agent captures the correct canonical value using actual
+    language understanding in the first place; this catches whatever still
+    slips through that. If the column is enum-constrained but nothing
     matches, raise UserFacingStepError with the real allowed values — better
     to ask the user to correct one word than to let the whole write fail
     with an opaque banner and no path to retry successfully.
     """
-    enums = await _load_enum_constraints(source_key)
+    from app.services.schema_utils import get_enum_constraints
+    enums = await get_enum_constraints(source_key)
     if not enums:
         return
     for col, val in list(values.items()):

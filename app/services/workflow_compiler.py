@@ -52,11 +52,14 @@ async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "pla
     Returns the spec dict. Raises ValueError if compilation fails after 3 attempts.
     """
     # Load schema for context using shared business schema function
-    from app.services.schema_utils import get_business_schema, format_schema_text, get_column_descriptions
+    from app.services.schema_utils import (
+        get_business_schema, format_schema_text, get_column_descriptions, get_enum_constraints,
+    )
 
     table_cols = await get_business_schema(source_key=source_key)
     column_descriptions = await get_column_descriptions(org_id, source_key)
-    schema_text = format_schema_text(table_cols, column_descriptions)
+    enum_constraints = await get_enum_constraints(source_key)
+    schema_text = format_schema_text(table_cols, column_descriptions, enum_constraints)
 
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):

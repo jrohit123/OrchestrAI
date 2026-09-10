@@ -773,7 +773,13 @@ async def _build_system_prompt(user: dict) -> str:
                     field_type = field_def.get("type", "string")
                     computed   = " [COMPUTED — do not fill, system calculates this]" if field_def.get("computed") else ""
                     description = f" — {field_def.get('description', '')}" if field_def.get("description") else ""
-                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}\n"
+                    enum_vals = field_def.get("enum")
+                    enum_hint = (
+                        f" — MUST be exactly one of: {', '.join(enum_vals)}"
+                        f" (map whatever the user said to the matching one of these, "
+                        f"don't pass their literal words through)"
+                    ) if enum_vals else ""
+                    workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}{enum_hint}\n"
 
                 # Add note about computed fields if any exist
                 has_computed = any(v.get("computed") for v in entity_schema.values())
@@ -1321,7 +1327,10 @@ async def _execute_tool(
             for f in validation["missing_fields"]:
                 base = f.split("[")[0].split(".")[0]
                 spec = schema_for_hints.get(base, {})
-                missing_field_hints.append(spec.get("description") or base.replace("_", " "))
+                hint = spec.get("description") or base.replace("_", " ")
+                if spec.get("enum"):
+                    hint += f" (one of: {', '.join(spec['enum'])})"
+                missing_field_hints.append(hint)
 
         # Persist to database (write-through cache)
         from app.services.draft_store import upsert_draft
@@ -1720,6 +1729,8 @@ async def run_agent(
                 if first_missing:
                     fname, fspec = first_missing
                     question = fspec.get("description") or f"What is the {fname.replace('_', ' ')}?"
+                    if fspec.get("enum"):
+                        question += f" ({' / '.join(fspec['enum'])})"
                     reply_text = f"I'll help you with *{wf['name']}*. {question}"
                     history_to_save = [{"role": "user", "content": message},
                                         {"role": "assistant", "content": reply_text}]

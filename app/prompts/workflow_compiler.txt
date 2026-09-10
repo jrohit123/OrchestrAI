@@ -38,6 +38,20 @@ RULE 3 — entity_schema: Only entities actually needed. Per field:
   RULE: Every field produced by calc_rules MUST appear in entity_schema with "computed":true.
   RULE: Never mark a computed field as "required":true — the user never provides it.
 
+  ENUM COLUMNS — CRITICAL, this prevents live insert/update failures:
+  When the schema shows a column with "(options: a, b, c)" (a real DB
+  CHECK-constraint enum), the field mapped to that column MUST include an
+  "enum" array with EXACTLY those values, e.g.:
+    "residential_status": {"type":"string","required":true,"table":"residents",
+      "column":"residential_status","match":"exact","enum":["first_owner","second_owner","tenant"]}
+  This is not optional decoration — the runtime chat agent uses "enum" to
+  capture the correct canonical value from whatever the user actually typed
+  ("he's the first owner", "1st owner", etc.) instead of writing their literal
+  phrasing straight into an insert/update, which otherwise crashes against the
+  DB's real constraint with no way for the user to self-correct. Use
+  "match":"exact" (not "ILIKE"/"wildcard") for enum fields — partial/fuzzy
+  matching makes no sense against a fixed, small set of exact values.
+
 RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id, $2+ for entities).
   null for action workflows.
   This query is what actually RUNS in production every time someone uses this
