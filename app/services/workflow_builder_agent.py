@@ -40,7 +40,16 @@ _TOOLS = [
             "purpose":       {"type": "string", "description": "What this workflow does in plain terms"},
             "workflow_type": {"type": "string", "enum": ["action", "read"]},
             "raw_fields":    {"type": "array", "items": {"type": "string"},
-                              "description": "Fields to collect, e.g. ['customer name', 'item description', 'GST — auto']"},
+                              "description": (
+                                  "The COMPLETE list of fields to collect, replacing whatever was "
+                                  "set before — always pass the full list that should apply going "
+                                  "forward (existing ones the admin didn't change + any added or "
+                                  "renamed), not just what's new. Drop a field entirely if the admin "
+                                  "says to remove it. One entry per distinct piece of information — "
+                                  "never split a single thing the admin named (e.g. 'tenant or owner') "
+                                  "into multiple near-duplicate/synonym fields. e.g. ['customer name', "
+                                  "'item description', 'GST — auto']"
+                              )},
             "business_rules": {"type": "string", "description": "Any OTHER rule not covered by set_gates (calculations, formatting, etc.)."},
             "slash_command": {
                 "type": "string",
@@ -441,9 +450,14 @@ async def _execute_tool(
             existing = draft.get("business_rules") or ""
             updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
         if tool_input.get("raw_fields"):
-            existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
-            merged = list({*existing_fields, *tool_input["raw_fields"]})
-            updates["raw_fields"] = json.dumps(merged)
+            # Full replace, not merge — matches set_gates/set_roles semantics.
+            # A silent set-union here was structurally incapable of ever
+            # removing a field: an admin saying "drop the address field" had
+            # no way to take effect no matter what the LLM sent, since the
+            # old field name just got unioned back in. The system prompt
+            # already tells the model to pass the FULL current field list
+            # every time (EXTRACTION-FIRST RULE), so trust that list as-is.
+            updates["raw_fields"] = json.dumps(tool_input["raw_fields"])
         if tool_input.get("slash_command"):
             updates["slash_command"] = tool_input["slash_command"].lstrip("/")
         if tool_input.get("command_description"):
