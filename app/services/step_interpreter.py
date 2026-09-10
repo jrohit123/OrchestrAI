@@ -1273,6 +1273,15 @@ async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
             filename=f"{doc_id}.pdf",
             caption=f"📄 {doc_id}"
         )
+        # Clear it once sent — run_workflow_steps' final "done" result still
+        # carries ctx["pdf_bytes"] verbatim, and webhook.py has its OWN
+        # independent fallback (_send_action_pdf) that sends whatever
+        # pdf_bytes comes back in that result. That fallback exists for
+        # workflows with pdf.generate but no explicit notify.whatsapp step —
+        # for one that HAS this step, leaving pdf_bytes set meant the same
+        # document got sent twice (confirmed live: two identical PDFs on
+        # one release_meeting_minutes run).
+        ctx["pdf_bytes"] = None
 
     if ctx.get("_final_message"):
         await send_text(phone, ctx["_final_message"])
