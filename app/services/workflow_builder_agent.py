@@ -398,6 +398,7 @@ async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
         "draft_id":    draft_id,
         "greeting":    greeting,
         "draft_recap": build_draft_recap(dict(fresh)),
+        "name":        wf["name"],
     }
 
 

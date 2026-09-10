@@ -913,7 +913,7 @@ input:checked+.slider:before{transform:translateX(18px)}
           <button class="btn btn-purple" onclick="sendChatMsg()">Send</button>
         </div>
         <div style="margin-top:8px;text-align:right">
-          <button class="btn btn-primary" onclick="manualPublish()" title="Open the publish screen with whatever's in Draft so far right now — you don't have to wait for the assistant to say it's ready">💾 Save / update changes</button>
+          <button class="btn btn-primary" id="manualPublishBtn" onclick="manualPublish()">🚀 Publish</button>
         </div>
         <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
       </div>
@@ -951,6 +951,7 @@ const API = path => `/admin/${ORG_SLUG}/api${path}`;
 let chatDraftId = null;
 let chatTyping  = false;
 let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
+let chatIsEditingExisting = false;  // true only when this draft was loaded from an already-published workflow
 
 // No auth for now — see _check_token in admin.py for how to re-enable it.
 async function authenticatedFetch(url, options = {}) {
@@ -1144,15 +1145,35 @@ async function viewRawJson() {
 }
 
 // ── Chat Builder ─────────────────────────────────────────────────
+function _updateManualPublishLabel() {
+  // Send is always available in both modes — it's how you actually make
+  // changes, whether describing a brand-new workflow or asking for a fix to
+  // an existing one. Only this second button's label/intent should differ:
+  // for a never-published draft there's nothing live yet to "update", so it
+  // reads as the first-time creation action; once editing something that's
+  // already published, it reads as what it actually does to that workflow.
+  const btn = document.getElementById('manualPublishBtn');
+  if (!btn) return;
+  if (chatIsEditingExisting) {
+    btn.textContent = '💾 Save changes';
+    btn.title = "Open the publish screen with whatever's in Draft so far right now — updates the existing live workflow, you don't have to wait for the assistant to say it's ready";
+  } else {
+    btn.textContent = '🚀 Publish';
+    btn.title = "Open the publish screen with whatever's in Draft so far right now — creates this as a new live workflow, you don't have to wait for the assistant to say it's ready";
+  }
+}
+
 function _resetBuilderModal() {
   chatDraftId = null;
   chatPdfAnalysis = null;
+  chatIsEditingExisting = false;
   document.getElementById('chatMessages').innerHTML = '';
   document.getElementById('chatInput').value = '';
   document.getElementById('attachLabel').textContent = '';
   document.getElementById('builderStatus').textContent = '';
   document.getElementById('draftRecap').textContent = 'Tell me what you want to build...';
-  document.getElementById('builderTitle').textContent = '💬 Build / Edit a Workflow';
+  document.getElementById('builderTitle').textContent = '💬 Build a New Workflow';
+  _updateManualPublishLabel();
 }
 
 function openBuilderChat() {
@@ -1176,8 +1197,10 @@ async function openEditLogic() {
   const data = await r.json();
   _resetBuilderModal();
   chatDraftId = data.draft_id;
+  chatIsEditingExisting = true;
   document.getElementById('draftRecap').textContent = data.draft_recap || '';
-  document.getElementById('builderTitle').textContent = '💬 Edit Workflow';
+  document.getElementById('builderTitle').textContent = `💬 Editing: ${data.name || 'Workflow'}`;
+  _updateManualPublishLabel();
   closeModal('editModal');
   openModal('builderModal');
   appendBotMsg(data.greeting);
