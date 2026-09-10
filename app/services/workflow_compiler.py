@@ -104,9 +104,24 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
 
     last_error = "Unknown error"
     for attempt in range(3):
+        # Guided re-ask, not blind retry: attempt 2+ must see exactly what was
+        # wrong with the previous attempt, or it has no way to correct toward
+        # the actual problem — it's just re-rolling with higher temperature.
+        # Without this, a failure mode that isn't randomness-sensitive (a
+        # systematically wrong column mapping, a structurally-repeated bug)
+        # fails the same way on every attempt, and the retry loop's only real
+        # job — self-correction — never happens.
+        attempt_prompt = prompt
+        if attempt > 0:
+            attempt_prompt += (
+                "\n\n===== YOUR PREVIOUS ATTEMPT WAS REJECTED =====\n"
+                f"{last_error}\n"
+                "Fix this specific problem in your next attempt — do not repeat it.\n"
+                "===== END REJECTION REASON ====="
+            )
         try:
             response = await _llm_chat(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": attempt_prompt}],
                 max_tokens=8192,
                 temperature=0.1 + attempt * 0.1,
             )

@@ -253,4 +253,38 @@ def validate_workflow_config(spec: dict) -> list[str]:
                     f"($1 is always org_id, $2.. map 1:1 to sql_params_order in order)"
                 )
 
+    # ── 10. Two resolve_entity steps must not write into the same alias ─────
+    # A second resolve_entity into an "into" already used by an earlier one
+    # silently OVERWRITES the first's result rather than combining both
+    # conditions — reproduced live: a workflow meant to find a resident by
+    # wing AND flat_no used two separate resolve_entity calls (one per
+    # column) into the same alias; the second call's flat_no-only match
+    # silently won, so the wing filter was dropped entirely and the update
+    # could target the wrong resident. Composite-key lookups must use a
+    # single resolve_entity with match_columns instead (see RULE 14).
+    resolve_targets: dict[str, int] = {}
+    for idx, step in enumerate(steps):
+        if isinstance(step, str):
+            try:
+                step = json.loads(step)
+            except Exception:
+                continue
+        if not isinstance(step, dict) or step.get("op") != "resolve_entity":
+            continue
+        into = (step.get("params") or {}).get("into")
+        if not into:
+            continue
+        if into in resolve_targets:
+            problems.append(
+                f"steps[{idx}] is a second resolve_entity writing into '{into}' "
+                f"(steps[{resolve_targets[into]}] already does) — the second call "
+                f"silently overwrites the first's result instead of combining both "
+                f"conditions, so whichever column the second call matched on ends up "
+                f"being the ONLY thing actually filtered on. Use a single resolve_entity "
+                f"with match_columns to match on multiple columns together, not two "
+                f"separate resolve_entity calls into the same alias."
+            )
+        else:
+            resolve_targets[into] = idx
+
     return problems
