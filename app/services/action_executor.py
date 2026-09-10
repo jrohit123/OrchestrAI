@@ -118,11 +118,21 @@ async def execute_pending_action(
     # The real cause lives in result["message"] (set by step_interpreter's
     # StepError handling) but was previously discarded here with nothing
     # logged anywhere — making failures like this unreproducible after the
-    # fact. Log it before replacing it with the user-facing generic text.
+    # fact. Log it before deciding what (if anything) to replace it with.
     logger.error(
         f"Workflow '{intent_key}' execution failed: {result.get('message')}"
     )
     await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled", source_key=user["source_key"])
+
+    # result["user_facing"] is set only for messages step_interpreter has
+    # already vetted as safe and useful to show verbatim (e.g. "'renter'
+    # isn't a valid residential status — use one of: tenant, first_owner,
+    # second_owner", or a price-interpretation clarifying question) — never
+    # for raw DB/internal errors, which must stay behind the generic banner
+    # so schema/SQL details never leak to a WhatsApp/Telegram user.
+    if result.get("user_facing") and result.get("message"):
+        return {"success": False, "message": result["message"]}
+
     return {
         "success": False,
         "message": (
