@@ -167,7 +167,7 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
         return _schema_cache[cache_key]
 
     # Get column structure
-    from app.services.schema_utils import SYSTEM_TABLE_BLOCKLIST
+    from app.services.schema_utils import SYSTEM_TABLE_BLOCKLIST, get_column_descriptions
     cols = await fetch_all("""
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
@@ -175,6 +175,7 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
           AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
     """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
+    column_descriptions = await get_column_descriptions(org_id, source_key)
 
     table_cols: dict[str, list] = {}
     for c in cols:
@@ -183,9 +184,11 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
         # Empty readable_tables means "nothing granted yet", not "everything visible".
         if t not in readable_tables:
             continue
-        table_cols.setdefault(t, []).append(
-            f"{c['column_name']} ({c['data_type']})"
-        )
+        desc = (column_descriptions.get(t) or {}).get(c["column_name"])
+        label = f"{c['column_name']} ({c['data_type']})"
+        if desc:
+            label += f" — {desc}"
+        table_cols.setdefault(t, []).append(label)
 
     # NOTE: Sample rows removed to prevent hallucination
     # Schema samples were causing LLM to use example data (Jain Gold Works, etc.)

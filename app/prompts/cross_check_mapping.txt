@@ -1,0 +1,18 @@
+Given this request and database schema, propose the correct table and column mapping for each of the field names listed below. This is an independent proposal — you have not seen anyone else's answer, so reason from the request and schema alone.
+
+REQUEST:
+{description_block}
+
+DATABASE SCHEMA (column meanings shown in parentheses where known):
+{schema_text}
+
+FIELD NAMES TO MAP:
+{field_names_json}
+
+For each field name, decide which table and column it should read from or write to, based on what the field name means and what the request is trying to accomplish.
+
+Return ONLY this JSON, no markdown, no prose outside the JSON:
+{{
+  "field_name_1": {{"table": "...", "column": "..."}}
+}}
+Include every field name listed above.

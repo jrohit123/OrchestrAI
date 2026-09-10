@@ -1,0 +1,30 @@
+You are reviewing a compiled workflow specification for correctness. You are NOT building it — someone else already did. Your only job is to find mistakes in the field-to-column mappings, if any exist.
+
+ORIGINAL REQUEST (what the admin actually asked for, verbatim from the conversation so far):
+{description_block}
+
+DATABASE SCHEMA (column meanings shown in parentheses where known):
+{schema_text}
+
+COMPILED FIELD MAPPINGS TO REVIEW:
+{entity_schema_json}
+
+For EACH field in the mappings above, reason step by step about whether its "table"/"column" actually matches what the field's own name and the original request mean — THEN give a verdict. Do not skip the reasoning step and jump to a verdict.
+
+KNOWN FAILURE PATTERNS — treat these as the exact kind of mistake you are hunting for, found live in this system before:
+- A field like "resident_name" or "customer_name" mapped to a column that only means ONE PARTICULAR person's name within a broader relationship. Example: "first_owner_name" does NOT mean "this row's own person" — it specifically means the flat's recorded first owner, which is the wrong column for a tenant or second-owner row's own name.
+- A field mapped to a column whose real meaning is unrelated to the field name. Example: "relationship_to_flat" (tenant/owner/second owner) wrongly mapped to "brokers_name" — the column for whoever brokered the transaction, nothing to do with occupancy relationship.
+- Two differently-named fields (e.g. "new_status" and "occupancy_status") both trying to represent the SAME underlying concept, with the mapping swapped between them, or a genuinely redundant field that duplicates another one already in the mapping.
+- A field that should NOT exist at all given the original request (e.g. a "resident_name" field appearing on a workflow that explicitly said lookups should happen by wing+flat, not by name).
+
+A mapping is only a FAIL if the column's actual meaning conflicts with what the field claims to represent, or the field itself contradicts what the original request asked for. A field that is simply unfamiliar but plausible given its column is not automatically a FAIL — reason about actual meaning, not certainty.
+
+Return ONLY this JSON, no markdown, no prose outside the JSON:
+{{
+  "field_name_1": {{
+    "reasoning": "one or two sentences reasoning through what this field claims to be vs. what its column actually means",
+    "verdict": "PASS or FAIL",
+    "fix_suggestion": "what the mapping should be instead, or null if PASS"
+  }}
+}}
+Include every field from the compiled mappings above, even the ones that PASS.

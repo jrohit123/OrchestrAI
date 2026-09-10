@@ -52,10 +52,11 @@ async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "pla
     Returns the spec dict. Raises ValueError if compilation fails after 3 attempts.
     """
     # Load schema for context using shared business schema function
-    from app.services.schema_utils import get_business_schema, format_schema_text
-    
+    from app.services.schema_utils import get_business_schema, format_schema_text, get_column_descriptions
+
     table_cols = await get_business_schema(source_key=source_key)
-    schema_text = format_schema_text(table_cols)
+    column_descriptions = await get_column_descriptions(org_id, source_key)
+    schema_text = format_schema_text(table_cols, column_descriptions)
 
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):
@@ -251,6 +252,44 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             if not spec.get("plain_english_summary"):
                 last_error = f"Attempt {attempt+1}: missing plain_english_summary"
                 continue
+
+            # Semantic critique — everything above only checks that the JSON is
+            # internally consistent and structurally valid; none of it can tell
+            # whether a field mapping is factually wrong (a real column, wrong
+            # meaning) or whether steps[] actually implements the requested
+            # logic. Only run this once the spec has already cleared every
+            # cheap/free check above — no point spending an extra LLM call on
+            # a candidate that's already known to be broken. Fails open (see
+            # workflow_critic.py docstring): a critique-call error never blocks
+            # publishing, it only adds problems when it actually completes and
+            # finds something.
+            from app.services.workflow_critic import critique_spec, cross_check_field_mappings
+            critique_problems = await critique_spec(spec, description_block, schema_text)
+            if critique_problems:
+                last_error = f"Attempt {attempt+1} (semantic review): " + "; ".join(critique_problems)
+                logger.warning(f"Critique flagged issues — retrying: {last_error}")
+                continue
+
+            # Reinforcement only, deliberately does NOT gate acceptance — see
+            # cross_check_field_mappings' docstring on why agreement between
+            # two models isn't proof of correctness and disagreement alone
+            # isn't proof of error either. Surfaced for a human to see, never
+            # blocks or retries on its own.
+            try:
+                cross_check_warnings = await cross_check_field_mappings(spec, description_block, schema_text)
+                if cross_check_warnings:
+                    logger.info(f"Cross-check flagged (non-blocking): {'; '.join(cross_check_warnings)}")
+                    # A warning that only reaches a server log never reaches the
+                    # admin who's actually deciding whether to publish — fold it
+                    # into the one place they're already shown, plain_english_summary.
+                    note = (
+                        "\n\n⚠️ An independent second review wasn't fully confident about "
+                        f"{len(cross_check_warnings)} field mapping(s) in this workflow. "
+                        "Worth double-checking the field details before publishing."
+                    )
+                    spec["plain_english_summary"] = (spec.get("plain_english_summary") or "") + note
+            except Exception as e:
+                logger.info(f"Cross-check step failed entirely, ignoring (non-blocking): {e}")
 
             return spec
 

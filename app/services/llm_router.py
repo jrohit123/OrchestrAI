@@ -157,16 +157,28 @@ if _openai_key:
         logger.warning(f"Failed to init OpenAI client: {e}")
 
 
-def _build_ladder() -> list[_Attempt]:
+def _build_ladder(preferred_provider: str | None = None) -> list[_Attempt]:
     """
     Ordered attempt list, driven entirely by PROVIDER_ORDER (from
     app/ai_models_config.json). Gemini keys are rotated so we don't always
     start at key 1; every provider tries its configured models in order on
     each available key.
+
+    preferred_provider: optional one-off reorder — moves that provider to
+    the front of THIS call's ladder only (global PROVIDER_ORDER, and every
+    other caller, are unaffected). Everything else still follows behind it
+    as the normal fallback chain. Used for independent second-opinion calls
+    (e.g. workflow_critic's cross-provider check) that specifically need a
+    DIFFERENT provider than whichever one just answered, not for routine
+    calls — most callers should never pass this.
     """
+    order = PROVIDER_ORDER
+    if preferred_provider and preferred_provider in PROVIDER_ORDER:
+        order = [preferred_provider] + [p for p in PROVIDER_ORDER if p != preferred_provider]
+
     ladder: list[_Attempt] = []
 
-    for provider in PROVIDER_ORDER:
+    for provider in order:
         if provider == "openai" and _openai_client:
             for model in OPENAI_MODELS:
                 ladder.append(_Attempt(
@@ -208,12 +220,17 @@ async def chat_completion(
     max_tokens: int = 8192,
     temperature: float = 0.1,
     require_tools: bool = False,
+    preferred_provider: str | None = None,
 ) -> object:
     """
     Walk the provider ladder, skipping anything currently benched.
 
     require_tools=True  → skip providers whose tool-calling is unreliable
                           (set on the agent's main loop; see §2.3).
+    preferred_provider   → try this provider first for this call only; see
+                          _build_ladder's docstring. Normal fallback chain
+                          still applies behind it — this never narrows what
+                          can succeed, only reorders the attempt.
     Raises AllProvidersFailed if nothing succeeds.
     """
     errors: dict[str, str] = {}
@@ -227,7 +244,7 @@ async def chat_completion(
         base_kwargs["tool_choice"] = tool_choice
         base_kwargs.setdefault("parallel_tool_calls", False)
 
-    ladder = _build_ladder()
+    ladder = _build_ladder(preferred_provider)
 
     # Pass 1: only providers that are not benched.
     # Pass 2: if literally everything is benched, ignore cooldowns and try
