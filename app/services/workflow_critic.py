@@ -38,12 +38,22 @@ _FIELD_MAPPING_PROMPT  = _read(PROMPTS_DIR / "critic_field_mapping.txt")
 _STEPS_LOGIC_PROMPT    = _read(PROMPTS_DIR / "critic_steps_logic.txt")
 _CROSS_CHECK_PROMPT    = _read(PROMPTS_DIR / "cross_check_mapping.txt")
 
-# Whichever provider the main compile call happened to succeed on isn't
-# tracked back to the caller today, so rather than plumb that through, the
-# cross-check simply always prefers a provider different from the default
-# ladder's first choice (see ai_models_config.json's provider_order) — near-
-# guaranteed independence without needing to know what actually answered.
-_CROSS_CHECK_PROVIDER = "gemini"
+def _pick_cross_check_provider() -> str | None:
+    """
+    Derive the cross-check's provider from the SAME config that drives the
+    primary compile ladder (app/ai_models_config.json's provider_order),
+    instead of a fixed name. A hardcoded provider here would silently stop
+    being independent — and silently stop catching anything, no error, just
+    quietly worthless — the moment provider_order is ever reordered, since
+    that config exists specifically so ordering can change without touching
+    code. Whichever provider the main compile call actually succeeded on
+    isn't tracked back to this caller today, so this picks provider_order's
+    SECOND entry — always different from the first, whatever that currently
+    is, so it stays correct automatically if the order ever changes.
+    """
+    from app.services import llm_router
+    order = llm_router.PROVIDER_ORDER
+    return order[1] if len(order) > 1 else None
 
 
 def _extract_json(text: str) -> dict:
@@ -136,8 +146,8 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
     """
     Independent second opinion on entity_schema's table/column mappings,
     deliberately routed through a different provider (see
-    _CROSS_CHECK_PROVIDER) than whatever the primary compile+critique calls
-    used. Self-consistency reinforcement, NOT a replacement for
+    _pick_cross_check_provider) than whatever the primary compile+critique
+    calls used. Self-consistency reinforcement, NOT a replacement for
     critique_field_mappings — research on best-of-N/self-consistency is
     explicit that two models agreeing doesn't prove correctness (they can
     share the same blind spot), only that DISAGREEING is a meaningful
@@ -167,7 +177,7 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1500,
             temperature=0.1,
-            preferred_provider=_CROSS_CHECK_PROVIDER,
+            preferred_provider=_pick_cross_check_provider(),
         )
         proposed = _extract_json(response.choices[0].message.content)
     except Exception as e:
