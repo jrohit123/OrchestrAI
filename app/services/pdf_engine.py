@@ -285,10 +285,22 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
 
 def _html_to_pdf(html: str) -> bytes:
     """WeasyPrint: HTML string → PDF bytes. Raises ValueError on failure."""
-    from weasyprint import HTML
+    from weasyprint import HTML, default_url_fetcher
 
     def custom_url_fetcher(url):
-        """Block all external URLs — fonts are inlined, no external fetching needed."""
+        """
+        Block all EXTERNAL URLs — fonts are inlined, no external fetching
+        needed, and allowing arbitrary http(s)/file URLs here would be an
+        SSRF vector since this runs server-side against LLM-generated HTML.
+        data: URIs are the one exception: they carry no network fetch and
+        no SSRF risk at all (the bytes are already inline in the string) —
+        this is exactly how the org logo reaches the page (see generate_pdf
+        in this same file). Confirmed live: without this exception, every
+        logo silently failed with "Blocked external URL: data:image/...",
+        despite the injection itself working correctly.
+        """
+        if url.startswith("data:"):
+            return default_url_fetcher(url)
         raise ValueError(f"Blocked external URL: {url}")
 
     try:
