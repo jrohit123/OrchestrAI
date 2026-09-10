@@ -64,6 +64,8 @@ async def generate_pdf(
     doc_type: str = "report",
     extra_context: dict = None,
     pdf_config: dict = None,
+    org_id: str = None,
+    source_key: str = None,
 ) -> bytes:
     """Generate a professional A4 PDF. Returns bytes. Raises on error."""
     html = await _build_html(
@@ -75,6 +77,39 @@ async def generate_pdf(
         extra_context=extra_context or {},
         pdf_config=pdf_config or {},
     )
+
+    # Logo injection is deliberately a plain post-processing step, same
+    # mechanism as the forced_css safety net below — NOT a prompt
+    # instruction to the LLM writing the rest of this HTML. Position (top-
+    # right, fixed size) is a structural decision that must be identical on
+    # every single PDF; asking a generative call to place it consistently
+    # every time would be the less reliable of the two options. WeasyPrint
+    # renders position:fixed elements on every page of a multi-page
+    # document, so this also works as a repeating letterhead, not just a
+    # cover-page logo.
+    if org_id and source_key:
+        try:
+            from app.db import fetch_one as _fetch_one
+            org_row = await _fetch_one("SELECT logo_url FROM orgs WHERE id = $1", org_id, source_key=source_key)
+            logo_url = org_row and org_row.get("logo_url")
+        except Exception as e:
+            logger.warning(f"Could not load org logo, skipping: {e}")
+            logo_url = None
+        if logo_url:
+            logo_html = (
+                f'<div style="position:fixed;top:16px;right:16px;z-index:9999;">'
+                f'<img src="{logo_url}" style="max-height:50px;max-width:140px;object-fit:contain;" />'
+                f'</div>'
+            )
+            import re as _re
+            # <body ...> may carry attributes the LLM added (style/class) —
+            # match the tag itself, not a bare "<body>" literal, so this
+            # doesn't silently no-op the moment the LLM writes <body style=...>.
+            if _re.search(r"<body[^>]*>", html):
+                html = _re.sub(r"(<body[^>]*>)", r"\1" + logo_html.replace("\\", "\\\\"), html, count=1)
+            else:
+                html = logo_html + html
+
     logger.info(f"Final HTML for PDF: {len(html)} chars, title={title}")
     # WeasyPrint's HTML→PDF render is synchronous and CPU-bound — running it
     # directly here blocks the event loop for every other in-flight

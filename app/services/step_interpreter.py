@@ -942,6 +942,8 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
         doc_type=pdf_config.get("doc_type", "report"),
         extra_context=extra,
         pdf_config=pdf_config,
+        org_id=ctx["org_id"],
+        source_key=ctx["source_key"],
     )
     ctx["pdf_bytes"] = pdf_bytes
     return ctx

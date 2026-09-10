@@ -307,6 +307,53 @@ async def update_session_ttl(org_slug: str, request: Request):
     return {"session_ttl_minutes": minutes}
 
 
+@router.get("/admin/{org_slug}/api/settings/logo")
+async def get_org_logo(org_slug: str):
+    source_key = await _resolve_source_key(org_slug)
+    org = await fetch_one("SELECT id, logo_url FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org")
+    return {"logo_url": org["logo_url"], "org_id": str(org["id"])}
+
+
+@router.post("/admin/{org_slug}/api/settings/logo")
+async def upload_org_logo(org_slug: str, request: Request):
+    # Deliberately separate from the workflow-builder chat's PDF attach —
+    # that upload is scoped to whichever single workflow is being built and
+    # is ONLY ever a reference layout for pdf_engine.py, never persisted
+    # data. A logo is an org-wide setting with nothing to do with any one
+    # workflow, so it gets its own small endpoint here instead of being
+    # bolted onto the chat's file-attach flow.
+    source_key = await _resolve_source_key(org_slug)
+    form = await request.form()
+    upload = form.get("logo_file")
+    if not upload:
+        raise HTTPException(status_code=400, detail="logo_file is required")
+
+    content_type = getattr(upload, "content_type", "") or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Logo must be an image file")
+
+    image_bytes = await upload.read()
+    if len(image_bytes) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Logo image is too large (max 2MB)")
+
+    # No external file storage in this app — a logo is small enough (a few
+    # KB, capped at 2MB above) to store inline as a data URI. pdf_engine.py
+    # injects it via a plain <img src="..."> tag, which accepts a data URI
+    # exactly the same as a real hosted URL — no other code needs to care
+    # which kind of value is in this column.
+    import base64
+    data_uri = f"data:{content_type};base64,{base64.b64encode(image_bytes).decode()}"
+
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org")
+
+    await execute("UPDATE orgs SET logo_url = $1 WHERE id = $2", data_uri, str(org["id"]), source_key=source_key)
+    return {"logo_url": data_uri}
+
+
 @router.post("/admin/{org_slug}/api/sessions/clear")
 async def admin_clear_sessions(org_slug: str):
     from app.redis_client import clear_all_sessions
@@ -826,6 +873,21 @@ input:checked+.slider:before{transform:translateX(18px)}
       </div>
     </div>
 
+    <!-- ── BRANDING ──────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-title">🖼️ Branding — Org Logo</div>
+      <div style="display:flex;align-items:center;gap:16px">
+        <img id="orgLogoPreview" src="" alt="" style="display:none;max-height:60px;max-width:160px;border:1px solid #e8edf5;border-radius:6px;padding:4px">
+        <span id="orgLogoEmpty" style="font-size:12px;color:#aaa">No logo uploaded yet</span>
+        <input type="file" id="logoFile" accept="image/*" style="display:none" onchange="uploadLogo(this)">
+        <button class="btn btn-gray" onclick="document.getElementById('logoFile').click()">📎 Upload Logo</button>
+        <span id="logoStatus" style="font-size:11px;color:#888"></span>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:8px">
+        Shown in the same fixed position on every generated PDF (invoices, meeting minutes, etc.) — image only, up to 2MB.
+      </div>
+    </div>
+
     <!-- ── RECENT ACTIVITY ───────────────────────────────────────── -->
     <div class="card">
       <div class="card-title">📋 Recent Activity</div>
@@ -977,6 +1039,38 @@ async function clearSessions() {
   if (!confirm('⚠️ Log out ALL users immediately?')) return;
   const res = await authenticatedFetch(API('/sessions/clear'), {method:'POST'});
   if (res && res.ok) alert('🔒 All sessions cleared');
+}
+
+// ── Branding ──────────────────────────────────────────────────────
+function _renderLogoPreview(logoUrl) {
+  const img = document.getElementById('orgLogoPreview');
+  const empty = document.getElementById('orgLogoEmpty');
+  if (logoUrl) {
+    img.src = logoUrl;
+    img.style.display = '';
+    empty.style.display = 'none';
+  } else {
+    img.style.display = 'none';
+    empty.style.display = '';
+  }
+}
+async function uploadLogo(input) {
+  if (!input.files.length) return;
+  const file = input.files[0];
+  const status = document.getElementById('logoStatus');
+  status.textContent = '⏳ Uploading...';
+  const fd = new FormData();
+  fd.append('logo_file', file);
+  const res = await authenticatedFetch(API('/settings/logo'), {method:'POST', body:fd});
+  if (res && res.ok) {
+    const { logo_url } = await res.json();
+    _renderLogoPreview(logo_url);
+    status.textContent = '✅ Logo updated';
+  } else {
+    const err = res ? (await res.json().catch(()=>({}))).detail : null;
+    status.textContent = '⚠️ ' + (err || 'Upload failed');
+  }
+  input.value = '';
 }
 
 // ── Workflow List ─────────────────────────────────────────────────
@@ -1386,6 +1480,14 @@ async function loadData() {
           document.getElementById('ttl_value').value = mins;
           document.getElementById('ttl_unit').value = 'minutes';
         }
+      }
+    } catch(e) {}
+
+    try {
+      const logoResp = await authenticatedFetch(API('/settings/logo'));
+      if (logoResp && logoResp.ok) {
+        const { logo_url } = await logoResp.json();
+        _renderLogoPreview(logo_url);
       }
     } catch(e) {}
 
