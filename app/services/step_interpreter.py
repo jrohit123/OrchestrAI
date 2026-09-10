@@ -6,14 +6,27 @@ All execution logic lives in the workflow record in the DB.
 
 Available step ops:
   resolve_entity   — look up a named entity from any table (supports expose param)
+  conflict_check   — halt with a clear error if a row already matches match_columns
+                     (e.g. asset already booked for that date) — a guard, not a lookup
   compute          — run qa_verifier to validate + recompute via calc_rules
   otp_gate         — halt for OTP verification if amount >= threshold
   approval_gate    — halt for approval if amount >= threshold and user is not owner
   db.insert_row    — insert a row into any table with field mapping + sequence generation
-  db.update_row    — update an existing row in any table
+  db.update_row    — update an existing row in any table (custom_fields is merged via
+                     ||, never replaced — see _op_update_row)
   db.upsert_row    — insert or update (ON CONFLICT) in any table
   pdf.generate     — generate PDF using workflow's pdf_config
   notify.whatsapp  — send PDF and/or text message to the user
+
+custom_fields (jsonb, one per business table — see the iteration3 schema
+migration): entity_schema marks such a field with "json_key" instead of
+"table"/"column" (e.g. {"json_key":"custom_fields.parking_spot","type":"string"}),
+and steps[] nests it under the table's custom_fields key instead of listing
+it flat, e.g. "values": {"name": "$fields.name", "custom_fields":
+{"parking_spot": "$fields.parking_spot"}}. _resolve_values() already
+resolves $paths inside nested dicts, insert already serializes a dict value
+as jsonb, and update merges rather than replaces — no further engine change
+needed to actually use this.
 """
 import json
 import re
@@ -992,7 +1005,18 @@ async def _op_update_row(params: dict, ctx: dict) -> dict:
     set_cols   = list(set_vals.keys())
     where_cols = list(where_vals.keys())
 
-    set_clause   = ", ".join(f"{c} = ${i+1}" for i, c in enumerate(set_cols))
+    # custom_fields is every table's Tier-B "one-off field the admin asked
+    # for" jsonb column (see the iteration3 schema migration — every
+    # business table got one, same name, same purpose, by design). A plain
+    # `custom_fields = $N` REPLACE would silently wipe out every other key
+    # already stored there the moment a workflow only wants to set/update
+    # one of them — merge (||) instead, so setting one key never clobbers
+    # the rest. Insert needs no such handling: a new row has nothing to
+    # clobber yet, so the existing plain json.dumps() there is correct.
+    set_clause = ", ".join(
+        f"{c} = {c} || ${i+1}::jsonb" if c == "custom_fields" else f"{c} = ${i+1}"
+        for i, c in enumerate(set_cols)
+    )
     where_clause = " AND ".join(
         f"{c} = ${i+1+len(set_cols)}" for i, c in enumerate(where_cols)
     )
@@ -1195,10 +1219,59 @@ async def _op_notify_whatsapp(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+async def _op_conflict_check(params: dict, ctx: dict) -> dict:
+    """
+    Halt with a clear, user-facing error if a row already exists matching
+    match_columns — e.g. the same bookable asset already has a confirmed
+    booking overlapping the requested date. Reuses resolve_entity's
+    match_columns query shape (same validated-column, AND'd-equality WHERE
+    pattern), but here FINDING a row is the failure case, not the success
+    case — this is a guard, not a lookup.
+
+    params:
+      table:          table to check for an existing conflicting row
+      match_columns:  {column: $path_or_literal} — ANDed together
+      exclude_id:     optional $path_or_literal — excludes this row's own id
+                       (needed when re-checking on an update, so a booking
+                       being edited doesn't conflict with itself)
+      error_message:  shown to the user verbatim if a conflict is found
+    """
+    table         = params["table"]
+    match_columns = params.get("match_columns") or {}
+    error_message = params.get("error_message") or "This conflicts with an existing record."
+
+    await _load_schema_allowlist(ctx["source_key"])
+    _validate_table_and_columns(table, set(match_columns.keys()), ctx["source_key"])
+
+    sql_values  = [ctx["org_id"]]
+    where_parts = []
+    for col, path in match_columns.items():
+        val = _resolve_path(ctx, path) if isinstance(path, str) else path
+        if val is None:
+            raise StepError(f"conflict_check: no value at '{path}' for match_columns.{col}")
+        sql_values.append(val)
+        where_parts.append(f"{col} = ${len(sql_values)}")
+
+    exclude_clause = ""
+    exclude_id = params.get("exclude_id")
+    if exclude_id:
+        exclude_val = _resolve_path(ctx, exclude_id) if isinstance(exclude_id, str) else exclude_id
+        if exclude_val:
+            sql_values.append(exclude_val)
+            exclude_clause = f" AND id != ${len(sql_values)}"
+
+    sql = f"SELECT id FROM {table} WHERE org_id = $1 AND {' AND '.join(where_parts)}{exclude_clause} LIMIT 1"
+    row = await fetch_one(sql, *sql_values, source_key=ctx["source_key"])
+    if row:
+        raise UserFacingStepError(error_message)
+    return ctx
+
+
 # ── Op registry — adding a new op never requires changing action_executor.py ─
 
 PRIMITIVES = {
     "resolve_entity":     _op_resolve_entity,
+    "conflict_check":     _op_conflict_check,
     "ai_price_interpret": _op_ai_price_interpret,
     "compute":            _op_compute,
     "otp_gate":           _op_otp_gate,

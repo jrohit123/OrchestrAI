@@ -52,6 +52,21 @@ RULE 3 — entity_schema: Only entities actually needed. Per field:
   "match":"exact" (not "ILIKE"/"wildcard") for enum fields — partial/fuzzy
   matching makes no sense against a fixed, small set of exact values.
 
+  ONE-OFF FIELDS WITH NO REAL COLUMN — custom_fields (jsonb):
+  Every business table has a "custom_fields" jsonb column for exactly this
+  case: a field the admin clearly wants captured, but that has no matching
+  real column in the schema shown above (and isn't common/important enough
+  to justify a schema change). Do NOT invent a fake table/column for it, and
+  do NOT silently drop it. Instead mark it with "json_key" (the key name
+  inside custom_fields) INSTEAD of "table"/"column":
+    "parking_spot": {"type":"string","required":false,"json_key":"parking_spot"}
+  Then in steps[], nest it under the table's custom_fields key rather than
+  listing it flat alongside real columns:
+    "values": {"name":"$fields.name", "custom_fields": {"parking_spot": "$fields.parking_spot"}}
+  If a workflow has SEVERAL such fields for the same table, they all nest
+  under the SAME single "custom_fields" object in that step's values/set —
+  never emit "custom_fields" more than once in one step.
+
 RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id, $2+ for entities).
   null for action workflows.
   This query is what actually RUNS in production every time someone uses this
@@ -142,6 +157,17 @@ RULE 14 — steps (action workflows — this IS the execution logic):
                       second one silently overwrites the first's result, so whichever
                       column that second call matched on ends up being the ONLY thing
                       actually filtered on, silently dropping the other column entirely.
+    conflict_check  — {"table","match_columns":{"col1":"$fields.x","col2":"$fields.y"},
+                       "error_message":"...","exclude_id":"$alias.id" (optional)}
+                      Halts with error_message shown to the user if a row already exists
+                      matching every listed column — use this BEFORE db.insert_row whenever
+                      the request implies "don't let two things collide" (e.g. the same
+                      bookable asset can't have two confirmed bookings overlapping the same
+                      date/time, the same slot can't be double-assigned). Do NOT try to fake
+                      this with resolve_entity — resolve_entity's job is finding a row to use;
+                      conflict_check's job is refusing to proceed BECAUSE a row was found.
+                      exclude_id excludes a row from the check (needed when re-checking on an
+                      update to a booking, so it doesn't conflict with its own existing row).
     compute         — {} — REQUIRED whenever calc_rules is non-empty
     otp_gate        — {"amount_field":"$computed.total_amount"}
     approval_gate   — {"amount_field":"$computed.total_amount"}
