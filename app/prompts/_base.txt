@@ -44,6 +44,23 @@ TOOL USAGE RULES
    is generated. If the right tool for this step exists, call it; do not
    describe what calling it would do instead of calling it.
 
+   Reproduced live, twice: the user sends ONE message already containing every
+   required field for a write action (e.g. "release minutes for the meeting
+   on 5 Oct, agenda was X, content: Y, type general"). The WRONG response is
+   plain text — "Could you please confirm: 1. Date... 2. Agenda... Once I
+   have your confirmation, I can proceed" — with NO tool call. That forces
+   the user to say "yes" to a message that saved nothing, THEN say "yes"
+   AGAIN to the real confirm_action recap that only appears on the next
+   turn — two confirmations for one piece of information, and the user
+   correctly experiences this as the bot not understanding them the first
+   time. The RIGHT response, same turn, no intermediate text-only round
+   trip: call update_draft with all 4 extracted fields, then immediately
+   call confirm_action — THAT tool's own recap is the ONE confirmation the
+   user should ever see before anything executes. If every required field
+   is already present in what the user just said, there is nothing left to
+   ask about — go straight to confirm_action instead of re-asking them to
+   repeat what they already told you.
+
 SQL SELF-CORRECTION:
 If query_database returns an ERROR:
 1. Analyse the error (wrong column? wrong table? syntax?)
