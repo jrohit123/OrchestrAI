@@ -39,16 +39,23 @@ _TOOLS = [
         "parameters": {"type": "object", "properties": {
             "purpose":       {"type": "string", "description": "What this workflow does in plain terms"},
             "workflow_type": {"type": "string", "enum": ["action", "read"]},
-            "raw_fields":    {"type": "array", "items": {"type": "string"},
+            "add_fields":    {"type": "array", "items": {"type": "string"},
                               "description": (
-                                  "The COMPLETE list of fields to collect, replacing whatever was "
-                                  "set before — always pass the full list that should apply going "
-                                  "forward (existing ones the admin didn't change + any added or "
-                                  "renamed), not just what's new. Drop a field entirely if the admin "
-                                  "says to remove it. One entry per distinct piece of information — "
-                                  "never split a single thing the admin named (e.g. 'tenant or owner') "
-                                  "into multiple near-duplicate/synonym fields. e.g. ['customer name', "
-                                  "'item description', 'GST — auto']"
+                                  "ONLY the fields being newly added or renamed THIS turn — not the "
+                                  "whole list. Track what changed, not the full picture from memory: "
+                                  "re-stating everything every turn is how a field silently gets "
+                                  "duplicated under a slightly different name a few turns later. One "
+                                  "entry per distinct piece of information — never split a single "
+                                  "thing the admin named (e.g. 'tenant or owner') into multiple "
+                                  "near-duplicate/synonym fields. e.g. ['customer name', 'GST — auto']"
+                              )},
+            "remove_fields": {"type": "array", "items": {"type": "string"},
+                              "description": (
+                                  "Fields the admin just said to drop — matched against the existing "
+                                  "list case-insensitively, doesn't need to be an exact string match. "
+                                  "This is the ONLY way a field is ever removed; there is no other "
+                                  "removal mechanism, so anything the admin explicitly says to drop "
+                                  "MUST appear here in the same turn."
                               )},
             "business_rules": {"type": "string", "description": "Any OTHER rule not covered by set_gates (calculations, formatting, etc.)."},
             "slash_command": {
@@ -449,15 +456,28 @@ async def _execute_tool(
         if tool_input.get("business_rules"):
             existing = draft.get("business_rules") or ""
             updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
-        if tool_input.get("raw_fields"):
-            # Full replace, not merge — matches set_gates/set_roles semantics.
-            # A silent set-union here was structurally incapable of ever
-            # removing a field: an admin saying "drop the address field" had
-            # no way to take effect no matter what the LLM sent, since the
-            # old field name just got unioned back in. The system prompt
-            # already tells the model to pass the FULL current field list
-            # every time (EXTRACTION-FIRST RULE), so trust that list as-is.
-            updates["raw_fields"] = json.dumps(tool_input["raw_fields"])
+        if tool_input.get("add_fields") or tool_input.get("remove_fields"):
+            # Explicit delta (add/remove), not a full re-statement of the
+            # whole field list. Two prior approaches were both wrong: a
+            # silent set-union merge could never remove a field (an admin
+            # saying "drop the address field" had no way to take effect no
+            # matter what the LLM sent), and a full-replace-every-turn
+            # design shifted the burden onto the LLM to perfectly
+            # reconstruct the entire list from conversation memory every
+            # single call — dialogue-state-tracking research is consistent
+            # that this "full state" pattern is MORE error-prone than
+            # tracking deltas, and it's exactly what produced a live bug
+            # this session (one admin-named field getting split into
+            # multiple near-duplicate entries after a few turns). An
+            # explicit add/remove delta needs no memory reconstruction —
+            # it only asks the model to name what changed THIS turn.
+            existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
+            remove = {r.strip().lower() for r in (tool_input.get("remove_fields") or [])}
+            merged = [f for f in existing_fields if f.strip().lower() not in remove]
+            for f in (tool_input.get("add_fields") or []):
+                if f.strip().lower() not in {m.strip().lower() for m in merged}:
+                    merged.append(f)
+            updates["raw_fields"] = json.dumps(merged)
         if tool_input.get("slash_command"):
             updates["slash_command"] = tool_input["slash_command"].lstrip("/")
         if tool_input.get("command_description"):

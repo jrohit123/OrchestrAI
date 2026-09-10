@@ -10,7 +10,6 @@ from pathlib import Path
 # Set required environment variables for imports
 os.environ.setdefault("ADMIN_TOKEN", "test-token")
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
-os.environ.setdefault("CEREBRAS_API_KEY", "test-key")
 os.environ.setdefault("WHATSAPP_TOKEN", "test-key")
 os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-key")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "test-secret")
