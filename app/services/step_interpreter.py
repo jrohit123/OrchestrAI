@@ -341,10 +341,52 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     Stores the full resolved row in ctx[into] for downstream steps.
     Optional expose: {"alias": "column"} copies columns into ctx["fields"]
     so calc_rules can reference them.
+
+    match_columns (optional) — {"col1":"$fields.x","col2":"$fields.y"}:
+    composite-key lookup, ANDing an ILIKE match on every listed column,
+    for when no single column uniquely identifies a row (e.g. a flat is
+    identified by wing + flat_no together — flat numbers commonly repeat
+    across different wings/towers, so matching on flat_no alone risks
+    silently resolving to the wrong row). Mutually exclusive with
+    match_column/name_from — do not set both.
     """
-    table      = params["table"]
+    table = params["table"]
+    into  = params.get("into", table.rstrip("s"))
+
+    match_columns = params.get("match_columns")
+    if match_columns:
+        await _load_schema_allowlist(ctx["source_key"])
+        _validate_table_and_columns(table, set(match_columns.keys()), ctx["source_key"])
+
+        conditions, values = [], [ctx["org_id"]]
+        for col, path in match_columns.items():
+            val = _resolve_path(ctx, path)
+            if val in (None, ""):
+                raise StepError(f"resolve_entity: no value at '{path}' for match_columns.{col}")
+            safe_val = str(val).replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            values.append(f"%{safe_val}%")
+            conditions.append(f"{col}::text ILIKE ${len(values)}")
+
+        raw_rows = await fetch_all(
+            f"SELECT * FROM {table} WHERE org_id = $1 AND {' AND '.join(conditions)} LIMIT 5",
+            *values, source_key=ctx["source_key"]
+        )
+        rows = [dict(r) for r in raw_rows]
+
+        if len(rows) == 0:
+            desc = ", ".join(f"{c}={_resolve_path(ctx, p)}" for c, p in match_columns.items())
+            raise StepError(f"No {table} record found matching {desc}")
+        if len(rows) > 1:
+            raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
+
+        resolved = dict(rows[0])
+        ctx[into] = resolved
+        ctx.setdefault("_resolved_entities", []).append(into)
+        for alias, column in (params.get("expose") or {}).items():
+            ctx["fields"][alias] = resolved.get(column)
+        return ctx
+
     match_col  = params.get("match_column", "name")
-    into       = params.get("into", table.rstrip("s"))
     name_path  = params["name_from"]
     name_val   = _resolve_path(ctx, name_path)
 

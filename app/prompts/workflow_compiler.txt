@@ -118,6 +118,16 @@ RULE 14 — steps (action workflows — this IS the execution logic):
   Available ops:
     resolve_entity  — {"table","name_from":"$fields.X","into":"alias","match_column":"name"}
                       optional: "expose":{"ctx_alias":"db_column"} to copy row values into fields
+                      COMPOSITE KEY LOOKUP: if no single column uniquely identifies the row
+                      (e.g. a flat is only unique by wing + flat number together — flat
+                      numbers commonly repeat across different wings/towers), use
+                      "match_columns":{"col1":"$fields.x","col2":"$fields.y"} instead of
+                      match_column/name_from — this ANDs a match across every listed column
+                      in ONE resolve_entity step. NEVER emit two separate resolve_entity
+                      steps into the same "into" alias to fake a multi-column match — the
+                      second one silently overwrites the first's result, so whichever
+                      column that second call matched on ends up being the ONLY thing
+                      actually filtered on, silently dropping the other column entirely.
     compute         — {} — REQUIRED whenever calc_rules is non-empty
     otp_gate        — {"amount_field":"$computed.total_amount"}
     approval_gate   — {"amount_field":"$computed.total_amount"}
