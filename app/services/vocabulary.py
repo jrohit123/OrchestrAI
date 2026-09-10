@@ -26,10 +26,30 @@ crash, no guessed English/Hindi words); the message just falls through to
 the normal LLM agent turn instead. See migrations/seed_vocabulary.sql for
 the one-time data seed that gives existing orgs their current behaviour.
 """
+import re
 from app.db import fetch_one
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 _VOCAB_KEYS = ("confirm_words", "cancel_words", "cancel_tokens", "self_reference_words", "retry_words")
+
+
+def matches_vocab(text: str, words: frozenset) -> bool:
+    """
+    True if `text` STARTS WITH one of `words` as a whole token — e.g. "yes"
+    matches "yes save it" and "yes, please" but not "yesterday". Deliberately
+    NOT plain `text in words` (exact equality): that broke live — a real
+    user replying "yes save it" to a pending confirmation didn't exactly
+    equal "yes", failed the deterministic shortcut, fell through to the
+    general LLM agent turn, and got stuck re-asking the same confirmation
+    instead of ever executing. Still fully deterministic (no LLM call) —
+    just tolerant of the word not being the ENTIRE message, which is how
+    people actually type confirmations/cancellations/retries.
+    """
+    if not words:
+        return False
+    text = text.strip().lower()
+    pattern = r'^(?:' + '|'.join(re.escape(w) for w in words) + r')\b'
+    return bool(re.match(pattern, text))
 
 _cache: dict[str, dict] = {}   # org_id -> {key: frozenset}
 

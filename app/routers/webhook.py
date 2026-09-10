@@ -304,7 +304,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     )
     ttl_minutes = org_row["session_ttl_minutes"] if org_row else 480
 
-    from app.services.vocabulary import get_vocabulary
+    from app.services.vocabulary import get_vocabulary, matches_vocab
     vocab = await get_vocabulary(user["org_id"], user["source_key"])
 
     # 3. Security auth check
@@ -316,7 +316,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
         if pre_session.get("state") == "awaiting_security_otp":
             # Handle explicit retry — generate a fresh OTP instead of re-checking the stale one
-            if text.strip().lower() in vocab["retry_words"]:
+            if matches_vocab(text, vocab["retry_words"]):
                 pending_text = pre_session.get("pending_text", "")
                 result = await generate_and_send_otp(
                     user_id=user["user_id"],
@@ -561,7 +561,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 8. Pending action confirmation
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
         text_lower = text.strip().lower()
-        if text_lower in vocab["confirm_words"]:
+        if matches_vocab(text, vocab["confirm_words"]):
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
@@ -595,7 +595,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 await send_text(phone, result.get("message", "Action failed"))
             return
 
-        if text_lower in vocab["cancel_words"]:
+        if matches_vocab(text, vocab["cancel_words"]):
             await _clear_stuck_draft(user, session, session_id, session_ttl, reason="cancelled")
             await send_text(phone, "❌ Action cancelled.")
             return
@@ -645,7 +645,7 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
     # 9. OTP reply for pending action
     elif pending_action and pending_action.get("stage") == "awaiting_otp":
-        if text.strip().lower() in vocab["retry_words"]:
+        if matches_vocab(text, vocab["retry_words"]):
             session.pop("pending_action", None)
             session.pop("state", None)
             await set_session(session_id, session, ttl=session_ttl)
@@ -842,9 +842,9 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
 
 # ── OTP REPLY HANDLER (invoice high value) ────────────
 async def _handle_otp_reply(phone, text, user, session, session_id):
-    from app.services.vocabulary import get_vocabulary
+    from app.services.vocabulary import get_vocabulary, matches_vocab
     vocab = await get_vocabulary(user["org_id"], user["source_key"])
-    if text.strip().lower() in vocab["retry_words"]:
+    if matches_vocab(text, vocab["retry_words"]):
         await set_session(session_id, {})
         await send_text(phone, "🔄 Session cleared. Please resend your original request.")
         return
