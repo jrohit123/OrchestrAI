@@ -249,9 +249,31 @@ def build_draft_recap(draft: dict) -> str:
     if draft.get("workflow_type"):
         lines.append(f"{n}) Type: {draft['workflow_type']}"); n += 1
 
+    # Once compile_and_summarize has run, entity_schema is the real, deduplicated
+    # truth — each field appears exactly once, tied to an actual table.column
+    # (or marked computed). Prefer it over raw_fields, which is just the loose
+    # conversational text ("Wing", "wing", "residential status (tenant...)")
+    # that accumulates duplicates turn over turn and was never meant to be the
+    # final word on what's being saved. Only fall back to raw_fields before
+    # the first compile, when entity_schema doesn't exist yet.
+    entity_schema = _parse_jsonb(draft.get("entity_schema"), {})
     raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
-    if raw_fields:
-        lines.append(f"{n}) Fields: " + ", ".join(raw_fields)); n += 1
+    if entity_schema:
+        lines.append(f"{n}) Fields:"); n += 1
+        for field_name, field_def in entity_schema.items():
+            if not isinstance(field_def, dict):
+                lines.append(f"   • {field_name}")
+                continue
+            if field_def.get("computed"):
+                lines.append(f"   • {field_name} — calculated automatically")
+                continue
+            table = field_def.get("table")
+            column = field_def.get("column")
+            loc = f"{table}.{column}" if table and column else "(not yet mapped to a table)"
+            req = "required" if field_def.get("required") else "optional"
+            lines.append(f"   • {field_name} → {loc} ({req})")
+    elif raw_fields:
+        lines.append(f"{n}) Fields (not compiled yet — discussed so far): " + ", ".join(raw_fields)); n += 1
 
     gates = _parse_jsonb(draft.get("gates"), [])
     if gates:
