@@ -87,7 +87,13 @@ async def generate_pdf(
     # renders position:fixed elements on every page of a multi-page
     # document, so this also works as a repeating letterhead, not just a
     # cover-page logo.
-    if org_id and source_key:
+    if not (org_id and source_key):
+        # This branch was completely silent before — a caller not passing
+        # org_id/source_key looked identical in the logs to a caller that
+        # passed them but found no logo set, making this genuinely
+        # undiagnosable from logs alone. Now it says which one happened.
+        logger.info(f"generate_pdf: no org_id/source_key passed (org_id={org_id!r}, source_key={source_key!r}) — skipping logo lookup entirely")
+    else:
         try:
             from app.db import fetch_one as _fetch_one
             org_row = await _fetch_one("SELECT logo_url FROM orgs WHERE id = $1", org_id, source_key=source_key)
@@ -95,7 +101,10 @@ async def generate_pdf(
         except Exception as e:
             logger.warning(f"Could not load org logo, skipping: {e}")
             logo_url = None
-        if logo_url:
+        if not logo_url:
+            logger.info(f"generate_pdf: org_id={org_id} source_key={source_key} — logo lookup ran, found no logo_url set")
+        else:
+            logger.info(f"generate_pdf: org_id={org_id} — logo found ({len(logo_url)} chars), injecting")
             logo_html = (
                 f'<div style="position:fixed;top:16px;right:16px;z-index:9999;">'
                 f'<img src="{logo_url}" style="max-height:50px;max-width:140px;object-fit:contain;" />'
@@ -107,8 +116,10 @@ async def generate_pdf(
             # doesn't silently no-op the moment the LLM writes <body style=...>.
             if _re.search(r"<body[^>]*>", html):
                 html = _re.sub(r"(<body[^>]*>)", r"\1" + logo_html.replace("\\", "\\\\"), html, count=1)
+                logger.info("generate_pdf: logo injected after <body> tag")
             else:
                 html = logo_html + html
+                logger.warning("generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>")
 
     logger.info(f"Final HTML for PDF: {len(html)} chars, title={title}")
     # WeasyPrint's HTML→PDF render is synchronous and CPU-bound — running it
