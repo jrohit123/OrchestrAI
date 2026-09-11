@@ -7,6 +7,7 @@ stays as the history with status='published'.
 """
 import json
 from app.db import fetch_one, fetch_all, execute
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 
 def _j(val, default=None):
@@ -18,7 +19,28 @@ def _j(val, default=None):
     return val
 
 
-async def sync_role_grants(intent_key: str, org_id: str, desired_roles: list[str], source_key: str) -> None:
+def _referenced_tables(entity_schema: dict) -> set:
+    """Every real DB table a workflow's entity_schema fields read from or
+    write to — skips computed fields (no table of their own) and json_key/
+    custom_fields fields (no 'table', by design — see workflow_compiler.txt).
+    Covers item_schema-nested fields too."""
+    tables = set()
+    for spec in (entity_schema or {}).values():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("table"):
+            tables.add(spec["table"])
+        item_schema = (spec.get("item_schema") or {}) if spec.get("type") == "array" else {}
+        for ispec in item_schema.values():
+            if isinstance(ispec, dict) and ispec.get("table"):
+                tables.add(ispec["table"])
+    return tables
+
+
+async def sync_role_grants(
+    intent_key: str, org_id: str, desired_roles: list[str], source_key: str,
+    entity_schema: dict | str | None = None,
+) -> None:
     """
     Set a workflow's role access to EXACTLY desired_roles — grants roles that
     should now have it, revokes roles that shouldn't. Unlike the old
@@ -27,9 +49,25 @@ async def sync_role_grants(intent_key: str, org_id: str, desired_roles: list[str
     the admin ("actually only staff, not branch_manager") on a later turn,
     via set_roles replacing the whole list — publishing has to make the live
     grants match that replacement, not just accumulate onto it.
+
+    Also grants readable_tables for every table this workflow's
+    entity_schema actually touches, for each role being granted the
+    workflow. roles.permissions ("can trigger this workflow") and
+    roles.readable_tables ("can this role's queries even see this table")
+    are two independent arrays — publishing previously only ever synced the
+    first one. Reproduced live: get_meeting_records was correctly granted
+    to owner/tenant (they could trigger it), but owner/tenant's
+    readable_tables never included meetings/meeting_minutes, so the LLM
+    never saw those tables in its schema and every lookup silently failed
+    with a sanitized "couldn't find that information" — having the
+    workflow permission gave no hint the underlying table access was still
+    missing. Only ever adds tables, never removes — a role losing this one
+    workflow shouldn't lose table access another granted workflow still
+    needs.
     """
+    tables_needed = _referenced_tables(_parse_jsonb(entity_schema, {}) or {})
     all_roles = await fetch_all(
-        "SELECT id, name, permissions FROM roles WHERE org_id = $1", org_id, source_key=source_key
+        "SELECT id, name, permissions, readable_tables FROM roles WHERE org_id = $1", org_id, source_key=source_key
     )
     desired = set(desired_roles or [])
     for r in all_roles:
@@ -46,6 +84,14 @@ async def sync_role_grants(intent_key: str, org_id: str, desired_roles: list[str
                 "UPDATE roles SET permissions = array_remove(permissions, $1) WHERE id = $2",
                 intent_key, r["id"], source_key=source_key
             )
+
+        if wants_it and tables_needed:
+            missing = tables_needed - set(r["readable_tables"] or [])
+            if missing:
+                await execute(
+                    "UPDATE roles SET readable_tables = readable_tables || $1::text[] WHERE id = $2",
+                    list(missing), r["id"], source_key=source_key
+                )
 
 
 async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") -> dict:
@@ -178,7 +224,10 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     # granted_roles is a text[] column (asyncpg decodes arrays natively,
     # unlike jsonb — no _parse_jsonb needed here).
     granted_roles = draft.get("granted_roles") or []
-    await sync_role_grants(draft["intent_key"], org_id, granted_roles, source_key)
+    await sync_role_grants(
+        draft["intent_key"], org_id, granted_roles, source_key,
+        entity_schema=draft.get("entity_schema"),
+    )
 
     # Mark draft as published
     await execute(
