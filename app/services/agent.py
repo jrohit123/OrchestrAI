@@ -1289,6 +1289,27 @@ async def _execute_tool(
                 intent_switched = True
                 logger.info(f"Intent switch detected: {existing_draft.get('intent_key')} → {intent_key}")
 
+        # Permission check as EARLY as possible — this used to only happen
+        # in action_executor.py at final confirm+execute time, meaning a
+        # user with no permission for a workflow was walked through the
+        # entire field-collection dialogue and a full confirmation summary
+        # before being told no at the very last step. Reproduced live: an
+        # owner-role user was asked for missing fields, shown "Reply yes to
+        # save," and only rejected after actually replying yes — a
+        # pointless, confusing dead end. update_draft is the first tool
+        # call for any new intent (RULE D2b), so checking here catches it
+        # on the user's very first message instead.
+        if intent_key and intent_key not in set(user.get("permissions") or []):
+            logger.warning(
+                f"update_draft: permission denied early — user={user.get('user_id')} "
+                f"role={user.get('role')} intent={intent_key}"
+            )
+            return (
+                "PERMISSION_DENIED — do not collect any fields or proceed with this "
+                "request. Tell the user exactly this: \"You don't have permission to "
+                "do that. Please ask a committee member or admin.\""
+            )
+
         # Guard: the LLM must always pass an object. A malformed call (e.g.
         # passing an items array directly as `fields`) corrupts the stored
         # draft via Postgres jsonb's `||` operator, which crashes every

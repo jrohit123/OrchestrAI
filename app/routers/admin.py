@@ -473,7 +473,16 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
 
     if "roles" in body:
         from app.services.workflow_publisher import sync_role_grants
-        await sync_role_grants(existing["intent_key"], str(existing["org_id"]), body["roles"] or [], source_key)
+        # Same readable_tables sync the publish endpoint does — ticking a
+        # role checkbox here is a second, separate path to granting a
+        # workflow (not just the chat builder's publish flow), and it needs
+        # the same "also grant the tables this workflow touches" behavior
+        # or a role ticked on here hits the exact same silent failure a
+        # role granted via publish did before that fix.
+        await sync_role_grants(
+            existing["intent_key"], str(existing["org_id"]), body["roles"] or [], source_key,
+            entity_schema=existing.get("entity_schema"),
+        )
 
     return {"success": True}
 
