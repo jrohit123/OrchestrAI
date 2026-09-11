@@ -22,7 +22,7 @@ from app.redis_client import (
 )
 
 logger = get_context_logger(__name__)
-from app.db import fetch_one, execute
+from app.db import fetch_one, fetch_all, execute
 
 load_dotenv()
 
@@ -159,12 +159,125 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
-        # Telegram linking flow — unregistered tg: user links via email + OTP
+        # Telegram linking flow — unregistered tg: user links via email + OTP,
+        # or self-registers a brand-new account if no existing one matches.
         if phone.startswith("tg:"):
             import re as _re
             chat_id = phone[3:]
             link_session_id = f"tglink:{phone}"
             pending_link = await get_session(link_session_id)
+
+            # TEMPORARY: this Telegram bot is only used by Godrej Emerald
+            # today (Baanganga is on WhatsApp, a structurally separate
+            # webhook — see app/routers/webhook.py's /webhook/whatsapp vs
+            # app/routers/telegram_webhook.py's /webhook/telegram). Self-
+            # registration needs SOME org to create the new user under, and
+            # nothing in an unregistered person's first message says which
+            # org they mean — this is an explicit, acknowledged shortcut for
+            # now, not a permanent multi-tenant design. Revisit (e.g. a
+            # Telegram /start deep-link payload per org) before any second
+            # org goes live on Telegram.
+            NEW_USER_ORG_SOURCE_KEY = "godrej"
+
+            # Step 3: user is registering a brand-new account (no existing
+            # unlinked user matched their email) — collecting name, then
+            # role, then a final confirm, before creating the account and
+            # falling through to the SAME OTP-verify flow as Step 2 below.
+            if pending_link.get("state") == "awaiting_new_user_name":
+                name = text.strip()
+                if not (2 <= len(name) <= 80) or "@" in name or name.startswith("/"):
+                    await send_text(phone, "That doesn't look like a name — please reply with your full name.")
+                    return
+                roles = await fetch_all(
+                    "SELECT id, name FROM roles WHERE org_id = ("
+                    "SELECT id FROM orgs WHERE is_active = true LIMIT 1) ORDER BY name",
+                    source_key=NEW_USER_ORG_SOURCE_KEY
+                )
+                if not roles:
+                    await send_text(phone, "❌ Registration isn't available right now. Please contact your admin.")
+                    await delete_session(link_session_id)
+                    return
+                role_list = "\n".join(f"{i+1}. {r['name'].title()}" for i, r in enumerate(roles))
+                await set_session(link_session_id, {
+                    **pending_link, "state": "awaiting_new_user_role", "name": name,
+                    "role_options": [{"id": str(r["id"]), "name": r["name"]} for r in roles],
+                }, ttl=300)
+                await send_text(phone, f"Thanks, {name}! Which role are you?\n\n{role_list}\n\nReply with the number.")
+                return
+
+            if pending_link.get("state") == "awaiting_new_user_role":
+                options = pending_link.get("role_options", [])
+                choice = text.strip()
+                picked = None
+                if choice.isdigit() and 1 <= int(choice) <= len(options):
+                    picked = options[int(choice) - 1]
+                else:
+                    picked = next((o for o in options if o["name"].lower() == choice.lower()), None)
+                if not picked:
+                    role_list = "\n".join(f"{i+1}. {o['name'].title()}" for i, o in enumerate(options))
+                    await send_text(phone, f"Didn't recognise that — please reply with the number:\n\n{role_list}")
+                    return
+                await set_session(link_session_id, {
+                    **pending_link, "state": "awaiting_new_user_confirm", "role_id": picked["id"], "role_name": picked["name"],
+                }, ttl=300)
+                await send_text(phone,
+                    f"📝 Confirm your details:\n"
+                    f"  • Name: {pending_link.get('name')}\n"
+                    f"  • Email: {pending_link.get('new_user_email')}\n"
+                    f"  • Role: {picked['name'].title()}\n\n"
+                    f"Reply *yes* to create your account, or *no* to cancel."
+                )
+                return
+
+            if pending_link.get("state") == "awaiting_new_user_confirm":
+                text_lower = text.strip().lower()
+                if text_lower in ("no", "cancel"):
+                    await delete_session(link_session_id)
+                    await send_text(phone, "❌ Registration cancelled.")
+                    return
+                if text_lower != "yes":
+                    await send_text(phone, "Reply *yes* to create your account, or *no* to cancel.")
+                    return
+                new_email = pending_link.get("new_user_email")
+                new_row = await fetch_one("""
+                    INSERT INTO users (org_id, role_id, name, email, channel, is_active)
+                    VALUES ((SELECT id FROM orgs WHERE is_active = true LIMIT 1), $1, $2, $3, 'telegram', true)
+                    RETURNING id, (SELECT id FROM orgs WHERE is_active = true LIMIT 1) AS org_id
+                """, pending_link["role_id"], pending_link["name"], new_email, source_key=NEW_USER_ORG_SOURCE_KEY)
+                if not new_row:
+                    await send_text(phone, "❌ Something went wrong creating your account. Please try again.")
+                    await delete_session(link_session_id)
+                    return
+                org_row = await fetch_one(
+                    "SELECT name FROM orgs WHERE id = $1", new_row["org_id"], source_key=NEW_USER_ORG_SOURCE_KEY
+                )
+                result = await generate_and_send_otp(
+                    user_id=str(new_row["id"]),
+                    user_email=new_email,
+                    user_name=pending_link["name"],
+                    org_name=org_row["name"] if org_row else "",
+                    org_id=str(new_row["org_id"]),
+                    action_context={"type": "telegram_link"},
+                    source_key=NEW_USER_ORG_SOURCE_KEY,
+                )
+                if result["sent"]:
+                    # Same state the existing linking flow (Step 2 below) already
+                    # verifies — reusing it as-is rather than duplicating OTP
+                    # verification + bind_telegram_phone logic.
+                    await set_session(link_session_id, {
+                        "state": "awaiting_link_otp",
+                        "user_id": str(new_row["id"]),
+                        "source_key": NEW_USER_ORG_SOURCE_KEY,
+                    }, ttl=180)
+                    await send_text(phone,
+                        f"✅ Account created! A verification code has been sent to *{new_email}*.\n"
+                        f"Reply with the code to activate your account.\n\n"
+                        f"_Code expires in {result['expiry_minutes']} minutes._"
+                    )
+                else:
+                    await send_text(phone, "❌ Could not send verification email. Please contact your admin.")
+                    await delete_session(link_session_id)
+                return
 
             # Step 2: user is replying with the OTP code
             if pending_link.get("state") == "awaiting_link_otp":
@@ -233,16 +346,22 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     else:
                         await send_text(phone, "❌ Could not send verification email. Contact admin.")
                 else:
+                    await set_session(link_session_id, {
+                        "state": "awaiting_new_user_name", "new_user_email": text.strip(),
+                    }, ttl=300)
                     await send_text(phone,
-                        "❌ No account found with that email. "
-                        "Contact your admin to get registered, then send your email here to link."
+                        "No existing account found for that email.\n\n"
+                        "Want to register as a new member? Reply with your *full name* to "
+                        "get started — or contact your admin if you already have an "
+                        "account under a different email."
                     )
                 return
 
             await send_text(phone,
                 "👋 Welcome to OrchestrAI!\n\n"
                 "Your Telegram account isn't linked yet.\n"
-                "Reply with your *registered email address* to link your account.\n\n"
+                "Reply with your *email address* — if you already have an account, "
+                "we'll link it; if not, we'll help you register as a new member.\n\n"
                 "_Example: john@example.com_"
             )
             return
