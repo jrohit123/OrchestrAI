@@ -2084,10 +2084,17 @@ async def run_agent(
                 r"just to confirm|reply .{0,10}yes.{0,10}(to confirm|to save|to proceed))",
                 content, re.IGNORECASE
             ))
-            bullet_field_lines = re.findall(r"(?m)^\s*[-•]\s*\**[\w \(\)]+\**\s*:", content)
+            # Reproduced live: gpt-4o-mini's fake confirm blocks aren't always
+            # "- Field: value" bullets — a NUMBERED list ("1. **Date**: ...")
+            # is just as common and the old [-•]-only pattern missed it
+            # entirely, letting the whole interception silently no-op for
+            # that shape. \d+[.)] catches "1." / "2)" the same way.
+            bullet_field_lines = re.findall(r"(?m)^\s*(?:[-•]|\d+[.)])\s*\**[\w \(\)]+\**\s*:", content)
             invites_confirmation = bool(re.search(
-                r"reply\s+\**yes\**|let'?s confirm|confirm(?:ing)? (?:the details|the registration|"
-                r"the action|now)|let me know if you (?:want to|'?d like to) (?:make any )?change|"
+                r"reply\s+\**yes\**|let'?s confirm|confirm(?:ing)?\s+(?:the\s+)?(?:following\s+)?"
+                r"(?:details|information|registration|action|now)|"
+                r"once i have your confirmation|"
+                r"let me know if you (?:want to|'?d like to) (?:make any )?change|"
                 r"(?:let me|i'll|i will|going to)\s+(?:now\s+)?confirm|please hold on|one moment|"
                 r"before i (?:proceed|register|save|close|assign|confirm)",
                 content, re.IGNORECASE
