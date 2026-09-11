@@ -268,19 +268,18 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
         if text_stripped.lower() == "/start":
             # /start is Telegram's own "user just opened this bot" signal —
-            # sent automatically the first time someone starts a
-            # conversation (or taps a bot's Start button), not something a
-            # user typed expecting a specific command. It was falling
+            # sent automatically on first open or tapping Start, not
+            # something typed expecting a specific command. It was falling
             # through to the generic "Didn't recognise that command"
-            # fallback below, which reads as broken/cold for what's
-            # actually a completely normal, universal first message.
+            # fallback below, which reads as broken for a completely
+            # normal first message. Kept SHORT and generic on purpose —
+            # this is also the message a returning user sees replayed
+            # right after "✅ Identity verified! Session active..." when
+            # their session expired and they just re-verified, so a full
+            # "Welcome to X, I'm your assistant" paragraph here would be
+            # redundant with what they just saw seconds earlier.
             sections = await build_menu_sections(user["org_id"], user)
-            await send_list(
-                phone,
-                f"👋 Welcome to *{user.get('org_name', 'OrchestrAI')}*! "
-                f"I'm your society assistant — here's what I can help with:",
-                "📋 Menu", sections
-            )
+            await send_list(phone, "📋 Here's what I can help with:", "Menu", sections)
             return
         if text_stripped.lower() in ("/help", "/h"):
             from app.services.agent import _build_help_response
