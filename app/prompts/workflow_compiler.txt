@@ -106,6 +106,27 @@ RULE 4 — sql_template: Full parameterized SELECT for read workflows ($1=org_id
      instant that filter isn't supplied. Required fields don't need this —
      only ones where the user might reasonably omit the filter.
 
+     MULTIPLE OPTIONAL FILTERS IN ONE QUERY — CRITICAL, this is where
+     placeholder numbering consistently goes wrong: every entity_schema
+     field feeding a param gets exactly ONE placeholder number, used
+     verbatim everywhere it appears in the WHERE clause (a param CAN
+     appear twice in one filter's own IS-NULL-OR check, but that's still
+     ONE number, not two). With 3 optional filters, sql_params_order has
+     3 entries ($2, $3, $4) and the highest placeholder anywhere in the
+     SQL text must be $4 — count entries in sql_params_order, not
+     distinct-looking clauses, to get this right:
+       SELECT * FROM meetings m
+       LEFT JOIN meeting_minutes mm ON mm.meeting_id = m.id
+       WHERE m.org_id = $1
+         AND ($2::text IS NULL OR m.meeting_type = $2)
+         AND ($3::date IS NULL OR m.meeting_date = $3)
+         AND ($4::text IS NULL OR m.agenda ILIKE '%' || $4 || '%')
+       ORDER BY m.meeting_date DESC
+     sql_params_order = ["meeting_type", "meeting_date", "agenda"] — 3
+     entries, highest placeholder $4 (= 1 + 3). Before returning, COUNT
+     the placeholders you actually wrote against sql_params_order's
+     length yourself — do not submit a mismatch.
+
 RULE 5 — sql_params_order: entity_schema keys in $2,$3... order, OR the literal
   sentinel "$current_user" wherever RULE 4(a) applies. [] for action workflows.
 
