@@ -266,6 +266,22 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         if text_stripped.lower() == "/cancel":
             await cancel_user_draft(user, phone, confirm=False)
             return
+        if text_stripped.lower() == "/start":
+            # /start is Telegram's own "user just opened this bot" signal —
+            # sent automatically the first time someone starts a
+            # conversation (or taps a bot's Start button), not something a
+            # user typed expecting a specific command. It was falling
+            # through to the generic "Didn't recognise that command"
+            # fallback below, which reads as broken/cold for what's
+            # actually a completely normal, universal first message.
+            sections = await build_menu_sections(user["org_id"], user)
+            await send_list(
+                phone,
+                f"👋 Welcome to *{user.get('org_name', 'OrchestrAI')}*! "
+                f"I'm your society assistant — here's what I can help with:",
+                "📋 Menu", sections
+            )
+            return
         if text_stripped.lower() in ("/help", "/h"):
             from app.services.agent import _build_help_response
             await send_text(phone, await _build_help_response(user))
