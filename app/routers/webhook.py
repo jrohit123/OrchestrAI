@@ -167,17 +167,21 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             link_session_id = f"tglink:{phone}"
             pending_link = await get_session(link_session_id)
 
-            # TEMPORARY: this Telegram bot is only used by Godrej Emerald
-            # today (Baanganga is on WhatsApp, a structurally separate
-            # webhook — see app/routers/webhook.py's /webhook/whatsapp vs
-            # app/routers/telegram_webhook.py's /webhook/telegram). Self-
-            # registration needs SOME org to create the new user under, and
-            # nothing in an unregistered person's first message says which
-            # org they mean — this is an explicit, acknowledged shortcut for
-            # now, not a permanent multi-tenant design. Revisit (e.g. a
-            # Telegram /start deep-link payload per org) before any second
-            # org goes live on Telegram.
-            NEW_USER_ORG_SOURCE_KEY = "godrej"
+            # Self-registration needs SOME org to create the new user under.
+            # Resolved from the routing DB's data_sources.messaging_channel
+            # column — since this whole branch only runs for phone.startswith
+            # ("tg:"), i.e. a message that arrived on the Telegram webhook,
+            # whichever org is configured as owning "telegram" is the answer.
+            # Not a Python-level guess: if a second org goes live on Telegram
+            # this raises loudly (see get_source_key_for_channel) instead of
+            # silently misrouting new accounts to the wrong org.
+            from app.db import get_source_key_for_channel
+            try:
+                NEW_USER_ORG_SOURCE_KEY = await get_source_key_for_channel("telegram")
+            except RuntimeError as e:
+                logger.error(f"Cannot resolve org for Telegram self-registration: {e}")
+                await send_text(phone, "❌ Registration isn't available right now. Please contact your admin.")
+                return
 
             # Step 3: user is registering a brand-new account (no existing
             # unlinked user matched their email) — collecting name, then

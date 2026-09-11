@@ -84,6 +84,25 @@ async def get_default_source_key() -> str:
     return keys[0]
 
 
+async def get_source_key_for_channel(channel: str) -> str:
+    """Resolve which org's source_key owns a given messaging channel
+    (e.g. 'telegram', 'whatsapp'), from the routing DB — not a hardcoded
+    mapping. Raises if zero or more than one org claims the channel, since
+    both are configuration states a caller needs to know about rather than
+    silently guessing."""
+    rows = await _routing_pool.fetch(
+        "SELECT source_key FROM data_sources WHERE messaging_channel = $1", channel
+    )
+    if not rows:
+        raise RuntimeError(f"No data_sources row configured for messaging_channel='{channel}'")
+    if len(rows) > 1:
+        raise RuntimeError(
+            f"Multiple data_sources rows configured for messaging_channel='{channel}': "
+            f"{[r['source_key'] for r in rows]} — ambiguous"
+        )
+    return rows[0]["source_key"]
+
+
 async def fetch_one(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:
