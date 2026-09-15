@@ -1207,6 +1207,8 @@ async def _execute_tool(
                 subtitle=subtitle,
                 doc_type=doc_type,
                 extra_context=merged_context,  # ← use merged context with analysis
+                org_id=user["org_id"],
+                source_key=user["source_key"],
             )
             safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".pdf"
 
