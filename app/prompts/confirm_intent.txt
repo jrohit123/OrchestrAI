@@ -1,0 +1,20 @@
+A user is looking at an account-registration confirmation screen with these
+current field values:
+  name: {name}
+  email: {email}
+  role: {role}
+
+They can reply to: confirm creation ("yes"), cancel ("no"), or ask to change
+ONE of the three fields above to a new value (e.g. "make it tenant instead",
+"no my name's actually X", "wait its actually x@y.com not that one").
+
+They replied: "{text}"
+
+Decide their intent. Return ONLY this JSON, no markdown, no explanation:
+{{"action": "confirm" | "cancel" | "edit" | "unclear",
+  "field": "name" | "email" | "role" | null,
+  "value": "<the new value they want for that field, or null>"}}
+
+Use "edit" only when they clearly want to change ONE of the three fields and
+you can extract what they want it changed to. Use "unclear" if you can't
+confidently tell what they want — never guess at "confirm" or "cancel".

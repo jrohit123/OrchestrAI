@@ -157,10 +157,12 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
 
     if not valid_row:
         remaining = max_attempts - (row["attempts"] + 1)
-        return {
-            "valid": False,
-            "reason": f"Incorrect code. {remaining} attempt(s) remaining."
-        }
+        reason = (
+            f"Incorrect code. {remaining} attempt(s) remaining."
+            if remaining > 0 else
+            "Incorrect code. 0 attempts remaining. Reply 'retry' to get a new code."
+        )
+        return {"valid": False, "reason": reason}
 
     # Mark used immediately — single use enforced
     await execute("UPDATE otp_tokens SET used = true WHERE id = $1", valid_row["id"], source_key=source_key)

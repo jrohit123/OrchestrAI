@@ -20,6 +20,7 @@ from app.redis_client import (
     get_session, set_session, delete_session, get_redis,
     set_auth_token, check_auth_token
 )
+from app.services.onboarding_parsing import extract_email, extract_otp_candidates
 
 logger = get_context_logger(__name__)
 from app.db import fetch_one, fetch_all, execute
@@ -154,6 +155,57 @@ async def receive_message(request: Request):
     return {"status": "ok"}
 
 
+async def _handle_email_submission(phone: str, email: str, link_session_id: str) -> None:
+    """
+    Given a candidate email address (already extracted from free text),
+    either kicks off account linking (an existing unlinked user matches it)
+    or starts self-registration (no match). Shared by the initial "send
+    your email" step and the confirm screen's "change email to X" edit —
+    both need identical branching, since changing the email mid-
+    registration might turn out to match an existing account instead of
+    just being a typo fix.
+    """
+    from app.services.identity import find_unlinked_user_by_email
+    candidate = await find_unlinked_user_by_email(email)
+    if candidate:
+        result = await generate_and_send_otp(
+            user_id=candidate["user_id"],
+            user_email=candidate["email"],
+            user_name=candidate["user_name"],
+            org_name=candidate["org_name"],
+            org_id=candidate["org_id"],
+            action_context={"type": "telegram_link"},
+            source_key=candidate["source_key"],
+        )
+        if result["sent"]:
+            await set_session(link_session_id, {
+                "state": "awaiting_link_otp",
+                "user_id": str(candidate["user_id"]),
+                "source_key": candidate["source_key"],
+            }, ttl=180)
+            await send_text(phone,
+                f"🔐 A verification code has been sent to *{candidate['email']}*.\n"
+                f"Reply with the code to link your Telegram account.\n\n"
+                f"_Code expires in {result['expiry_minutes']} minutes. Reply 'retry' to cancel and restart._"
+            )
+        elif result["reason"] == "cooldown":
+            await send_text(phone,
+                f"⏳ Please wait {result['wait_seconds']}s before requesting another code."
+            )
+        else:
+            await send_text(phone, "❌ Could not send verification email. Contact admin.")
+    else:
+        await set_session(link_session_id, {
+            "state": "awaiting_new_user_name", "new_user_email": email,
+        }, ttl=300)
+        await send_text(phone,
+            "No existing account found for that email.\n\n"
+            "Want to register as a new member? Reply with your *full name* to "
+            "get started — or contact your admin if you already have an "
+            "account under a different email."
+        )
+
+
 # ── CORE MESSAGE HANDLER ──────────────────────────────
 async def handle_message(phone: str, text: str, msg_type: str = "text"):
     # 1. Identity
@@ -162,7 +214,6 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         # Telegram linking flow — unregistered tg: user links via email + OTP,
         # or self-registers a brand-new account if no existing one matches.
         if phone.startswith("tg:"):
-            import re as _re
             chat_id = phone[3:]
             link_session_id = f"tglink:{phone}"
             pending_link = await get_session(link_session_id)
@@ -188,7 +239,8 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             # role, then a final confirm, before creating the account and
             # falling through to the SAME OTP-verify flow as Step 2 below.
             if pending_link.get("state") == "awaiting_new_user_name":
-                name = text.strip()
+                from app.services.onboarding_parsing import clean_name
+                name = clean_name(text)
                 if not (2 <= len(name) <= 80) or "@" in name or name.startswith("/"):
                     await send_text(phone, "That doesn't look like a name — please reply with your full name.")
                     return
@@ -210,13 +262,16 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 return
 
             if pending_link.get("state") == "awaiting_new_user_role":
+                from app.services.onboarding_parsing import resolve_role_by_text
                 options = pending_link.get("role_options", [])
-                choice = text.strip()
-                picked = None
-                if choice.isdigit() and 1 <= int(choice) <= len(options):
-                    picked = options[int(choice) - 1]
-                else:
-                    picked = next((o for o in options if o["name"].lower() == choice.lower()), None)
+                picked = resolve_role_by_text(text, options)
+                if not picked:
+                    # No clean digit/name/substring match — role names are
+                    # dynamic per org, so a free-text answer ("I own my flat
+                    # here") goes to the LLM mapper rather than a fixed
+                    # keyword dict that would need reauthoring per org.
+                    from app.services.onboarding_llm import llm_match_role
+                    picked = await llm_match_role(text, options)
                 if not picked:
                     role_list = "\n".join(f"{i+1}. {o['name'].title()}" for i, o in enumerate(options))
                     await send_text(phone, f"Didn't recognise that — please reply with the number:\n\n{role_list}")
@@ -229,19 +284,102 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     f"  • Name: {pending_link.get('name')}\n"
                     f"  • Email: {pending_link.get('new_user_email')}\n"
                     f"  • Role: {picked['name'].title()}\n\n"
-                    f"Reply *yes* to create your account, or *no* to cancel."
+                    f"Reply *yes* to create your account, *no* to cancel, or tell me what "
+                    f"to change (e.g. \"change role to tenant\")."
                 )
                 return
 
             if pending_link.get("state") == "awaiting_new_user_confirm":
-                text_lower = text.strip().lower()
-                if text_lower in ("no", "cancel"):
+                from app.services.vocabulary import get_vocabulary, matches_vocab
+                from app.services.onboarding_parsing import parse_edit_command, clean_name, resolve_role_by_text
+                from app.services.onboarding_llm import llm_parse_confirm_intent, llm_match_role
+
+                stripped = text.strip()
+                role_options = pending_link.get("role_options", [])
+                role_name = pending_link.get("role_name", "")
+
+                # Vocabulary is per-org, but this user doesn't exist yet —
+                # look it up via the org this registration is happening
+                # under (same "single active org per source_key" query the
+                # account-creation INSERT below already relies on).
+                confirm_org_row = await fetch_one(
+                    "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=NEW_USER_ORG_SOURCE_KEY
+                )
+                vocab = (
+                    await get_vocabulary(str(confirm_org_row["id"]), NEW_USER_ORG_SOURCE_KEY)
+                    if confirm_org_row else
+                    {"confirm_words": frozenset(), "cancel_words": frozenset()}
+                )
+
+                def _confirm_card(prefix: str) -> str:
+                    # Reads pending_link fresh (not the `role_name` local
+                    # above) so it reflects whichever field was just edited.
+                    current_role = pending_link.get("role_name", "")
+                    return (
+                        f"{prefix}\n"
+                        f"  • Name: {pending_link.get('name')}\n"
+                        f"  • Email: {pending_link.get('new_user_email')}\n"
+                        f"  • Role: {current_role.title() if current_role else '—'}\n\n"
+                        f"Reply *yes* to create your account, *no* to cancel, or tell me "
+                        f"what to change (e.g. \"change role to tenant\")."
+                    )
+
+                confirmed = matches_vocab(stripped, vocab["confirm_words"]) or stripped.lower() == "yes"
+                cancelled = matches_vocab(stripped, vocab["cancel_words"]) or stripped.lower() in ("no", "cancel")
+
+                if cancelled:
                     await delete_session(link_session_id)
                     await send_text(phone, "❌ Registration cancelled.")
                     return
-                if text_lower != "yes":
-                    await send_text(phone, "Reply *yes* to create your account, or *no* to cancel.")
-                    return
+
+                if not confirmed:
+                    # Fast, deterministic path first: explicit "change X to
+                    # Y" phrasing needs no LLM call. Anything freer-form
+                    # ("no wait its actually X", "make it tenant instead")
+                    # falls back to the LLM intent parser — which itself
+                    # only ever proposes a field+value; nothing here trusts
+                    # it blindly, every edit still goes through the same
+                    # validation/lookup a first-time answer would get.
+                    edit = parse_edit_command(stripped)
+                    if edit:
+                        action, field, value = "edit", edit[0], edit[1]
+                    else:
+                        parsed = await llm_parse_confirm_intent(stripped, pending_link.get("name", ""),
+                                                                 pending_link.get("new_user_email", ""), role_name)
+                        action, field, value = parsed["action"], parsed.get("field"), parsed.get("value")
+
+                    if action == "confirm":
+                        confirmed = True
+                    elif action == "cancel":
+                        await delete_session(link_session_id)
+                        await send_text(phone, "❌ Registration cancelled.")
+                        return
+                    elif action == "edit" and field == "name":
+                        pending_link = {**pending_link, "name": clean_name(value)}
+                        await set_session(link_session_id, pending_link, ttl=300)
+                        await send_text(phone, _confirm_card("📝 Updated. Confirm your details:"))
+                        return
+                    elif action == "edit" and field == "role":
+                        picked = resolve_role_by_text(value, role_options) or await llm_match_role(value, role_options)
+                        if not picked:
+                            role_list = "\n".join(f"{i+1}. {o['name'].title()}" for i, o in enumerate(role_options))
+                            await send_text(phone, f"Didn't catch which role you meant — please reply with the number:\n\n{role_list}")
+                            return
+                        pending_link = {**pending_link, "role_id": picked["id"], "role_name": picked["name"]}
+                        await set_session(link_session_id, pending_link, ttl=300)
+                        await send_text(phone, _confirm_card("📝 Updated. Confirm your details:"))
+                        return
+                    elif action == "edit" and field == "email":
+                        new_candidate_email = extract_email(value) or value.strip()
+                        await _handle_email_submission(phone, new_candidate_email, link_session_id)
+                        return
+                    else:
+                        await send_text(phone,
+                            "I didn't quite catch that — reply *yes* to confirm, *no* to cancel, "
+                            "or tell me what to change (e.g. \"change role to tenant\")."
+                        )
+                        return
+
                 new_email = pending_link.get("new_user_email")
                 new_row = await fetch_one("""
                     INSERT INTO users (org_id, role_id, name, email, channel, is_active)
@@ -290,13 +428,31 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 # org (resolve_identity above returned None), so there is no
                 # org_id yet to look up a vocabulary override for. This is
                 # platform-level linking protocol text, not business content.
-                if text.strip().lower() == "retry":
+                # Tolerant prefix match ("retry please") for the same reason
+                # vocabulary.matches_vocab is — people don't type bare
+                # keywords into chat.
+                if text.strip().lower().startswith("retry"):
                     await delete_session(link_session_id)
                     await send_text(phone, "🔄 Cancelled. Please send your email again to restart linking.")
                     return
 
+                # Extract the code rather than hashing the raw reply — "the
+                # code is 4821" or "OTP: 4821" must not burn one of the 3
+                # real attempts just because it wasn't typed as bare digits.
+                candidates = extract_otp_candidates(text)
+                if not candidates:
+                    await send_text(phone,
+                        "That doesn't look like a code — please check your email and reply with just the digits."
+                    )
+                    return
+                if len(candidates) > 1:
+                    await send_text(phone,
+                        "I found more than one number in that message — please reply with just the code from your email."
+                    )
+                    return
+
                 result = await verify_otp(
-                    pending_link["user_id"], text.strip(), pending_link["source_key"]
+                    pending_link["user_id"], candidates[0], pending_link["source_key"]
                 )
                 if result["valid"]:
                     from app.services.identity import bind_telegram_phone
@@ -329,47 +485,12 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     await send_text(phone, f"❌ {result['reason']}")
                 return
 
-            # Step 1: user just sent an email
-            if _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", text.strip()):
-                from app.services.identity import find_unlinked_user_by_email
-                candidate = await find_unlinked_user_by_email(text.strip())
-                if candidate:
-                    result = await generate_and_send_otp(
-                        user_id=candidate["user_id"],
-                        user_email=candidate["email"],
-                        user_name=candidate["user_name"],
-                        org_name=candidate["org_name"],
-                        org_id=candidate["org_id"],
-                        action_context={"type": "telegram_link"},
-                        source_key=candidate["source_key"],
-                    )
-                    if result["sent"]:
-                        await set_session(link_session_id, {
-                            "state": "awaiting_link_otp",
-                            "user_id": str(candidate["user_id"]),
-                            "source_key": candidate["source_key"],
-                        }, ttl=180)
-                        await send_text(phone,
-                            f"🔐 A verification code has been sent to *{candidate['email']}*.\n"
-                            f"Reply with the code to link your Telegram account.\n\n"
-                            f"_Code expires in {result['expiry_minutes']} minutes. Reply 'retry' to cancel and restart._"
-                        )
-                    elif result["reason"] == "cooldown":
-                        await send_text(phone,
-                            f"⏳ Please wait {result['wait_seconds']}s before requesting another code."
-                        )
-                    else:
-                        await send_text(phone, "❌ Could not send verification email. Contact admin.")
-                else:
-                    await set_session(link_session_id, {
-                        "state": "awaiting_new_user_name", "new_user_email": text.strip(),
-                    }, ttl=300)
-                    await send_text(phone,
-                        "No existing account found for that email.\n\n"
-                        "Want to register as a new member? Reply with your *full name* to "
-                        "get started — or contact your admin if you already have an "
-                        "account under a different email."
-                    )
+            # Step 1: user just sent an email — extracted from anywhere in
+            # the message ("my email is X", "it's X@y.com") rather than
+            # requiring the whole reply to be exactly the address.
+            email = extract_email(text)
+            if email:
+                await _handle_email_submission(phone, email, link_session_id)
                 return
 
             await send_text(phone,
@@ -493,8 +614,23 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     await send_text(phone, "❌ Could not send verification email. Contact admin.")
                 return
 
-            # User is replying with security OTP
-            result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
+            # User is replying with security OTP — extract the digits
+            # rather than hashing the raw reply, same reasoning as the
+            # linking-OTP step above: "the code is 4821" shouldn't burn a
+            # real attempt on a formatting mismatch.
+            candidates = extract_otp_candidates(text)
+            if not candidates:
+                await send_text(phone,
+                    "That doesn't look like a code — please check your email and reply with just the digits."
+                )
+                return
+            if len(candidates) > 1:
+                await send_text(phone,
+                    "I found more than one number in that message — please reply with just the code from your email."
+                )
+                return
+
+            result = await verify_otp(user["user_id"], candidates[0], user["source_key"])
             if result["valid"]:
                 await set_auth_token(user["org_id"], phone, ttl_minutes)
                 pending_text = pre_session.get("pending_text", "")

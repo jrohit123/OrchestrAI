@@ -1,0 +1,11 @@
+A user was asked to pick their role from this list: {role_names}
+
+They replied: "{text}"
+
+Map their reply to exactly ONE of the role names above, but only if you're
+reasonably confident that's what they mean (e.g. "I own my flat here" ->
+the role that means property owner; "I'm renting" -> the tenant-type role).
+If their reply doesn't clearly indicate any role on the list, don't guess.
+
+Return ONLY this JSON, no markdown, no explanation:
+{{"role_name": "<one of the exact role names above, or null if not confident>"}}
