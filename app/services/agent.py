@@ -1214,7 +1214,16 @@ async def _execute_tool(
 
             results = []
 
-            # WhatsApp delivery to current user
+            # send_via="whatsapp" here just means "the user's own chat" —
+            # send_document is the channel-agnostic dispatcher (messaging.py),
+            # which already routes to Telegram or WhatsApp based on the
+            # "tg:" prefix on `phone`. The label just needs to match
+            # whichever one it actually used, not assume WhatsApp — a
+            # Telegram user was seeing "via WhatsApp" in their own chat.
+            def _channel_label(to: str) -> str:
+                return "Telegram" if str(to).startswith("tg:") else "WhatsApp"
+
+            # Delivery to current user
             if send_via in ("whatsapp", "both") and not forward_to:
                 await send_document(
                     to=phone,
@@ -1222,7 +1231,7 @@ async def _execute_tool(
                     filename=safe_filename,
                     caption=f"📄 {title}"
                 )
-                results.append("WhatsApp")
+                results.append(_channel_label(phone))
 
             # Forward to another user (instead of or in addition to current user)
             if forward_to:
@@ -1233,7 +1242,7 @@ async def _execute_tool(
                     filename=safe_filename,
                     caption=f"📨 *From {sender_name}:* 📄 {title}"
                 )
-                results.append(f"WhatsApp → {forward_name or forward_to}")
+                results.append(f"{_channel_label(forward_to)} → {forward_name or forward_to}")
 
             # Email delivery
             if send_via in ("email", "both"):
@@ -2165,6 +2174,36 @@ async def run_agent(
                 force_tool_choice = True
                 continue  # retry this iteration
 
+            # Intercept: LLM claimed a PDF/document was sent as plain text instead
+            # of actually calling generate_pdf. Confirmed live: after an earlier
+            # real PDF send elsewhere in the conversation, a later "pdf" / "give
+            # the pdf for all cases" reply got a fabricated "✅ PDF sent
+            # successfully! ... (19 rows) via WhatsApp" response with NO tool
+            # call at all — nothing was generated or sent, the model just
+            # imitated the shape of its own past tool result. Gated on
+            # _pdf_sent_this_turn so the real, truthful confirmation that
+            # follows an ACTUAL generate_pdf call this turn is never blocked.
+            pdf_sent_this_turn = session_patch.get("_pdf_sent_this_turn", False)
+            if (
+                not pdf_sent_this_turn
+                and re.search(r"(pdf|document)s?\b.{0,30}\bsent\b|\bsent\b.{0,30}(pdf|document)s?\b", content, re.IGNORECASE)
+                and re.search(r"success|✅", content, re.IGNORECASE)
+            ):
+                logger.info(f"Intercepted plain-text PDF-sent confirmation — forcing tool retry")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You said a PDF/document was sent as plain text. "
+                        "Nothing was actually generated or sent — no tool was called. You MUST "
+                        "call generate_pdf with real rows (re-run query_database first if needed "
+                        "to get the data) to actually send it. Do not claim success again unless "
+                        "generate_pdf actually returns PDF_SENT."
+                    )
+                })
+                force_tool_choice = True
+                continue  # retry this iteration
+
             # Intercept: LLM claimed the draft was cancelled/cleared in plain text
             # without actually calling the cancel_draft tool — nothing was cleared.
             active_draft_for_cancel_check = session_patch.get("pending_action") or pending_action
@@ -2279,6 +2318,17 @@ async def run_agent(
                 and result.get("type") == "schedule_created"
             ):
                 session_patch["_schedule_created_this_turn"] = True
+
+            # Same tracking for generate_pdf — see the matching plain-text
+            # intercept below. isinstance(result, str) since this tool
+            # returns "PDF_SENT: ..." / "ERROR: ..." as a plain string, not
+            # the dict shape manage_schedule uses.
+            if (
+                tool_call.function.name == "generate_pdf"
+                and isinstance(result, str)
+                and result.startswith("PDF_SENT:")
+            ):
+                session_patch["_pdf_sent_this_turn"] = True
 
             # If this was a clarify call, stop the loop
             if tool_call.function.name == "clarify":
