@@ -307,6 +307,17 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                     )
                     await delete_session(link_session_id)
                     if linked_user:
+                        # The OTP just verified IS the identity check — mark the
+                        # session authenticated now, otherwise the user's very
+                        # next message immediately triggers an unexplained
+                        # second (security_auth) OTP challenge right after
+                        # onboarding.
+                        link_org_row = await fetch_one(
+                            "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
+                            linked_user["org_id"], source_key=pending_link["source_key"]
+                        )
+                        link_ttl_minutes = link_org_row["session_ttl_minutes"] if link_org_row else 480
+                        await set_auth_token(linked_user["org_id"], linked_user["phone"], link_ttl_minutes)
                         await send_text(phone,
                             f"✅ *Linked!* Welcome, {linked_user['user_name']}.\n"
                             f"Your Telegram account is now connected to OrchestrAI.\n"
