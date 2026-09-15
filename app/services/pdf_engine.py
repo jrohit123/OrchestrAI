@@ -8,6 +8,7 @@ This way existing behaviour is preserved and new DB-configured workflows get cus
 """
 import asyncio
 import json
+import re
 from io import BytesIO
 from datetime import datetime
 from openai import AsyncOpenAI
@@ -54,6 +55,47 @@ RISK_COLORS = {
     "LOW":      {"bg": "#2E7D32", "row": "#F1F8E9", "text": "#FFFFFF"},
     "UPCOMING": {"bg": "#1565C0", "row": "#E3F2FD", "text": "#FFFFFF"},
 }
+
+
+def _strip_page_rules(text: str) -> str:
+    """
+    Remove every `@page { ... }` block from `text`, brace-depth aware since
+    @page can legitimately nest margin at-rules inside it (e.g. `@page {
+    @top-right { content: ...; } }`) — a naive regex stops at the FIRST
+    closing brace, which belongs to the nested rule, not the outer one, and
+    leaves a mangled fragment behind.
+
+    Used so our own logo-reservation @page rule (added right after this
+    runs) is the ONLY @page rule left in the document. Confirmed live:
+    injecting our rule and just trusting normal CSS cascade/source-order to
+    make it win over whatever @page the LLM's own generated HTML declared
+    was not reliable — the logo still overlapped table content on later
+    pages. Removing every other @page rule outright is the version that
+    can't lose a cascade fight, because there's nothing left to fight.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        m = re.search(r"@page\b", text[i:])
+        if not m:
+            out.append(text[i:])
+            break
+        start = i + m.start()
+        out.append(text[i:start])
+        brace_start = text.find("{", start)
+        if brace_start == -1:
+            out.append(text[start:])
+            break
+        depth = 1
+        j = brace_start + 1
+        while j < n and depth > 0:
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+            j += 1
+        i = j  # skip the whole @page{...} block, nested braces included
+    return "".join(out)
 
 
 async def generate_pdf(
@@ -134,10 +176,22 @@ async def generate_pdf(
                 html = logo_html + html
                 logger.warning("generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>")
 
+            # The LLM's own @page rule is what actually sets page size/
+            # orientation (landscape for wide tables) — read that BEFORE
+            # stripping it out below, so our replacement rule preserves it
+            # instead of silently forcing every PDF back to portrait.
+            is_landscape = bool(_re.search(r"@page\b[^}]*landscape", html, _re.IGNORECASE))
+
+            # Strip any @page rule the LLM's own generated HTML declared
+            # BEFORE adding ours, so ours is the only one left — no
+            # cascade/source-order to trust.
+            html = _strip_page_rules(html)
+
             page_margin_css = (
                 "<style>"
                 ".__pdf_org_logo { position: running(__pdfOrgLogo); }"
-                "@page { margin-top: 100px; "
+                f"@page {{ size: {'A4 landscape' if is_landscape else 'A4'}; "
+                "margin-top: 130px; "
                 "@top-right { content: element(__pdfOrgLogo); margin-top: 16px; } }"
                 "</style>"
             )
