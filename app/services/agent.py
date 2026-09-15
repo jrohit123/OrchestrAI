@@ -532,6 +532,57 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_excel",
+            "description": (
+                "Generate a plain data-table .xlsx spreadsheet and send it via WhatsApp/Telegram.\n\n"
+                "This is a raw data download (for filtering/re-import/pivoting elsewhere) — "
+                "no branding, no logo, no layout design. For a formatted document to read or "
+                "hand someone, use generate_pdf instead.\n\n"
+                "STRICT TRIGGER RULE — only call this when the user's current message "
+                "contains at least one of: 'excel', 'xlsx', 'spreadsheet', 'sheet'.\n\n"
+                "DO NOT CALL for: 'show', 'check', 'list', 'dikhao', 'batao' — UNLESS one of "
+                "those words is also present.\n\n"
+                "CORRECT FLOW:\n"
+                "  1. User asks question → query_database → return TEXT\n"
+                "  2. Append to text: '_📊 Reply *excel* to get this as a spreadsheet._'\n"
+                "  3. Only when user replies 'excel' (or similar) → THEN call generate_excel"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rows": {
+                        "type": "array",
+                        "description": "The data rows from query_database"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Sheet title / filename"
+                    },
+                    "subtitle": {
+                        "type": "string",
+                        "description": "Optional subtitle or date range"
+                    },
+                    "send_via": {
+                        "type": "string",
+                        "enum": ["whatsapp", "email", "both"],
+                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'."
+                    },
+                    "forward_to": {
+                        "type": "string",
+                        "description": "Phone number of another user to send this to instead of the current user."
+                    },
+                    "forward_to_name": {
+                        "type": "string",
+                        "description": "Name of the recipient for the forward caption"
+                    }
+                },
+                "required": ["rows", "title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "confirm_action",
             "description": (
                 "Show the user what action is about to be taken and wait for confirmation. "
@@ -1271,6 +1322,80 @@ async def _execute_tool(
         except Exception as e:
             logger.error(f"PDF generation error: {e}", exc_info=True)
             return f"ERROR generating PDF: {str(e)}"
+
+    elif tool_name == "generate_excel":
+        from app.services.excel_engine import generate_excel as _gen_excel
+        from app.services.messaging import send_document
+
+        rows         = tool_input.get("rows", [])
+        title        = tool_input.get("title", "Export")
+        subtitle     = tool_input.get("subtitle", "")
+        send_via     = tool_input.get("send_via", "whatsapp")
+        forward_to   = tool_input.get("forward_to")
+        forward_name = tool_input.get("forward_to_name")
+
+        if not rows:
+            return "ERROR: No data to generate Excel from"
+
+        def _channel_label(to: str) -> str:
+            return "Telegram" if str(to).startswith("tg:") else "WhatsApp"
+
+        try:
+            excel_bytes = _gen_excel(rows=rows, title=title, subtitle=subtitle)
+            safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".xlsx"
+            xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+            results = []
+
+            if send_via in ("whatsapp", "both") and not forward_to:
+                await send_document(
+                    to=phone,
+                    pdf_bytes=excel_bytes,
+                    filename=safe_filename,
+                    caption=f"📊 {title}",
+                    mime_type=xlsx_mime,
+                )
+                results.append(_channel_label(phone))
+
+            if forward_to:
+                sender_name = user.get("user_name", "A colleague")
+                await send_document(
+                    to=forward_to,
+                    pdf_bytes=excel_bytes,
+                    filename=safe_filename,
+                    caption=f"📨 *From {sender_name}:* 📊 {title}",
+                    mime_type=xlsx_mime,
+                )
+                results.append(f"{_channel_label(forward_to)} → {forward_name or forward_to}")
+
+            if send_via in ("email", "both"):
+                user_email = user.get("email")
+                if user_email:
+                    org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"], source_key=user["source_key"])
+                    org_name = org_row["name"] if org_row else user["org_name"]
+                    from app.services.otp_service import send_email_with_pdf
+                    email_sent = await send_email_with_pdf(
+                        to_email=user_email,
+                        to_name=user.get("user_name", "User"),
+                        subject=f"📊 {title} — {org_name}",
+                        body=f"Please find attached: <b>{title}</b>",
+                        pdf_bytes=excel_bytes,
+                        filename=safe_filename,
+                        org_name=org_name
+                    )
+                    if email_sent:
+                        results.append(f"Email ({user_email})")
+                    else:
+                        results.append("Email (failed to send)")
+                else:
+                    results.append("Email (no email on file)")
+
+            delivery_str = " + ".join(results) if results else "no delivery"
+            return f"EXCEL_SENT: {title} ({len(rows)} rows) via {delivery_str}"
+
+        except Exception as e:
+            logger.error(f"Excel generation error: {e}", exc_info=True)
+            return f"ERROR generating Excel: {str(e)}"
 
     elif tool_name == "update_draft":
         intent_key = tool_input.get("intent_key")
@@ -2046,7 +2171,7 @@ async def run_agent(
             fake_failure = bool(
                 re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
                 and re.search(
-                    r"(fetch|retriev|data|load|pdf|document|generat|process|handle|complete|"
+                    r"(fetch|retriev|data|load|pdf|excel|spreadsheet|xlsx|document|generat|process|handle|complete|"
                     r"register|create|file|book|save|submit|confirm|update|insert)",
                     content, re.IGNORECASE
                 )
@@ -2057,12 +2182,14 @@ async def run_agent(
                 messages.append({
                     "role": "user",
                     "content": (
-                        "SYSTEM CORRECTION: You did not actually call any tool — no query or PDF "
-                        "generation was run, so there was no real error. If the user is asking for "
-                        "data, you MUST call query_database with a real SELECT query. If the user "
-                        "is asking for a PDF/document, you MUST call generate_pdf with real rows "
-                        "(re-run query_database first if needed to get the data). Do not apologize "
-                        "about a failure unless you actually called the tool and it returned an ERROR."
+                        "SYSTEM CORRECTION: You did not actually call any tool — no query, PDF, or "
+                        "Excel generation was run, so there was no real error. If the user is asking "
+                        "for data, you MUST call query_database with a real SELECT query. If the user "
+                        "is asking for a PDF/document, you MUST call generate_pdf with real rows. If "
+                        "the user is asking for Excel/a spreadsheet, you MUST call generate_excel with "
+                        "real rows (re-run query_database first if needed to get the data). Do not "
+                        "apologize about a failure unless you actually called the tool and it returned "
+                        "an ERROR."
                     )
                 })
                 force_tool_choice = True
@@ -2204,6 +2331,31 @@ async def run_agent(
                 force_tool_choice = True
                 continue  # retry this iteration
 
+            # Intercept: LLM claimed an Excel/spreadsheet was sent as plain text
+            # instead of actually calling generate_excel. Same failure mode as
+            # the PDF intercept above, same fix — gated on _excel_sent_this_turn
+            # so a truthful confirmation right after a real call isn't blocked.
+            excel_sent_this_turn = session_patch.get("_excel_sent_this_turn", False)
+            if (
+                not excel_sent_this_turn
+                and re.search(r"(excel|spreadsheet|xlsx)\b.{0,30}\bsent\b|\bsent\b.{0,30}(excel|spreadsheet|xlsx)\b", content, re.IGNORECASE)
+                and re.search(r"success|✅", content, re.IGNORECASE)
+            ):
+                logger.info(f"Intercepted plain-text Excel-sent confirmation — forcing tool retry")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM CORRECTION: You said an Excel/spreadsheet was sent as plain text. "
+                        "Nothing was actually generated or sent — no tool was called. You MUST "
+                        "call generate_excel with real rows (re-run query_database first if needed "
+                        "to get the data) to actually send it. Do not claim success again unless "
+                        "generate_excel actually returns EXCEL_SENT."
+                    )
+                })
+                force_tool_choice = True
+                continue  # retry this iteration
+
             # Intercept: LLM claimed the draft was cancelled/cleared in plain text
             # without actually calling the cancel_draft tool — nothing was cleared.
             active_draft_for_cancel_check = session_patch.get("pending_action") or pending_action
@@ -2329,6 +2481,14 @@ async def run_agent(
                 and result.startswith("PDF_SENT:")
             ):
                 session_patch["_pdf_sent_this_turn"] = True
+
+            # Same tracking for generate_excel — mirrors generate_pdf exactly.
+            if (
+                tool_call.function.name == "generate_excel"
+                and isinstance(result, str)
+                and result.startswith("EXCEL_SENT:")
+            ):
+                session_patch["_excel_sent_this_turn"] = True
 
             # If this was a clarify call, stop the loop
             if tool_call.function.name == "clarify":

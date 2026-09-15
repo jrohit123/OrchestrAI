@@ -64,19 +64,22 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     return resp.json()
 
 
-async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = ""):
+async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = "",
+                         mime_type: str = "application/pdf"):
     """
-    Upload PDF to WhatsApp media and send as document.
+    Upload a document (PDF, Excel, ...) to WhatsApp media and send it.
+    `mime_type` defaults to PDF for backwards compatibility with every
+    existing caller — pass the real one (e.g. an .xlsx sheet's) explicitly.
     """
     auth_header = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
-    # Step 1: Upload PDF to Meta media endpoint
+    # Step 1: Upload document to Meta media endpoint
     async with httpx.AsyncClient() as client:
         upload_resp = await client.post(
             MEDIA_URL,
             headers=auth_header,
             data={"messaging_product": "whatsapp"},
-            files={"file": (filename, pdf_bytes, "application/pdf")}
+            files={"file": (filename, pdf_bytes, mime_type)}
         )
         if upload_resp.status_code >= 400:
             logger.error(f"upload_media failed ({upload_resp.status_code}): {upload_resp.text}")

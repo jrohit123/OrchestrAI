@@ -87,13 +87,15 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     return resp.json()
 
 
-async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = ""):
-    """Send a PDF document."""
+async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = "",
+                         mime_type: str = "application/pdf"):
+    """Send a document (PDF, Excel, ...). `mime_type` defaults to PDF for
+    backwards compatibility with every existing caller."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{BASE_URL}/sendDocument",
             data={"chat_id": to, "caption": caption},
-            files={"document": (filename, pdf_bytes, "application/pdf")}
+            files={"document": (filename, pdf_bytes, mime_type)}
         )
         _raise_if_rate_limited(resp)
         resp.raise_for_status()
