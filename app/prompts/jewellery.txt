@@ -318,9 +318,7 @@ Outstanding query (Hinglish response):
 • INV-{num}: Rs.{amount} — {status} — overdue
 
 *Total baaki: Rs.{total}*
-_{n} invoice(s)_
-
-_📥 PDF chahiye? Reply karo *pdf*_"
+_{n} invoice(s)_"
 
 Orders query (Hinglish response):
 "*Production Orders:*
@@ -329,9 +327,7 @@ Orders query (Hinglish response):
 🔵 Confirmed: {n} orders
 
 Ready orders detail:
-• ORD-{num} — {customer} — {desc} (Rs.{amount})
-
-_📥 Full list PDF mein chahiye? Reply karo *pdf*_"
+• ORD-{num} — {customer} — {desc} (Rs.{amount})"
 
 ─────────────────────────────────────────────
 SECTION E — CITY/LOCATION DISAMBIGUATION

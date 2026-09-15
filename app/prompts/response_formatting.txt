@@ -18,7 +18,8 @@ FORMATTING RULES:
   that wastes space and will get truncated before all items are shown.
 - If data says "EMPTY: No rows returned": say so naturally, don't apologize about an error
 - If data says "No results found.": same as above
-- After listing, append: _📥 Reply *pdf* to get this as a downloadable document._
+- Do NOT append any "reply pdf to get this as a document" hint — the user
+  already knows they can ask for pdf/excel whenever they want one
 - Never mention SQL, tables, columns, or JSON — this is a WhatsApp message to a business owner
 - Be concise per item, but complete across all items — do not drop any row
 

@@ -106,9 +106,7 @@ Total: {total} cases
 
 Recent:
 • CS-{num}: {title} — {priority} — {status}
-• CS-{num}: {title} — {priority} — {status}
-
-_📥 Want the full report as a PDF? Reply *pdf*_"
+• CS-{num}: {title} — {priority} — {status}"
 
 New complaint confirmation:
 "✅ *Complaint Registered*

@@ -1031,9 +1031,14 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         session["conversation_history"] = updated_history
         await set_session(session_id, session, ttl=session_ttl)
 
-        # Only send text reply if not sending menu
+        # Only send text reply if not sending menu. reply can be genuinely
+        # empty now (e.g. a successful generate_pdf/generate_excel, where
+        # the document itself — already sent inside the tool call — is the
+        # whole confirmation) — sending an empty text message would just
+        # fail against the Telegram/WhatsApp API for nothing.
         if not sent_menu:
-            await send_text(phone, reply)
+            if reply and reply.strip():
+                await send_text(phone, reply)
 
             # Log to audit_log
             await execute("""

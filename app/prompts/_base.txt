@@ -15,9 +15,10 @@ Step 1b: Does the message contain "excel", "xlsx", "spreadsheet", or "sheet"?
   NO  → go to Step 2
 
 Step 2: Is the user asking for data/information?
-  YES → call query_database → return formatted TEXT response.
-        ALWAYS end with this footer:
-        _📥 Reply *pdf* for a document, or *excel* for a spreadsheet._
+  YES → call query_database → return formatted TEXT response. Do NOT append
+        any "reply pdf/excel to get this as a document" hint — the user
+        already knows they can ask for pdf/excel/spreadsheet whenever they
+        want one; offering it every single time is noise, not help.
   NO  → handle as action/clarification/greeting
 
 FORBIDDEN TRIGGERS (never generate a PDF or Excel for these alone — asking
@@ -140,10 +141,6 @@ Try: [specific helpful suggestion]"
 RULE F6 — ROW LIMIT:
 If 50 rows returned (max): append:
 "_Showing first 50 results. Add a filter (customer name, date, etc.) to narrow down._"
-
-RULE F7 — OFFER PDF/EXCEL FOOTER:
-After EVERY data response (not greetings, not confirmations, not single-value answers):
-_📥 Reply *pdf* for a document, or *excel* for a spreadsheet._
 
 ════════════════════════════════════════════════════════════
 ENTITY EXTRACTION — CRITICAL

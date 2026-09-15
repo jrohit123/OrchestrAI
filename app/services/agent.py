@@ -476,9 +476,9 @@ TOOLS = [
                 "'baaki', 'outstanding', 'dues', 'orders' — UNLESS the word pdf/download/document "
                 "is also present.\n\n"
                 "CORRECT FLOW:\n"
-                "  1. User asks question → query_database → return TEXT\n"
-                "  2. Append to text: '_📥 Reply *pdf* to get this as a document._'\n"
-                "  3. Only when user replies 'pdf' → THEN call generate_pdf\n\n"
+                "  1. User asks question → query_database → return TEXT (do NOT append any\n"
+                "     'reply pdf to get this as a document' hint — offering it every time is noise)\n"
+                "  2. Only when the user's OWN message asks for pdf/download/document → THEN call generate_pdf\n\n"
                 "DOC_TYPE: use 'report' for any multi-row result — that's the safe default "
                 "for every sector. A single-record document (an invoice, a quotation, a "
                 "formal statement for one specific person/entity — whatever this workflow's "
@@ -543,9 +543,9 @@ TOOLS = [
                 "DO NOT CALL for: 'show', 'check', 'list', 'dikhao', 'batao' — UNLESS one of "
                 "those words is also present.\n\n"
                 "CORRECT FLOW:\n"
-                "  1. User asks question → query_database → return TEXT\n"
-                "  2. Append to text: '_📊 Reply *excel* to get this as a spreadsheet._'\n"
-                "  3. Only when user replies 'excel' (or similar) → THEN call generate_excel"
+                "  1. User asks question → query_database → return TEXT (do NOT append any\n"
+                "     'reply excel to get this as a spreadsheet' hint — offering it every time is noise)\n"
+                "  2. Only when the user's OWN message asks for excel/xlsx/spreadsheet → THEN call generate_excel"
             ),
             "parameters": {
                 "type": "object",
@@ -2532,19 +2532,34 @@ async def run_agent(
                 history_to_save.append({"role": "assistant", "content": cancel_text})
                 return cancel_text, history_to_save, {"pending_action": None}
 
-            # If this was a generate_pdf call, return success message immediately
+            # If this was a generate_pdf call, stop the loop immediately.
             if tool_call.function.name == "generate_pdf":
                 # generate_pdf returns "PDF_SENT: title (rows) via delivery" on success
                 # or "ERROR generating PDF: ..." on failure
                 if isinstance(result, str) and result.startswith("PDF_SENT:"):
-                    # Extract the title from the result for a friendly message
-                    pdf_message = f"✅ PDF sent successfully! {result.replace('PDF_SENT:', '')}"
+                    # No chat text on success — the document itself (send_document
+                    # inside the tool call, with its own "📄 {title}" caption) IS
+                    # the confirmation. A follow-up "✅ PDF sent successfully!"
+                    # message was a redundant second message on top of the actual
+                    # file for every single send.
                     history_to_save = _serialize_history(messages)
-                    history_to_save.append({"role": "assistant", "content": pdf_message})
-                    return pdf_message, history_to_save, session_patch
+                    return "", history_to_save, session_patch
                 elif isinstance(result, str) and result.startswith("ERROR generating PDF:"):
                     # Return the error message to the user
                     error_message = f"❌ {result.replace('ERROR generating PDF: ', '')}"
+                    history_to_save = _serialize_history(messages)
+                    history_to_save.append({"role": "assistant", "content": error_message})
+                    return error_message, history_to_save, session_patch
+
+            # If this was a generate_excel call, stop the loop immediately —
+            # same reasoning as generate_pdf above: the file itself (with its
+            # own "📊 {title}" caption) is the confirmation, no extra message.
+            if tool_call.function.name == "generate_excel":
+                if isinstance(result, str) and result.startswith("EXCEL_SENT:"):
+                    history_to_save = _serialize_history(messages)
+                    return "", history_to_save, session_patch
+                elif isinstance(result, str) and result.startswith("ERROR generating Excel:"):
+                    error_message = f"❌ {result.replace('ERROR generating Excel: ', '')}"
                     history_to_save = _serialize_history(messages)
                     history_to_save.append({"role": "assistant", "content": error_message})
                     return error_message, history_to_save, session_patch
