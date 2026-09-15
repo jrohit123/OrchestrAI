@@ -202,15 +202,6 @@ async def admin_data(org_slug: str):
     stats     = await _compute_dashboard_stats(dashboard_cfg, org_id, source_key)
     low_stock = await _compute_low_stock(dashboard_cfg, org_id, source_key)
 
-    recent_logs = await fetch_all("""
-        SELECT a.intent_key, a.outcome, a.otp_used,
-               a.created_at, u.name as user_name
-        FROM audit_log a
-        LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.org_id = $1
-        ORDER BY a.created_at DESC LIMIT 8
-    """, org_id, source_key=source_key)
-
     workflows_out = []
     for w in workflows:
         wd = dict(w)
@@ -227,8 +218,109 @@ async def admin_data(org_slug: str):
         # track that metric at all.
         "stats": stats,
         "low_stock": low_stock,
-        "recent_logs": [dict(r) for r in recent_logs]
+        # Recent Activity has its own paginated/filtered endpoint now
+        # (GET .../api/activity) — no longer bundled in here.
     }
+
+
+@router.get("/admin/{org_slug}/api/activity")
+async def admin_activity(
+    org_slug: str,
+    user_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    outcome: str | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """
+    Paginated, filterable Recent Activity feed. intent_key is only ever
+    'agent'/'menu' for ordinary chat turns (the real content is input_text/
+    response_text) — anything else is a genuine workflow name, shown as-is;
+    'agent'/'menu' are relabelled "Chat" since they say nothing useful.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    if not org:
+        return {"error": "No active org found"}
+    org_id = str(org["id"])
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    offset = (page - 1) * page_size
+
+    where = "a.org_id = $1"
+    params: list = [org_id]
+
+    if user_id:
+        params.append(user_id)
+        where += f" AND a.user_id = ${len(params)}::uuid"
+    if date_from:
+        params.append(date_from)
+        where += f" AND a.created_at >= ${len(params)}::date"
+    if date_to:
+        params.append(date_to)
+        where += f" AND a.created_at < (${len(params)}::date + interval '1 day')"
+    if outcome:
+        params.append(outcome)
+        where += f" AND a.outcome = ${len(params)}"
+    if search:
+        params.append(f"%{search}%")
+        where += f" AND (a.input_text ILIKE ${len(params)} OR a.response_text ILIKE ${len(params)})"
+
+    total_row = await fetch_one(
+        f"SELECT COUNT(*) AS n FROM audit_log a WHERE {where}", *params, source_key=source_key
+    )
+
+    rows = await fetch_all(f"""
+        SELECT a.id, a.created_at, a.user_id, u.name AS user_name, a.intent_key,
+               a.input_text, a.response_text, a.outcome, a.session_id
+        FROM audit_log a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE {where}
+        ORDER BY a.created_at DESC
+        LIMIT {page_size} OFFSET {offset}
+    """, *params, source_key=source_key)
+
+    users = await fetch_all("""
+        SELECT DISTINCT u.id, u.name
+        FROM audit_log a JOIN users u ON u.id = a.user_id
+        WHERE a.org_id = $1
+        ORDER BY u.name
+    """, org_id, source_key=source_key)
+
+    out_rows = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = str(d["id"])
+        d["user_id"] = str(d["user_id"]) if d["user_id"] else None
+        d["workflow"] = d["intent_key"] if d["intent_key"] not in ("agent", "menu") else "Chat"
+        out_rows.append(d)
+
+    return {
+        "rows": out_rows,
+        "total": total_row["n"] if total_row else 0,
+        "page": page,
+        "page_size": page_size,
+        "users": [{"id": str(u["id"]), "name": u["name"]} for u in users],
+    }
+
+
+@router.get("/admin/{org_slug}/api/activity/session")
+async def admin_activity_session(org_slug: str, session_id: str):
+    """Full transcript for one conversation — every audit_log row sharing
+    the same session_id (the exact key Redis already keys this chat's
+    session by), oldest first so it reads top-to-bottom like a chat."""
+    source_key = await _resolve_source_key(org_slug)
+    rows = await fetch_all("""
+        SELECT a.created_at, u.name AS user_name, a.input_text, a.response_text
+        FROM audit_log a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.session_id = $1
+        ORDER BY a.created_at ASC
+    """, session_id, source_key=source_key)
+    return {"rows": [dict(r) for r in rows]}
 
 
 @router.post("/admin/{org_slug}/api/workflow/{workflow_id}/toggle")
@@ -900,13 +992,36 @@ input:checked+.slider:before{transform:translateX(18px)}
     <!-- ── RECENT ACTIVITY ───────────────────────────────────────── -->
     <div class="card">
       <div class="card-title">📋 Recent Activity</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+        <select class="field-input" id="actUser" style="width:160px">
+          <option value="">All users</option>
+        </select>
+        <input class="field-input" type="date" id="actFrom" style="width:150px" title="From date">
+        <input class="field-input" type="date" id="actTo" style="width:150px" title="To date">
+        <select class="field-input" id="actOutcome" style="width:130px">
+          <option value="">All status</option>
+          <option value="success">success</option>
+          <option value="error">error</option>
+        </select>
+        <input class="field-input" type="text" id="actSearch" placeholder="Search message or reply" style="flex:1;min-width:180px">
+        <button class="btn btn-gray" onclick="resetActivityFilters()">Reset</button>
+      </div>
       <table style="table-layout:fixed">
         <thead><tr>
-          <th style="width:18%">User</th><th style="width:34%">Action</th>
-          <th style="width:28%">Timestamp</th><th style="width:20%">Status</th>
+          <th style="width:14%">Timestamp</th><th style="width:13%">User</th>
+          <th style="width:23%">Message</th><th style="width:23%">Reply</th>
+          <th style="width:12%">Workflow</th><th style="width:8%">Status</th><th style="width:7%"></th>
         </tr></thead>
         <tbody id="activityTable"></tbody>
       </table>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#888">
+        <span id="activityInfo"></span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-gray" id="activityPrev" onclick="changeActivityPage(-1)">Prev</button>
+          <span id="activityPageNum"></span>
+          <button class="btn btn-gray" id="activityNext" onclick="changeActivityPage(1)">Next</button>
+        </div>
+      </div>
     </div>
 
   </div><!-- /content -->
@@ -961,6 +1076,17 @@ input:checked+.slider:before{transform:translateX(18px)}
       <button class="btn btn-gray" onclick="closeModal('jsonViewModal')" style="padding:4px 10px">✕</button>
     </div>
     <div id="jsonViewContent" class="json-editor" style="min-height:400px;max-height:70vh;overflow-y:auto;background:#fafbfc"></div>
+  </div>
+</div>
+
+<!-- ── ACTIVITY CONVERSATION MODAL ──────────────────────────────── -->
+<div class="modal-bg" id="activityConvoModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-title" style="display:flex;justify-content:space-between">
+      <span id="activityConvoTitle">Conversation</span>
+      <button class="btn btn-gray" onclick="closeModal('activityConvoModal')" style="padding:4px 10px">✕</button>
+    </div>
+    <div id="activityConvoThread" style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto"></div>
   </div>
 </div>
 
@@ -1535,16 +1661,6 @@ async function loadData() {
       document.getElementById('lowStockCard').style.display = 'none';
     }
 
-    const logs = data.recent_logs || [];
-    document.getElementById('activityTable').innerHTML = logs.map(l => `
-      <tr>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.user_name || '—'}</td>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.intent_key}">${l.intent_key}</td>
-        <td style="color:#888;font-size:12px">${fmtDate(l.created_at)}</td>
-        <td><span class="badge ${l.outcome==='success'?'badge-active':l.outcome==='pending'?'badge-inactive':'badge-inactive'}">${l.outcome}</span></td>
-      </tr>
-    `).join('') || '<tr><td colspan="4" style="color:#aaa">No recent activity</td></tr>';
-
     document.getElementById('loading').style.display = 'none';
     document.getElementById('content').style.display = 'block';
   } catch(e) {
@@ -1552,7 +1668,121 @@ async function loadData() {
   }
 }
 
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+let activityPage = 1;
+let activityTotalPages = 1;
+let activityUsersLoaded = false;
+let activityRows = [];
+
+function viewActivityConvoByIndex(idx) {
+  const r = activityRows[idx];
+  if (r) viewActivityConvo(r.session_id, r);
+}
+
+function activityParams(page) {
+  const p = new URLSearchParams({ page: page, page_size: 10 });
+  const user = document.getElementById('actUser').value;
+  const from = document.getElementById('actFrom').value;
+  const to = document.getElementById('actTo').value;
+  const outcome = document.getElementById('actOutcome').value;
+  const search = document.getElementById('actSearch').value.trim();
+  if (user) p.set('user_id', user);
+  if (from) p.set('date_from', from);
+  if (to) p.set('date_to', to);
+  if (outcome) p.set('outcome', outcome);
+  if (search) p.set('search', search);
+  return p;
+}
+
+async function loadActivity(page = 1) {
+  activityPage = page;
+  const res = await authenticatedFetch(API('/activity?' + activityParams(page).toString()));
+  if (!res || !res.ok) return;
+  const data = await res.json();
+
+  if (!activityUsersLoaded) {
+    const sel = document.getElementById('actUser');
+    (data.users || []).forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.id; opt.textContent = u.name;
+      sel.appendChild(opt);
+    });
+    activityUsersLoaded = true;
+  }
+
+  activityRows = data.rows || [];
+  document.getElementById('activityTable').innerHTML = activityRows.map((r, idx) => `
+    <tr>
+      <td style="color:#888;font-size:12px">${fmtDate(r.created_at)}</td>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.user_name) || '—'}</td>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.input_text)}">${escHtml(r.input_text) || '—'}</td>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888" title="${escHtml(r.response_text)}">${escHtml(r.response_text) || '—'}</td>
+      <td><span class="badge badge-read">${escHtml(r.workflow)}</span></td>
+      <td><span class="badge ${r.outcome==='success'?'badge-active':'badge-inactive'}">${escHtml(r.outcome)}</span></td>
+      <td><button class="btn btn-gray" style="padding:4px 10px" onclick="viewActivityConvoByIndex(${idx})">View</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" style="color:#aaa">No activity matches these filters</td></tr>';
+
+  const total = data.total || 0;
+  const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 10)));
+  activityTotalPages = totalPages;
+  const start = total ? (page - 1) * (data.page_size || 10) + 1 : 0;
+  const end = Math.min(page * (data.page_size || 10), total);
+  document.getElementById('activityInfo').textContent = total ? `Showing ${start}-${end} of ${total}` : '';
+  document.getElementById('activityPageNum').textContent = `Page ${page} of ${totalPages}`;
+  document.getElementById('activityPrev').disabled = page <= 1;
+  document.getElementById('activityNext').disabled = page >= totalPages;
+}
+
+function changeActivityPage(delta) {
+  const next = activityPage + delta;
+  if (next < 1 || next > activityTotalPages) return;
+  loadActivity(next);
+}
+
+function resetActivityFilters() {
+  ['actUser','actFrom','actTo','actOutcome','actSearch'].forEach(id => document.getElementById(id).value = '');
+  loadActivity(1);
+}
+
+async function viewActivityConvo(sessionId, fallbackRow) {
+  document.getElementById('activityConvoTitle').textContent =
+    (fallbackRow.user_name || 'Conversation') + ' — ' + fmtDate(fallbackRow.created_at);
+  let thread;
+  if (sessionId) {
+    const res = await authenticatedFetch(API('/activity/session?session_id=' + encodeURIComponent(sessionId)));
+    thread = res && res.ok ? (await res.json()).rows : [];
+  } else {
+    thread = [];
+  }
+  if (!thread.length) {
+    // Legacy row logged before session_id/response_text existed, or a
+    // one-off with nothing else in that session — fall back to just this
+    // row's own message/reply instead of showing an empty modal.
+    thread = [{ input_text: fallbackRow.input_text, response_text: fallbackRow.response_text }];
+  }
+  const bubbles = [];
+  thread.forEach(turn => {
+    if (turn.input_text) bubbles.push(['user', turn.input_text]);
+    bubbles.push(['bot', turn.response_text || '(no reply recorded)']);
+  });
+  document.getElementById('activityConvoThread').innerHTML = bubbles.map(([who, text]) => `
+    <div style="align-self:${who==='bot'?'flex-end':'flex-start'};max-width:80%;background:${who==='bot'?'#e6f1fb':'#f0f4f8'};color:#1a1a2e;padding:8px 12px;border-radius:8px;font-size:13px">${escHtml(text)}</div>
+  `).join('');
+  openModal('activityConvoModal');
+}
+
+['actUser','actFrom','actTo','actOutcome'].forEach(id =>
+  document.getElementById(id).addEventListener('change', () => loadActivity(1)));
+document.getElementById('actSearch').addEventListener('input', () => loadActivity(1));
+
 loadData();
+loadActivity();
 setInterval(loadData, 30000);
 </script>
 </body>

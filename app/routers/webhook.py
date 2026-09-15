@@ -1040,17 +1040,19 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             if reply and reply.strip():
                 await send_text(phone, reply)
 
-            # Log to audit_log
+            # Log to audit_log — response_text/session_id let the admin panel
+            # show the actual reply and group turns into one conversation
+            # (same key Redis already uses for this chat's session).
             await execute("""
-                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
-                VALUES ($1, $2, 'agent', $3, 'success')
-            """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
+                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
+                VALUES ($1, $2, 'agent', $3, $4, $5, 'success')
+            """, user["org_id"], user["user_id"], text, reply, session_id, source_key=user["source_key"])
         else:
             # Log to audit_log for menu responses too
             await execute("""
-                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, outcome)
-                VALUES ($1, $2, 'menu', $3, 'success')
-            """, user["org_id"], user["user_id"], text, source_key=user["source_key"])
+                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
+                VALUES ($1, $2, 'menu', $3, $4, $5, 'success')
+            """, user["org_id"], user["user_id"], text, reply, session_id, source_key=user["source_key"])
 
     except Exception as e:
         # If this came from a Telegram send that's already flood-controlled
