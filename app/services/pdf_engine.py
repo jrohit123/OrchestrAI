@@ -121,6 +121,24 @@ async def generate_pdf(
                 html = logo_html + html
                 logger.warning("generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>")
 
+            # position:fixed repeats the logo on EVERY page (WeasyPrint's
+            # correct behaviour for paged media) — but nothing reserved
+            # space for it, so a continuation page's table starts at the
+            # very top and renders straight under it. Confirmed live: a
+            # multi-page case list overlapped the logo on page 2 even
+            # though page 1 looked fine (its own title/header happened to
+            # push the table down far enough by coincidence). A `@page`
+            # top margin sized to the logo's footprint (16px offset + 50px
+            # tall + breathing room) reserves that band on every page, not
+            # just the first. Longhand margin-top only, so it doesn't
+            # touch whatever margin-right/bottom/left the LLM's own @page
+            # rule (if any) already set.
+            page_margin_css = "<style>@page { margin-top: 100px; }</style>"
+            if "</head>" in html:
+                html = html.replace("</head>", page_margin_css + "</head>", 1)
+            else:
+                html = page_margin_css + html
+
     logger.info(f"Final HTML for PDF: {len(html)} chars, title={title}")
     # WeasyPrint's HTML→PDF render is synchronous and CPU-bound — running it
     # directly here blocks the event loop for every other in-flight
