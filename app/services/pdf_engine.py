@@ -105,8 +105,21 @@ async def generate_pdf(
             logger.info(f"generate_pdf: org_id={org_id} source_key={source_key} — logo lookup ran, found no logo_url set")
         else:
             logger.info(f"generate_pdf: org_id={org_id} — logo found ({len(logo_url)} chars), injecting")
+
+            # Was position:fixed, which repeats on every page but shares a
+            # coordinate frame with the @page margin in a way that isn't
+            # guaranteed collision-free — confirmed live: a multi-page case
+            # list still overlapped the logo on page 2 even after reserving
+            # a matching @page margin-top. Switched to CSS Paged Media's
+            # actual mechanism for a repeating letterhead: `position:
+            # running()` pulls the logo out of the document's normal flow
+            # entirely, and `@page { @top-right { content: element(...) } }`
+            # renders it inside the page's TOP MARGIN BOX — a separate
+            # layout region from the content area by spec, so body content
+            # (a table, at any column count, on any page) cannot land on
+            # top of it. No pixel math to get subtly wrong.
             logo_html = (
-                f'<div style="position:fixed;top:16px;right:16px;z-index:9999;">'
+                f'<div class="__pdf_org_logo">'
                 f'<img src="{logo_url}" style="max-height:50px;max-width:140px;object-fit:contain;" />'
                 f'</div>'
             )
@@ -121,19 +134,13 @@ async def generate_pdf(
                 html = logo_html + html
                 logger.warning("generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>")
 
-            # position:fixed repeats the logo on EVERY page (WeasyPrint's
-            # correct behaviour for paged media) — but nothing reserved
-            # space for it, so a continuation page's table starts at the
-            # very top and renders straight under it. Confirmed live: a
-            # multi-page case list overlapped the logo on page 2 even
-            # though page 1 looked fine (its own title/header happened to
-            # push the table down far enough by coincidence). A `@page`
-            # top margin sized to the logo's footprint (16px offset + 50px
-            # tall + breathing room) reserves that band on every page, not
-            # just the first. Longhand margin-top only, so it doesn't
-            # touch whatever margin-right/bottom/left the LLM's own @page
-            # rule (if any) already set.
-            page_margin_css = "<style>@page { margin-top: 100px; }</style>"
+            page_margin_css = (
+                "<style>"
+                ".__pdf_org_logo { position: running(__pdfOrgLogo); }"
+                "@page { margin-top: 100px; "
+                "@top-right { content: element(__pdfOrgLogo); margin-top: 16px; } }"
+                "</style>"
+            )
             if "</head>" in html:
                 html = html.replace("</head>", page_margin_css + "</head>", 1)
             else:
