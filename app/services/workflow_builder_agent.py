@@ -343,7 +343,9 @@ def build_draft_state(draft: dict) -> dict:
 
     return {
         "title":          draft.get("name") or draft.get("purpose"),
+        "intent_key":     draft.get("intent_key"),
         "workflow_type":  draft.get("workflow_type"),
+        "description":    draft.get("description"),
         "business_rule":  draft.get("business_rules"),
         "compiled":       compiled,
         "fields":         fields,
@@ -418,6 +420,7 @@ async def get_live_snapshot(org_id: str, intent_key: str, source_key: str) -> di
         org_id, intent_key, source_key=source_key
     )
     return {
+        "id": str(wf["id"]),
         "version": wf["version"],
         "fields": _fields_from_entity_schema(_parse_jsonb(wf.get("entity_schema"), {})),
         "gates": _parse_jsonb(wf.get("gates"), []),

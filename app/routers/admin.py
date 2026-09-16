@@ -1146,6 +1146,29 @@ async def edit_draft_trigger(org_slug: str, draft_id: str, request: Request):
     return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
 
 
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/description")
+async def edit_draft_description(org_slug: str, draft_id: str, request: Request):
+    """Direct panel edit for the description — moved here from the old
+    settings-modal form. Purely descriptive text with no execution-logic
+    impact, so safe to change with no recompile, same as roles/trigger."""
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+
+    description = (body.get("description") or "").strip()
+    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    await execute(
+        "UPDATE workflow_drafts SET description = $1, updated_at = now() WHERE id = $2",
+        description, draft_id, source_key=source_key
+    )
+    draft["description"] = description
+    await append_draft_note(draft, "directly edited the description", source_key)
+    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+
+
 def _build_html() -> str:
     return """<!DOCTYPE html>
 <html lang="en">
@@ -1364,46 +1387,6 @@ input:checked+.slider:before{transform:translateX(18px)}
 </div><!-- /container -->
 
 <!-- ── WORKFLOW SETTINGS MODAL (structural only — see PUT /workflow/{id}) ── -->
-<div class="modal-bg" id="editModal">
-  <div class="modal">
-    <div class="modal-title">⚙️ Workflow Settings</div>
-    <input type="hidden" id="editId">
-    <input type="hidden" id="editWorkflowIdForLogic">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="field-row">
-        <div class="field-label">Name</div>
-        <input class="field-input" id="editName">
-      </div>
-      <div class="field-row">
-        <div class="field-label">Intent Key (read-only)</div>
-        <input class="field-input" id="editIntentKey" readonly style="background:#f9f9f9">
-      </div>
-    </div>
-    <div class="field-row">
-      <div class="field-label">Description</div>
-      <textarea class="field-input" id="editDescription" rows="2"></textarea>
-    </div>
-    <div class="field-row">
-      <div class="field-label">Trigger command</div>
-      <input class="field-input" id="editSlashCommand" placeholder="e.g. stock" style="max-width:200px">
-    </div>
-    <div class="field-row">
-      <div class="field-label">Who can use it</div>
-      <div id="editRolesContainer" style="display:flex;flex-wrap:wrap;gap:14px"></div>
-    </div>
-
-    <div style="border-top:1px solid #e8edf5;margin-top:16px;padding-top:14px">
-      <button class="btn btn-purple" onclick="openEditLogic()">💬 Edit the logic for this workflow</button>
-      <button class="btn btn-gray" onclick="viewRawJson()">🔍 View workflow JSON</button>
-    </div>
-
-    <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn btn-primary" onclick="saveWorkflowEdit()">💾 Save Settings</button>
-      <button class="btn btn-gray" onclick="closeModal('editModal')">Cancel</button>
-    </div>
-  </div>
-</div>
-
 <!-- ── RAW JSON VIEW (read-only — the real saved data, formatted for readability) ── -->
 <div class="modal-bg" id="jsonViewModal">
   <div class="modal" style="max-width:700px">
@@ -1429,9 +1412,12 @@ input:checked+.slider:before{transform:translateX(18px)}
 <!-- ── WORKFLOW CHAT BUILDER MODAL ──────────────────────────────── -->
 <div class="modal-bg" id="builderModal">
   <div class="modal" style="max-width:920px">
-    <div class="modal-title" style="display:flex;justify-content:space-between">
+    <div class="modal-title" style="display:flex;justify-content:space-between;align-items:center">
       <span id="builderTitle">💬 Build / Edit a Workflow</span>
-      <button class="btn btn-gray" onclick="closeModal('builderModal')" style="padding:4px 10px">✕</button>
+      <span>
+        <button class="btn btn-gray" id="viewJsonBtn" onclick="viewRawJson()" style="display:none;padding:4px 10px;font-size:11px;margin-right:6px">🔍 View JSON</button>
+        <button class="btn btn-gray" onclick="closeModal('builderModal')" style="padding:4px 10px">✕</button>
+      </span>
     </div>
     <div style="display:grid;grid-template-columns:1fr 300px;gap:14px">
       <div>
@@ -1585,7 +1571,7 @@ function renderWorkflows(workflows) {
         </label>
       </td>
       <td style="white-space:nowrap">
-        <button class="btn btn-gray" onclick="openEdit('${w.id}')" style="margin-right:4px">✏️ Edit</button>
+        <button class="btn btn-gray" onclick="openEditLogic('${w.id}')" style="margin-right:4px">✏️ Edit</button>
         <button class="btn btn-danger" onclick="deleteWorkflow('${w.id}','${w.name}')">🗑️</button>
       </td>
     </tr>
@@ -1618,49 +1604,12 @@ async function refreshOrgRoles() {
   if (r && r.ok) orgRolesList = (await r.json()).map(x => x.name);
 }
 
-// ── Edit Modal ────────────────────────────────────────────────────
-async function openEdit(id) {
-  const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
-  if (!r) return;
-  const w = await r.json();
-  document.getElementById('editId').value = id;
-  document.getElementById('editWorkflowIdForLogic').value = id;
-  document.getElementById('editName').value = w.name || '';
-  document.getElementById('editIntentKey').value = w.intent_key || '';
-  document.getElementById('editDescription').value = w.description || '';
-  document.getElementById('editSlashCommand').value = w.slash_command || '';
-
-  const granted = w.granted_roles || [];
-  document.getElementById('editRolesContainer').innerHTML = (orgRolesList || []).map(r => `
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-      <input type="checkbox" value="${r}" class="edit-role-cb" ${granted.includes(r) ? 'checked' : ''}> ${r}
-    </label>`).join('');
-
-  openModal('editModal');
-}
-
-async function saveWorkflowEdit() {
-  const id = document.getElementById('editId').value;
-  const roles = Array.from(document.querySelectorAll('.edit-role-cb:checked')).map(cb => cb.value);
-  const body = {
-    name:          document.getElementById('editName').value,
-    description:   document.getElementById('editDescription').value,
-    slash_command: document.getElementById('editSlashCommand').value,
-    roles,
-  };
-  const r = await authenticatedFetch(API(`/workflow/${id}`), {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
-  });
-  if (r) {
-    const d = await r.json();
-    if (d.success) { alert('✅ Saved'); closeModal('editModal'); loadData(); }
-    else {
-      const detail = d.detail;
-      const msg = typeof detail === 'object' ? (detail.error + (detail.problems ? '\\n• ' + detail.problems.join('\\n• ') : '')) : detail;
-      alert('Error: ' + msg);
-    }
-  }
-}
+// Structural settings (name/description/trigger/roles) now live entirely
+// inside the chat builder panel (renderDraftPanel) — editing a workflow no
+// longer opens a separate settings modal first, it goes straight into
+// openEditLogic below. The old form-based editModal and its save path
+// (PUT /workflow/{id}) were removed; that endpoint is still on the server
+// but nothing in this UI calls it anymore.
 
 // Same raw data as before (training_phrases, entity_schema, calc_rules,
 // steps, sql_template, business_glossary, pdf_config, response_template,
@@ -1703,7 +1652,8 @@ const _JSON_VIEW_FIELDS = [
 ];
 
 async function viewRawJson() {
-  const id = document.getElementById('editWorkflowIdForLogic').value;
+  const id = chatLiveSnapshot && chatLiveSnapshot.id;
+  if (!id) { alert("Nothing published yet — there's no live workflow to show JSON for."); return; }
   const r = await authenticatedFetch(API(`/workflow/${id}/detail`));
   if (!r) return;
   const w = await r.json();
@@ -1765,6 +1715,16 @@ function _resetBuilderModal() {
   document.getElementById('diffPill').style.display = 'none';
   document.getElementById('builderTitle').textContent = '💬 Build a New Workflow';
   _updateManualPublishLabel();
+  _updateViewJsonBtn();
+}
+
+// Shows "View JSON" only once there's an actual live workflow behind this
+// draft (chatLiveSnapshot set) — a from-scratch draft has nothing live yet
+// to show, same as the original button's meaning when it lived in the
+// settings modal.
+function _updateViewJsonBtn() {
+  const btn = document.getElementById('viewJsonBtn');
+  if (btn) btn.style.display = chatLiveSnapshot ? 'inline-block' : 'none';
 }
 
 function openBuilderChat() {
@@ -1816,6 +1776,7 @@ async function resumeDraft(draftId) {
   renderChatHistory(data.chat_history || []);
   renderDraftPanel(data.draft_state);
   _updateManualPublishLabel();
+  _updateViewJsonBtn();
   openModal('builderModal');
 }
 
@@ -1832,8 +1793,12 @@ function renderChatHistory(history) {
   }
 }
 
-async function openEditLogic() {
-  const id = document.getElementById('editWorkflowIdForLogic').value;
+// Single entry point into editing a workflow — the "✏️ Edit" button on the
+// workflows list calls this directly with the workflow's id, opening the
+// chat builder immediately. There's no separate settings-modal step
+// anymore; everything that used to live there (name, description, trigger
+// command, roles, View JSON) is now in the builder panel itself.
+async function openEditLogic(id) {
   const r = await authenticatedFetch(API(`/workflow-builder/edit/${id}`), {method: 'POST'});
   if (!r || !r.ok) { alert('Could not start edit.'); return; }
   const data = await r.json();
@@ -1845,7 +1810,7 @@ async function openEditLogic() {
   renderDraftPanel(data.draft_state);
   document.getElementById('builderTitle').textContent = `💬 Editing: ${data.name || 'Workflow'}`;
   _updateManualPublishLabel();
-  closeModal('editModal');
+  _updateViewJsonBtn();
   openModal('builderModal');
   appendBotMsg(data.greeting);
 }
@@ -1873,7 +1838,15 @@ function renderDraftPanel(state) {
 
   let html = '';
   html += panelSection('Title', state.title ? escHtml(state.title) : '<span style="color:#bbb">(untitled — name it in chat)</span>');
+  if (state.intent_key) html += panelSection('Intent key', `<code style="font-size:11px">${escHtml(state.intent_key)}</code>`);
   html += panelSection('Type', state.workflow_type || '<span style="color:#bbb">not set yet</span>');
+
+  const descHtml = state.description
+    ? escHtml(state.description).replace(/\\n/g, '<br>')
+    : '<span style="color:#bbb">(none)</span>';
+  html += panelSection('Description', descHtml, '<button class="link-btn-sm" onclick="showEditDescriptionForm()">edit</button>') +
+          '<div id="editDescriptionMount"></div>';
+
   if (state.business_rule) html += panelSection('Business rule', escHtml(state.business_rule).replace(/\\n/g, '<br>'));
 
   const fieldsHtml = state.fields.length ? state.fields.map(f => `
@@ -2098,6 +2071,20 @@ function confirmEditTrigger() {
   callDraftEdit('trigger', {slash_command: cmd});
 }
 
+function showEditDescriptionForm() {
+  document.getElementById('editDescriptionMount').innerHTML = `
+    <div class="mini-form-sm">
+      <textarea id="newDescription" rows="2" style="width:100%;font-family:inherit;font-size:12px;padding:5px 7px;border:1px solid #e8edf5;border-radius:5px">${escHtml(chatDraftState.description || '')}</textarea>
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmEditDescription()">Save</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('editDescriptionMount').innerHTML=''">Cancel</button>
+    </div>`;
+}
+function confirmEditDescription() {
+  const desc = document.getElementById('newDescription').value.trim();
+  document.getElementById('editDescriptionMount').innerHTML = '';
+  callDraftEdit('description', {description: desc});
+}
+
 async function onPdfSelected(input) {
   if (!input.files.length) return;
   const file = input.files[0];
@@ -2272,6 +2259,7 @@ async function discardAndReloadLatest() {
   renderDraftPanel(data.draft_state);
   document.getElementById('builderTitle').textContent = `💬 Editing: ${data.name || 'Workflow'}`;
   _updateManualPublishLabel();
+  _updateViewJsonBtn();
   openModal('builderModal');
   appendBotMsg("This is a fresh copy of the current live version — your change from the discarded draft was NOT carried over, since automatically re-applying it risks silently producing something incorrect. Tell me (or use the panel) to make that change again.");
 }
