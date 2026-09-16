@@ -1190,6 +1190,104 @@ async def edit_draft_description(org_slug: str, draft_id: str, request: Request)
     return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
 
 
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/title")
+async def edit_draft_title(org_slug: str, draft_id: str, request: Request):
+    """
+    Direct panel edit for the workflow's display name — purely descriptive,
+    no execution-logic impact, safe with no recompile.
+
+    Previously the only way to rename a draft was asking the assistant via
+    chat, which routed through revise_draft + a full recompile — fragile
+    for something this simple, and reproduced live on Godrej: a
+    rename-only request caused the compiler to regenerate entity_schema
+    WORSE than the original (content/pdf_url lost their table/column
+    mapping entirely) and fail all 3 critic retries, over a change that
+    never needed the compiler involved at all.
+    """
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    await execute(
+        "UPDATE workflow_drafts SET name = $1, updated_at = now() WHERE id = $2",
+        name, draft_id, source_key=source_key
+    )
+    draft["name"] = name
+    await append_draft_note(draft, f'directly renamed the workflow to "{name}"', source_key)
+    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/type")
+async def edit_draft_type(org_slug: str, draft_id: str, request: Request):
+    """
+    Direct panel edit for workflow_type (read/action). Unlike title, this
+    genuinely changes what steps[]/sql_template should look like — same
+    category as fields/gates — so it flips the draft back to 'chatting'
+    and recompiles immediately rather than being a safe no-op change.
+    """
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    wtype = body.get("workflow_type")
+    if wtype not in ("read", "action"):
+        raise HTTPException(status_code=400, detail="workflow_type must be 'read' or 'action'")
+
+    was_compiled = draft.get("status") == "ready_for_review"
+    set_parts = ["workflow_type = $2"]
+    vals = [wtype]
+    if was_compiled:
+        set_parts.append("status = 'chatting'")
+    await execute(
+        f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
+        draft_id, *vals, source_key=source_key
+    )
+    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, f"directly changed the type to {wtype}")
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/business-rule")
+async def edit_draft_business_rule(org_slug: str, draft_id: str, request: Request):
+    """
+    Direct panel edit for the raw business-rules text the compiler reads.
+    Unlike chat's revise_draft (which always appends a "Requested change:
+    ..." line, appropriate for narrating a new request mid-conversation),
+    this REPLACES the text outright — a panel edit is the admin looking at
+    and correcting the actual current instructions, not adding another one
+    on top. Affects compiled output same as fields/gates, so this
+    recompiles immediately too.
+    """
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    business_rules = (body.get("business_rules") or "").strip()
+    was_compiled = draft.get("status") == "ready_for_review"
+    set_parts = ["business_rules = $2"]
+    vals = [business_rules]
+    if was_compiled:
+        set_parts.append("status = 'chatting'")
+    await execute(
+        f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
+        draft_id, *vals, source_key=source_key
+    )
+    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, "directly edited the business rules")
+
+
 def _build_html() -> str:
     return """<!DOCTYPE html>
 <html lang="en">
@@ -1901,9 +1999,11 @@ function renderDraftPanel(state) {
   }
 
   let html = '';
-  html += panelSection('Title', state.title ? escHtml(state.title) : '<span style="color:#bbb">(untitled — name it in chat)</span>');
+  html += panelSection('Title', state.title ? escHtml(state.title) : '<span style="color:#bbb">(untitled)</span>',
+    '<button class="link-btn-sm" onclick="showEditTitleForm()">edit</button>') + '<div id="editTitleMount"></div>';
   if (state.intent_key) html += panelSection('Intent key', `<code style="font-size:11px">${escHtml(state.intent_key)}</code>`);
-  html += panelSection('Type', state.workflow_type || '<span style="color:#bbb">not set yet</span>');
+  html += panelSection('Type', state.workflow_type || '<span style="color:#bbb">not set yet</span>',
+    '<button class="link-btn-sm" onclick="showEditTypeForm()">edit</button>') + '<div id="editTypeMount"></div>';
 
   const descHtml = state.description
     ? escHtml(state.description).replace(/\\n/g, '<br>')
@@ -1911,7 +2011,11 @@ function renderDraftPanel(state) {
   html += panelSection('Description', descHtml, '<button class="link-btn-sm" onclick="showEditDescriptionForm()">edit</button>') +
           '<div id="editDescriptionMount"></div>';
 
-  if (state.business_rule) html += panelSection('Business rule', escHtml(state.business_rule).replace(/\\n/g, '<br>'));
+  const bizRuleHtml = state.business_rule
+    ? escHtml(state.business_rule).replace(/\\n/g, '<br>')
+    : '<span style="color:#bbb">(none)</span>';
+  html += panelSection('Business rule', bizRuleHtml, '<button class="link-btn-sm" onclick="showEditBizRuleForm()">edit</button>') +
+          '<div id="editBizRuleMount"></div>';
 
   const fieldsHtml = state.fields.length ? state.fields.map(f => `
     <div class="panel-field-row">
@@ -1919,7 +2023,7 @@ function renderDraftPanel(state) {
       ${f.computed ? '<span style="font-size:10px;color:#aaa">calculated automatically</span>' :
         f.required === null ? '<span style="font-size:10px;color:#aaa">not compiled yet</span>' :
         `<span class="req-pill ${f.required ? 'req-yes' : 'req-no'}" onclick="toggleFieldRequired('${escAttr(f.name)}', ${!f.required})">${f.required ? 'required' : 'optional'}</span>`}
-      ${f.computed ? '' : `<button class="icon-btn-sm" onclick="deleteDraftField('${escAttr(f.name)}')" title="Remove">🗑</button>`}
+      ${f.computed ? '' : `<button class="icon-btn-sm" onclick="showRenameFieldForm('${escAttr(f.name)}')" title="Rename">✎</button><button class="icon-btn-sm" onclick="deleteDraftField('${escAttr(f.name)}')" title="Remove">🗑</button>`}
     </div>`).join('') : '<div style="color:#bbb">No fields yet.</div>';
   html += panelSection('Fields', fieldsHtml, '<button class="link-btn-sm" onclick="showAddFieldForm()">+ Add field</button>') +
           '<div id="addFieldMount"></div>';
@@ -2147,6 +2251,69 @@ function confirmEditDescription() {
   const desc = document.getElementById('newDescription').value.trim();
   document.getElementById('editDescriptionMount').innerHTML = '';
   callDraftEdit('description', {description: desc});
+}
+
+function showEditTitleForm() {
+  document.getElementById('editTitleMount').innerHTML = `
+    <div class="mini-form-sm">
+      <input type="text" id="newTitle" value="${escAttr(chatDraftState.title || '')}">
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmEditTitle()">Save</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('editTitleMount').innerHTML=''">Cancel</button>
+    </div>`;
+}
+function confirmEditTitle() {
+  const name = document.getElementById('newTitle').value.trim();
+  if (!name) return;
+  document.getElementById('editTitleMount').innerHTML = '';
+  callDraftEdit('title', {name});
+}
+
+function showEditTypeForm() {
+  document.getElementById('editTypeMount').innerHTML = `
+    <div class="mini-form-sm">
+      <select id="newType">
+        <option value="action" ${chatDraftState.workflow_type === 'action' ? 'selected' : ''}>action</option>
+        <option value="read" ${chatDraftState.workflow_type === 'read' ? 'selected' : ''}>read</option>
+      </select>
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmEditType()">Save (recompiles)</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('editTypeMount').innerHTML=''">Cancel</button>
+    </div>`;
+}
+function confirmEditType() {
+  const wtype = document.getElementById('newType').value;
+  document.getElementById('editTypeMount').innerHTML = '';
+  callDraftEdit('type', {workflow_type: wtype});
+}
+
+function showEditBizRuleForm() {
+  document.getElementById('editBizRuleMount').innerHTML = `
+    <div class="mini-form-sm">
+      <textarea id="newBizRule" rows="3" style="width:100%;font-family:inherit;font-size:12px;padding:5px 7px;border:1px solid #e8edf5;border-radius:5px">${escHtml(chatDraftState.business_rule || '')}</textarea>
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmEditBizRule()">Save (recompiles)</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('editBizRuleMount').innerHTML=''">Cancel</button>
+    </div>`;
+}
+function confirmEditBizRule() {
+  const rules = document.getElementById('newBizRule').value.trim();
+  document.getElementById('editBizRuleMount').innerHTML = '';
+  callDraftEdit('business-rule', {business_rules: rules});
+}
+
+function showRenameFieldForm(oldName) {
+  document.getElementById('addFieldMount').innerHTML = `
+    <div class="mini-form-sm">
+      <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Rename "${escHtml(oldName)}" to:</label>
+      <input type="text" id="renameFieldNew" value="${escAttr(oldName)}">
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmRenameField('${escAttr(oldName)}')">Save</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('addFieldMount').innerHTML=''">Cancel</button>
+    </div>`;
+  document.getElementById('renameFieldNew').focus();
+}
+function confirmRenameField(oldName) {
+  const newName = document.getElementById('renameFieldNew').value.trim();
+  document.getElementById('addFieldMount').innerHTML = '';
+  if (!newName || newName === oldName) return;
+  callDraftEdit('field', {action: 'rename', name: oldName, new_name: newName});
 }
 
 async function onPdfSelected(input) {
