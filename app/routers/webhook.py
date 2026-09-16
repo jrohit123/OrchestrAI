@@ -1041,17 +1041,23 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
                 await send_text(phone, reply)
 
             # Log to audit_log — response_text/session_id let the admin panel
-            # show the actual reply and group turns into one conversation
-            # (same key Redis already uses for this chat's session).
+            # show the actual reply and group turns into one conversation.
+            # `session_id` (the Redis key) is a FIXED string per user, never
+            # rotating — persisting it as-is would make the admin "View
+            # conversation" modal grow unboundedly across a user's entire
+            # lifetime of usage instead of showing one bounded conversation.
+            # Bucketing by calendar day (computed in Postgres, already on
+            # IST per db.py's _set_timezone, so no separate tz handling
+            # here) keeps it to "this user's activity on this day".
             await execute("""
                 INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
-                VALUES ($1, $2, 'agent', $3, $4, $5, 'success')
+                VALUES ($1, $2, 'agent', $3, $4, $5 || ':' || to_char(now(), 'YYYY-MM-DD'), 'success')
             """, user["org_id"], user["user_id"], text, reply, session_id, source_key=user["source_key"])
         else:
             # Log to audit_log for menu responses too
             await execute("""
                 INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
-                VALUES ($1, $2, 'menu', $3, $4, $5, 'success')
+                VALUES ($1, $2, 'menu', $3, $4, $5 || ':' || to_char(now(), 'YYYY-MM-DD'), 'success')
             """, user["org_id"], user["user_id"], text, reply, session_id, source_key=user["source_key"])
 
     except Exception as e:
@@ -1077,6 +1083,21 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             )
         except TelegramRateLimitedError:
             logger.warning(f"handle_message: Telegram rate-limited while sending error fallback to {phone}")
+
+        # This is the whole reason the Recent Activity filter has an "error"
+        # option — before this, a failed turn left NO trace in audit_log at
+        # all (only in Railway's raw logs), so the filter had nothing to
+        # ever match. Best-effort and isolated in its own try: we're already
+        # in the failure path, a second failure here (e.g. DB down) must not
+        # stop the user-facing error reply above from having already gone out.
+        try:
+            await execute("""
+                INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
+                VALUES ($1, $2, 'agent', $3, $4, $5 || ':' || to_char(now(), 'YYYY-MM-DD'), 'error')
+            """, user["org_id"], user["user_id"], text, f"[{correlation_id}] {e}"[:2000], session_id,
+                source_key=user["source_key"])
+        except Exception as log_err:
+            logger.error(f"handle_message: failed to log error to audit_log: {log_err}")
 
 
 # ── SYSTEM ROW HANDLERS ─────────────────────────────────
