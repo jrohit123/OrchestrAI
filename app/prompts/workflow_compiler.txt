@@ -294,7 +294,17 @@ BEFORE generating the final JSON, verify:
   5. plain_english_summary is present and ends with "Shall I create this?"
 
 ══════════════════ OUTPUT ══════════════════════════════════════════
-Return ONLY this JSON, no markdown:
+First, in 2-4 sentences of plain text, reason through: which field (if any)
+distinguishes different branches of behaviour in this workflow (e.g. an
+add-vs-update action), which column or combination of columns uniquely
+matches the entity being looked up (resolve_entity's match_column /
+match_columns), and which steps therefore need a "when" guard. If this
+workflow has no branching and no ambiguous lookup, say so in one sentence
+instead of inventing a branch that isn't there.
+
+Then return this JSON (no markdown fence needed around it — everything from
+the first { to the last } is parsed as the spec, so the reasoning above and
+the JSON below can just run one after the other):
 {
   "name":"...", "intent_key":"...", "workflow_type":"read|action",
   "description":"...", "training_phrases":[...], "entity_schema":{},

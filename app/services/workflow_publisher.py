@@ -10,6 +10,28 @@ from app.db import fetch_one, fetch_all, execute
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 
+class PublishConflict(Exception):
+    """
+    Raised when a draft's based_on_version no longer matches the live
+    workflow's current version — someone else published a change to this
+    same workflow while this draft was being edited. The classic lost-update
+    problem: without this check, whichever admin clicks Publish/Save second
+    would silently overwrite the first admin's change with no trace. Caught
+    in admin.py's publish endpoint and surfaced as a 409, never auto-resolved
+    here — see workflow_publisher module docs for why this doesn't attempt
+    an automatic merge.
+    """
+    def __init__(self, intent_key: str, current_version: int, based_on_version: int):
+        self.intent_key = intent_key
+        self.current_version = current_version
+        self.based_on_version = based_on_version
+        super().__init__(
+            f"'{intent_key}' is now at v{current_version}, but this draft was "
+            f"based on v{based_on_version} — someone else published a change "
+            f"since this draft was started."
+        )
+
+
 def _j(val, default=None):
     """Safely serialize a value to JSON string for DB binding."""
     if val is None:
@@ -137,6 +159,20 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
         "SELECT id, version FROM workflows WHERE org_id = $1 AND intent_key = $2",
         org_id, draft["intent_key"], source_key=source_key
     )
+
+    # Optimistic concurrency: a draft copied from a live workflow (via
+    # "Edit the logic" or resuming one) remembers which version it started
+    # from. If the live version has moved on since, publishing here would
+    # silently discard whatever the other admin changed — refuse instead,
+    # same principle as a compare-and-swap.
+    based_on = draft.get("based_on_version")
+    if based_on is not None and existing and existing["version"] != based_on:
+        raise PublishConflict(
+            intent_key=draft["intent_key"],
+            current_version=existing["version"],
+            based_on_version=based_on,
+        )
+
     new_version = (existing["version"] + 1) if existing else 1
 
     # NOTE: adapter_method / trigger_patterns are NOT real columns on
@@ -227,6 +263,23 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     await sync_role_grants(
         draft["intent_key"], org_id, granted_roles, source_key,
         entity_schema=draft.get("entity_schema"),
+    )
+
+    # Snapshot what just went live — the only history this workflow has.
+    # Powers the "N changes vs live" diff view and the conflict message
+    # above; not surfaced as a browsable history/rollback UI (yet).
+    await execute("""
+        INSERT INTO workflow_versions (
+            workflow_id, org_id, version, intent_key, name,
+            entity_schema, gates, granted_roles, steps, calc_rules,
+            sql_template, slash_command, source_draft_id
+        ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$12,$13)
+    """,
+        workflow_id, org_id, new_version, draft["intent_key"], draft.get("name"),
+        _j(draft.get("entity_schema"), "{}"), _j(draft.get("gates"), "[]"), granted_roles,
+        _j(draft.get("steps"), "[]"), _j(draft.get("calc_rules"), "{}"),
+        draft.get("sql_template"), draft.get("slash_command"), draft["id"],
+        source_key=source_key
     )
 
     # Mark draft as published

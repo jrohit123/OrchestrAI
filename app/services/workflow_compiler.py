@@ -132,7 +132,13 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
                 temperature=0.1 + attempt * 0.1,
             )
             content = response.choices[0].message.content.strip()
-            if "```" in content:
+            # Unconditional, not just when a ``` fence is present: RULE-set
+            # OUTPUT now asks the model to reason in plain text before the
+            # JSON (no fence required for that), so leading prose is the
+            # expected common case, not just an occasional markdown wrapper.
+            # A no-op for a response that's already pure JSON (find("{")==0,
+            # rfind("}")==len-1), so this changes nothing for that case.
+            if "{" in content:
                 content = content[content.find("{"):content.rfind("}") + 1]
 
             spec = json.loads(content)

@@ -307,6 +307,53 @@ def build_draft_recap(draft: dict) -> str:
     return "\n".join(lines)
 
 
+def build_draft_state(draft: dict) -> dict:
+    """
+    Structured sibling of build_draft_recap — same source columns, same
+    computed/required rules, but returned as JSON instead of formatted text
+    so the admin panel can render editable rows (delete a field, toggle a
+    gate, flip a role chip) instead of read-only text. The two can never
+    show materially different information since they're built from the
+    same draft row by the same rules; keep both in sync if either changes.
+
+    fields[].required is None (not True/False) before the first compile —
+    "required" genuinely isn't decided yet at that stage (see
+    _merge_raw_fields' docstring), and the panel should show that
+    accurately rather than defaulting to a guess.
+    """
+    entity_schema = _parse_jsonb(draft.get("entity_schema"), {})
+    raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
+    compiled = bool(entity_schema)
+
+    if compiled:
+        fields = []
+        for name, spec in entity_schema.items():
+            if not isinstance(spec, dict):
+                fields.append({"name": name, "required": False, "computed": False})
+                continue
+            fields.append({
+                "name":     name,
+                "required": bool(spec.get("required")),
+                "computed": bool(spec.get("computed")),
+                "table":    spec.get("table"),
+                "column":   spec.get("column"),
+            })
+    else:
+        fields = [{"name": f, "required": None, "computed": False} for f in raw_fields]
+
+    return {
+        "title":          draft.get("name") or draft.get("purpose"),
+        "workflow_type":  draft.get("workflow_type"),
+        "business_rule":  draft.get("business_rules"),
+        "compiled":       compiled,
+        "fields":         fields,
+        "gates":          _parse_jsonb(draft.get("gates"), []),
+        "granted_roles":  draft.get("granted_roles") or [],
+        "slash_command":  draft.get("slash_command"),
+        "status":         draft.get("status"),
+    }
+
+
 def _derive_slash_command(intent_key: str) -> str:
     """
     Trigger commands must match their workflow's intent_key with underscores
@@ -332,6 +379,358 @@ async def _get_or_create_draft(org_id: str, draft_id: str | None, source_key: st
         org_id, source_key=source_key
     )
     return dict(row)
+
+
+def _fields_from_entity_schema(entity_schema: dict) -> list[dict]:
+    """
+    Human-facing field list (name + required) derived from a compiled
+    entity_schema, skipping computed fields — same filtering
+    build_draft_recap already applies for display, factored out so the
+    live-diff snapshot below uses identical rules rather than a second,
+    possibly-drifting copy of the same logic.
+    """
+    out = []
+    for name, spec in (entity_schema or {}).items():
+        if not isinstance(spec, dict) or spec.get("computed"):
+            continue
+        out.append({"name": name, "required": bool(spec.get("required"))})
+    return out
+
+
+async def get_live_snapshot(org_id: str, intent_key: str, source_key: str) -> dict | None:
+    """
+    Compact, diff-friendly snapshot of a live workflow's admin-facing shape —
+    used both to show "N changes vs live vX" while an edit draft is still in
+    progress, and by workflow_publisher.publish_draft's optimistic-concurrency
+    check. Returns None if the workflow no longer exists live (e.g. deleted
+    since this draft was copied from it) — callers must treat that as its
+    own case, not a zero-diff match against nothing.
+    """
+    wf = await fetch_one(
+        "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
+        org_id, intent_key, source_key=source_key
+    )
+    if not wf:
+        return None
+    wf = dict(wf)
+    granted = await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
+        org_id, intent_key, source_key=source_key
+    )
+    return {
+        "version": wf["version"],
+        "fields": _fields_from_entity_schema(_parse_jsonb(wf.get("entity_schema"), {})),
+        "gates": _parse_jsonb(wf.get("gates"), []),
+        "granted_roles": [r["name"] for r in granted],
+        "slash_command": wf.get("slash_command"),
+    }
+
+
+def _merge_raw_fields(existing_fields: list, add_fields: list, remove_fields: list) -> list:
+    """
+    Shared by update_builder_draft (chat tool) and the direct-edit field
+    endpoint (admin.py) so a field added/removed by clicking in the panel
+    follows the exact same case-insensitive dedup/removal rule as one
+    added/removed by chatting — see update_builder_draft's own comment for
+    why this is a delta, not a full-list replace.
+    """
+    remove = {r.strip().lower() for r in (remove_fields or [])}
+    merged = [f for f in existing_fields if f.strip().lower() not in remove]
+    for f in (add_fields or []):
+        if f.strip().lower() not in {m.strip().lower() for m in merged}:
+            merged.append(f)
+    return merged
+
+
+def _backfill_gate_ids(gates: list) -> list:
+    """Shared by set_gates (chat tool) and the direct-edit gate endpoint —
+    deterministic id assignment so the validator's uniqueness/reference
+    checks never choke on an omitted id, regardless of which path added it."""
+    for i, g in enumerate(gates):
+        if isinstance(g, dict) and not g.get("id"):
+            g["id"] = f"{g.get('type', 'gate')}{i + 1}"
+    return gates
+
+
+async def resolve_roles(requested: list, org_id: str, source_key: str) -> tuple[list, list]:
+    """
+    Shared by set_roles (chat tool) and the direct-edit roles endpoint.
+    Validates against the org's REAL roles, tolerating case and simple
+    pluralization ("members" -> "member") since those are unambiguous;
+    anything else comes back in `unknown` rather than being guessed at —
+    see set_roles' original comment for the live incident this caught.
+    Returns (resolved, unknown).
+    """
+    org_roles = await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
+    )
+    valid_names = {r["name"] for r in org_roles}
+    valid_lower = {n.lower(): n for n in valid_names}
+
+    resolved, unknown = [], []
+    for r in requested:
+        if r in valid_names:
+            resolved.append(r)
+        elif r.lower() in valid_lower:
+            resolved.append(valid_lower[r.lower()])
+        elif r.lower().rstrip("s") in valid_lower:
+            resolved.append(valid_lower[r.lower().rstrip("s")])
+        else:
+            unknown.append(r)
+
+    return list(dict.fromkeys(resolved)), unknown
+
+
+def _build_draft_context(draft: dict) -> str:
+    """
+    Plain-text recap of what's already known about this draft, injected into
+    the system prompt every turn so the LLM never re-asks something already
+    captured. Factored out of run_builder_agent so resume_draft's synthetic
+    "welcome back" turn sees the identical context a normal turn would.
+    """
+    draft_context = ""
+    if draft.get("purpose"):
+        draft_context += f"Purpose: {draft['purpose']}\n"
+    if draft.get("workflow_type"):
+        draft_context += f"Workflow Type: {draft['workflow_type']}\n"
+    raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
+    if raw_fields:
+        draft_context += f"Fields to collect: {', '.join(raw_fields)}\n"
+    draft_gates = _parse_jsonb(draft.get("gates"), [])
+    if draft_gates:
+        draft_context += f"Constraints so far (gates): {json.dumps(draft_gates)}\n"
+    if draft.get("granted_roles"):
+        draft_context += f"Roles allowed so far: {', '.join(draft['granted_roles'])}\n"
+    if draft.get("business_rules"):
+        draft_context += f"Business Rules: {draft['business_rules']}\n"
+    if draft.get("slash_command"):
+        draft_context += f"Slash Command: /{draft['slash_command']}\n"
+    if draft.get("command_description"):
+        draft_context += f"Command Description: {draft['command_description']}\n"
+    if draft.get("menu_section"):
+        draft_context += f"Menu Section: {draft['menu_section']}\n"
+    if draft.get("chat_summary"):
+        draft_context += f"Earlier in this conversation: {draft['chat_summary']}\n"
+    return draft_context
+
+
+_HISTORY_COMPACT_THRESHOLD = 20
+_HISTORY_KEEP_TAIL = 10
+
+
+async def _maybe_compact_history(draft: dict, chat_history: list, source_key: str) -> list:
+    """
+    Keeps a long-running draft's LLM context bounded — without this, a
+    genuinely iterative drafting session (come back repeatedly over days to
+    keep refining, exactly the workflow this system is meant to support)
+    grows linearly slower and more expensive with every turn, forever.
+    Once the transcript passes _HISTORY_COMPACT_THRESHOLD messages, folds
+    everything except the most recent _HISTORY_KEEP_TAIL into a short
+    rolling summary (workflow_drafts.chat_summary) and truncates the
+    persisted history to just that tail. The summary is re-derived from the
+    PRIOR summary plus the messages being dropped each time a draft passes
+    the threshold again, so nothing is lost across repeated compactions over
+    a very long draft. Mirrors user_drafts.conversation_summary's role on
+    the runtime side; unlike that one, this keeps a verbatim recent tail too
+    since builder conversations are longer and more exploratory than a
+    single transactional request.
+    """
+    if len(chat_history) <= _HISTORY_COMPACT_THRESHOLD:
+        return chat_history
+
+    to_summarize = chat_history[:-_HISTORY_KEEP_TAIL]
+    tail = chat_history[-_HISTORY_KEEP_TAIL:]
+    prior_summary = draft.get("chat_summary")
+
+    summary_prompt = (
+        (f"Earlier summary of this conversation so far:\n{prior_summary}\n\n" if prior_summary else "")
+        + "New messages to fold into that summary:\n" + json.dumps(to_summarize, default=str)
+        + "\n\nWrite an updated 2-4 sentence summary of the whole conversation so far — "
+          "what the workflow is for, what's been decided, what's still open. Plain text only."
+    )
+    try:
+        response = await _llm_chat(messages=[{"role": "user", "content": summary_prompt}], max_tokens=300)
+        summary = (response.choices[0].message.content or "").strip()
+    except Exception:
+        logger.warning("chat history compaction summary call failed — keeping full history uncompacted this turn")
+        return chat_history
+
+    await execute(
+        "UPDATE workflow_drafts SET chat_summary = $1, chat_history = $2::jsonb WHERE id = $3",
+        summary, json.dumps(tail), draft["id"], source_key=source_key
+    )
+    draft["chat_summary"] = summary
+    return tail
+
+
+async def append_draft_note(draft: dict, note: str, source_key: str) -> None:
+    """
+    Records a direct panel edit (not a chat message) into the draft's
+    persisted chat_history, using the same bracketed-synthetic-note
+    convention already established for the PDF-upload case and
+    resume_draft's "welcome back" trigger — invisible to the visible chat
+    transcript (the frontend skips rendering bracketed user-role entries),
+    but present in context on the LLM's next real turn, so the assistant
+    doesn't act as if it never happened.
+    """
+    chat_history = _parse_jsonb(draft.get("chat_history"), [])
+    chat_history.append({"role": "user", "content": f"[{note}]"})
+    await execute(
+        "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
+        json.dumps(chat_history), draft["id"], source_key=source_key
+    )
+    draft["chat_history"] = chat_history
+
+
+async def compile_and_save(draft_id: str, org_id: str, source_key: str) -> dict:
+    """
+    Compile whatever's currently saved on a draft and persist the result —
+    factored out of _execute_tool's compile_and_summarize branch so the
+    direct-edit endpoints (admin.py) that need to silently recompile after a
+    panel edit call the exact same logic the chat tool does, rather than a
+    second copy that could drift from it. See that branch's original inline
+    comments (still below, verbatim) for why intent_key is pinned and why
+    gates must come from the already-parsed draft dict, not raw jsonb text.
+    """
+    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = dict(fresh)
+    try:
+        spec = await compile_workflow_spec(fresh, org_id=org_id, source_key=source_key)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    # Preserve identity across an edit. This draft already has an
+    # intent_key iff it was seeded from a live workflow (load_existing_workflow
+    # / start_edit_draft, via _copy_workflow_into_draft) — a brand-new draft
+    # starts with intent_key=NULL. The compiler derives intent_key fresh from
+    # the current purpose text on every call (workflow_compiler_rules RULE 10)
+    # with no awareness that a draft it's recompiling is actually an edit of
+    # something already published. Left alone, a purpose-text tweak during an
+    # edit can silently derive a DIFFERENT intent_key, and since
+    # workflow_publisher.publish_draft matches on (org_id, intent_key) via
+    # ON CONFLICT, a drifted key makes publish INSERT a second workflow
+    # instead of UPDATing the original — reproduced live: editing
+    # "manage_residents" recompiled to "update_or_add_resident" and publish
+    # created a duplicate instead of updating it in place.
+    if fresh.get("intent_key"):
+        spec["intent_key"] = fresh["intent_key"]
+
+    await execute("""
+        UPDATE workflow_drafts SET
+            name=$1, intent_key=$2, description=$3,
+            workflow_type=$4,
+            training_phrases=$5::jsonb, entity_schema=$6::jsonb,
+            calc_rules=$7::jsonb, steps=$8::jsonb,
+            sql_template=$9, sql_params_order=$10::jsonb, response_format=$11,
+            business_glossary=$12::jsonb, llm_system_prompt=$13,
+            pdf_config=$14::jsonb, response_template=$15,
+            otp_required=$16, otp_threshold=$17, approval_threshold=$18,
+            gates=$19::jsonb,
+            plain_english_summary=$20,
+            slash_command=$21, command_description=$22, menu_section=$23,
+            status = 'ready_for_review', updated_at = now()
+        WHERE id = $24
+    """,
+        spec["name"], spec["intent_key"], spec["description"],
+        spec.get("workflow_type") or "action",
+        json.dumps(spec["training_phrases"]),
+        json.dumps(spec["entity_schema"]),
+        json.dumps(spec.get("calc_rules", {})),
+        json.dumps(spec.get("steps", [])),
+        spec.get("sql_template"),
+        json.dumps(spec.get("sql_params_order", [])),
+        spec.get("response_format") or "generic",
+        json.dumps(spec.get("business_glossary", {})),
+        spec.get("llm_system_prompt"),
+        json.dumps(spec["pdf_config"]) if spec.get("pdf_config") else None,
+        spec.get("response_template"),
+        bool(spec.get("otp_required", False)),
+        spec.get("otp_threshold"),
+        spec.get("approval_threshold"),
+        # fresh.get("gates") is raw jsonb TEXT from asyncpg (no codec
+        # registered — see _parse_jsonb's docstring), not a parsed list.
+        # Using it unparsed here double-encodes it: json.dumps("[]")
+        # produces the JSON string "\"[]\"", which every later reader
+        # (including this same draft's own recap) then parses back into
+        # the STRING "[]" instead of an empty list — iterating that
+        # string character-by-character produced "Constraints: • [ • ]"
+        # in the live "Draft so far" panel. Caught by actually testing
+        # the chat builder end-to-end against Godrej Emerald.
+        json.dumps(spec.get("gates") or _parse_jsonb(fresh.get("gates"), None) or []),
+        spec["plain_english_summary"],
+        _derive_slash_command(spec["intent_key"]),
+        fresh.get("command_description"),
+        fresh.get("menu_section"),
+        draft_id,
+        source_key=source_key
+    )
+    return {
+        "summary":         spec["plain_english_summary"],
+        "intent_key":      spec["intent_key"],
+        "has_pdf_preview": bool(spec.get("pdf_config")),
+    }
+
+
+async def resume_draft(draft: dict, org_id: str, source_key: str) -> dict:
+    """
+    Deterministic entry point for the admin panel's "Continue a draft" list
+    — the counterpart to start_edit_draft, but for an UNFINISHED draft
+    (status='chatting' or 'ready_for_review') instead of a published
+    workflow. Replays the real stored conversation back to the admin instead
+    of starting over (the gap that let four separate "add a resident"
+    drafts pile up before this existed), and asks the model for one fresh,
+    content-aware "welcome back" line — never a hardcoded string, since
+    drafts vary wildly in what's actually been captured.
+    """
+    draft_id = str(draft["id"])
+    chat_history = _parse_jsonb(draft.get("chat_history"), [])
+
+    if chat_history:
+        chat_history = await _maybe_compact_history(draft, chat_history, source_key)
+
+        resume_note = (
+            "[The admin has returned to this draft after a break — briefly "
+            "restate the current state of the draft in 1-2 sentences and ask "
+            "what they'd like to continue with. Do not re-ask about anything "
+            "already captured, and do not call any tools for this message.]"
+        )
+        turn_messages = chat_history + [{"role": "user", "content": resume_note}]
+        draft_context = _build_draft_context(draft)
+        system_content = _SYSTEM_PROMPT
+        if draft_context:
+            system_content += f"\n\n=== CURRENT DRAFT STATE ===\n{draft_context}=== END DRAFT STATE ===\n"
+
+        # Deliberately no `tools` here — this turn only recaps and asks a
+        # question, it should never itself trigger a save/compile/publish
+        # side effect on the admin's behalf.
+        response = await _llm_chat(
+            messages=[{"role": "system", "content": system_content}] + turn_messages,
+            max_tokens=300,
+        )
+        reply = (response.choices[0].message.content or "").strip() \
+            or "Welcome back — what would you like to continue with?"
+
+        chat_history = chat_history + [{"role": "assistant", "content": reply}]
+        await execute(
+            "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
+            json.dumps(chat_history), draft_id, source_key=source_key
+        )
+
+    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = dict(fresh)
+
+    live_snapshot = None
+    if fresh.get("based_on_version") is not None and fresh.get("intent_key"):
+        live_snapshot = await get_live_snapshot(org_id, fresh["intent_key"], source_key)
+
+    return {
+        "draft_id": draft_id,
+        "chat_history": chat_history,
+        "draft_recap": build_draft_recap(fresh),
+        "draft_state": build_draft_state(fresh),
+        "name": fresh.get("name") or fresh.get("purpose"),
+        "live_snapshot": live_snapshot,
+    }
 
 
 async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list[str], source_key: str) -> None:
@@ -363,8 +762,9 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
             otp_threshold=$17, approval_threshold=$18,
             gates=$19::jsonb, granted_roles=$20,
             slash_command=$21, command_description=$22, menu_section=$23,
+            based_on_version=$24,
             status='chatting', updated_at=now()
-        WHERE id=$24
+        WHERE id=$25
     """,
         wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
         json.dumps(training_phrases), json.dumps(entity_schema),
@@ -377,6 +777,7 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
         wf.get("otp_threshold"), wf.get("approval_threshold"),
         json.dumps(gates), granted_roles,
         wf.get("slash_command"), wf.get("command_description"), wf.get("menu_section"),
+        wf.get("version"),
         draft_id, source_key=source_key
     )
 
@@ -410,11 +811,14 @@ async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
     )
 
     fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = dict(fresh)
     return {
-        "draft_id":    draft_id,
-        "greeting":    greeting,
-        "draft_recap": build_draft_recap(dict(fresh)),
-        "name":        wf["name"],
+        "draft_id":     draft_id,
+        "greeting":     greeting,
+        "draft_recap":  build_draft_recap(fresh),
+        "draft_state":  build_draft_state(fresh),
+        "name":         wf["name"],
+        "live_snapshot": await get_live_snapshot(org_id, wf["intent_key"], source_key),
     }
 
 
@@ -472,11 +876,9 @@ async def _execute_tool(
             # explicit add/remove delta needs no memory reconstruction —
             # it only asks the model to name what changed THIS turn.
             existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
-            remove = {r.strip().lower() for r in (tool_input.get("remove_fields") or [])}
-            merged = [f for f in existing_fields if f.strip().lower() not in remove]
-            for f in (tool_input.get("add_fields") or []):
-                if f.strip().lower() not in {m.strip().lower() for m in merged}:
-                    merged.append(f)
+            merged = _merge_raw_fields(
+                existing_fields, tool_input.get("add_fields"), tool_input.get("remove_fields")
+            )
             updates["raw_fields"] = json.dumps(merged)
         if tool_input.get("slash_command"):
             updates["slash_command"] = tool_input["slash_command"].lstrip("/")
@@ -497,12 +899,7 @@ async def _execute_tool(
         return {"saved": list(updates.keys())}
 
     if tool_name == "set_gates":
-        gates = tool_input.get("gates") or []
-        # Backfill missing ids so the validator's uniqueness/reference checks
-        # never choke on an LLM omission — deterministic, not a guess.
-        for i, g in enumerate(gates):
-            if isinstance(g, dict) and not g.get("id"):
-                g["id"] = f"{g.get('type', 'gate')}{i+1}"
+        gates = _backfill_gate_ids(tool_input.get("gates") or [])
         await execute(
             "UPDATE workflow_drafts SET gates = $1::jsonb, updated_at = now() WHERE id = $2",
             json.dumps(gates), draft["id"], source_key=source_key
@@ -521,33 +918,20 @@ async def _execute_tool(
         # unambiguous; anything else comes back as an error so the LLM asks
         # the admin instead of guessing, in the same turn it went wrong.
         requested = tool_input.get("roles") or []
-        org_roles = await fetch_all(
-            "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
-        )
-        valid_names = {r["name"] for r in org_roles}
-        valid_lower = {n.lower(): n for n in valid_names}
-
-        resolved, unknown = [], []
-        for r in requested:
-            if r in valid_names:
-                resolved.append(r)
-            elif r.lower() in valid_lower:
-                resolved.append(valid_lower[r.lower()])
-            elif r.lower().rstrip("s") in valid_lower:
-                resolved.append(valid_lower[r.lower().rstrip("s")])
-            else:
-                unknown.append(r)
+        resolved, unknown = await resolve_roles(requested, org_id, source_key)
 
         if unknown:
+            valid_names = sorted(r["name"] for r in await fetch_all(
+                "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
+            ))
             return {
                 "error": (
                     f"{unknown} — not real roles in this org, so nothing was saved. "
-                    f"The actual roles here are: {sorted(valid_names)}. Ask the admin "
+                    f"The actual roles here are: {valid_names}. Ask the admin "
                     f"which of these they meant, then call set_roles again with the exact name(s)."
                 )
             }
 
-        resolved = list(dict.fromkeys(resolved))
         await execute(
             "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
             resolved, draft["id"], source_key=source_key
@@ -572,84 +956,10 @@ async def _execute_tool(
         }
 
     if tool_name == "compile_and_summarize":
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
-        try:
-            spec = await compile_workflow_spec(dict(fresh), org_id=org_id, source_key=source_key)
-        except ValueError as e:
-            return {"error": str(e)}
-
-        # Preserve identity across an edit. This draft already has an
-        # intent_key iff it was seeded from a live workflow (load_existing_workflow
-        # / start_edit_draft, via _copy_workflow_into_draft) — a brand-new draft
-        # starts with intent_key=NULL. The compiler derives intent_key fresh from
-        # the current purpose text on every call (workflow_compiler_rules RULE 10)
-        # with no awareness that a draft it's recompiling is actually an edit of
-        # something already published. Left alone, a purpose-text tweak during an
-        # edit can silently derive a DIFFERENT intent_key, and since
-        # workflow_publisher.publish_draft matches on (org_id, intent_key) via
-        # ON CONFLICT, a drifted key makes publish INSERT a second workflow
-        # instead of UPDATing the original — reproduced live: editing
-        # "manage_residents" recompiled to "update_or_add_resident" and publish
-        # created a duplicate instead of updating it in place.
-        if fresh.get("intent_key"):
-            spec["intent_key"] = fresh["intent_key"]
-
-        # Save compiled spec back into the draft
-        await execute("""
-            UPDATE workflow_drafts SET
-                name=$1, intent_key=$2, description=$3,
-                workflow_type=$4,
-                training_phrases=$5::jsonb, entity_schema=$6::jsonb,
-                calc_rules=$7::jsonb, steps=$8::jsonb,
-                sql_template=$9, sql_params_order=$10::jsonb, response_format=$11,
-                business_glossary=$12::jsonb, llm_system_prompt=$13,
-                pdf_config=$14::jsonb, response_template=$15,
-                otp_required=$16, otp_threshold=$17, approval_threshold=$18,
-                gates=$19::jsonb,
-                plain_english_summary=$20,
-                slash_command=$21, command_description=$22, menu_section=$23,
-                status = 'ready_for_review', updated_at = now()
-            WHERE id = $24
-        """,
-            spec["name"], spec["intent_key"], spec["description"],
-            spec.get("workflow_type") or "action",
-            json.dumps(spec["training_phrases"]),
-            json.dumps(spec["entity_schema"]),
-            json.dumps(spec.get("calc_rules", {})),
-            json.dumps(spec.get("steps", [])),
-            spec.get("sql_template"),
-            json.dumps(spec.get("sql_params_order", [])),
-            spec.get("response_format") or "generic",
-            json.dumps(spec.get("business_glossary", {})),
-            spec.get("llm_system_prompt"),
-            json.dumps(spec["pdf_config"]) if spec.get("pdf_config") else None,
-            spec.get("response_template"),
-            bool(spec.get("otp_required", False)),
-            spec.get("otp_threshold"),
-            spec.get("approval_threshold"),
-            # draft.get("gates") is raw jsonb TEXT from asyncpg (no codec
-            # registered — see _parse_jsonb's docstring), not a parsed list.
-            # Using it unparsed here double-encodes it: json.dumps("[]")
-            # produces the JSON string "\"[]\"", which every later reader
-            # (including this same draft's own recap) then parses back into
-            # the STRING "[]" instead of an empty list — iterating that
-            # string character-by-character produced "Constraints: • [ • ]"
-            # in the live "Draft so far" panel. Caught by actually testing
-            # the chat builder end-to-end against Godrej Emerald.
-            json.dumps(spec.get("gates") or _parse_jsonb(draft.get("gates"), None) or []),
-            spec["plain_english_summary"],
-            _derive_slash_command(spec["intent_key"]),
-            draft.get("command_description"),
-            draft.get("menu_section"),
-            draft["id"],
-            source_key=source_key
-        )
-        return {
-            "summary":              spec["plain_english_summary"],
-            "intent_key":           spec["intent_key"],
-            "_show_confirm_buttons": True,
-            "has_pdf_preview":      bool(spec.get("pdf_config")),
-        }
+        result = await compile_and_save(draft["id"], org_id, source_key)
+        if "error" not in result:
+            result["_show_confirm_buttons"] = True
+        return result
 
     if tool_name == "revise_draft":
         change = tool_input.get("change_description", "")
@@ -784,6 +1094,9 @@ async def run_builder_agent(
     if isinstance(chat_history, str):
         chat_history = json.loads(chat_history)
 
+    # Keeps a long-running draft's context bounded — see _maybe_compact_history.
+    chat_history = await _maybe_compact_history(draft, chat_history, source_key)
+
     # Append the new user message
     user_content = message
     if attachment_b64:
@@ -791,27 +1104,7 @@ async def run_builder_agent(
     chat_history.append({"role": "user", "content": user_content})
 
     # Inject current draft state into context so LLM can avoid re-asking
-    draft_context = ""
-    if draft.get("purpose"):
-        draft_context += f"Purpose: {draft['purpose']}\n"
-    if draft.get("workflow_type"):
-        draft_context += f"Workflow Type: {draft['workflow_type']}\n"
-    raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
-    if raw_fields:
-        draft_context += f"Fields to collect: {', '.join(raw_fields)}\n"
-    draft_gates = _parse_jsonb(draft.get("gates"), [])
-    if draft_gates:
-        draft_context += f"Constraints so far (gates): {json.dumps(draft_gates)}\n"
-    if draft.get("granted_roles"):
-        draft_context += f"Roles allowed so far: {', '.join(draft['granted_roles'])}\n"
-    if draft.get("business_rules"):
-        draft_context += f"Business Rules: {draft['business_rules']}\n"
-    if draft.get("slash_command"):
-        draft_context += f"Slash Command: /{draft['slash_command']}\n"
-    if draft.get("command_description"):
-        draft_context += f"Command Description: {draft['command_description']}\n"
-    if draft.get("menu_section"):
-        draft_context += f"Menu Section: {draft['menu_section']}\n"
+    draft_context = _build_draft_context(draft)
 
     # Build messages for API call
     system_content = _SYSTEM_PROMPT
@@ -825,9 +1118,10 @@ async def run_builder_agent(
     has_pdf_preview = False
     ready_for_publish = False
 
-    async def _recap() -> str:
+    async def _panel_data() -> tuple[str, dict]:
         fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
-        return build_draft_recap(dict(fresh)) if fresh else build_draft_recap(draft)
+        row = dict(fresh) if fresh else draft
+        return build_draft_recap(row), build_draft_state(row)
 
     for _ in range(max_iterations):
         response = await _llm_chat(
@@ -847,10 +1141,12 @@ async def run_builder_agent(
                 "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
                 json.dumps(chat_history), draft["id"], source_key=source_key
             )
+            recap, state = await _panel_data()
             return {
                 "reply":                reply,
                 "draft_id":             str(draft["id"]),
-                "draft_recap":          await _recap(),
+                "draft_recap":          recap,
+                "draft_state":          state,
                 "summary_card":         summary_card,
                 "has_pdf_preview":      has_pdf_preview,
                 "published":            published,
@@ -912,10 +1208,12 @@ async def run_builder_agent(
         "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
         json.dumps(chat_history), draft["id"], source_key=source_key
     )
+    recap, state = await _panel_data()
     return {
         "reply":                reply,
         "draft_id":             str(draft["id"]),
-        "draft_recap":          await _recap(),
+        "draft_recap":          recap,
+        "draft_state":          state,
         "summary_card":         summary_card,
         "has_pdf_preview":      has_pdf_preview,
         "published":            published,

@@ -825,11 +825,23 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     if dupe:
         raise HTTPException(409, f"Command '/{cmd}' is already in use")
 
-    from app.services.workflow_publisher import publish_draft
+    from app.services.workflow_publisher import publish_draft, PublishConflict
     draft_dict = dict(draft)
     draft_dict["slash_command"] = cmd
     try:
         result = await publish_draft(draft_dict, org_id, source_key)
+    except PublishConflict as e:
+        # Someone else published a change to this same workflow while this
+        # draft was being edited — see PublishConflict's docstring for why
+        # this refuses instead of silently overwriting. 409, not 422: the
+        # draft itself is fine, it's just stale relative to what's live now.
+        from app.services.workflow_builder_agent import get_live_snapshot
+        raise HTTPException(409, {
+            "error": str(e),
+            "current_version": e.current_version,
+            "based_on_version": e.based_on_version,
+            "live_snapshot": await get_live_snapshot(org_id, e.intent_key, source_key),
+        })
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:
@@ -843,6 +855,295 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     return {"ok": True, "workflow_id": result["workflow_id"]}
 
 
+@router.get("/admin/{org_slug}/api/workflow-builder/drafts")
+async def list_unfinished_drafts(org_slug: str):
+    """
+    Backs the dashboard's "Continue a draft" list — the fix for the gap
+    that let "add a resident" get attempted from scratch four separate
+    times: previously the only way to see an unfinished draft was an LLM
+    happening to mention it mid-conversation, with no way to actually
+    resume it. is_edit is based on based_on_version, not intent_key — a
+    brand-new draft also gets an intent_key on its first compile, so
+    intent_key alone can't tell "editing something live" apart from
+    "already compiled once, still from scratch".
+    """
+    source_key = await _resolve_source_key(org_slug)
+    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    if not org:
+        raise HTTPException(status_code=404, detail="No active org found")
+    rows = await fetch_all("""
+        SELECT id, name, purpose, status, updated_at, raw_fields, granted_roles,
+               gates, based_on_version
+        FROM workflow_drafts
+        WHERE org_id = $1 AND status IN ('chatting', 'ready_for_review')
+        ORDER BY updated_at DESC
+    """, str(org["id"]), source_key=source_key)
+
+    def _summarize(r):
+        raw_fields = _parse_jsonb(r["raw_fields"], [])
+        gates = _parse_jsonb(r["gates"], [])
+        return {
+            "id":          str(r["id"]),
+            "name":        r["name"] or r["purpose"] or "(untitled)",
+            "status":      r["status"],
+            "updated_at":  r["updated_at"].isoformat() if r["updated_at"] else None,
+            "field_count": len(raw_fields),
+            "has_roles":   bool(r["granted_roles"]),
+            "gate_count":  len(gates),
+            "is_edit":     r["based_on_version"] is not None,
+        }
+
+    return {"drafts": [_summarize(r) for r in rows]}
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/resume/{draft_id}")
+async def resume_draft_endpoint(org_slug: str, draft_id: str):
+    """Deterministic entry point for clicking "Continue" on a drafts-list row."""
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft or draft["status"] not in ("chatting", "ready_for_review"):
+        raise HTTPException(status_code=404, detail="Draft not found or no longer active")
+
+    from app.services.workflow_builder_agent import resume_draft
+    return await resume_draft(dict(draft), str(draft["org_id"]), source_key)
+
+
+async def _save_and_maybe_recompile(draft_id: str, org_id: str, source_key: str, was_compiled: bool, note: str) -> dict:
+    """
+    Shared by the field and gate direct-edit endpoints below. If the draft
+    had already been compiled once (status was 'ready_for_review'), the
+    edit just invalidated that compile — gates/fields feed directly into
+    the compiled steps[]/sql_template (see workflow_compiler.txt RULE 14;
+    otp_gate/approval_gate are literal steps the compiler inserts, not
+    independently enforced), so silently leaving the old compiled output in
+    place would ship logic that doesn't match what the panel now shows.
+    Recompiling here — synchronously, in the same request — means the admin
+    never has to go back to chat to keep them in sync; the tradeoff is this
+    call takes as long as any other compile (a few seconds), same as
+    hitting compile_and_summarize from chat already does today.
+    """
+    from app.services.workflow_builder_agent import append_draft_note, compile_and_save, build_draft_recap, build_draft_state
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = dict(draft)
+    await append_draft_note(draft, note, source_key)
+
+    result = {
+        "draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft),
+        "ready_for_review": False, "summary_card": None,
+    }
+    if was_compiled:
+        compiled = await compile_and_save(draft_id, org_id, source_key)
+        fresh = dict(await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key))
+        result["draft_recap"] = build_draft_recap(fresh)
+        result["draft_state"] = build_draft_state(fresh)
+        if "error" in compiled:
+            result["error"] = compiled["error"]
+        else:
+            result["summary_card"] = compiled["summary"]
+            result["ready_for_review"] = True
+    return result
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/field")
+async def edit_draft_field(org_slug: str, draft_id: str, request: Request):
+    """
+    Direct panel edit — add/remove/rename a field, or flip required/optional
+    — without going back to the chat box. Always writes through raw_fields
+    (even post-compile: compile_workflow_spec always reads raw_fields as its
+    field list on every recompile, never entity_schema — see
+    workflow_compiler.py — so a change that only touched entity_schema would
+    get silently reverted the next time anything triggers a recompile).
+    required/optional is communicated as a business-rule note rather than a
+    direct entity_schema patch for the same reason: required-ness is
+    re-derived from the description on every compile, so it has to be
+    something the compiler is told, not a value patched around it.
+    """
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    from app.services.workflow_builder_agent import _merge_raw_fields
+    action = body.get("action")
+    existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
+    name = (body.get("name") or "").strip()
+    updates: dict = {}
+
+    if action == "add":
+        if not name:
+            raise HTTPException(status_code=400, detail="Field name is required")
+        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, [name], None))
+        note = f'directly added a field to the draft: "{name}"'
+    elif action == "remove":
+        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, None, [name]))
+        note = f'directly removed the field "{name}" from the draft'
+    elif action == "rename":
+        new_name = (body.get("new_name") or "").strip()
+        if not name or not new_name:
+            raise HTTPException(status_code=400, detail="name and new_name are required")
+        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, [new_name], [name]))
+        note = f'directly renamed the field "{name}" to "{new_name}"'
+    elif action == "toggle_required":
+        required = bool(body.get("required"))
+        existing_rules = draft.get("business_rules") or ""
+        updates["business_rules"] = f'{existing_rules}\n{name} should be {"required" if required else "optional"}.'.strip()
+        note = f'directly marked "{name}" as {"required" if required else "optional"}'
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+
+    was_compiled = draft.get("status") == "ready_for_review"
+    if was_compiled:
+        updates["status"] = "chatting"
+
+    set_parts = [f"{k} = ${i + 2}" for i, k in enumerate(updates)]
+    await execute(
+        f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
+        draft_id, *updates.values(), source_key=source_key
+    )
+    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, note)
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/gate")
+async def edit_draft_gate(org_slug: str, draft_id: str, request: Request):
+    """Direct panel edit for constraints — add or remove a gate. Unlike
+    fields, gates ARE the authoritative source (the compiler is told to
+    match them verbatim, never invent its own), so this writes straight to
+    workflow_drafts.gates; recompiling afterward (if already compiled) is
+    still required to regenerate the matching otp_gate/approval_gate steps."""
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    from app.services.workflow_builder_agent import _backfill_gate_ids, _describe_gate
+    gates = _parse_jsonb(draft.get("gates"), [])
+    action = body.get("action")
+
+    if action == "add":
+        gate = body.get("gate") or {}
+        gates = _backfill_gate_ids(gates + [gate])
+        note = f'directly added a constraint to the draft: {_describe_gate(gate)}'
+    elif action == "remove":
+        gate_id = body.get("gate_id")
+        gates = [g for g in gates if g.get("id") != gate_id]
+        note = "directly removed a constraint from the draft"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+
+    was_compiled = draft.get("status") == "ready_for_review"
+    set_parts = ["gates = $2::jsonb"]
+    vals = [json.dumps(gates)]
+    if was_compiled:
+        set_parts.append("status = 'chatting'")
+    await execute(
+        f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
+        draft_id, *vals, source_key=source_key
+    )
+    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, note)
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/roles")
+async def edit_draft_roles(org_slug: str, draft_id: str, request: Request):
+    """
+    Direct panel edit for who can use it. Unlike fields/gates, roles never
+    touch steps/entity_schema/sql_template — freely editable with no
+    recompile and no status change, even on an already-compiled draft.
+    """
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    from app.services.workflow_builder_agent import resolve_roles, append_draft_note, build_draft_recap, build_draft_state
+    requested = body.get("roles") or []
+    resolved, unknown = await resolve_roles(requested, org_id, source_key)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Not real roles in this org: {unknown}")
+
+    await execute(
+        "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
+        resolved, draft_id, source_key=source_key
+    )
+    draft["granted_roles"] = resolved
+    await append_draft_note(draft, f"directly set who can use this to: {', '.join(resolved) or '(no one yet)'}", source_key)
+    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/discard-and-reload")
+async def discard_and_reload_draft(org_slug: str, draft_id: str):
+    """
+    The "discard mine & reload latest" side of the publish-conflict screen.
+    Self-contained on purpose — abandons this draft and starts a fresh edit
+    copy of whatever's live now, both server-side, rather than the frontend
+    reusing whatever workflow id happens to still be sitting in a hidden
+    input from earlier in the session. That hidden field is reliably set
+    when this draft was reached via "Edit the logic", but a draft reached
+    via the drafts-list resume flow (Part 2) might have no such field set
+    at all, or a stale one — a conflict is exactly the moment a stale id
+    would silently reload the WRONG workflow.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft or not draft.get("intent_key"):
+        raise HTTPException(status_code=404, detail="Draft not found or was never linked to a workflow")
+
+    org_id = str(draft["org_id"])
+    wf = await fetch_one(
+        "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
+        org_id, draft["intent_key"], source_key=source_key
+    )
+    if not wf:
+        raise HTTPException(status_code=404, detail="That workflow no longer exists live")
+
+    await execute(
+        "UPDATE workflow_drafts SET status = 'abandoned', updated_at = now() WHERE id = $1",
+        draft_id, source_key=source_key
+    )
+
+    from app.services.workflow_builder_agent import start_edit_draft
+    return await start_edit_draft(dict(wf), org_id, source_key)
+
+
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/trigger")
+async def edit_draft_trigger(org_slug: str, draft_id: str, request: Request):
+    """Direct panel edit for the trigger command — same validation rule as
+    the live-workflow settings form (update_workflow), and just as safe to
+    change with no recompile: it's a routing label, not execution logic."""
+    body = await request.json()
+    source_key = await _resolve_source_key(org_slug)
+    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    draft = dict(draft)
+    org_id = str(draft["org_id"])
+
+    cmd = (body.get("slash_command") or "").strip().lstrip("/").lower()
+    if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
+        raise HTTPException(status_code=400, detail="Command: 2-32 chars, lowercase letters/digits/_")
+    dupe = await fetch_one(
+        "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND intent_key != $3",
+        org_id, cmd, draft.get("intent_key") or "", source_key=source_key
+    )
+    if dupe:
+        raise HTTPException(status_code=409, detail=f"Command '/{cmd}' is already in use")
+
+    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    await execute(
+        "UPDATE workflow_drafts SET slash_command = $1, updated_at = now() WHERE id = $2",
+        cmd, draft_id, source_key=source_key
+    )
+    draft["slash_command"] = cmd
+    await append_draft_note(draft, f"directly changed the trigger command to /{cmd}", source_key)
+    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
 
 
 def _build_html() -> str:
@@ -913,6 +1214,33 @@ input:checked+.slider:before{transform:translateX(18px)}
 .chat-msg.bot .chat-bubble{background:#fff;border:1px solid #e8edf5;color:#1a1a2e}
 .summary-card{background:#f0fdf4;border:2px solid #16a34a;border-radius:8px;padding:14px;margin:10px 0;font-size:13px;line-height:1.6}
 .chat-input-row{display:flex;gap:8px}
+/* Drafts list ("Continue a draft") */
+.draft-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #f0f4f8}
+.draft-row:last-child{border-bottom:none}
+.draft-row .meta{font-size:11px;color:#aaa;margin-top:2px}
+/* Editable draft panel */
+.panel-box{background:#fafbfc;border:1px solid #e8edf5;border-radius:8px;padding:10px;height:320px;overflow-y:auto;font-size:12px}
+.panel-section{margin-bottom:14px}
+.panel-section:last-child{margin-bottom:0}
+.panel-section-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+.panel-field-row{display:flex;align-items:center;gap:6px;padding:4px 0}
+.panel-field-row .fname{flex:1}
+.req-pill{font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;cursor:pointer;border:none}
+.req-yes{background:#dbeafe;color:#185FA5}
+.req-no{background:#f0f4f8;color:#888}
+.icon-btn-sm{background:none;border:none;color:#bbb;cursor:pointer;font-size:12px;padding:2px 4px}
+.icon-btn-sm:hover{color:#dc2626}
+.gate-row{border:1px solid #e8edf5;border-radius:6px;padding:6px 9px;margin-bottom:5px;display:flex;justify-content:space-between;gap:6px;align-items:flex-start}
+.gate-row.is-new{border-color:#8b5cf6;background:#f5f3ff}
+.role-chip-sm{border:1px solid #e8edf5;background:#fff;border-radius:12px;padding:3px 9px;font-size:11px;cursor:pointer;margin:2px}
+.role-chip-sm.on{background:#185FA5;border-color:#185FA5;color:#fff}
+.mini-form-sm{background:#fff;border:1px dashed #e8edf5;border-radius:6px;padding:8px;margin-top:6px}
+.mini-form-sm input,.mini-form-sm select{width:100%;border:1px solid #e8edf5;border-radius:5px;padding:5px 7px;font-size:12px;margin-bottom:6px;font-family:inherit}
+.link-btn-sm{background:none;border:none;color:#185FA5;font-weight:600;font-size:11px;cursor:pointer;padding:0}
+.diff-pill{font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px;background:#fef3c7;color:#d97706}
+.diff-box{background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;font-size:11px;margin-top:6px}
+.diff-box div{padding:2px 0}
+.conflict-box{background:#fee2e2;border:1px solid #fecaca;color:#991b1b;border-radius:8px;padding:12px;font-size:13px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -933,6 +1261,13 @@ input:checked+.slider:before{transform:translateX(18px)}
         <thead><tr id="lowStockHead"></tr></thead>
         <tbody id="lowStockTable"></tbody>
       </table>
+    </div>
+
+    <!-- ── CONTINUE A DRAFT — unfinished workflow_drafts rows, resumable
+         instead of only ever start-fresh-or-edit-published ──────────── -->
+    <div class="card" id="draftsCard" style="display:none;border-left:4px solid #8b5cf6">
+      <div class="card-title" style="color:#8b5cf6">📝 Continue a draft</div>
+      <div id="draftsList"></div>
     </div>
 
     <!-- ── WORKFLOW LIST ─────────────────────────────────────────── -->
@@ -1116,10 +1451,27 @@ input:checked+.slider:before{transform:translateX(18px)}
         <div id="builderStatus" style="font-size:11px;color:#888;margin-top:6px;text-align:center"></div>
       </div>
       <div>
-        <div class="field-label">Draft so far</div>
-        <pre id="draftRecap" style="background:#fafbfc;border:1px solid #e8edf5;border-radius:8px;padding:10px;
-             font-size:12px;line-height:1.6;white-space:pre-wrap;font-family:inherit;height:320px;overflow-y:auto;margin:0">Tell me what you want to build...</pre>
+        <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Draft so far</span>
+          <span id="diffPill" class="diff-pill" style="display:none"></span>
+        </div>
+        <div id="draftPanel" class="panel-box">Tell me what you want to build...</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── PUBLISH CONFLICT — someone else published a change to this same
+     workflow while this draft was open; never auto-merged, see
+     PublishConflict's docstring ──────────────────────────────────────── -->
+<div class="modal-bg" id="conflictModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">⚠️ Can't save</div>
+    <input type="hidden" id="conflictDraftId">
+    <div id="conflictBody" class="conflict-box"></div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-gray" onclick="closeModal('conflictModal');openModal('publishModal')">Keep editing here</button>
+      <button class="btn btn-danger" onclick="discardAndReloadLatest()">Discard mine &amp; reload latest</button>
     </div>
   </div>
 </div>
@@ -1150,6 +1502,12 @@ let chatDraftId = null;
 let chatTyping  = false;
 let chatPdfAnalysis = null;  // pre-extracted PDF layout spec
 let chatIsEditingExisting = false;  // true only when this draft was loaded from an already-published workflow
+let chatLiveSnapshot = null; // {version,fields,gates,granted_roles,slash_command} captured once when an
+                              // edit draft is opened/resumed — the FIXED baseline the diff pill compares
+                              // against for the rest of this session; never refreshed mid-session (see
+                              // resume_draft's docstring on why that would hide a real conflict)
+let chatDraftState   = null; // last draft_state payload — structured mirror of draftRecap the panel renders from
+let chatLastRecapText = '';  // last build_draft_recap() text — only used for the read-only publish-confirm screen
 
 // No auth for now — see _check_token in admin.py for how to re-enable it.
 async function authenticatedFetch(url, options = {}) {
@@ -1397,11 +1755,14 @@ function _resetBuilderModal() {
   chatDraftId = null;
   chatPdfAnalysis = null;
   chatIsEditingExisting = false;
+  chatLiveSnapshot = null;
+  chatDraftState = null;
   document.getElementById('chatMessages').innerHTML = '';
   document.getElementById('chatInput').value = '';
   document.getElementById('attachLabel').textContent = '';
   document.getElementById('builderStatus').textContent = '';
-  document.getElementById('draftRecap').textContent = 'Tell me what you want to build...';
+  document.getElementById('draftPanel').textContent = 'Tell me what you want to build...';
+  document.getElementById('diffPill').style.display = 'none';
   document.getElementById('builderTitle').textContent = '💬 Build a New Workflow';
   _updateManualPublishLabel();
 }
@@ -1418,6 +1779,57 @@ async function clearUnfinishedDrafts() {
   if (!r) return;
   const d = await r.json();
   alert(d.cleared > 0 ? `✅ Cleared ${d.cleared} unfinished draft(s).` : 'No unfinished drafts to clear.');
+  loadDrafts();
+}
+
+// ── Continue a draft ─────────────────────────────────────────────
+async function loadDrafts() {
+  const r = await authenticatedFetch(API('/workflow-builder/drafts'));
+  if (!r || !r.ok) return;
+  const { drafts } = await r.json();
+  const card = document.getElementById('draftsCard');
+  if (!drafts.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  document.getElementById('draftsList').innerHTML = drafts.map(d => `
+    <div class="draft-row">
+      <div>
+        <strong>${d.name}</strong>
+        <div class="meta">${d.is_edit ? 'editing a live workflow' : 'new workflow'} · ${d.status.replace('_',' ')} ·
+          ${d.field_count} field(s) · ${d.gate_count} constraint(s) · roles ${d.has_roles ? 'set' : 'not set'} ·
+          updated ${fmtDate(d.updated_at)}</div>
+      </div>
+      <button class="btn btn-purple" onclick="resumeDraft('${d.id}')">Continue →</button>
+    </div>
+  `).join('');
+}
+
+async function resumeDraft(draftId) {
+  const r = await authenticatedFetch(API(`/workflow-builder/resume/${draftId}`), {method: 'POST'});
+  if (!r || !r.ok) { alert('Could not resume that draft.'); return; }
+  const data = await r.json();
+  _resetBuilderModal();
+  chatDraftId = data.draft_id;
+  chatIsEditingExisting = !!data.live_snapshot;
+  chatLiveSnapshot = data.live_snapshot || null;
+  chatLastRecapText = data.draft_recap || '';
+  document.getElementById('builderTitle').textContent = `💬 ${data.name || 'Workflow'}`;
+  renderChatHistory(data.chat_history || []);
+  renderDraftPanel(data.draft_state);
+  _updateManualPublishLabel();
+  openModal('builderModal');
+}
+
+// Replays a stored transcript on resume. Bracketed entries are synthetic
+// annotations (PDF-upload notes, the resume nudge itself, direct-panel-edit
+// notes — see append_draft_note) meant only for the model's context, never
+// shown as if the admin typed them.
+function renderChatHistory(history) {
+  document.getElementById('chatMessages').innerHTML = '';
+  for (const m of history) {
+    if (m.role === 'user' && m.content.trim().startsWith('[')) continue;
+    if (m.role === 'user') appendUserMsg(m.content);
+    else if (m.role === 'assistant' && m.content) appendBotMsg(m.content);
+  }
 }
 
 async function openEditLogic() {
@@ -1428,12 +1840,262 @@ async function openEditLogic() {
   _resetBuilderModal();
   chatDraftId = data.draft_id;
   chatIsEditingExisting = true;
-  document.getElementById('draftRecap').textContent = data.draft_recap || '';
+  chatLiveSnapshot = data.live_snapshot || null;
+  chatLastRecapText = data.draft_recap || '';
+  renderDraftPanel(data.draft_state);
   document.getElementById('builderTitle').textContent = `💬 Editing: ${data.name || 'Workflow'}`;
   _updateManualPublishLabel();
   closeModal('editModal');
   openModal('builderModal');
   appendBotMsg(data.greeting);
+}
+
+// ── Editable draft panel ─────────────────────────────────────────
+// Structured sibling of the old read-only <pre> recap — chat and direct
+// panel edits write through the exact same workflow_drafts row, so
+// whichever one the admin used, the other sees it on its next render.
+let diffExpanded = false;
+
+function renderDraftPanel(state) {
+  chatDraftState = state;
+  const el = document.getElementById('draftPanel');
+  if (!state) { el.textContent = 'Tell me what you want to build...'; return; }
+
+  const diffs = chatLiveSnapshot ? computeDraftDiff(state, chatLiveSnapshot) : [];
+  const pill = document.getElementById('diffPill');
+  if (diffs.length) {
+    pill.style.display = 'inline-block';
+    pill.textContent = `${diffs.length} change${diffs.length > 1 ? 's' : ''} vs live v${chatLiveSnapshot.version}`;
+    pill.onclick = () => { diffExpanded = !diffExpanded; renderDraftPanel(state); };
+  } else {
+    pill.style.display = 'none';
+  }
+
+  let html = '';
+  html += panelSection('Title', state.title ? escHtml(state.title) : '<span style="color:#bbb">(untitled — name it in chat)</span>');
+  html += panelSection('Type', state.workflow_type || '<span style="color:#bbb">not set yet</span>');
+  if (state.business_rule) html += panelSection('Business rule', escHtml(state.business_rule).replace(/\\n/g, '<br>'));
+
+  const fieldsHtml = state.fields.length ? state.fields.map(f => `
+    <div class="panel-field-row">
+      <span class="fname">${escHtml(f.name)}</span>
+      ${f.computed ? '<span style="font-size:10px;color:#aaa">calculated automatically</span>' :
+        f.required === null ? '<span style="font-size:10px;color:#aaa">not compiled yet</span>' :
+        `<span class="req-pill ${f.required ? 'req-yes' : 'req-no'}" onclick="toggleFieldRequired('${escAttr(f.name)}', ${!f.required})">${f.required ? 'required' : 'optional'}</span>`}
+      ${f.computed ? '' : `<button class="icon-btn-sm" onclick="deleteDraftField('${escAttr(f.name)}')" title="Remove">🗑</button>`}
+    </div>`).join('') : '<div style="color:#bbb">No fields yet.</div>';
+  html += panelSection('Fields', fieldsHtml, '<button class="link-btn-sm" onclick="showAddFieldForm()">+ Add field</button>') +
+          '<div id="addFieldMount"></div>';
+
+  const gatesHtml = state.gates.length ? state.gates.map(g => `
+    <div class="gate-row ${diffs.some(d => d.kind === 'gate_added' && d.id === g.id) ? 'is-new' : ''}">
+      <span>${describeGateJs(g)}</span>
+      <button class="icon-btn-sm" onclick="deleteDraftGate('${escAttr(g.id)}')" title="Remove">🗑</button>
+    </div>`).join('') : '<div style="color:#bbb">None — no extra safety checks.</div>';
+  html += panelSection('Constraints', gatesHtml, '<button class="link-btn-sm" onclick="showAddGateForm()">+ Add constraint</button>') +
+          '<div id="addGateMount"></div>';
+
+  const rolesHtml = `<div>${(orgRolesList || []).map(r => `
+    <button class="role-chip-sm ${state.granted_roles.includes(r) ? 'on' : ''}" onclick="toggleDraftRole('${escAttr(r)}')">${escHtml(r)}</button>`).join('')}</div>`;
+  html += panelSection('Who can use it', rolesHtml);
+
+  const trigHtml = state.slash_command
+    ? `<code>/${escHtml(state.slash_command)}</code> <button class="link-btn-sm" onclick="showEditTriggerForm()">edit</button>`
+    : '<span style="color:#bbb">assigned automatically once compiled</span>';
+  html += panelSection('Trigger command', trigHtml) + '<div id="editTriggerMount"></div>';
+
+  if (diffs.length && diffExpanded) {
+    html += `<div class="diff-box">${diffs.map(d => `<div>${escHtml(d.text)}</div>`).join('')}</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+function panelSection(title, valueHtml, actionHtml) {
+  return `<div class="panel-section"><div class="panel-section-title"><span>${title}</span>${actionHtml || ''}</div>${valueHtml}</div>`;
+}
+
+// Escapes a value for safe use inside onclick="fn('VALUE')" — HTML-entity
+// escapes first (& must go first, or its own &amp;/&lt;/&gt;/&quot; would
+// get double-escaped), then the JS single-quote the inline handler uses.
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/'/g, "\\\\'");
+}
+
+function describeGateJs(g) {
+  const when = g.when || {};
+  const cond = when.gte != null ? `above ₹${Number(when.gte).toLocaleString('en-IN')}`
+    : when.field && when.equals != null ? `${when.field.split('.').pop()} = ${when.equals}` : '';
+  if (g.type === 'otp') return `🔐 OTP required${cond ? ' ' + cond : ''}`;
+  if (g.type === 'approval_chain') {
+    const lvls = (g.levels || []).map(l =>
+      `${l.role || '(role not set)'}${l.max_amount ? ' (up to ₹' + Number(l.max_amount).toLocaleString('en-IN') + ')' : ' (no ceiling)'}`
+    ).join(' → ');
+    return `👤 Approval${cond ? ' — ' + cond : ''}: ${lvls}`;
+  }
+  if (g.type === 'permission') return `🔒 Only ${(g.role_any_of || []).join(', ') || '(no role set)'} can use this`;
+  return '• constraint';
+}
+
+// Diffs the CURRENT draft against the FIXED snapshot captured once when
+// this edit session started (chatLiveSnapshot) — never against "live now",
+// which would hide a real conflict the moment someone else published a
+// change. Field/gate identity uses name/id respectively, matching how the
+// backend already keys them.
+function computeDraftDiff(state, snap) {
+  const diffs = [];
+  const curNames = state.fields.filter(f => !f.computed).map(f => f.name);
+  const oldNames = snap.fields.map(f => f.name);
+  curNames.filter(n => !oldNames.includes(n)).forEach(n => diffs.push({text: `+ Added field: ${n}`, kind: 'field_added'}));
+  oldNames.filter(n => !curNames.includes(n)).forEach(n => diffs.push({text: `− Removed field: ${n}`, kind: 'field_removed'}));
+
+  const curGateIds = state.gates.map(g => g.id);
+  const oldGateIds = snap.gates.map(g => g.id);
+  state.gates.filter(g => !oldGateIds.includes(g.id)).forEach(g => diffs.push({text: `+ Added constraint: ${describeGateJs(g)}`, kind: 'gate_added', id: g.id}));
+  snap.gates.filter(g => !curGateIds.includes(g.id)).forEach(g => diffs.push({text: `− Removed constraint: ${describeGateJs(g)}`, kind: 'gate_removed', id: g.id}));
+
+  const addedRoles = state.granted_roles.filter(r => !snap.granted_roles.includes(r));
+  const removedRoles = snap.granted_roles.filter(r => !state.granted_roles.includes(r));
+  if (addedRoles.length) diffs.push({text: `+ Added role(s): ${addedRoles.join(', ')}`, kind: 'roles'});
+  if (removedRoles.length) diffs.push({text: `− Removed role(s): ${removedRoles.join(', ')}`, kind: 'roles'});
+
+  if (state.slash_command !== snap.slash_command) diffs.push({text: `Trigger command changed: /${snap.slash_command} → /${state.slash_command}`, kind: 'trigger'});
+
+  return diffs;
+}
+
+// Shared by every direct-panel-edit action below — same response shape
+// (draft_recap/draft_state always, summary_card/error only from field/gate
+// edits that triggered a recompile) regardless of which endpoint answered.
+async function callDraftEdit(kind, body) {
+  document.getElementById('builderStatus').textContent = 'Updating…';
+  const r = await authenticatedFetch(API(`/workflow-builder/draft/${chatDraftId}/${kind}`), {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  document.getElementById('builderStatus').textContent = '';
+  if (!r) return;
+  const data = await r.json();
+  if (!r.ok) { alert('Error: ' + (data.detail || 'could not save that change')); return; }
+  if (data.draft_recap) chatLastRecapText = data.draft_recap;
+  if (data.draft_state) renderDraftPanel(data.draft_state);
+  if (data.error) appendBotMsg(`⚠️ Recompiling after that change hit a snag: ${data.error}`);
+  else if (data.summary_card) appendSummaryCard(data.summary_card);
+  _updateManualPublishLabel();
+}
+
+function toggleFieldRequired(name, newRequired) {
+  callDraftEdit('field', {action: 'toggle_required', name, required: newRequired});
+}
+function deleteDraftField(name) {
+  if (!confirm(`Remove field "${name}"?`)) return;
+  callDraftEdit('field', {action: 'remove', name});
+}
+function showAddFieldForm() {
+  document.getElementById('addFieldMount').innerHTML = `
+    <div class="mini-form-sm">
+      <input type="text" id="newFieldName" placeholder="e.g. Vehicle number">
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmAddField()">Add</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('addFieldMount').innerHTML=''">Cancel</button>
+    </div>`;
+  document.getElementById('newFieldName').focus();
+}
+function confirmAddField() {
+  const name = document.getElementById('newFieldName').value.trim();
+  if (!name) return;
+  document.getElementById('addFieldMount').innerHTML = '';
+  callDraftEdit('field', {action: 'add', name});
+}
+
+function deleteDraftGate(id) {
+  if (!confirm('Remove this constraint?')) return;
+  callDraftEdit('gate', {action: 'remove', gate_id: id});
+}
+function showAddGateForm() {
+  document.getElementById('addGateMount').innerHTML = `
+    <div class="mini-form-sm">
+      <select id="gateTypeSel" onchange="_toggleGateSub()">
+        <option value="otp">OTP above an amount</option>
+        <option value="approval_chain">Approval required</option>
+        <option value="permission">Only specific roles can use this</option>
+      </select>
+      <div id="gateSubOtp">
+        <input type="number" id="gateOtpAmount" placeholder="Amount, e.g. 50000">
+      </div>
+      <div id="gateSubApproval" style="display:none">
+        <select id="gateApprovalCond">
+          <option value="always">Always required</option>
+          <option value="amount">When amount is above ₹</option>
+          <option value="field">When a field equals a value</option>
+        </select>
+        <input type="number" id="gateApprovalAmount" placeholder="Amount" style="display:none">
+        <input type="text" id="gateApprovalField" placeholder="Field name, e.g. priority" style="display:none">
+        <input type="text" id="gateApprovalValue" placeholder="Value, e.g. urgent" style="display:none">
+        <input type="text" id="gateApprovalRole" placeholder="Approver role, e.g. committee">
+        <input type="number" id="gateApprovalCeiling" placeholder="Ceiling ₹ (optional)">
+      </div>
+      <div id="gateSubPermission" style="display:none">
+        <div id="gatePermRoles"></div>
+      </div>
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmAddGate()">Add</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('addGateMount').innerHTML=''">Cancel</button>
+    </div>`;
+  document.getElementById('gatePermRoles').innerHTML = (orgRolesList || []).map(r =>
+    `<button type="button" class="role-chip-sm" data-perm-role="${escAttr(r)}" onclick="this.classList.toggle('on')">${escHtml(r)}</button>`).join('');
+  document.getElementById('gateApprovalCond').addEventListener('change', function () {
+    document.getElementById('gateApprovalAmount').style.display = this.value === 'amount' ? 'block' : 'none';
+    document.getElementById('gateApprovalField').style.display = this.value === 'field' ? 'block' : 'none';
+    document.getElementById('gateApprovalValue').style.display = this.value === 'field' ? 'block' : 'none';
+  });
+}
+function _toggleGateSub() {
+  const v = document.getElementById('gateTypeSel').value;
+  document.getElementById('gateSubOtp').style.display = v === 'otp' ? 'block' : 'none';
+  document.getElementById('gateSubApproval').style.display = v === 'approval_chain' ? 'block' : 'none';
+  document.getElementById('gateSubPermission').style.display = v === 'permission' ? 'block' : 'none';
+}
+function confirmAddGate() {
+  const type = document.getElementById('gateTypeSel').value;
+  let gate;
+  if (type === 'otp') {
+    gate = {type: 'otp', when: {field: '$computed.total_amount', gte: Number(document.getElementById('gateOtpAmount').value || 0)}};
+  } else if (type === 'approval_chain') {
+    const cond = document.getElementById('gateApprovalCond').value;
+    let when = null;
+    if (cond === 'amount') when = {field: '$computed.total_amount', gte: Number(document.getElementById('gateApprovalAmount').value || 0)};
+    else if (cond === 'field') when = {field: '$fields.' + document.getElementById('gateApprovalField').value.trim(), equals: document.getElementById('gateApprovalValue').value.trim()};
+    const role = document.getElementById('gateApprovalRole').value.trim() || 'admin';
+    const ceiling = document.getElementById('gateApprovalCeiling').value;
+    gate = {type: 'approval_chain', levels: [{level: 1, role, max_amount: ceiling ? Number(ceiling) : null}]};
+    if (when) gate.when = when;
+  } else {
+    const roles = Array.from(document.querySelectorAll('#gatePermRoles .role-chip-sm.on')).map(el => el.getAttribute('data-perm-role'));
+    gate = {type: 'permission', role_any_of: roles.length ? roles : ['admin']};
+  }
+  document.getElementById('addGateMount').innerHTML = '';
+  callDraftEdit('gate', {action: 'add', gate});
+}
+
+function toggleDraftRole(role) {
+  const roles = chatDraftState.granted_roles.includes(role)
+    ? chatDraftState.granted_roles.filter(r => r !== role)
+    : [...chatDraftState.granted_roles, role];
+  callDraftEdit('roles', {roles});
+}
+
+function showEditTriggerForm() {
+  document.getElementById('editTriggerMount').innerHTML = `
+    <div class="mini-form-sm">
+      <input type="text" id="newTrigger" value="${escAttr(chatDraftState.slash_command || '')}">
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="confirmEditTrigger()">Save</button>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('editTriggerMount').innerHTML=''">Cancel</button>
+    </div>`;
+}
+function confirmEditTrigger() {
+  const cmd = document.getElementById('newTrigger').value.trim();
+  document.getElementById('editTriggerMount').innerHTML = '';
+  callDraftEdit('trigger', {slash_command: cmd});
 }
 
 async function onPdfSelected(input) {
@@ -1523,7 +2185,8 @@ async function sendChatMsg() {
 
     // Deterministic, server-rendered — always reflects what's actually
     // saved, not what the LLM's reply claims (see build_draft_recap).
-    if (data.draft_recap) document.getElementById('draftRecap').textContent = data.draft_recap;
+    if (data.draft_recap) chatLastRecapText = data.draft_recap;
+    if (data.draft_state) renderDraftPanel(data.draft_state);
 
     if (data.summary_card) appendSummaryCard(data.summary_card);
     if (data.reply) appendBotMsg(data.reply);
@@ -1547,7 +2210,7 @@ async function sendChatMsg() {
 // existing workflow's logic and just wanting to commit a small change.
 function manualPublish() {
   if (!chatDraftId) { alert("Nothing to save yet — describe the workflow first."); return; }
-  showPublishConfirm(chatDraftId, document.getElementById('draftRecap').textContent);
+  showPublishConfirm(chatDraftId, chatLastRecapText);
 }
 
 // ── Confirm & Publish ───────────────────────────────────────────────
@@ -1577,12 +2240,40 @@ async function publishDraft() {
     alert('✅ Workflow published!');
     closeModal('publishModal');
     loadData();
+    loadDrafts();
+  } else if (r.status === 409) {
+    // Someone else published a change to this same workflow while this
+    // draft was open — never auto-merged, see PublishConflict's docstring.
+    document.getElementById('publishStatus').textContent = '';
+    document.getElementById('conflictDraftId').value = draftId;
+    document.getElementById('conflictBody').innerHTML =
+      escHtml(d.detail.error) + '<br><br>Your changes are still safe in this draft — they just haven\\'t been saved over the live workflow yet.';
+    closeModal('publishModal');
+    openModal('conflictModal');
   } else {
     const detail = d.detail;
     const msg = typeof detail === 'object' ? (detail.error + (detail.problems ? '\\n• ' + detail.problems.join('\\n• ') : '')) : detail;
     alert('Error: ' + msg);
     document.getElementById('publishStatus').textContent = '';
   }
+}
+
+async function discardAndReloadLatest() {
+  const draftId = document.getElementById('conflictDraftId').value;
+  closeModal('conflictModal');
+  const r = await authenticatedFetch(API(`/workflow-builder/draft/${draftId}/discard-and-reload`), {method: 'POST'});
+  if (!r || !r.ok) { alert('Could not reload the latest version — try "Edit the logic" again from the workflow list.'); return; }
+  const data = await r.json();
+  _resetBuilderModal();
+  chatDraftId = data.draft_id;
+  chatIsEditingExisting = true;
+  chatLiveSnapshot = data.live_snapshot || null;
+  chatLastRecapText = data.draft_recap || '';
+  renderDraftPanel(data.draft_state);
+  document.getElementById('builderTitle').textContent = `💬 Editing: ${data.name || 'Workflow'}`;
+  _updateManualPublishLabel();
+  openModal('builderModal');
+  appendBotMsg("This is a fresh copy of the current live version — your change from the discarded draft was NOT carried over, since automatically re-applying it risks silently producing something incorrect. Tell me (or use the panel) to make that change again.");
 }
 
 // ── Load Data ─────────────────────────────────────────────────────
@@ -1604,6 +2295,7 @@ async function loadData() {
 
     document.getElementById('orgName').textContent = data.org.name;
     refreshOrgRoles();  // fire-and-forget — populates the "Who can use it" role checkboxes
+    loadDrafts();       // fire-and-forget — populates "Continue a draft"
 
     try {
       const sec = await authenticatedFetch(API('/security'));
