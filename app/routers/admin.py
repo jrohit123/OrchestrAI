@@ -908,6 +908,27 @@ async def resume_draft_endpoint(org_slug: str, draft_id: str):
     return await resume_draft(dict(draft), str(draft["org_id"]), source_key)
 
 
+@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/abandon")
+async def abandon_one_draft(org_slug: str, draft_id: str):
+    """
+    Per-draft delete, backing the 🗑️ button in the drafts modal — same
+    'abandoned' status change clear-drafts already does in bulk, just
+    scoped to one row instead of every 'chatting' draft in the org. A
+    status change, not a hard delete, consistent with how this table
+    treats removal everywhere else (see clear_unfinished_drafts' own
+    comment) — nothing here touches any live workflow.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    row = await fetch_one(
+        "UPDATE workflow_drafts SET status = 'abandoned', updated_at = now() "
+        "WHERE id = $1 AND status IN ('chatting', 'ready_for_review') RETURNING id",
+        draft_id, source_key=source_key
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Draft not found or already inactive")
+    return {"success": True}
+
+
 async def _save_and_maybe_recompile(draft_id: str, org_id: str, source_key: str, was_compiled: bool, note: str) -> dict:
     """
     Shared by the field and gate direct-edit endpoints below. If the draft
@@ -1286,19 +1307,12 @@ input:checked+.slider:before{transform:translateX(18px)}
       </table>
     </div>
 
-    <!-- ── CONTINUE A DRAFT — unfinished workflow_drafts rows, resumable
-         instead of only ever start-fresh-or-edit-published ──────────── -->
-    <div class="card" id="draftsCard" style="display:none;border-left:4px solid #8b5cf6">
-      <div class="card-title" style="color:#8b5cf6">📝 Continue a draft</div>
-      <div id="draftsList"></div>
-    </div>
-
     <!-- ── WORKFLOW LIST ─────────────────────────────────────────── -->
     <div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
         <span>⚙️ Workflows</span>
         <span>
-          <button class="btn btn-gray" style="margin-right:6px" onclick="clearUnfinishedDrafts()">🧹 Clear unfinished drafts</button>
+          <button class="btn btn-gray" id="draftsBtn" style="margin-right:6px;display:none" onclick="openDraftsModal()">📝 Drafts</button>
           <button class="btn btn-purple" onclick="openBuilderChat()">✨ Build New Workflow</button>
         </span>
       </div>
@@ -1406,6 +1420,22 @@ input:checked+.slider:before{transform:translateX(18px)}
       <button class="btn btn-gray" onclick="closeModal('activityConvoModal')" style="padding:4px 10px">✕</button>
     </div>
     <div id="activityConvoThread" style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto"></div>
+  </div>
+</div>
+
+<!-- ── DRAFTS — unfinished workflow_drafts rows, opened on demand instead of
+     sitting as a permanent card above the workflow list. Continue any one,
+     delete any one, or clear all from here. ──────────────────────────── -->
+<div class="modal-bg" id="draftsModal">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-title" style="display:flex;justify-content:space-between">
+      <span>📝 Drafts in progress</span>
+      <button class="btn btn-gray" onclick="closeModal('draftsModal')" style="padding:4px 10px">✕</button>
+    </div>
+    <div id="draftsModalList"></div>
+    <div style="border-top:1px solid #e8edf5;margin-top:14px;padding-top:14px;text-align:right">
+      <button class="btn btn-danger" onclick="clearUnfinishedDrafts()">🧹 Clear all</button>
+    </div>
   </div>
 </div>
 
@@ -1733,24 +1763,36 @@ function openBuilderChat() {
   appendBotMsg('Hi! Tell me about the workflow you want to build — what should it do?');
 }
 
+// Bulk-clear still exists (now lives inside draftsModal, not the
+// workflow-list header) — confirms once, abandons every 'chatting' draft
+// for the org, then refreshes whichever view is currently showing counts.
 async function clearUnfinishedDrafts() {
-  if (!confirm('Clear all unfinished workflow drafts for this org?\\nThis abandons every in-progress "Build New Workflow" chat that was never published — it does not touch any live workflow.')) return;
+  if (!confirm('Clear all unfinished workflow drafts for this org?\\nThis abandons every in-progress draft that was never published — it does not touch any live workflow.')) return;
   const r = await authenticatedFetch(API('/workflow-builder/clear-drafts'), {method: 'POST'});
   if (!r) return;
   const d = await r.json();
   alert(d.cleared > 0 ? `✅ Cleared ${d.cleared} unfinished draft(s).` : 'No unfinished drafts to clear.');
+  closeModal('draftsModal');
   loadDrafts();
 }
 
-// ── Continue a draft ─────────────────────────────────────────────
+// ── Drafts ────────────────────────────────────────────────────────
+// Only updates the "📝 Drafts" button's count badge — no longer renders an
+// always-visible card, which just sat there taking up space above the
+// workflow list whether there was one draft or none. The actual list only
+// renders when the admin opens it (openDraftsModal).
 async function loadDrafts() {
   const r = await authenticatedFetch(API('/workflow-builder/drafts'));
   if (!r || !r.ok) return;
   const { drafts } = await r.json();
-  const card = document.getElementById('draftsCard');
-  if (!drafts.length) { card.style.display = 'none'; return; }
-  card.style.display = 'block';
-  document.getElementById('draftsList').innerHTML = drafts.map(d => `
+  const btn = document.getElementById('draftsBtn');
+  if (!drafts.length) { btn.style.display = 'none'; return; }
+  btn.style.display = 'inline-block';
+  btn.textContent = `📝 Drafts (${drafts.length})`;
+}
+
+function _renderDraftsModalList(drafts) {
+  document.getElementById('draftsModalList').innerHTML = drafts.length ? drafts.map(d => `
     <div class="draft-row">
       <div>
         <strong>${d.name}</strong>
@@ -1758,15 +1800,37 @@ async function loadDrafts() {
           ${d.field_count} field(s) · ${d.gate_count} constraint(s) · roles ${d.has_roles ? 'set' : 'not set'} ·
           updated ${fmtDate(d.updated_at)}</div>
       </div>
-      <button class="btn btn-purple" onclick="resumeDraft('${d.id}')">Continue →</button>
+      <span style="white-space:nowrap">
+        <button class="btn btn-purple" style="margin-right:4px" onclick="resumeDraft('${d.id}')">Continue →</button>
+        <button class="btn btn-danger" onclick="deleteDraft('${d.id}','${escAttr(d.name)}')" title="Delete this draft">🗑️</button>
+      </span>
     </div>
-  `).join('');
+  `).join('') : '<div style="text-align:center;color:#aaa;padding:20px">No drafts in progress.</div>';
+}
+
+async function openDraftsModal() {
+  const r = await authenticatedFetch(API('/workflow-builder/drafts'));
+  if (!r || !r.ok) return;
+  const { drafts } = await r.json();
+  _renderDraftsModalList(drafts);
+  openModal('draftsModal');
+}
+
+async function deleteDraft(id, name) {
+  if (!confirm(`Delete draft "${name}"?\\nThis abandons this specific draft — it does not touch any live workflow, and doesn't affect any other draft.`)) return;
+  const r = await authenticatedFetch(API(`/workflow-builder/draft/${id}/abandon`), {method: 'POST'});
+  if (!r || !r.ok) { alert('Could not delete that draft.'); return; }
+  const rr = await authenticatedFetch(API('/workflow-builder/drafts'));
+  const { drafts } = await rr.json();
+  _renderDraftsModalList(drafts);
+  loadDrafts();
 }
 
 async function resumeDraft(draftId) {
   const r = await authenticatedFetch(API(`/workflow-builder/resume/${draftId}`), {method: 'POST'});
   if (!r || !r.ok) { alert('Could not resume that draft.'); return; }
   const data = await r.json();
+  closeModal('draftsModal');
   _resetBuilderModal();
   chatDraftId = data.draft_id;
   chatIsEditingExisting = !!data.live_snapshot;
