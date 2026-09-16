@@ -324,18 +324,6 @@ async def admin_activity_session(org_slug: str, session_id: str):
     return {"rows": [dict(r) for r in rows]}
 
 
-@router.post("/admin/{org_slug}/api/debug/cleanup-test-error")
-async def admin_cleanup_test_error(org_slug: str):
-    """TEMPORARY — removes the row seeded by the (already-removed) smoke
-    test above. Remove this endpoint once run."""
-    source_key = await _resolve_source_key(org_slug)
-    result = await execute(
-        "DELETE FROM audit_log WHERE input_text = '[TEST] seeded error row'",
-        source_key=source_key
-    )
-    return {"deleted": result}
-
-
 @router.post("/admin/{org_slug}/api/workflow/{workflow_id}/toggle")
 async def toggle_otp(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
