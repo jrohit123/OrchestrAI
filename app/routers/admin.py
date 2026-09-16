@@ -1,6 +1,7 @@
 import json
 import re
 import hmac
+from datetime import date
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from app.config import required
@@ -227,8 +228,8 @@ async def admin_data(org_slug: str):
 async def admin_activity(
     org_slug: str,
     user_id: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     outcome: str | None = None,
     search: str | None = None,
     page: int = 1,
