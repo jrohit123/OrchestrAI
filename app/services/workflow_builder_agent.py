@@ -743,6 +743,18 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
     "Edit the logic" on a specific workflow row — no name-matching involved).
     Copies every field of a live `workflows` row into a workflow_drafts row
     so the admin can change it by talking, exactly like building a new one.
+
+    Lands the draft in status='ready_for_review', not 'chatting': what's
+    just been copied is a byte-for-byte snapshot of something already live
+    and valid, so it's publishable as-is the instant it lands (confirmed
+    live: publishing straight after a title-only edit — which deliberately
+    never recompiles — 409'd with "Draft is not ready for review" forever,
+    since nothing else in that flow ever flips status to ready_for_review).
+    Any tool that actually changes the draft's content (revise_draft, the
+    direct-edit endpoints for type/business rule/fields/gates) is
+    responsible for flipping status back to 'chatting' itself before its
+    recompile — revise_draft already does this unconditionally, so this
+    change is safe for the chat-driven path too.
     """
     steps           = _parse_jsonb(wf.get("steps"), [])
     gates           = _parse_jsonb(wf.get("gates"), [])
@@ -766,7 +778,7 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
             gates=$19::jsonb, granted_roles=$20,
             slash_command=$21, command_description=$22, menu_section=$23,
             based_on_version=$24,
-            status='chatting', updated_at=now()
+            status='ready_for_review', updated_at=now()
         WHERE id=$25
     """,
         wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
