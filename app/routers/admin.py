@@ -1974,7 +1974,8 @@ async function openEditLogic(id) {
   _updateManualPublishLabel();
   _updateViewJsonBtn();
   openModal('builderModal');
-  appendBotMsg(data.greeting);
+  if (data.chat_history) renderChatHistory(data.chat_history);
+  else appendBotMsg(data.greeting);
 }
 
 // ── Editable draft panel ─────────────────────────────────────────

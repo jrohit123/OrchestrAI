@@ -792,7 +792,22 @@ async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
     guessed by an LLM matching a name), and seeds the chat with a greeting so
     the builder opens already primed instead of the admin re-explaining which
     workflow they mean or the LLM misidentifying it.
+
+    If an edit for this exact workflow is already in progress (same
+    intent_key, status still chatting/ready_for_review — typically an
+    earlier "Edit the logic" click on the same workflow that was never
+    finished), resumes that draft instead of creating a second one: the two
+    would collide on idx_workflow_drafts_org_intent_active and crash with a
+    raw UniqueViolationError otherwise (reproduced live on Godrej).
     """
+    existing_draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE org_id = $1 AND intent_key = $2 "
+        "AND status IN ('chatting', 'ready_for_review')",
+        org_id, wf["intent_key"], source_key=source_key
+    )
+    if existing_draft:
+        return await resume_draft(dict(existing_draft), org_id, source_key)
+
     row = await fetch_one(
         "INSERT INTO workflow_drafts (org_id, status) VALUES ($1, 'chatting') RETURNING *",
         org_id, source_key=source_key
@@ -1021,6 +1036,26 @@ async def _execute_tool(
         if not wf:
             return {"error": f"No workflow found with key '{intent_key}'. Check the name and try again."}
         wf = dict(wf)
+
+        # Same collision this tool would otherwise hit as start_edit_draft:
+        # setting this draft's intent_key would violate
+        # idx_workflow_drafts_org_intent_active if another draft already has
+        # an unfinished edit open for this exact workflow. Surfaced as a
+        # tool-result error the model can relay in plain language instead of
+        # a raw UniqueViolationError crash.
+        existing_edit = await fetch_one(
+            "SELECT id FROM workflow_drafts WHERE org_id = $1 AND intent_key = $2 "
+            "AND status IN ('chatting', 'ready_for_review') AND id != $3",
+            org_id, intent_key, draft["id"], source_key=source_key
+        )
+        if existing_edit:
+            return {
+                "error": (
+                    f"There's already an unfinished edit in progress for '{intent_key}' "
+                    "in a different draft. Tell the admin to resume that draft from the "
+                    "Drafts list instead of starting another one for the same workflow."
+                )
+            }
 
         granted = await fetch_all(
             "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
