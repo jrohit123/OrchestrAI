@@ -324,20 +324,16 @@ async def admin_activity_session(org_slug: str, session_id: str):
     return {"rows": [dict(r) for r in rows]}
 
 
-@router.post("/admin/{org_slug}/api/debug/seed-test-error")
-async def admin_seed_test_error(org_slug: str):
-    """TEMPORARY — one-time smoke test for the outcome='error' rendering
-    path in Recent Activity. Inserts one clearly-fake row, tagged so it's
-    unmistakable in the UI. Remove this endpoint after verifying."""
+@router.post("/admin/{org_slug}/api/debug/cleanup-test-error")
+async def admin_cleanup_test_error(org_slug: str):
+    """TEMPORARY — removes the row seeded by the (already-removed) smoke
+    test above. Remove this endpoint once run."""
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
-    user = await fetch_one("SELECT id FROM users WHERE org_id = $1 LIMIT 1", org["id"], source_key=source_key)
-    await execute("""
-        INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
-        VALUES ($1, $2, 'agent', '[TEST] seeded error row', '[TEST] seeded to verify the error filter — safe to ignore/delete',
-                $3 || ':' || to_char(now(), 'YYYY-MM-DD'), 'error')
-    """, org["id"], user["id"], f"{org['id']}:tg:debug-seed", source_key=source_key)
-    return {"seeded": True}
+    result = await execute(
+        "DELETE FROM audit_log WHERE input_text = '[TEST] seeded error row'",
+        source_key=source_key
+    )
+    return {"deleted": result}
 
 
 @router.post("/admin/{org_slug}/api/workflow/{workflow_id}/toggle")
