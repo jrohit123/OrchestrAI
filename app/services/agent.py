@@ -1046,6 +1046,7 @@ async def _execute_tool(
     if tool_name == "query_database":
         sql = tool_input.get("sql", "")
         params = tool_input.get("params", [])
+        logger.info(f"query_database raw call — sql={sql!r} params={params!r}")
 
         # Check readable_tables permission
         readable_tables = set(user.get("readable_tables", []))
