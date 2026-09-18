@@ -153,6 +153,13 @@ Extract the LONGEST possible entity name. Never truncate.
 TWO-PASS LOOKUP:
 Pass 1: ILIKE '%{full_name}%' → 1 match: proceed | 2+: clarify | 0: Pass 2
 Pass 2: ILIKE '%{first_word}%' → 1 match: proceed | 2+: clarify | 0: not found
+This means TWO SEPARATE tool calls, one after the other — run Pass 1, look at
+its result, and only if it came back empty do you make a second, separate
+query_database call for Pass 2. NEVER combine both passes into a single query
+with two placeholders/params (e.g. "name ILIKE $2 OR name ILIKE $3") — each
+query_database call gets exactly ONE name value in params[] for ONE ILIKE
+condition. This rule is about sequencing retries, not about how many params
+a single query takes.
 
 SECURITY: Never expose passwords, OTP hashes, raw UUIDs, workflow internals, SQL queries.
 
