@@ -24,18 +24,19 @@ CASES ASSIGNED TO SOMEONE ELSE (by name):
 "<name> ko kya assign hai" / "cases assigned to <name>" / "<name> ke paas kya hai"
 "who is X's case assigned to" / "list cases assigned to <name>"
 `assigned_to_id` (and `complainant_id`) are UUID foreign keys into `users.id` —
-NEVER bind a person's name directly to $2/$3 in a comparison against these
-columns; that mismatches types and crashes the query. Always resolve the name
-to an id first via a JOIN or subquery matched on `users.name`, e.g.:
+NEVER bind a person's name directly to a $ placeholder in a comparison against
+these columns; that mismatches types and crashes the query. Always resolve the
+name to an id first via a JOIN or subquery matched on `users.name`, e.g.:
   SELECT c.id, c.case_number, c.title, c.status, c.priority, u.name AS assigned_to_name
   FROM cases c
   JOIN users u ON c.assigned_to_id = u.id
-  WHERE c.org_id = $1 AND u.name ILIKE '%' || $2 || '%'
+  WHERE c.org_id = :org_id AND u.name ILIKE '%' || $1 || '%'
   -- params: ["<name>"]   (pass the bare name/first-name the user said —
   -- do NOT add your own % wildcards to the param value; the SQL above
   -- already wraps it. Users often say only a first name like "anuja" while
   -- the stored name is "Anuja Sinkar" — the '%'||$n||'%' wrapper is what
-  -- makes that partial match work. Exactly ONE param for this query.)
+  -- makes that partial match work. Exactly ONE param for this query — :org_id
+  -- is a separate literal marker, it is NOT one of your params[] entries.)
 If no rows come back, say plainly that no user matching that name has any
 cases assigned (or that no such user exists) — do not report an "unknown
 user" case as if the lookup succeeded.

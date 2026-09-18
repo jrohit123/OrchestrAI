@@ -243,30 +243,30 @@ TOOLS = [
                 "instead of this tool; that query has already been reviewed and is more reliable "
                 "than one written fresh on every call. Use query_database only when no configured "
                 "workflow covers the question — a genuinely ad-hoc lookup. "
-                "Always use $1 for org_id. Use $2, $3... for additional params. "
-                "ILIKE for name searches. LIMIT 50 max. "
+                "ORG SCOPING — use the literal marker :org_id (not a $ placeholder) anywhere "
+                "you need to filter by organization, e.g. \"WHERE c.org_id = :org_id\". It is "
+                "substituted automatically and is NOT part of params[] and does NOT consume a "
+                "placeholder number. "
+                "YOUR OWN PARAMS — start numbering at $1. params[0] is $1, params[1] is $2, and "
+                "so on — a plain 1:1 mapping with no offset, since :org_id is separate and "
+                "invisible to this numbering. ILIKE for name searches. LIMIT 50 max. "
                 "CRITICAL: params[] must contain EXACTLY one value per DISTINCT placeholder "
-                "number from $2 onward, in order — nothing more. If the same placeholder (e.g. "
-                "$2) appears more than once in the SQL text — such as wrapping it twice for "
-                "ILIKE, e.g. \"WHERE name ILIKE '%' || $2 || '%'\" — it is still ONE value used "
-                "twice; do NOT add a second params[] entry for the repeat. Count DISTINCT "
-                "placeholder numbers, not occurrences. If the query has no filter (e.g. 'show "
-                "all X'), params must be an empty array []. "
+                "number — nothing more. If the same placeholder (e.g. $1) appears more than "
+                "once in the SQL text — such as wrapping it twice for ILIKE, e.g. \"name ILIKE "
+                "'%' || $1 || '%'\" — it is still ONE value used twice; do NOT add a second "
+                "params[] entry for the repeat. If the query has only the :org_id filter and no "
+                "other condition (e.g. 'show all X'), params must be an empty array []. "
                 "CRITICAL: every item in params[] must be a REAL value (a name, id, number, date) "
-                "— never the literal text '$1', '$2', etc. Those placeholders only belong inside "
+                "— never literal text like '$1' or ':org_id'. Those markers only belong inside "
                 "the sql string itself. "
                 "For 'my own X' / 'complaints I filed' / anything scoped to the person asking: use "
-                "the User ID given under CURRENT USER above as the literal param value — do not "
-                "guess, join on name, or leave it out. "
-                "This CURRENT USER id rule applies ONLY when the request is about the asking "
-                "person themselves (their own cases/complaints — 'my', 'mine', 'I filed', no "
-                "other name mentioned). It does NOT apply to a query about a DIFFERENT named "
-                "person (e.g. 'cases assigned to anuja', 'what does girish have') — for those, "
-                "params[] holds ONLY the other person's name/search term, resolved via the "
-                "ILIKE-on-name pattern; never add the asking user's own id as an extra param "
-                "just because a person is mentioned. Example of the mistake to avoid: for "
-                "\"cases assigned to anuja\" the correct params is [\"anuja\"] (length 1) — "
-                "NOT [current_user_id, \"anuja\"] (length 2, wrong)."
+                "the User ID given under CURRENT USER above as a normal $N param value (resolved "
+                "via ILIKE-on-name is wrong here — use the id directly) — do not guess or leave "
+                "it out. This applies ONLY when the request is about the asking person themselves "
+                "('my', 'mine', 'I filed', no other name mentioned). It does NOT apply to a query "
+                "about a DIFFERENT named person (e.g. 'cases assigned to anuja') — for those, "
+                "params[] holds ONLY the other person's name/search term; never add the asking "
+                "user's own id just because a person is mentioned somewhere in the request."
             ),
             "parameters": {
                 "type": "object",
@@ -277,7 +277,7 @@ TOOLS = [
                     },
                     "params": {
                         "type": "array",
-                        "description": "Values for $2, $3... ($1=org_id is injected automatically)",
+                        "description": "Values for $1, $2, $3... in order. org_id is NOT one of these — use the :org_id marker in sql instead.",
                         "items": {}
                     }
                 },
@@ -1082,39 +1082,53 @@ async def _execute_tool(
         if not ok:
             return f"ERROR: Query blocked — {reason}"
 
-        full_params = [user["org_id"]] + list(params)
-        placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
-        max_placeholder = max(placeholder_nums, default=1)
+        # org_id is a trusted server-side value (resolved from the authenticated
+        # session, never model-controlled) — it is injected as a literal via the
+        # :org_id marker rather than as a numbered $N placeholder. This means the
+        # model's own params[] maps 1:1 onto the $1, $2... it writes, with no
+        # hidden offset to account for. The previous design auto-injected org_id
+        # as $1 behind the scenes while asking the model to start its own params
+        # at $2 — an invisible-offset bookkeeping task that small models proved
+        # unable to do reliably (confirmed from production logs: the model kept
+        # re-supplying its own id as an extra, redundant leading param). Making
+        # $1 belong to the model unconditionally removes the failure mode at its
+        # source instead of pattern-matching symptoms of it.
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(user["org_id"])):
+            logger.error(f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}")
+            return "ERROR: internal error resolving org — please try again"
+        if ':org_id' not in sql:
+            return (
+                "ERROR: this query has no org scoping. Every query_database call must "
+                "filter on org_id using the literal :org_id marker (e.g. "
+                "\"WHERE c.org_id = :org_id\") — never a $-numbered placeholder for it. "
+                "Add that filter and retry."
+            )
+        sql = re.sub(r':org_id\b', f"'{user['org_id']}'::uuid", sql)
 
-        if max_placeholder > len(full_params):
-            # Genuine under-supply — the LLM must fix this, can't guess a value.
+        placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
+        max_placeholder = max(placeholder_nums, default=0)
+
+        if max_placeholder > len(params):
             msg = (
-                f"SQL references up to ${max_placeholder} but only {len(full_params)} "
-                f"param(s) were supplied ($1=org_id + {len(params)} from params[]). "
-                f"Add the missing value(s) to params and retry."
+                f"SQL references up to ${max_placeholder} but only {len(params)} "
+                f"param(s) were supplied in params[]. Add the missing value(s) and retry."
             )
             logger.warning(f"query_database param mismatch (under-supply): {msg}")
             return f"ERROR: {msg}"
 
-        if max_placeholder < len(full_params):
-            # Over-supply — do NOT guess which params to drop. params[] is
-            # positional ($2=params[0], $3=params[1], ...), so blindly keeping
-            # the first max_placeholder values silently binds the wrong value
-            # to a placeholder whenever the extra value isn't trailing. Fail
-            # closed like under-supply so the LLM fixes params[] and retries.
-            expected_len = max(max_placeholder - 1, 0)
+        if max_placeholder < len(params):
             msg = (
-                f"params[] must have EXACTLY {expected_len} item(s) but {len(params)} "
-                f"were supplied (SQL's highest placeholder is ${max_placeholder}; $1=org_id "
-                f"is automatic, so only ${'2..' + str(max_placeholder) if max_placeholder > 2 else '2'} "
-                f"need params[] entries — {expected_len} distinct number(s) total). "
-                f"If your SQL text uses the same placeholder number more than once (e.g. "
-                f"$2 appearing twice to wrap a name in ILIKE), that is still ONE value — do "
-                f"not add a duplicate entry for it. Remove the extra value(s) from params "
-                f"and retry with exactly {expected_len} item(s)."
+                f"params[] has {len(params)} item(s) but the SQL's highest placeholder "
+                f"is ${max_placeholder} — remove the unused value(s) so params[] has "
+                f"exactly {max_placeholder} item(s), one per DISTINCT placeholder number "
+                f"(a placeholder repeated in the SQL text, e.g. $1 appearing twice to "
+                f"wrap a name in ILIKE, still counts once). Retry with exactly "
+                f"{max_placeholder} item(s)."
             )
             logger.warning(f"query_database param mismatch (over-supply): {msg}")
             return f"ERROR: {msg}"
+
+        full_params = list(params)
 
         try:
             logger.info(f"Executing SQL query: {sql[:200]}")

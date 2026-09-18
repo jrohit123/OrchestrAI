@@ -50,7 +50,7 @@ always JOIN the customers table to include customer name in results:
 SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
        i.amount, i.status, i.due_date, i.items
 FROM invoices i JOIN customers c ON c.id = i.customer_id
-WHERE i.org_id = $1 AND ...
+WHERE i.org_id = :org_id AND ...
 Include i.items so the Tax Invoice can show line-item breakdown.
 
 ─────────────────────────────────────────────
@@ -109,13 +109,13 @@ EXAMPLES:
 
 RULE 2 — TWO-PASS CUSTOMER LOOKUP:
 Pass 1: Search with the FULL extracted name:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FULL_NAME}%'
+  SELECT id, name, city FROM customers WHERE org_id = :org_id AND name ILIKE '%{FULL_NAME}%'
   - If 1 result → proceed immediately. NO clarification needed.
   - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
   - If 0 results → go to Pass 2.
 
 Pass 2 (only if Pass 1 returned 0 results): Search with first significant word only:
-  SELECT id, name, city FROM customers WHERE org_id = $1 AND name ILIKE '%{FIRST_WORD}%'
+  SELECT id, name, city FROM customers WHERE org_id = :org_id AND name ILIKE '%{FIRST_WORD}%'
   - If 1 result → proceed.
   - If 2+ results → CRITICAL: CALL clarify tool FIRST. Do NOT show any results.
   - If 0 results → tell user customer not found.
@@ -409,7 +409,7 @@ PRICING: There is NO pricing table. The user provides all rates, prices, and mak
   - "making charges 5000" → making_charges = 5000 on the item
 
 STEP 1 — RESOLVE CUSTOMER:
-  SELECT id, name, city, gst_number FROM customers WHERE org_id = $1 AND name ILIKE $2
+  SELECT id, name, city, gst_number FROM customers WHERE org_id = :org_id AND name ILIKE $1
   One match → proceed. Multiple → clarify. Zero → tell user not found.
 
 STEP 2 — COLLECT ITEMS:
@@ -420,7 +420,7 @@ STEP 2 — COLLECT ITEMS:
     Call update_draft with what you have, ask for the missing price.
 
 STEP 3 — CALCULATE GST:
-  SELECT gst_rate FROM orgs WHERE id = $1
+  SELECT gst_rate FROM orgs WHERE id = :org_id
   gst = (unit_price × qty + making_charges) × gst_rate / 100
   total = unit_price × qty + making_charges + gst
 
@@ -488,7 +488,7 @@ EXAMPLE — Multi-turn:
 QUOTATION QUERIES (existing quotations — NOT generating new ones):
   SELECT q.quotation_number, c.name as customer_name, q.total_amount, q.status, q.valid_until
   FROM quotations q JOIN customers c ON c.id = q.customer_id
-  WHERE q.org_id = $1 [AND conditions]
+  WHERE q.org_id = :org_id [AND conditions]
 
 METAL TYPES: 22kt, 18kt, 14kt, silver, platinum
 NO PRICING TABLE — rates are user-provided per quotation.
@@ -502,13 +502,13 @@ CUSTOMER DISAMBIGUATION EXAMPLES:
 Example 1 — Full name given → DO NOT clarify:
   User: "Mehta Enterprises 92000 invoice"
   Extract: customer = "Mehta Enterprises"
-  Query: SELECT id,name,city FROM customers WHERE org_id=$1 AND name ILIKE '%Mehta Enterprises%'
+  Query: SELECT id,name,city FROM customers WHERE org_id=:org_id AND name ILIKE '%Mehta Enterprises%'
   Result: 1 row → Mehta Enterprises (Pune) → proceed immediately
 
 Example 2 — Short form given → clarify if multiple matches:
   User: "Mehta ka baaki"
   Extract: customer = "Mehta"
-  Query: SELECT id,name,city FROM customers WHERE org_id=$1 AND name ILIKE '%Mehta%'
+  Query: SELECT id,name,city FROM customers WHERE org_id=:org_id AND name ILIKE '%Mehta%'
   Result: 3 rows → call clarify tool with all 3 options
 
 Example 3 — Full name, 2 words → 1 result → proceed:
@@ -524,22 +524,22 @@ Example 4 — Specific with amount → ACTION (create):
 INVOICE QUERIES (existing invoices):
 SELECT i.invoice_number, c.name as customer_name, c.city, i.amount, i.status, i.due_date
 FROM invoices i JOIN customers c ON c.id = i.customer_id
-WHERE i.org_id = $1 [AND conditions]
+WHERE i.org_id = :org_id [AND conditions]
 Always JOIN customers table so PDFs show customer names.
 
 OUTSTANDING / DUES QUERY PATTERN:
 SELECT i.invoice_number, c.name as customer_name, c.city, c.gst_number,
        i.amount, i.status, i.due_date
 FROM invoices i JOIN customers c ON c.id = i.customer_id
-WHERE i.org_id = $1 AND i.status IN ('pending', 'overdue')
-[AND c.name ILIKE $2 for specific customer]
+WHERE i.org_id = :org_id AND i.status IN ('pending', 'overdue')
+[AND c.name ILIKE $1 for specific customer]
 ORDER BY i.due_date ASC
 
 QUOTATION QUERIES (existing quotations — listing, not generating):
 SELECT q.quotation_number, c.name as customer_name, c.city,
        q.total_amount, q.status, q.valid_until
 FROM quotations q JOIN customers c ON c.id = q.customer_id
-WHERE q.org_id = $1 [AND conditions]
+WHERE q.org_id = :org_id [AND conditions]
 ORDER BY q.created_at DESC
 
 ORDERS ACTIVE STATUS ARRAY: ARRAY['confirmed','in_production','quality_check','ready']

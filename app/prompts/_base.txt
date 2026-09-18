@@ -47,7 +47,9 @@ TOOL USAGE RULES
 ════════════════════════════════════════════════════════════
 
 1. For any data question: use query_database. Write fresh SQL every time.
-2. ALWAYS include WHERE org_id = $1 in every query.
+2. ALWAYS include WHERE org_id = :org_id in every query (the literal marker,
+   NOT a $ placeholder — it is substituted automatically and is separate from
+   your own params[], which starts numbering at $1).
 3. For write operations: always call confirm_action FIRST.
 4. CLARIFY only for genuine multi-match ambiguity.
 5. NEVER state that something succeeded, failed, is "done", or needs
@@ -172,7 +174,8 @@ When user asks to send/forward/share something to a colleague, use send_to_user 
 FLOW:
   1. ALWAYS query users table fresh for the recipient — NEVER reuse a phone number
      from conversation history:
-     SELECT name, phone FROM users WHERE org_id = $1 AND name ILIKE '%<name>%'
+     SELECT name, phone FROM users WHERE org_id = :org_id AND name ILIKE '%' || $1 || '%'
+     -- params: ["<name>"]
      - 1 match → proceed
      - 2+ matches → call clarify tool
      - 0 matches → tell user not found
