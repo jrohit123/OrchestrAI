@@ -40,6 +40,12 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
     Execute a validated SELECT query and return formatted results.
     Used by read workflows with empty entity_schema.
     """
+    # NOTE: sql_template here is authored once by workflow_compiler and reused
+    # unchanged, so it still uses the old $1=org_id / $2+=params convention
+    # (see workflow_compiler.txt). Do NOT port the :org_id-marker redesign from
+    # agent.py's query_database here without also migrating already-compiled
+    # workflows in the DB — this path isn't where the per-turn LLM offset bug
+    # showed up, since these templates are reviewed once, not regenerated live.
     if business_glossary is None:
         business_glossary = {}
 

@@ -1055,6 +1055,10 @@ async def _execute_tool(
     if tool_name == "query_database":
         sql = tool_input.get("sql", "")
         params = tool_input.get("params", [])
+        # Kept permanently, not just for this debugging pass: every earlier
+        # failure here was invisible until this line existed, since the error
+        # branches below only ever logged derived counts, not what the model
+        # actually sent. Cheap at INFO level; removing it re-blinds this path.
         logger.info(f"query_database raw call — sql={sql!r} params={params!r}")
 
         # Check readable_tables permission
@@ -1093,6 +1097,11 @@ async def _execute_tool(
         # re-supplying its own id as an extra, redundant leading param). Making
         # $1 belong to the model unconditionally removes the failure mode at its
         # source instead of pattern-matching symptoms of it.
+        # Shape-check before string-interpolating org_id into the SQL text below.
+        # It's a trusted server-side value, not model/user input, so this isn't
+        # guarding against injection from this call — it's a cheap sanity check
+        # that fails loudly if the org lookup upstream ever returns something
+        # malformed, instead of silently running a query scoped to garbage.
         if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(user["org_id"])):
             logger.error(f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}")
             return "ERROR: internal error resolving org — please try again"
