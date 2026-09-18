@@ -1083,13 +1083,19 @@ async def _execute_tool(
             return f"ERROR: {msg}"
 
         if max_placeholder < len(full_params):
-            # Over-supply — harmless, the query just doesn't reference the extra
-            # value(s). Drop them rather than failing the whole request.
-            logger.warning(
-                f"query_database: {len(full_params)} params supplied but SQL only "
-                f"uses up to ${max_placeholder} — truncating extras instead of erroring"
+            # Over-supply — do NOT guess which params to drop. params[] is
+            # positional ($2=params[0], $3=params[1], ...), so blindly keeping
+            # the first max_placeholder values silently binds the wrong value
+            # to a placeholder whenever the extra value isn't trailing. Fail
+            # closed like under-supply so the LLM fixes params[] and retries.
+            msg = (
+                f"SQL only references up to ${max_placeholder} but {len(full_params)} "
+                f"param(s) were supplied ($1=org_id + {len(params)} from params[]). "
+                f"Remove the unused value(s) from params so it has exactly one "
+                f"entry per placeholder from $2 onward, in order, and retry."
             )
-            full_params = full_params[:max_placeholder]
+            logger.warning(f"query_database param mismatch (over-supply): {msg}")
+            return f"ERROR: {msg}"
 
         try:
             logger.info(f"Executing SQL query: {sql[:200]}")
