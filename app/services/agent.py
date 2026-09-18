@@ -257,7 +257,16 @@ TOOLS = [
                 "the sql string itself. "
                 "For 'my own X' / 'complaints I filed' / anything scoped to the person asking: use "
                 "the User ID given under CURRENT USER above as the literal param value — do not "
-                "guess, join on name, or leave it out."
+                "guess, join on name, or leave it out. "
+                "This CURRENT USER id rule applies ONLY when the request is about the asking "
+                "person themselves (their own cases/complaints — 'my', 'mine', 'I filed', no "
+                "other name mentioned). It does NOT apply to a query about a DIFFERENT named "
+                "person (e.g. 'cases assigned to anuja', 'what does girish have') — for those, "
+                "params[] holds ONLY the other person's name/search term, resolved via the "
+                "ILIKE-on-name pattern; never add the asking user's own id as an extra param "
+                "just because a person is mentioned. Example of the mistake to avoid: for "
+                "\"cases assigned to anuja\" the correct params is [\"anuja\"] (length 1) — "
+                "NOT [current_user_id, \"anuja\"] (length 2, wrong)."
             ),
             "parameters": {
                 "type": "object",
