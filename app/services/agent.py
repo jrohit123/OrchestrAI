@@ -1112,8 +1112,17 @@ async def _execute_tool(
                 "\"WHERE c.org_id = :org_id\") — never a $-numbered placeholder for it. "
                 "Add that filter and retry."
             )
+        # \b after :org_id (not before) is deliberate — PostgreSQL cast syntax
+        # like ::uuid also starts with a colon, and a leading \b would fail to
+        # match between two colons. Matching only the trailing boundary is
+        # enough to avoid accidentally catching a longer identifier that just
+        # happens to start with "org_id" (there isn't one in this schema, but
+        # cheap to be exact rather than rely on that staying true).
         sql = re.sub(r':org_id\b', f"'{user['org_id']}'::uuid", sql)
 
+        # Computed AFTER the :org_id substitution above, so any $N the model
+        # wrote is counted as-is — the substituted org_id literal contains no
+        # $ characters, so it can't shift or inflate this count.
         placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
         max_placeholder = max(placeholder_nums, default=0)
 
@@ -1137,6 +1146,11 @@ async def _execute_tool(
             logger.warning(f"query_database param mismatch (over-supply): {msg}")
             return f"ERROR: {msg}"
 
+        # full_params == params exactly now (org_id no longer gets prepended
+        # here — it's already a literal inside `sql` from the substitution
+        # above). Kept as its own name rather than reusing `params` directly
+        # so the fetch_all call below reads the same regardless of how the
+        # two lists relate, in case that ever changes again.
         full_params = list(params)
 
         try:
