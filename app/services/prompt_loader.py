@@ -3,6 +3,7 @@ prompt_loader.py
 Loads system prompt from files based on org industry and slug.
 Loading order: _base.txt → {industry}.txt → clients/{slug}.txt
 """
+
 from pathlib import Path
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -19,7 +20,9 @@ def load_prompt(org_row: dict) -> str:
     if base:
         parts.append(base)
 
-    industry = (org_row.get("industry") or "").lower().replace(" ", "_").replace("-", "_")
+    industry = (
+        (org_row.get("industry") or "").lower().replace(" ", "_").replace("-", "_")
+    )
     if industry:
         ind = _read(PROMPTS_DIR / f"{industry}.txt")
         if ind:

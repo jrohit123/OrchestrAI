@@ -6,11 +6,13 @@ When not, the default per-doc_type templates in the ===ALL_DOCTYPES=== section o
 app/prompts/pdf_generation_instructions.txt are used instead.
 This way existing behaviour is preserved and new DB-configured workflows get custom layouts.
 """
+
 import asyncio
 import json
 import re
-from io import BytesIO
 from datetime import datetime
+from io import BytesIO
+
 from openai import AsyncOpenAI
 
 from app.config import required
@@ -38,21 +40,25 @@ def _load_doctype_templates(raw: str) -> dict:
     return templates
 
 
-_RAW_PDF_PROMPT = (PROMPTS_DIR / "pdf_generation_instructions.txt").read_text(encoding="utf-8")
-_GENERATION_PROMPT, _, _DOCTYPE_RAW = _RAW_PDF_PROMPT.partition("\n===ALL_DOCTYPES===\n")
+_RAW_PDF_PROMPT = (PROMPTS_DIR / "pdf_generation_instructions.txt").read_text(
+    encoding="utf-8"
+)
+_GENERATION_PROMPT, _, _DOCTYPE_RAW = _RAW_PDF_PROMPT.partition(
+    "\n===ALL_DOCTYPES===\n"
+)
 _DOCTYPE_TEMPLATES = _load_doctype_templates(_DOCTYPE_RAW)
 
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
-BRAND_BLUE   = "#185FA5"
-BRAND_LIGHT  = "#EEF4FB"
-BRAND_DARK   = "#1A1A2E"
-BRAND_MUTED  = "#6B7280"
+BRAND_BLUE = "#185FA5"
+BRAND_LIGHT = "#EEF4FB"
+BRAND_DARK = "#1A1A2E"
+BRAND_MUTED = "#6B7280"
 
 RISK_COLORS = {
-    "HIGH":     {"bg": "#B71C1C", "row": "#FFEBEE", "text": "#FFFFFF"},
-    "MEDIUM":   {"bg": "#E65100", "row": "#FFF3E0", "text": "#FFFFFF"},
-    "LOW":      {"bg": "#2E7D32", "row": "#F1F8E9", "text": "#FFFFFF"},
+    "HIGH": {"bg": "#B71C1C", "row": "#FFEBEE", "text": "#FFFFFF"},
+    "MEDIUM": {"bg": "#E65100", "row": "#FFF3E0", "text": "#FFFFFF"},
+    "LOW": {"bg": "#2E7D32", "row": "#F1F8E9", "text": "#FFFFFF"},
     "UPCOMING": {"bg": "#1565C0", "row": "#E3F2FD", "text": "#FFFFFF"},
 }
 
@@ -134,19 +140,28 @@ async def generate_pdf(
         # org_id/source_key looked identical in the logs to a caller that
         # passed them but found no logo set, making this genuinely
         # undiagnosable from logs alone. Now it says which one happened.
-        logger.info(f"generate_pdf: no org_id/source_key passed (org_id={org_id!r}, source_key={source_key!r}) — skipping logo lookup entirely")
+        logger.info(
+            f"generate_pdf: no org_id/source_key passed (org_id={org_id!r}, source_key={source_key!r}) — skipping logo lookup entirely"
+        )
     else:
         try:
             from app.db import fetch_one as _fetch_one
-            org_row = await _fetch_one("SELECT logo_url FROM orgs WHERE id = $1", org_id, source_key=source_key)
+
+            org_row = await _fetch_one(
+                "SELECT logo_url FROM orgs WHERE id = $1", org_id, source_key=source_key
+            )
             logo_url = org_row and org_row.get("logo_url")
         except Exception as e:
             logger.warning(f"Could not load org logo, skipping: {e}")
             logo_url = None
         if not logo_url:
-            logger.info(f"generate_pdf: org_id={org_id} source_key={source_key} — logo lookup ran, found no logo_url set")
+            logger.info(
+                f"generate_pdf: org_id={org_id} source_key={source_key} — logo lookup ran, found no logo_url set"
+            )
         else:
-            logger.info(f"generate_pdf: org_id={org_id} — logo found ({len(logo_url)} chars), injecting")
+            logger.info(
+                f"generate_pdf: org_id={org_id} — logo found ({len(logo_url)} chars), injecting"
+            )
 
             # Was position:fixed, which repeats on every page but shares a
             # coordinate frame with the @page margin in a way that isn't
@@ -163,24 +178,34 @@ async def generate_pdf(
             logo_html = (
                 f'<div class="__pdf_org_logo">'
                 f'<img src="{logo_url}" style="max-height:50px;max-width:140px;object-fit:contain;" />'
-                f'</div>'
+                f"</div>"
             )
             import re as _re
+
             # <body ...> may carry attributes the LLM added (style/class) —
             # match the tag itself, not a bare "<body>" literal, so this
             # doesn't silently no-op the moment the LLM writes <body style=...>.
             if _re.search(r"<body[^>]*>", html):
-                html = _re.sub(r"(<body[^>]*>)", r"\1" + logo_html.replace("\\", "\\\\"), html, count=1)
+                html = _re.sub(
+                    r"(<body[^>]*>)",
+                    r"\1" + logo_html.replace("\\", "\\\\"),
+                    html,
+                    count=1,
+                )
                 logger.info("generate_pdf: logo injected after <body> tag")
             else:
                 html = logo_html + html
-                logger.warning("generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>")
+                logger.warning(
+                    "generate_pdf: no <body> tag found in generated HTML — logo prepended raw, may not render inside <html>"
+                )
 
             # The LLM's own @page rule is what actually sets page size/
             # orientation (landscape for wide tables) — read that BEFORE
             # stripping it out below, so our replacement rule preserves it
             # instead of silently forcing every PDF back to portrait.
-            is_landscape = bool(_re.search(r"@page\b[^}]*landscape", html, _re.IGNORECASE))
+            is_landscape = bool(
+                _re.search(r"@page\b[^}]*landscape", html, _re.IGNORECASE)
+            )
 
             # Strip any @page rule the LLM's own generated HTML declared
             # BEFORE adding ours, so ours is the only one left — no
@@ -210,16 +235,21 @@ async def generate_pdf(
 
 def _fill(template: str, primary: str, light_bg: str, today_long: str) -> str:
     return (
-        template
-        .replace("{primary}", primary)
+        template.replace("{primary}", primary)
         .replace("{light_bg}", light_bg)
         .replace("{today_long}", today_long)
     )
 
 
-def _build_doctype_instructions(doc_type: str, risk_mode: bool,
-                                 extra_context: dict, today_long: str,
-                                 org_name: str, primary: str, light_bg: str) -> str:
+def _build_doctype_instructions(
+    doc_type: str,
+    risk_mode: bool,
+    extra_context: dict,
+    today_long: str,
+    org_name: str,
+    primary: str,
+    light_bg: str,
+) -> str:
     """Build the doc-type specific section of the PDF prompt (default/fallback path).
     Templates live in the ===ALL_DOCTYPES=== section of
     app/prompts/pdf_generation_instructions.txt."""
@@ -231,23 +261,26 @@ def _build_doctype_instructions(doc_type: str, risk_mode: bool,
     return _fill(template, primary, light_bg, today_long)
 
 
-async def _build_html(rows, title, org_name, subtitle, doc_type,
-                       extra_context, pdf_config=None) -> str:
-    today      = datetime.now().strftime("%d %b %Y")
+async def _build_html(
+    rows, title, org_name, subtitle, doc_type, extra_context, pdf_config=None
+) -> str:
+    today = datetime.now().strftime("%d %b %Y")
     today_long = datetime.now().strftime("%d %B %Y")
 
     pdf_config = pdf_config or {}
     render_instructions = pdf_config.get("render_instructions")
-    theme     = pdf_config.get("theme") or {}
-    primary   = theme.get("primary",  BRAND_BLUE)
-    light_bg  = theme.get("light_bg", BRAND_LIGHT)
-    text_col  = theme.get("text",     BRAND_DARK)
-    muted_col = theme.get("muted",    BRAND_MUTED)
+    theme = pdf_config.get("theme") or {}
+    primary = theme.get("primary", BRAND_BLUE)
+    light_bg = theme.get("light_bg", BRAND_LIGHT)
+    text_col = theme.get("text", BRAND_DARK)
+    muted_col = theme.get("muted", BRAND_MUTED)
 
     data_for_prompt = rows[:100]
-    trunc_note = f"\n(Note: showing first 100 of {len(rows)} rows)" if len(rows) > 100 else ""
-    data_json  = json.dumps(data_for_prompt, default=str, indent=2)
-    ctx_json   = json.dumps(extra_context,   default=str, indent=2)
+    trunc_note = (
+        f"\n(Note: showing first 100 of {len(rows)} rows)" if len(rows) > 100 else ""
+    )
+    data_json = json.dumps(data_for_prompt, default=str, indent=2)
+    ctx_json = json.dumps(extra_context, default=str, indent=2)
 
     # Calculate column count for landscape/auto-layout
     col_count = len(data_for_prompt[0].keys()) if data_for_prompt else 0
@@ -262,7 +295,10 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
 
     has_risk_buckets = any("risk_bucket" in r for r in data_for_prompt)
     has_days_overdue = any("days_overdue" in r for r in data_for_prompt)
-    risk_mode = (has_risk_buckets or has_days_overdue) and doc_type not in ("invoice", "quotation")
+    risk_mode = (has_risk_buckets or has_days_overdue) and doc_type not in (
+        "invoice",
+        "quotation",
+    )
 
     # Choose layout instructions: DB-configured (new path) vs hardcoded defaults (legacy path)
     if render_instructions:
@@ -277,8 +313,15 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
 
     # Build canonical totals block — explicit values to prevent the LLM from
     # guessing or recalculating amounts that are already correct
-    canonical_keys  = ("subtotal", "gst_amount", "total_amount", "grand_total", "amount",
-                       "metal_cost", "making_charges")
+    canonical_keys = (
+        "subtotal",
+        "gst_amount",
+        "total_amount",
+        "grand_total",
+        "amount",
+        "metal_cost",
+        "making_charges",
+    )
     canonical_lines = [
         f"  {k} = {extra_context[k]}"
         for k in canonical_keys
@@ -326,14 +369,14 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
     )
 
     if not response:
-        raise Exception("No response from any LLM provider for PDF generation")
+        raise RuntimeError("No response from any LLM provider for PDF generation")
 
     html = response.choices[0].message.content.strip()
     if html.startswith("```"):
         lines = html.split("\n")
         start = 1 if lines[0].startswith("```") else 0
-        end   = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-        html  = "\n".join(lines[start:end]).strip()
+        end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+        html = "\n".join(lines[start:end]).strip()
 
     # ── Safety net: force wrapping/fixed layout regardless of what the LLM wrote ──
     forced_css = """
@@ -351,13 +394,20 @@ async def _build_html(rows, title, org_name, subtitle, doc_type,
         html = forced_css + html
 
     # ── Debug logging so blank/cut-off PDFs are diagnosable, not guessed at ──
-    logger.info(f"Generated HTML: {len(html)} chars, doc_type={doc_type}, columns={col_count}")
+    logger.info(
+        f"Generated HTML: {len(html)} chars, doc_type={doc_type}, columns={col_count}"
+    )
     if len(html) < 800:
         logger.warning(f"Suspiciously short HTML for '{title}'. Preview: {html[:500]}")
     import re as _re
-    big_px = [int(p) for p in _re.findall(r'width:\s*(\d{3,5})px', html) if int(p) > 750]
+
+    big_px = [
+        int(p) for p in _re.findall(r"width:\s*(\d{3,5})px", html) if int(p) > 750
+    ]
     if big_px:
-        logger.warning(f"HTML contains oversized fixed-px widths {big_px} — likely overflow cause for '{title}'")
+        logger.warning(
+            f"HTML contains oversized fixed-px widths {big_px} — likely overflow cause for '{title}'"
+        )
 
     return html
 

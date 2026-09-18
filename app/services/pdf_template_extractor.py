@@ -8,9 +8,11 @@ documents in the same visual style with new data.
 
 Runs ONCE at workflow-authoring time — never on the message-time hot path.
 """
+
 import asyncio
 import base64
 import json
+
 from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
@@ -28,6 +30,7 @@ def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
     """
     try:
         import fitz  # PyMuPDF
+
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         images = []
         for i in range(min(max_pages, doc.page_count)):
@@ -66,10 +69,10 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
         return {
             "doc_type_guess": doc_type_hint or "report",
             "theme": {
-                "primary":  "#185FA5",
+                "primary": "#185FA5",
                 "light_bg": "#EEF4FB",
-                "text":     "#1A1A2E",
-                "muted":    "#6B7280",
+                "text": "#1A1A2E",
+                "muted": "#6B7280",
             },
             "render_instructions": (
                 "Professional business document. "
@@ -91,10 +94,12 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
 
     # Add page images
     for img_b64 in images:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+            }
+        )
 
     response = await _llm_chat(
         messages=[{"role": "user", "content": content}],
@@ -106,7 +111,7 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
 
     # Strip markdown fences if present
     if "```" in raw:
-        raw = raw[raw.find("{"):raw.rfind("}") + 1]
+        raw = raw[raw.find("{") : raw.rfind("}") + 1]
 
     try:
         spec = json.loads(raw)
@@ -114,8 +119,12 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
         if "doc_type_guess" not in spec:
             spec["doc_type_guess"] = doc_type_hint or "report"
         if "theme" not in spec:
-            spec["theme"] = {"primary": "#185FA5", "light_bg": "#EEF4FB",
-                             "text": "#1A1A2E", "muted": "#6B7280"}
+            spec["theme"] = {
+                "primary": "#185FA5",
+                "light_bg": "#EEF4FB",
+                "text": "#1A1A2E",
+                "muted": "#6B7280",
+            }
         if "render_instructions" not in spec:
             spec["render_instructions"] = "Standard business document layout."
         return spec
@@ -123,8 +132,12 @@ async def extract_pdf_template(pdf_bytes: bytes, doc_type_hint: str = "") -> dic
         # Return a safe default if parsing fails
         return {
             "doc_type_guess": doc_type_hint or "report",
-            "theme": {"primary": "#185FA5", "light_bg": "#EEF4FB",
-                      "text": "#1A1A2E", "muted": "#6B7280"},
+            "theme": {
+                "primary": "#185FA5",
+                "light_bg": "#EEF4FB",
+                "text": "#1A1A2E",
+                "muted": "#6B7280",
+            },
             "render_instructions": (
                 "Professional business document with blue header, "
                 "customer details block, items table, totals section, and footer."

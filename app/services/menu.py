@@ -1,29 +1,40 @@
 from app.db import fetch_all
 
 SECTION_LABELS = {"reports": "📊 Reports", "create": "✍️ Create", "other": "⚙️ More"}
-SECTION_ORDER  = ["reports", "create", "other"]
+SECTION_ORDER = ["reports", "create", "other"]
+
 
 async def get_menu_workflows(org_id: str, user: dict) -> list[dict]:
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT intent_key, name, command_description, menu_section, slash_command, workflow_type
         FROM workflows
         WHERE org_id = $1 AND is_active = true
         ORDER BY menu_section, name
-    """, org_id, source_key=user["source_key"])
+    """,
+        org_id,
+        source_key=user["source_key"],
+    )
     perms = set(user.get("permissions", []))
     return [dict(r) for r in rows if r["intent_key"] in perms]
+
 
 async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
     allowed = await get_menu_workflows(org_id, user)
     grouped: dict[str, list] = {}
     for r in allowed:
-        grouped.setdefault(r["menu_section"] or "other", []).append({
-            "id": r["intent_key"],
-            "title": r["name"][:24],
-            "description": (r["command_description"] or "")[:72],
-        })
-    sections = [{"title": SECTION_LABELS.get(k, k.title()), "rows": grouped[k]}
-                for k in SECTION_ORDER if k in grouped]
+        grouped.setdefault(r["menu_section"] or "other", []).append(
+            {
+                "id": r["intent_key"],
+                "title": r["name"][:24],
+                "description": (r["command_description"] or "")[:72],
+            }
+        )
+    sections = [
+        {"title": SECTION_LABELS.get(k, k.title()), "rows": grouped[k]}
+        for k in SECTION_ORDER
+        if k in grouped
+    ]
     # My Status / Cancel / Help used to be appended here as a fixed
     # non-DB "⚙️ More" section — always shown regardless of what's actually
     # configured for this org. Removed so the menu only ever lists what's
@@ -39,10 +50,11 @@ async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
             if overflow <= 0:
                 break
             cut = min(overflow, len(s["rows"]))
-            s["rows"] = s["rows"][:len(s["rows"]) - cut]
+            s["rows"] = s["rows"][: len(s["rows"]) - cut]
             overflow -= cut
         sections = [s for s in sections if s["rows"]]
     return sections
+
 
 async def resolve_slash_command(org_id: str, user: dict, cmd: str) -> dict | None:
     """'/quo' → the quotation workflow. Exact match first, then unique prefix."""

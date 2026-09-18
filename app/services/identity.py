@@ -1,4 +1,7 @@
 from app.db import fetch_one, get_all_source_keys
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 
 async def resolve_identity(phone: str) -> dict | None:
@@ -8,10 +11,11 @@ async def resolve_identity(phone: str) -> dict | None:
     Loops through all data sources to find the user.
     """
     source_keys = await get_all_source_keys()
-    
+
     for source_key in source_keys:
         try:
-            row = await fetch_one("""
+            row = await fetch_one(
+                """
                 SELECT
                     u.id          AS user_id,
                     u.name        AS user_name,
@@ -32,29 +36,39 @@ async def resolve_identity(phone: str) -> dict | None:
                 JOIN roles r ON r.id = u.role_id
                 JOIN orgs  o ON o.id = u.org_id
                 WHERE u.phone = $1
-            """, phone, source_key=source_key)
-            
+            """,
+                phone,
+                source_key=source_key,
+            )
+
             if row:
                 return {
-                    "user_id":    str(row["user_id"]),
-                    "user_name":  row["user_name"],
-                    "email":      row["email"],
-                    "phone":      row["phone"],
-                    "is_active":  row["is_active"],
-                    "role_id":    str(row["role_id"]),
-                    "role":       row["role"],
-                    "permissions": list(row["permissions"]) if row["permissions"] else [],
-                    "readable_tables": list(row["readable_tables"]) if row["readable_tables"] else [],
-                    "org_id":     str(row["org_id"]),
-                    "org_name":   row["org_name"],
-                    "org_slug":   row["org_slug"],
+                    "user_id": str(row["user_id"]),
+                    "user_name": row["user_name"],
+                    "email": row["email"],
+                    "phone": row["phone"],
+                    "is_active": row["is_active"],
+                    "role_id": str(row["role_id"]),
+                    "role": row["role"],
+                    "permissions": list(row["permissions"])
+                    if row["permissions"]
+                    else [],
+                    "readable_tables": list(row["readable_tables"])
+                    if row["readable_tables"]
+                    else [],
+                    "org_id": str(row["org_id"]),
+                    "org_name": row["org_name"],
+                    "org_slug": row["org_slug"],
                     "org_active": row["org_active"],
                     "context_message_limit": row.get("context_message_limit", 12),
                     "org_settings": row.get("org_settings", {}),
                     "source_key": source_key,
                 }
-        except Exception:
+        except Exception as e:
             # Source key may not have the users table or connection failed, try next
+            logger.debug(
+                f"resolve_identity: source_key={source_key} lookup failed, trying next: {e}"
+            )
             continue
 
     return None
@@ -65,12 +79,16 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
     source_keys = await get_all_source_keys()
     for source_key in source_keys:
         try:
-            row = await fetch_one("""
+            row = await fetch_one(
+                """
                 SELECT u.id AS user_id, u.name AS user_name, u.email,
                        o.id AS org_id, o.name AS org_name
                 FROM users u JOIN orgs o ON o.id = u.org_id
                 WHERE LOWER(u.email) = LOWER($1) AND (u.phone IS NULL OR u.phone = '')
-            """, email, source_key=source_key)
+            """,
+                email,
+                source_key=source_key,
+            )
             if row:
                 # Convert UUID to string for JSON serialization
                 return {
@@ -79,22 +97,31 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
                     "email": row["email"],
                     "org_id": str(row["org_id"]),
                     "org_name": row["org_name"],
-                    "source_key": source_key
+                    "source_key": source_key,
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(
+                f"find_unlinked_user_by_email: source_key={source_key} lookup failed, trying next: {e}"
+            )
             continue
     return None
 
 
-async def bind_telegram_phone(user_id: str, chat_id: str, source_key: str) -> dict | None:
+async def bind_telegram_phone(
+    user_id: str, chat_id: str, source_key: str
+) -> dict | None:
     """Bind chat_id to a user — call ONLY after OTP verification succeeds."""
-    from app.db import execute
     tg_phone = f"tg:{chat_id}"
-    row = await fetch_one("""
+    row = await fetch_one(
+        """
         UPDATE users SET phone = $1
         WHERE id = $2 AND (phone IS NULL OR phone = '')
         RETURNING id
-    """, tg_phone, user_id, source_key=source_key)
+    """,
+        tg_phone,
+        user_id,
+        source_key=source_key,
+    )
     if row:
         return await resolve_identity(tg_phone)
     return None

@@ -11,9 +11,10 @@ Called:
 Returns verified fields with computed values overwritten from calc_rules.
 The LLM's own arithmetic is discarded and recomputed from the authoritative rules.
 """
-from app.services.calc_engine import compute_draft, CalcError
-from app.services.json_utils import parse_jsonb as _parse_jsonb
+
 from app.db import fetch_one
+from app.services.calc_engine import CalcError, compute_draft
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 # Columns we never pass into calc_rules namespace (security + noise)
 _ORG_EXCLUDED_COLS = {"id", "slug", "created_at", "is_active", "plan"}
@@ -21,9 +22,9 @@ _ORG_EXCLUDED_COLS = {"id", "slug", "created_at", "is_active", "plan"}
 
 class VerificationError(Exception):
     def __init__(self, missing_fields=None, invalid_fields=None, message=""):
-        self.missing_fields  = missing_fields or []
-        self.invalid_fields  = invalid_fields or []
-        self.message         = message or "Draft failed verification"
+        self.missing_fields = missing_fields or []
+        self.invalid_fields = invalid_fields or []
+        self.message = message or "Draft failed verification"
         super().__init__(self.message)
 
 
@@ -33,11 +34,13 @@ async def _build_context(org_id: str, source_key: str) -> dict:
     Whatever calc_rules reference (gst_rate, commission_pct, exchange_rate…) is
     available here because it's just a column on orgs. The engine never special-cases any.
     """
-    org = await fetch_one("SELECT * FROM orgs WHERE id = $1", org_id, source_key=source_key)
+    org = await fetch_one(
+        "SELECT * FROM orgs WHERE id = $1", org_id, source_key=source_key
+    )
     if not org:
         return {}
     return {
-        k: (float(v) if hasattr(v, '__float__') and not isinstance(v, str) else v)
+        k: (float(v) if hasattr(v, "__float__") and not isinstance(v, str) else v)
         for k, v in dict(org).items()
         if k not in _ORG_EXCLUDED_COLS and v is not None
     }
@@ -113,7 +116,9 @@ def _validate_schema(entity_schema: dict, fields: dict) -> tuple[list, list]:
     return missing, invalid
 
 
-async def verify_draft(workflow: dict, fields: dict, org_id: str, source_key: str) -> dict:
+async def verify_draft(
+    workflow: dict, fields: dict, org_id: str, source_key: str
+) -> dict:
     """
     Validate and recompute a draft's fields.
 
@@ -123,14 +128,14 @@ async def verify_draft(workflow: dict, fields: dict, org_id: str, source_key: st
     Raises VerificationError if required fields are missing or malformed.
     """
     entity_schema = _parse_jsonb(workflow.get("entity_schema"), {})
-    calc_rules    = _parse_jsonb(workflow.get("calc_rules"), {})
+    calc_rules = _parse_jsonb(workflow.get("calc_rules"), {})
 
     missing, invalid = _validate_schema(entity_schema, fields)
     if missing or invalid:
         raise VerificationError(
             missing_fields=missing,
             invalid_fields=invalid,
-            message=f"Missing: {missing}. Invalid: {invalid}."
+            message=f"Missing: {missing}. Invalid: {invalid}.",
         )
 
     if not calc_rules:
@@ -156,7 +161,7 @@ def diff_for_audit(pre_fields: dict, verified_fields: dict) -> dict:
                 _walk(
                     (pre or {}).get(k) if isinstance(pre, dict) else None,
                     v,
-                    f"{path}.{k}" if path else k
+                    f"{path}.{k}" if path else k,
                 )
         elif isinstance(post, list):
             pre_list = pre if isinstance(pre, list) else []

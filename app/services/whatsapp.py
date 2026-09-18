@@ -1,6 +1,8 @@
-import httpx
 import os
+
+import httpx
 from dotenv import load_dotenv
+
 from app.config import required
 from app.logging_config import get_context_logger
 
@@ -8,14 +10,14 @@ load_dotenv()
 
 logger = get_context_logger(__name__)
 
-WHATSAPP_TOKEN    = required("WHATSAPP_TOKEN")
+WHATSAPP_TOKEN = required("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 BASE_URL = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}/messages"
 MEDIA_URL = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}/media"
 
 HEADERS = {
     "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
 }
 
 
@@ -25,7 +27,7 @@ async def send_text(to: str, message: str):
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
-        "text": {"body": message}
+        "text": {"body": message},
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
@@ -53,8 +55,8 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
                     {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
                     for b in buttons[:3]
                 ]
-            }
-        }
+            },
+        },
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
@@ -64,8 +66,13 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     return resp.json()
 
 
-async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = "",
-                         mime_type: str = "application/pdf"):
+async def send_document(
+    to: str,
+    pdf_bytes: bytes,
+    filename: str,
+    caption: str = "",
+    mime_type: str = "application/pdf",
+):
     """
     Upload a document (PDF, Excel, ...) to WhatsApp media and send it.
     `mime_type` defaults to PDF for backwards compatibility with every
@@ -79,10 +86,12 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
             MEDIA_URL,
             headers=auth_header,
             data={"messaging_product": "whatsapp"},
-            files={"file": (filename, pdf_bytes, mime_type)}
+            files={"file": (filename, pdf_bytes, mime_type)},
         )
         if upload_resp.status_code >= 400:
-            logger.error(f"upload_media failed ({upload_resp.status_code}): {upload_resp.text}")
+            logger.error(
+                f"upload_media failed ({upload_resp.status_code}): {upload_resp.text}"
+            )
         upload_resp.raise_for_status()
         media_id = upload_resp.json()["id"]
 
@@ -91,11 +100,7 @@ async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str =
         "messaging_product": "whatsapp",
         "to": to,
         "type": "document",
-        "document": {
-            "id": media_id,
-            "filename": filename,
-            "caption": caption
-        }
+        "document": {"id": media_id, "filename": filename, "caption": caption},
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(BASE_URL, json=payload, headers=HEADERS)

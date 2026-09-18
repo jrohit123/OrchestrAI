@@ -5,10 +5,11 @@ NO intent_key branching. NO per-workflow Python functions. Ever.
 All execution logic lives in workflows.steps[] in the database.
 Adding a new workflow requires zero changes to this file.
 """
+
 from app.db import fetch_one
-from app.services.step_interpreter import run_workflow_steps
-from app.services.draft_store import close_draft
 from app.logging_config import get_context_logger
+from app.services.draft_store import close_draft
+from app.services.step_interpreter import run_workflow_steps
 
 logger = get_context_logger(__name__)
 
@@ -40,13 +41,15 @@ async def execute_pending_action(
             "success": False,
             "message": (
                 "I lost track of what we were working on. Please send your "
-                "request again — for example *\"assign CS-26-08-17 to Anuja\"*."
+                'request again — for example *"assign CS-26-08-17 to Anuja"*.'
             ),
         }
 
     workflow = await fetch_one(
         "SELECT * FROM workflows WHERE intent_key = $1 AND org_id = $2 AND is_active = true",
-        intent_key, user["org_id"], source_key=user["source_key"]
+        intent_key,
+        user["org_id"],
+        source_key=user["source_key"],
     )
 
     # D4: Permission check at execution time — any role can run any workflow without this
@@ -69,7 +72,7 @@ async def execute_pending_action(
             "message": (
                 f"❌ Workflow '{intent_key}' not found or inactive.\n"
                 f"Ask your admin to configure this workflow in the admin panel."
-            )
+            ),
         }
 
     result = await run_workflow_steps(
@@ -84,10 +87,15 @@ async def execute_pending_action(
 
     if result["status"] == "done":
         # Clear the draft after successful execution
-        await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "done", source_key=user["source_key"])
+        await close_draft(
+            user["org_id"],
+            user.get("user_id") or user.get("id"),
+            "done",
+            source_key=user["source_key"],
+        )
         return {
-            "success":   True,
-            "message":   result["message"],
+            "success": True,
+            "message": result["message"],
             "pdf_bytes": result.get("pdf_bytes"),
             # Expose any generated doc numbers at the top level for webhook
             **{k: v for k, v in result.get("generated", {}).items()},
@@ -95,23 +103,23 @@ async def execute_pending_action(
 
     if result["status"] in ("awaiting_otp", "awaiting_approval"):
         return {
-            "success":     False,
-            "stage":       result["status"],
+            "success": False,
+            "stage": result["status"],
             "resume_step": result.get("resume_step", 0),
-            "message":     result.get("message", ""),
+            "message": result.get("message", ""),
         }
 
     if result["status"] == "ambiguous":
         candidates = result.get("candidates", [])
         opts = "\n".join(
-            f"{i+1}. {c.get('case_number') or c.get('name') or '?'}"
+            f"{i + 1}. {c.get('case_number') or c.get('name') or '?'}"
             + (f" — {c['title']}" if c.get("title") else "")
             for i, c in enumerate(candidates[:5])
         )
         return {
             "success": False,
             "message": f"🤔 I found more than one match:\n{opts}\n\n"
-                       f"Which one did you mean? Reply with the full number.",
+            f"Which one did you mean? Reply with the full number.",
         }
 
     # status == "error" - close draft and show friendly message.
@@ -119,10 +127,13 @@ async def execute_pending_action(
     # StepError handling) but was previously discarded here with nothing
     # logged anywhere — making failures like this unreproducible after the
     # fact. Log it before deciding what (if anything) to replace it with.
-    logger.error(
-        f"Workflow '{intent_key}' execution failed: {result.get('message')}"
+    logger.error(f"Workflow '{intent_key}' execution failed: {result.get('message')}")
+    await close_draft(
+        user["org_id"],
+        user.get("user_id") or user.get("id"),
+        "cancelled",
+        source_key=user["source_key"],
     )
-    await close_draft(user["org_id"], user.get("user_id") or user.get("id"), "cancelled", source_key=user["source_key"])
 
     # result["user_facing"] is set only for messages step_interpreter has
     # already vetted as safe and useful to show verbatim (e.g. "'renter'

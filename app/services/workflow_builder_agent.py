@@ -13,168 +13,248 @@ through the browser. A deterministic "draft recap" (build_draft_recap, below) is
 returned on every turn so the frontend's live "Draft so far" panel reflects what's
 actually saved, not what the LLM claims it saved.
 """
+
+import base64
 import json
 import re
-import base64
-from app.db import fetch_all, fetch_one, execute
-from app.services.workflow_compiler import compile_workflow_spec
+
+from app.db import execute, fetch_all, fetch_one
+from app.logging_config import get_context_logger
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
-from app.services.json_utils import parse_jsonb as _parse_jsonb
-from app.logging_config import get_context_logger
+from app.services.workflow_compiler import compile_workflow_spec
 
 logger = get_context_logger(__name__)
 
 _SYSTEM_PROMPT = _read(PROMPTS_DIR / "workflow_builder_system.txt")
 
 _TOOLS = [
-    {"type": "function", "function": {
-        "name": "list_existing_workflows",
-        "description": "List this org's live workflows, its roles, and any unfinished drafts.",
-        "parameters": {"type": "object", "properties": {}}
-    }},
-    {"type": "function", "function": {
-        "name": "update_builder_draft",
-        "description": "Save what's been learned so far about the workflow being built.",
-        "parameters": {"type": "object", "properties": {
-            "purpose":       {"type": "string", "description": "What this workflow does in plain terms"},
-            "workflow_type": {"type": "string", "enum": ["action", "read"]},
-            "add_fields":    {"type": "array", "items": {"type": "string"},
-                              "description": (
-                                  "ONLY the fields being newly added or renamed THIS turn — not the "
-                                  "whole list. Track what changed, not the full picture from memory: "
-                                  "re-stating everything every turn is how a field silently gets "
-                                  "duplicated under a slightly different name a few turns later. One "
-                                  "entry per distinct piece of information — never split a single "
-                                  "thing the admin named (e.g. 'tenant or owner') into multiple "
-                                  "near-duplicate/synonym fields. e.g. ['customer name', 'GST — auto']"
-                              )},
-            "remove_fields": {"type": "array", "items": {"type": "string"},
-                              "description": (
-                                  "Fields the admin just said to drop — matched against the existing "
-                                  "list case-insensitively, doesn't need to be an exact string match. "
-                                  "This is the ONLY way a field is ever removed; there is no other "
-                                  "removal mechanism, so anything the admin explicitly says to drop "
-                                  "MUST appear here in the same turn."
-                              )},
-            "business_rules": {"type": "string", "description": "Any OTHER rule not covered by set_gates (calculations, formatting, etc.)."},
-            "slash_command": {
-                "type": "string",
-                "description": "DEPRECATED — do not set this. Trigger commands are now derived automatically from the workflow's intent_key at compile time; anything set here is discarded."
+    {
+        "type": "function",
+        "function": {
+            "name": "list_existing_workflows",
+            "description": "List this org's live workflows, its roles, and any unfinished drafts.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_builder_draft",
+            "description": "Save what's been learned so far about the workflow being built.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {
+                        "type": "string",
+                        "description": "What this workflow does in plain terms",
+                    },
+                    "workflow_type": {"type": "string", "enum": ["action", "read"]},
+                    "add_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "ONLY the fields being newly added or renamed THIS turn — not the "
+                            "whole list. Track what changed, not the full picture from memory: "
+                            "re-stating everything every turn is how a field silently gets "
+                            "duplicated under a slightly different name a few turns later. One "
+                            "entry per distinct piece of information — never split a single "
+                            "thing the admin named (e.g. 'tenant or owner') into multiple "
+                            "near-duplicate/synonym fields. e.g. ['customer name', 'GST — auto']"
+                        ),
+                    },
+                    "remove_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Fields the admin just said to drop — matched against the existing "
+                            "list case-insensitively, doesn't need to be an exact string match. "
+                            "This is the ONLY way a field is ever removed; there is no other "
+                            "removal mechanism, so anything the admin explicitly says to drop "
+                            "MUST appear here in the same turn."
+                        ),
+                    },
+                    "business_rules": {
+                        "type": "string",
+                        "description": "Any OTHER rule not covered by set_gates (calculations, formatting, etc.).",
+                    },
+                    "slash_command": {
+                        "type": "string",
+                        "description": "DEPRECATED — do not set this. Trigger commands are now derived automatically from the workflow's intent_key at compile time; anything set here is discarded.",
+                    },
+                    "command_description": {
+                        "type": "string",
+                        "description": "One-line description for the menu (≤72 chars).",
+                    },
+                    "menu_section": {
+                        "type": "string",
+                        "enum": ["reports", "create", "other"],
+                        "description": "Menu section: 'reports' for read workflows, 'create' for action workflows.",
+                    },
+                },
             },
-            "command_description": {
-                "type": "string",
-                "description": "One-line description for the menu (≤72 chars)."
-            },
-            "menu_section": {
-                "type": "string",
-                "enum": ["reports", "create", "other"],
-                "description": "Menu section: 'reports' for read workflows, 'create' for action workflows."
-            },
-        }}
-    }},
-    {"type": "function", "function": {
-        "name": "set_gates",
-        "description": (
-            "Set the COMPLETE list of safety/approval constraints for this workflow, "
-            "replacing whatever was there before. Call this every time the admin adds, "
-            "changes, or removes a constraint — always pass the full list that should "
-            "apply going forward, not just the one that changed. Not limited to two "
-            "numbers: a workflow can have zero, one, or several independent constraints "
-            "of different kinds (OTP, single- or multi-level approval, role-only gates)."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "gates": {
-                "type": "array",
-                "description": "Every constraint that should apply. Convert lakh/crore/k to plain numbers.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id":   {"type": "string", "description": "short stable id, e.g. 'otp1', 'appr1', 'appr_lift'"},
-                        "type": {"type": "string", "enum": ["otp", "approval_chain", "permission"]},
-                        "when": {
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_gates",
+            "description": (
+                "Set the COMPLETE list of safety/approval constraints for this workflow, "
+                "replacing whatever was there before. Call this every time the admin adds, "
+                "changes, or removes a constraint — always pass the full list that should "
+                "apply going forward, not just the one that changed. Not limited to two "
+                "numbers: a workflow can have zero, one, or several independent constraints "
+                "of different kinds (OTP, single- or multi-level approval, role-only gates)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "gates": {
+                        "type": "array",
+                        "description": "Every constraint that should apply. Convert lakh/crore/k to plain numbers.",
+                        "items": {
                             "type": "object",
-                            "description": (
-                                "Condition that triggers this gate. Amount-based: "
-                                "{\"field\":\"$computed.total_amount\",\"gte\":50000}. "
-                                "Non-amount field: {\"field\":\"$fields.category\",\"equals\":\"lift_elevator\"}. "
-                                "Omit only for a 'permission' gate that always applies."
-                            ),
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "short stable id, e.g. 'otp1', 'appr1', 'appr_lift'",
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["otp", "approval_chain", "permission"],
+                                },
+                                "when": {
+                                    "type": "object",
+                                    "description": (
+                                        "Condition that triggers this gate. Amount-based: "
+                                        '{"field":"$computed.total_amount","gte":50000}. '
+                                        'Non-amount field: {"field":"$fields.category","equals":"lift_elevator"}. '
+                                        "Omit only for a 'permission' gate that always applies."
+                                    ),
+                                },
+                                "levels": {
+                                    "type": "array",
+                                    "description": (
+                                        "Required for type='approval_chain'. Ordered stages — level 1 is always "
+                                        "required once 'when' matches; level 2+ is only required once the amount "
+                                        "exceeds the PREVIOUS level's max_amount (i.e. max_amount is the ceiling "
+                                        "that role can clear alone; null = no ceiling, final level)."
+                                    ),
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "level": {"type": "integer"},
+                                            "role": {
+                                                "type": "string",
+                                                "description": "role name required to approve at this level",
+                                            },
+                                            "max_amount": {"type": ["number", "null"]},
+                                        },
+                                    },
+                                },
+                                "role_any_of": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Required only for type='permission' — the only role(s) allowed to trigger this workflow at all, regardless of amount.",
+                                },
+                            },
                         },
-                        "levels": {
-                            "type": "array",
-                            "description": (
-                                "Required for type='approval_chain'. Ordered stages — level 1 is always "
-                                "required once 'when' matches; level 2+ is only required once the amount "
-                                "exceeds the PREVIOUS level's max_amount (i.e. max_amount is the ceiling "
-                                "that role can clear alone; null = no ceiling, final level)."
-                            ),
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "level":      {"type": "integer"},
-                                    "role":       {"type": "string", "description": "role name required to approve at this level"},
-                                    "max_amount": {"type": ["number", "null"]},
-                                }
-                            }
-                        },
-                        "role_any_of": {
-                            "type": "array", "items": {"type": "string"},
-                            "description": "Required only for type='permission' — the only role(s) allowed to trigger this workflow at all, regardless of amount."
-                        }
                     }
-                }
-            }
-        }, "required": ["gates"]}
-    }},
-    {"type": "function", "function": {
-        "name": "set_roles",
-        "description": (
-            "Set the COMPLETE list of roles allowed to use this workflow, replacing "
-            "whatever was set before. Call this the moment the admin says who should "
-            "be able to use it — always pass the full list, not just an addition."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "roles": {"type": "array", "items": {"type": "string"},
-                      "description": "Role names as they exist in this org, e.g. ['staff', 'branch_manager']"}
-        }, "required": ["roles"]}
-    }},
-    {"type": "function", "function": {
-        "name": "analyze_sample_pdf",
-        "description": "Analyze an uploaded PDF to extract layout instructions. Call when admin attaches a PDF.",
-        "parameters": {"type": "object", "properties": {
-            "doc_type_hint": {"type": "string"}
-        }}
-    }},
-    {"type": "function", "function": {
-        "name": "compile_and_summarize",
-        "description": "Compile everything gathered into a real workflow spec and produce a plain-English summary.",
-        "parameters": {"type": "object", "properties": {}}
-    }},
-    {"type": "function", "function": {
-        "name": "revise_draft",
-        "description": "Apply a change the admin asked for after seeing a summary, then recompile.",
-        "parameters": {"type": "object", "properties": {
-            "change_description": {"type": "string", "description": "What to change"}
-        }, "required": ["change_description"]}
-    }},
-    {"type": "function", "function": {
-        "name": "mark_ready_for_review",
-        "description": (
-            "Mark the draft as ready for review. The admin then sees everything gathered "
-            "so far (fields, constraints, roles, command) and hits one Publish button — "
-            "nothing left to fill in. Call ONLY after admin said yes to a summary AND "
-            "roles and slash_command are both set."
-        ),
-        "parameters": {"type": "object", "properties": {}}
-    }},
-    {"type": "function", "function": {
-        "name": "load_existing_workflow",
-        "description": "Load a live workflow into the draft so the admin can change it by talking instead of editing JSON. Use when admin wants to modify something that already exists.",
-        "parameters": {"type": "object", "properties": {
-            "intent_key": {"type": "string", "description": "The intent_key of the workflow to load"}
-        }, "required": ["intent_key"]}
-    }},
+                },
+                "required": ["gates"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_roles",
+            "description": (
+                "Set the COMPLETE list of roles allowed to use this workflow, replacing "
+                "whatever was set before. Call this the moment the admin says who should "
+                "be able to use it — always pass the full list, not just an addition."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "roles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Role names as they exist in this org, e.g. ['staff', 'branch_manager']",
+                    }
+                },
+                "required": ["roles"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_sample_pdf",
+            "description": "Analyze an uploaded PDF to extract layout instructions. Call when admin attaches a PDF.",
+            "parameters": {
+                "type": "object",
+                "properties": {"doc_type_hint": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compile_and_summarize",
+            "description": "Compile everything gathered into a real workflow spec and produce a plain-English summary.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revise_draft",
+            "description": "Apply a change the admin asked for after seeing a summary, then recompile.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "change_description": {
+                        "type": "string",
+                        "description": "What to change",
+                    }
+                },
+                "required": ["change_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mark_ready_for_review",
+            "description": (
+                "Mark the draft as ready for review. The admin then sees everything gathered "
+                "so far (fields, constraints, roles, command) and hits one Publish button — "
+                "nothing left to fill in. Call ONLY after admin said yes to a summary AND "
+                "roles and slash_command are both set."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_existing_workflow",
+            "description": "Load a live workflow into the draft so the admin can change it by talking instead of editing JSON. Use when admin wants to modify something that already exists.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_key": {
+                        "type": "string",
+                        "description": "The intent_key of the workflow to load",
+                    }
+                },
+                "required": ["intent_key"],
+            },
+        },
+    },
 ]
 
 
@@ -190,13 +270,29 @@ def _describe_when(when: dict) -> str:
     field = when.get("field", "") or ""
     is_amount = "total_amount" in field or "amount" in field
     if "gte" in when:
-        return f"amount ≥ ₹{when['gte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≥ {when['gte']}"
+        return (
+            f"amount ≥ ₹{when['gte']:,.0f}"
+            if is_amount
+            else f"{field.split('.')[-1]} ≥ {when['gte']}"
+        )
     if "lte" in when:
-        return f"amount ≤ ₹{when['lte']:,.0f}" if is_amount else f"{field.split('.')[-1]} ≤ {when['lte']}"
+        return (
+            f"amount ≤ ₹{when['lte']:,.0f}"
+            if is_amount
+            else f"{field.split('.')[-1]} ≤ {when['lte']}"
+        )
     if "gt" in when:
-        return f"amount > ₹{when['gt']:,.0f}" if is_amount else f"{field.split('.')[-1]} > {when['gt']}"
+        return (
+            f"amount > ₹{when['gt']:,.0f}"
+            if is_amount
+            else f"{field.split('.')[-1]} > {when['gt']}"
+        )
     if "lt" in when:
-        return f"amount < ₹{when['lt']:,.0f}" if is_amount else f"{field.split('.')[-1]} < {when['lt']}"
+        return (
+            f"amount < ₹{when['lt']:,.0f}"
+            if is_amount
+            else f"{field.split('.')[-1]} < {when['lt']}"
+        )
     if "equals" in when:
         return f"{field.split('.')[-1]} = {when['equals']}"
     if "not_equals" in when:
@@ -208,7 +304,11 @@ def _describe_when(when: dict) -> str:
         vals = ", ".join(str(v) for v in (when["not_in"] or []))
         return f"{field.split('.')[-1]} is none of: {vals}"
     if "exists" in when:
-        return f"{field.split('.')[-1]} is set" if when["exists"] else f"{field.split('.')[-1]} is not set"
+        return (
+            f"{field.split('.')[-1]} is set"
+            if when["exists"]
+            else f"{field.split('.')[-1]} is not set"
+        )
     return ""
 
 
@@ -226,13 +326,21 @@ def _describe_gate(g: dict) -> str:
         if when.get("lte") is not None:
             return f"\U0001f510 OTP required above ₹{when['lte']:,.0f}"
         cond = _describe_when(when)
-        return f"\U0001f510 OTP required — {cond}" if cond else "\U0001f510 OTP required"
+        return (
+            f"\U0001f510 OTP required — {cond}" if cond else "\U0001f510 OTP required"
+        )
     if gtype == "approval_chain":
         cond = _describe_when(when)
         lines = [f"\U0001f464 Approval — {cond}:" if cond else "\U0001f464 Approval:"]
-        for lvl in (g.get("levels") or []):
-            ceiling = f", up to ₹{lvl['max_amount']:,.0f}" if lvl.get("max_amount") is not None else " (no ceiling)"
-            lines.append(f"   {lvl.get('level', '?')}. {lvl.get('role') or '(role not set)'}{ceiling}")
+        for lvl in g.get("levels") or []:
+            ceiling = (
+                f", up to ₹{lvl['max_amount']:,.0f}"
+                if lvl.get("max_amount") is not None
+                else " (no ceiling)"
+            )
+            lines.append(
+                f"   {lvl.get('level', '?')}. {lvl.get('role') or '(role not set)'}{ceiling}"
+            )
         return "\n".join(lines)
     if gtype == "permission":
         roles = ", ".join(g.get("role_any_of") or []) or "(no role set)"
@@ -258,12 +366,14 @@ def build_draft_recap(draft: dict) -> str:
     n = 1
 
     title = draft.get("name") or draft.get("purpose") or "(untitled)"
-    lines.append(f"{n}) Title: {title}"); n += 1
+    lines.append(f"{n}) Title: {title}")
+    n += 1
     if draft.get("purpose") and draft.get("name"):
         lines.append(f"   {draft['purpose']}")
 
     if draft.get("workflow_type"):
-        lines.append(f"{n}) Type: {draft['workflow_type']}"); n += 1
+        lines.append(f"{n}) Type: {draft['workflow_type']}")
+        n += 1
 
     # Once compile_and_summarize has run, entity_schema is the real, deduplicated
     # truth — each field appears exactly once, tied to an actual table.column
@@ -275,7 +385,8 @@ def build_draft_recap(draft: dict) -> str:
     entity_schema = _parse_jsonb(draft.get("entity_schema"), {})
     raw_fields = _parse_jsonb(draft.get("raw_fields"), [])
     if entity_schema:
-        lines.append(f"{n}) Fields:"); n += 1
+        lines.append(f"{n}) Fields:")
+        n += 1
         for field_name, field_def in entity_schema.items():
             if not isinstance(field_def, dict):
                 lines.append(f"   • {field_name}")
@@ -285,11 +396,19 @@ def build_draft_recap(draft: dict) -> str:
                 continue
             table = field_def.get("table")
             column = field_def.get("column")
-            loc = f"{table}.{column}" if table and column else "(not yet mapped to a table)"
+            loc = (
+                f"{table}.{column}"
+                if table and column
+                else "(not yet mapped to a table)"
+            )
             req = "required" if field_def.get("required") else "optional"
             lines.append(f"   • {field_name} → {loc} ({req})")
     elif raw_fields:
-        lines.append(f"{n}) Fields (not compiled yet — discussed so far): " + ", ".join(raw_fields)); n += 1
+        lines.append(
+            f"{n}) Fields (not compiled yet — discussed so far): "
+            + ", ".join(raw_fields)
+        )
+        n += 1
 
     gates = _parse_jsonb(draft.get("gates"), [])
     if gates:
@@ -301,8 +420,19 @@ def build_draft_recap(draft: dict) -> str:
     n += 1
 
     granted_roles = draft.get("granted_roles") or []
-    lines.append(f"{n}) Who can use it: " + (", ".join(granted_roles) if granted_roles else "(not set yet)")); n += 1
-    lines.append(f"{n}) Trigger command: " + (f"/{draft['slash_command']}" if draft.get("slash_command") else "(not set yet)"))
+    lines.append(
+        f"{n}) Who can use it: "
+        + (", ".join(granted_roles) if granted_roles else "(not set yet)")
+    )
+    n += 1
+    lines.append(
+        f"{n}) Trigger command: "
+        + (
+            f"/{draft['slash_command']}"
+            if draft.get("slash_command")
+            else "(not set yet)"
+        )
+    )
 
     return "\n".join(lines)
 
@@ -331,28 +461,30 @@ def build_draft_state(draft: dict) -> dict:
             if not isinstance(spec, dict):
                 fields.append({"name": name, "required": False, "computed": False})
                 continue
-            fields.append({
-                "name":     name,
-                "required": bool(spec.get("required")),
-                "computed": bool(spec.get("computed")),
-                "table":    spec.get("table"),
-                "column":   spec.get("column"),
-            })
+            fields.append(
+                {
+                    "name": name,
+                    "required": bool(spec.get("required")),
+                    "computed": bool(spec.get("computed")),
+                    "table": spec.get("table"),
+                    "column": spec.get("column"),
+                }
+            )
     else:
         fields = [{"name": f, "required": None, "computed": False} for f in raw_fields]
 
     return {
-        "title":          draft.get("name") or draft.get("purpose"),
-        "intent_key":     draft.get("intent_key"),
-        "workflow_type":  draft.get("workflow_type"),
-        "description":    draft.get("description"),
-        "business_rule":  draft.get("business_rules"),
-        "compiled":       compiled,
-        "fields":         fields,
-        "gates":          _parse_jsonb(draft.get("gates"), []),
-        "granted_roles":  draft.get("granted_roles") or [],
-        "slash_command":  draft.get("slash_command"),
-        "status":         draft.get("status"),
+        "title": draft.get("name") or draft.get("purpose"),
+        "intent_key": draft.get("intent_key"),
+        "workflow_type": draft.get("workflow_type"),
+        "description": draft.get("description"),
+        "business_rule": draft.get("business_rules"),
+        "compiled": compiled,
+        "fields": fields,
+        "gates": _parse_jsonb(draft.get("gates"), []),
+        "granted_roles": draft.get("granted_roles") or [],
+        "slash_command": draft.get("slash_command"),
+        "status": draft.get("status"),
     }
 
 
@@ -367,18 +499,23 @@ def _derive_slash_command(intent_key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (intent_key or "").lower())[:32] or "workflow"
 
 
-async def _get_or_create_draft(org_id: str, draft_id: str | None, source_key: str) -> dict:
+async def _get_or_create_draft(
+    org_id: str, draft_id: str | None, source_key: str
+) -> dict:
     if draft_id:
         row = await fetch_one(
             "SELECT * FROM workflow_drafts WHERE id = $1 AND org_id = $2",
-            draft_id, org_id, source_key=source_key
+            draft_id,
+            org_id,
+            source_key=source_key,
         )
         if row:
             return dict(row)
     # Create a new draft
     row = await fetch_one(
         "INSERT INTO workflow_drafts (org_id, status) VALUES ($1, 'chatting') RETURNING *",
-        org_id, source_key=source_key
+        org_id,
+        source_key=source_key,
     )
     return dict(row)
 
@@ -399,7 +536,9 @@ def _fields_from_entity_schema(entity_schema: dict) -> list[dict]:
     return out
 
 
-async def get_live_snapshot(org_id: str, intent_key: str, source_key: str) -> dict | None:
+async def get_live_snapshot(
+    org_id: str, intent_key: str, source_key: str
+) -> dict | None:
     """
     Compact, diff-friendly snapshot of a live workflow's admin-facing shape —
     used both to show "N changes vs live vX" while an edit draft is still in
@@ -410,14 +549,18 @@ async def get_live_snapshot(org_id: str, intent_key: str, source_key: str) -> di
     """
     wf = await fetch_one(
         "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, intent_key, source_key=source_key
+        org_id,
+        intent_key,
+        source_key=source_key,
     )
     if not wf:
         return None
     wf = dict(wf)
     granted = await fetch_all(
         "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
-        org_id, intent_key, source_key=source_key
+        org_id,
+        intent_key,
+        source_key=source_key,
     )
     return {
         "id": str(wf["id"]),
@@ -429,7 +572,9 @@ async def get_live_snapshot(org_id: str, intent_key: str, source_key: str) -> di
     }
 
 
-def _merge_raw_fields(existing_fields: list, add_fields: list, remove_fields: list) -> list:
+def _merge_raw_fields(
+    existing_fields: list, add_fields: list, remove_fields: list
+) -> list:
     """
     Shared by update_builder_draft (chat tool) and the direct-edit field
     endpoint (admin.py) so a field added/removed by clicking in the panel
@@ -439,7 +584,7 @@ def _merge_raw_fields(existing_fields: list, add_fields: list, remove_fields: li
     """
     remove = {r.strip().lower() for r in (remove_fields or [])}
     merged = [f for f in existing_fields if f.strip().lower() not in remove]
-    for f in (add_fields or []):
+    for f in add_fields or []:
         if f.strip().lower() not in {m.strip().lower() for m in merged}:
             merged.append(f)
     return merged
@@ -455,7 +600,9 @@ def _backfill_gate_ids(gates: list) -> list:
     return gates
 
 
-async def resolve_roles(requested: list, org_id: str, source_key: str) -> tuple[list, list]:
+async def resolve_roles(
+    requested: list, org_id: str, source_key: str
+) -> tuple[list, list]:
     """
     Shared by set_roles (chat tool) and the direct-edit roles endpoint.
     Validates against the org's REAL roles, tolerating case and simple
@@ -521,7 +668,9 @@ _HISTORY_COMPACT_THRESHOLD = 20
 _HISTORY_KEEP_TAIL = 10
 
 
-async def _maybe_compact_history(draft: dict, chat_history: list, source_key: str) -> list:
+async def _maybe_compact_history(
+    draft: dict, chat_history: list, source_key: str
+) -> list:
     """
     Keeps a long-running draft's LLM context bounded — without this, a
     genuinely iterative drafting session (come back repeatedly over days to
@@ -546,21 +695,33 @@ async def _maybe_compact_history(draft: dict, chat_history: list, source_key: st
     prior_summary = draft.get("chat_summary")
 
     summary_prompt = (
-        (f"Earlier summary of this conversation so far:\n{prior_summary}\n\n" if prior_summary else "")
-        + "New messages to fold into that summary:\n" + json.dumps(to_summarize, default=str)
+        (
+            f"Earlier summary of this conversation so far:\n{prior_summary}\n\n"
+            if prior_summary
+            else ""
+        )
+        + "New messages to fold into that summary:\n"
+        + json.dumps(to_summarize, default=str)
         + "\n\nWrite an updated 2-4 sentence summary of the whole conversation so far — "
-          "what the workflow is for, what's been decided, what's still open. Plain text only."
+        "what the workflow is for, what's been decided, what's still open. Plain text only."
     )
     try:
-        response = await _llm_chat(messages=[{"role": "user", "content": summary_prompt}], max_tokens=300)
+        response = await _llm_chat(
+            messages=[{"role": "user", "content": summary_prompt}], max_tokens=300
+        )
         summary = (response.choices[0].message.content or "").strip()
     except Exception:
-        logger.warning("chat history compaction summary call failed — keeping full history uncompacted this turn")
+        logger.warning(
+            "chat history compaction summary call failed — keeping full history uncompacted this turn"
+        )
         return chat_history
 
     await execute(
         "UPDATE workflow_drafts SET chat_summary = $1, chat_history = $2::jsonb WHERE id = $3",
-        summary, json.dumps(tail), draft["id"], source_key=source_key
+        summary,
+        json.dumps(tail),
+        draft["id"],
+        source_key=source_key,
     )
     draft["chat_summary"] = summary
     return tail
@@ -580,7 +741,9 @@ async def append_draft_note(draft: dict, note: str, source_key: str) -> None:
     chat_history.append({"role": "user", "content": f"[{note}]"})
     await execute(
         "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-        json.dumps(chat_history), draft["id"], source_key=source_key
+        json.dumps(chat_history),
+        draft["id"],
+        source_key=source_key,
     )
     draft["chat_history"] = chat_history
 
@@ -595,7 +758,9 @@ async def compile_and_save(draft_id: str, org_id: str, source_key: str) -> dict:
     comments (still below, verbatim) for why intent_key is pinned and why
     gates must come from the already-parsed draft dict, not raw jsonb text.
     """
-    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     fresh = dict(fresh)
     try:
         spec = await compile_workflow_spec(fresh, org_id=org_id, source_key=source_key)
@@ -618,7 +783,8 @@ async def compile_and_save(draft_id: str, org_id: str, source_key: str) -> dict:
     if fresh.get("intent_key"):
         spec["intent_key"] = fresh["intent_key"]
 
-    await execute("""
+    await execute(
+        """
         UPDATE workflow_drafts SET
             name=$1, intent_key=$2, description=$3,
             workflow_type=$4,
@@ -634,7 +800,9 @@ async def compile_and_save(draft_id: str, org_id: str, source_key: str) -> dict:
             status = 'ready_for_review', updated_at = now()
         WHERE id = $24
     """,
-        spec["name"], spec["intent_key"], spec["description"],
+        spec["name"],
+        spec["intent_key"],
+        spec["description"],
         spec.get("workflow_type") or "action",
         json.dumps(spec["training_phrases"]),
         json.dumps(spec["entity_schema"]),
@@ -665,11 +833,11 @@ async def compile_and_save(draft_id: str, org_id: str, source_key: str) -> dict:
         fresh.get("command_description"),
         fresh.get("menu_section"),
         draft_id,
-        source_key=source_key
+        source_key=source_key,
     )
     return {
-        "summary":         spec["plain_english_summary"],
-        "intent_key":      spec["intent_key"],
+        "summary": spec["plain_english_summary"],
+        "intent_key": spec["intent_key"],
         "has_pdf_preview": bool(spec.get("pdf_config")),
     }
 
@@ -710,16 +878,21 @@ async def resume_draft(draft: dict, org_id: str, source_key: str) -> dict:
             messages=[{"role": "system", "content": system_content}] + turn_messages,
             max_tokens=300,
         )
-        reply = (response.choices[0].message.content or "").strip() \
-            or "Welcome back — what would you like to continue with?"
+        reply = (
+            response.choices[0].message.content or ""
+        ).strip() or "Welcome back — what would you like to continue with?"
 
         chat_history = chat_history + [{"role": "assistant", "content": reply}]
         await execute(
             "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(chat_history), draft_id, source_key=source_key
+            json.dumps(chat_history),
+            draft_id,
+            source_key=source_key,
         )
 
-    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     fresh = dict(fresh)
 
     live_snapshot = None
@@ -736,7 +909,9 @@ async def resume_draft(draft: dict, org_id: str, source_key: str) -> dict:
     }
 
 
-async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list[str], source_key: str) -> None:
+async def _copy_workflow_into_draft(
+    wf: dict, draft_id: str, granted_roles: list[str], source_key: str
+) -> None:
     """
     Shared by the load_existing_workflow tool (LLM-triggered, matched by name
     during chat) and start_edit_draft (deterministic, triggered by clicking
@@ -756,16 +931,17 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
     recompile — revise_draft already does this unconditionally, so this
     change is safe for the chat-driven path too.
     """
-    steps           = _parse_jsonb(wf.get("steps"), [])
-    gates           = _parse_jsonb(wf.get("gates"), [])
-    entity_schema   = _parse_jsonb(wf.get("entity_schema"), {})
-    calc_rules      = _parse_jsonb(wf.get("calc_rules"), {})
-    sql_params      = _parse_jsonb(wf.get("sql_params_order"), [])
+    steps = _parse_jsonb(wf.get("steps"), [])
+    gates = _parse_jsonb(wf.get("gates"), [])
+    entity_schema = _parse_jsonb(wf.get("entity_schema"), {})
+    calc_rules = _parse_jsonb(wf.get("calc_rules"), {})
+    sql_params = _parse_jsonb(wf.get("sql_params_order"), [])
     business_glossary = _parse_jsonb(wf.get("business_glossary"), {})
-    pdf_config      = _parse_jsonb(wf.get("pdf_config"), None)
+    pdf_config = _parse_jsonb(wf.get("pdf_config"), None)
     training_phrases = _parse_jsonb(wf.get("training_phrases"), [])
 
-    await execute("""
+    await execute(
+        """
         UPDATE workflow_drafts SET
             intent_key=$1, name=$2, description=$3, workflow_type=$4,
             training_phrases=$5::jsonb, entity_schema=$6::jsonb,
@@ -781,19 +957,32 @@ async def _copy_workflow_into_draft(wf: dict, draft_id: str, granted_roles: list
             status='ready_for_review', updated_at=now()
         WHERE id=$25
     """,
-        wf["intent_key"], wf["name"], wf.get("description"), wf["workflow_type"],
-        json.dumps(training_phrases), json.dumps(entity_schema),
-        json.dumps(calc_rules), json.dumps(steps),
-        wf.get("sql_template"), json.dumps(sql_params),
-        wf.get("response_format") or "generic", json.dumps(business_glossary),
+        wf["intent_key"],
+        wf["name"],
+        wf.get("description"),
+        wf["workflow_type"],
+        json.dumps(training_phrases),
+        json.dumps(entity_schema),
+        json.dumps(calc_rules),
+        json.dumps(steps),
+        wf.get("sql_template"),
+        json.dumps(sql_params),
+        wf.get("response_format") or "generic",
+        json.dumps(business_glossary),
         wf.get("llm_system_prompt"),
         json.dumps(pdf_config) if pdf_config else None,
-        wf.get("response_template"), wf.get("otp_required", False),
-        wf.get("otp_threshold"), wf.get("approval_threshold"),
-        json.dumps(gates), granted_roles,
-        wf.get("slash_command"), wf.get("command_description"), wf.get("menu_section"),
+        wf.get("response_template"),
+        wf.get("otp_required", False),
+        wf.get("otp_threshold"),
+        wf.get("approval_threshold"),
+        json.dumps(gates),
+        granted_roles,
+        wf.get("slash_command"),
+        wf.get("command_description"),
+        wf.get("menu_section"),
         wf.get("version"),
-        draft_id, source_key=source_key
+        draft_id,
+        source_key=source_key,
     )
 
 
@@ -815,20 +1004,25 @@ async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
     existing_draft = await fetch_one(
         "SELECT * FROM workflow_drafts WHERE org_id = $1 AND intent_key = $2 "
         "AND status IN ('chatting', 'ready_for_review')",
-        org_id, wf["intent_key"], source_key=source_key
+        org_id,
+        wf["intent_key"],
+        source_key=source_key,
     )
     if existing_draft:
         return await resume_draft(dict(existing_draft), org_id, source_key)
 
     row = await fetch_one(
         "INSERT INTO workflow_drafts (org_id, status) VALUES ($1, 'chatting') RETURNING *",
-        org_id, source_key=source_key
+        org_id,
+        source_key=source_key,
     )
     draft_id = str(row["id"])
 
     granted = await fetch_all(
         "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
-        org_id, wf["intent_key"], source_key=source_key
+        org_id,
+        wf["intent_key"],
+        source_key=source_key,
     )
     granted_roles = [r["name"] for r in granted]
 
@@ -837,17 +1031,21 @@ async def start_edit_draft(wf: dict, org_id: str, source_key: str) -> dict:
     greeting = f"Loaded *{wf['name']}* — tell me what you'd like to change."
     await execute(
         "UPDATE workflow_drafts SET chat_history = $1::jsonb WHERE id = $2",
-        json.dumps([{"role": "assistant", "content": greeting}]), draft_id, source_key=source_key
+        json.dumps([{"role": "assistant", "content": greeting}]),
+        draft_id,
+        source_key=source_key,
     )
 
-    fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    fresh = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     fresh = dict(fresh)
     return {
-        "draft_id":     draft_id,
-        "greeting":     greeting,
-        "draft_recap":  build_draft_recap(fresh),
-        "draft_state":  build_draft_state(fresh),
-        "name":         wf["name"],
+        "draft_id": draft_id,
+        "greeting": greeting,
+        "draft_recap": build_draft_recap(fresh),
+        "draft_state": build_draft_state(fresh),
+        "name": wf["name"],
         "live_snapshot": await get_live_snapshot(org_id, wf["intent_key"], source_key),
     }
 
@@ -864,20 +1062,28 @@ async def _execute_tool(
     if tool_name == "list_existing_workflows":
         live = await fetch_all(
             "SELECT intent_key, name, workflow_type FROM workflows WHERE org_id = $1 ORDER BY name",
-            org_id, source_key=source_key
+            org_id,
+            source_key=source_key,
         )
         roles = await fetch_all(
-            "SELECT name FROM roles WHERE org_id = $1 ORDER BY name", org_id, source_key=source_key
+            "SELECT name FROM roles WHERE org_id = $1 ORDER BY name",
+            org_id,
+            source_key=source_key,
         )
-        drafts = await fetch_all("""
+        drafts = await fetch_all(
+            """
             SELECT id, name, purpose, status, updated_at
             FROM workflow_drafts
             WHERE org_id = $1 AND status = 'chatting' AND id != $2
             ORDER BY updated_at DESC LIMIT 5
-        """, org_id, draft["id"], source_key=source_key)
+        """,
+            org_id,
+            draft["id"],
+            source_key=source_key,
+        )
         return {
-            "live_workflows":    [dict(r) for r in live],
-            "org_roles":         [r["name"] for r in roles],
+            "live_workflows": [dict(r) for r in live],
+            "org_roles": [r["name"] for r in roles],
             "unfinished_drafts": [dict(r) for r in drafts],
         }
 
@@ -889,7 +1095,9 @@ async def _execute_tool(
             updates["workflow_type"] = tool_input["workflow_type"]
         if tool_input.get("business_rules"):
             existing = draft.get("business_rules") or ""
-            updates["business_rules"] = (existing + "\n" + tool_input["business_rules"]).strip()
+            updates["business_rules"] = (
+                existing + "\n" + tool_input["business_rules"]
+            ).strip()
         if tool_input.get("add_fields") or tool_input.get("remove_fields"):
             # Explicit delta (add/remove), not a full re-statement of the
             # whole field list. Two prior approaches were both wrong: a
@@ -907,7 +1115,9 @@ async def _execute_tool(
             # it only asks the model to name what changed THIS turn.
             existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
             merged = _merge_raw_fields(
-                existing_fields, tool_input.get("add_fields"), tool_input.get("remove_fields")
+                existing_fields,
+                tool_input.get("add_fields"),
+                tool_input.get("remove_fields"),
             )
             updates["raw_fields"] = json.dumps(merged)
         if tool_input.get("slash_command"):
@@ -918,10 +1128,12 @@ async def _execute_tool(
             updates["menu_section"] = tool_input["menu_section"]
 
         if updates:
-            set_parts = [f"{k} = ${i+2}" for i, k in enumerate(updates)]
+            set_parts = [f"{k} = ${i + 2}" for i, k in enumerate(updates)]
             await execute(
                 f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-                draft["id"], *updates.values(), source_key=source_key
+                draft["id"],
+                *updates.values(),
+                source_key=source_key,
             )
             # Refresh local draft dict so subsequent tool calls in same turn see the updates
             for k, v in updates.items():
@@ -932,7 +1144,9 @@ async def _execute_tool(
         gates = _backfill_gate_ids(tool_input.get("gates") or [])
         await execute(
             "UPDATE workflow_drafts SET gates = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(gates), draft["id"], source_key=source_key
+            json.dumps(gates),
+            draft["id"],
+            source_key=source_key,
         )
         draft["gates"] = gates
         return {"saved_gates": len(gates)}
@@ -951,9 +1165,14 @@ async def _execute_tool(
         resolved, unknown = await resolve_roles(requested, org_id, source_key)
 
         if unknown:
-            valid_names = sorted(r["name"] for r in await fetch_all(
-                "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
-            ))
+            valid_names = sorted(
+                r["name"]
+                for r in await fetch_all(
+                    "SELECT name FROM roles WHERE org_id = $1",
+                    org_id,
+                    source_key=source_key,
+                )
+            )
             return {
                 "error": (
                     f"{unknown} — not real roles in this org, so nothing was saved. "
@@ -964,7 +1183,9 @@ async def _execute_tool(
 
         await execute(
             "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
-            resolved, draft["id"], source_key=source_key
+            resolved,
+            draft["id"],
+            source_key=source_key,
         )
         draft["granted_roles"] = resolved
         return {"saved_roles": resolved}
@@ -973,16 +1194,21 @@ async def _execute_tool(
         if not attachment_b64:
             return {"error": "No PDF attached to this message"}
         from app.services.pdf_template_extractor import extract_pdf_template
+
         pdf_bytes = base64.b64decode(attachment_b64)
-        spec = await extract_pdf_template(pdf_bytes, tool_input.get("doc_type_hint", ""))
+        spec = await extract_pdf_template(
+            pdf_bytes, tool_input.get("doc_type_hint", "")
+        )
         await execute(
             "UPDATE workflow_drafts SET pdf_sample_analysis = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(spec), draft["id"], source_key=source_key
+            json.dumps(spec),
+            draft["id"],
+            source_key=source_key,
         )
         return {
             "doc_type_guess": spec.get("doc_type_guess"),
             "analyzed": True,
-            "message": f"Extracted layout from your sample PDF ({spec.get('doc_type_guess', 'document')}). Will use this style."
+            "message": f"Extracted layout from your sample PDF ({spec.get('doc_type_guess', 'document')}). Will use this style.",
         }
 
     if tool_name == "compile_and_summarize":
@@ -997,21 +1223,38 @@ async def _execute_tool(
         await execute(
             "UPDATE workflow_drafts SET business_rules = $1, status = 'chatting', updated_at = now() WHERE id = $2",
             f"{existing_rules}\nRequested change: {change}".strip(),
-            draft["id"], source_key=source_key
+            draft["id"],
+            source_key=source_key,
         )
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
-        return await _execute_tool("compile_and_summarize", {}, dict(fresh), org_id, attachment_b64, source_key)
+        fresh = await fetch_one(
+            "SELECT * FROM workflow_drafts WHERE id = $1",
+            draft["id"],
+            source_key=source_key,
+        )
+        return await _execute_tool(
+            "compile_and_summarize", {}, dict(fresh), org_id, attachment_b64, source_key
+        )
 
     if tool_name == "mark_ready_for_review":
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
+        fresh = await fetch_one(
+            "SELECT * FROM workflow_drafts WHERE id = $1",
+            draft["id"],
+            source_key=source_key,
+        )
         if not fresh or fresh["status"] not in ("ready_for_review", "chatting"):
-            return {"error": "Nothing compiled yet. Please describe the workflow first."}
+            return {
+                "error": "Nothing compiled yet. Please describe the workflow first."
+            }
         if not fresh.get("intent_key"):
             return {"error": "Workflow has no name yet — please compile first."}
         if not fresh.get("granted_roles"):
-            return {"error": "No one's been given access yet — ask who should be able to use this before marking it ready."}
+            return {
+                "error": "No one's been given access yet — ask who should be able to use this before marking it ready."
+            }
         if not fresh.get("slash_command"):
-            return {"error": "No trigger command set yet — ask what it should be before marking it ready."}
+            return {
+                "error": "No trigger command set yet — ask what it should be before marking it ready."
+            }
 
         # Same structural check the publish endpoint runs — run it HERE too,
         # before the publish panel ever opens. Without this, "intent_key set"
@@ -1025,28 +1268,37 @@ async def _execute_tool(
         # the LLM can still explain the problem and try compile_and_summarize
         # again in the same conversation.
         from app.services.workflow_validator import validate_workflow_config
+
         problems = validate_workflow_config(dict(fresh))
         if problems:
-            return {"error": "This draft isn't consistent yet — recompile before marking it ready: " + "; ".join(problems)}
+            return {
+                "error": "This draft isn't consistent yet — recompile before marking it ready: "
+                + "; ".join(problems)
+            }
 
         await execute(
             "UPDATE workflow_drafts SET status = 'ready_for_review', updated_at = now() WHERE id = $1",
-            draft["id"], source_key=source_key
+            draft["id"],
+            source_key=source_key,
         )
         return {
             "_show_publish_panel": True,
             "draft_id": str(draft["id"]),
-            "message": "Everything's gathered — review the recap and hit Publish."
+            "message": "Everything's gathered — review the recap and hit Publish.",
         }
 
     if tool_name == "load_existing_workflow":
         intent_key = tool_input.get("intent_key", "")
         wf = await fetch_one(
             "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
-            org_id, intent_key, source_key=source_key
+            org_id,
+            intent_key,
+            source_key=source_key,
         )
         if not wf:
-            return {"error": f"No workflow found with key '{intent_key}'. Check the name and try again."}
+            return {
+                "error": f"No workflow found with key '{intent_key}'. Check the name and try again."
+            }
         wf = dict(wf)
 
         # Same collision this tool would otherwise hit as start_edit_draft:
@@ -1058,7 +1310,10 @@ async def _execute_tool(
         existing_edit = await fetch_one(
             "SELECT id FROM workflow_drafts WHERE org_id = $1 AND intent_key = $2 "
             "AND status IN ('chatting', 'ready_for_review') AND id != $3",
-            org_id, intent_key, draft["id"], source_key=source_key
+            org_id,
+            intent_key,
+            draft["id"],
+            source_key=source_key,
         )
         if existing_edit:
             return {
@@ -1071,7 +1326,9 @@ async def _execute_tool(
 
         granted = await fetch_all(
             "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
-            org_id, intent_key, source_key=source_key
+            org_id,
+            intent_key,
+            source_key=source_key,
         )
         granted_roles = [r["name"] for r in granted]
 
@@ -1085,7 +1342,7 @@ async def _execute_tool(
             "intent_key": intent_key,
             "current_gates": draft["gates"],
             "current_roles": granted_roles,
-            "message": f"Loaded '{wf['name']}' — tell me what to change."
+            "message": f"Loaded '{wf['name']}' — tell me what to change.",
         }
 
     return {"error": f"Unknown tool: {tool_name}"}
@@ -1121,7 +1378,9 @@ async def run_builder_agent(
     if pre_extracted_pdf and isinstance(pre_extracted_pdf, dict):
         await execute(
             "UPDATE workflow_drafts SET pdf_sample_analysis = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(pre_extracted_pdf), draft["id"], source_key=source_key
+            json.dumps(pre_extracted_pdf),
+            draft["id"],
+            source_key=source_key,
         )
         draft["pdf_sample_analysis"] = pre_extracted_pdf
         logger.info(f"Pre-extracted PDF analysis saved to draft {draft['id']}")
@@ -1129,13 +1388,17 @@ async def run_builder_agent(
         chat_history = draft.get("chat_history") or []
         if isinstance(chat_history, str):
             chat_history = json.loads(chat_history)
-        chat_history.append({
-            "role": "user",
-            "content": f"[Admin uploaded a sample PDF — it has been analyzed. doc_type: {pre_extracted_pdf.get('doc_type_guess', 'invoice')}. The layout has been extracted and saved. When compiling, use this PDF layout for render_instructions.]"
-        })
+        chat_history.append(
+            {
+                "role": "user",
+                "content": f"[Admin uploaded a sample PDF — it has been analyzed. doc_type: {pre_extracted_pdf.get('doc_type_guess', 'invoice')}. The layout has been extracted and saved. When compiling, use this PDF layout for render_instructions.]",
+            }
+        )
         await execute(
             "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-            json.dumps(chat_history), draft["id"], source_key=source_key
+            json.dumps(chat_history),
+            draft["id"],
+            source_key=source_key,
         )
         draft["chat_history"] = chat_history
 
@@ -1159,7 +1422,9 @@ async def run_builder_agent(
     # Build messages for API call
     system_content = _SYSTEM_PROMPT
     if draft_context:
-        system_content += f"\n\n=== CURRENT DRAFT STATE ===\n{draft_context}=== END DRAFT STATE ===\n"
+        system_content += (
+            f"\n\n=== CURRENT DRAFT STATE ===\n{draft_context}=== END DRAFT STATE ===\n"
+        )
     messages = [{"role": "system", "content": system_content}] + chat_history
 
     summary_card = None
@@ -1169,7 +1434,11 @@ async def run_builder_agent(
     ready_for_publish = False
 
     async def _panel_data() -> tuple[str, dict]:
-        fresh = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft["id"], source_key=source_key)
+        fresh = await fetch_one(
+            "SELECT * FROM workflow_drafts WHERE id = $1",
+            draft["id"],
+            source_key=source_key,
+        )
         row = dict(fresh) if fresh else draft
         return build_draft_recap(row), build_draft_state(row)
 
@@ -1189,37 +1458,45 @@ async def run_builder_agent(
             # Save updated chat history to DB
             await execute(
                 "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-                json.dumps(chat_history), draft["id"], source_key=source_key
+                json.dumps(chat_history),
+                draft["id"],
+                source_key=source_key,
             )
             recap, state = await _panel_data()
             return {
-                "reply":                reply,
-                "draft_id":             str(draft["id"]),
-                "draft_recap":          recap,
-                "draft_state":          state,
-                "summary_card":         summary_card,
-                "has_pdf_preview":      has_pdf_preview,
-                "published":            published,
+                "reply": reply,
+                "draft_id": str(draft["id"]),
+                "draft_recap": recap,
+                "draft_state": state,
+                "summary_card": summary_card,
+                "has_pdf_preview": has_pdf_preview,
+                "published": published,
                 "published_intent_key": published_intent_key,
-                "ready_for_publish":    ready_for_publish,
+                "ready_for_publish": ready_for_publish,
             }
 
         # Process tool calls
-        messages.append({
-            "role":       "assistant",
-            "content":    msg.content,
-            "tool_calls": msg.tool_calls,
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": msg.tool_calls,
+            }
+        )
 
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments)
             try:
                 result = await _execute_tool(
-                    tc.function.name, tool_input, draft, org_id, attachment_b64, source_key
+                    tc.function.name,
+                    tool_input,
+                    draft,
+                    org_id,
+                    attachment_b64,
+                    source_key,
                 )
             except Exception as e:
-                import logging
-                logging.exception("builder tool %s failed", tc.function.name)
+                logger.exception("builder tool %s failed", tc.function.name)
                 result = f"ERROR: {tc.function.name} failed: {type(e).__name__}: {e}. Tell the user you hit a temporary problem saving that, and that their answer is noted in the conversation."
 
             if result.get("_show_confirm_buttons"):
@@ -1231,42 +1508,48 @@ async def run_builder_agent(
             # only ever visible to the LLM (as a tool result it then
             # paraphrased into chat text), so the frontend had no reliable
             # way to know a draft was ready.
-            if tc.function.name == "mark_ready_for_review" and result.get("_show_publish_panel"):
+            if tc.function.name == "mark_ready_for_review" and result.get(
+                "_show_publish_panel"
+            ):
                 ready_for_publish = True
 
             if tc.function.name == "publish_workflow" and result.get("published"):
                 published = True
                 published_intent_key = result.get("intent_key")
 
-            messages.append({
-                "tool_call_id": tc.id,
-                "role":         "tool",
-                # default=str: some tool results include raw DB rows (e.g.
-                # list_existing_workflows' unfinished_drafts carries id/
-                # updated_at straight from asyncpg) — UUID and datetime
-                # aren't JSON-serializable by default, and this is the one
-                # place ALL tool results funnel through, so it's the right
-                # place to guard every tool at once rather than sanitizing
-                # each one individually.
-                "content":      json.dumps(result, default=str),
-            })
+            messages.append(
+                {
+                    "tool_call_id": tc.id,
+                    "role": "tool",
+                    # default=str: some tool results include raw DB rows (e.g.
+                    # list_existing_workflows' unfinished_drafts carries id/
+                    # updated_at straight from asyncpg) — UUID and datetime
+                    # aren't JSON-serializable by default, and this is the one
+                    # place ALL tool results funnel through, so it's the right
+                    # place to guard every tool at once rather than sanitizing
+                    # each one individually.
+                    "content": json.dumps(result, default=str),
+                }
+            )
 
     # Max iterations hit
     reply = "Let me take that one step at a time — could you tell me a bit more?"
     chat_history.append({"role": "assistant", "content": reply})
     await execute(
         "UPDATE workflow_drafts SET chat_history = $1::jsonb, updated_at = now() WHERE id = $2",
-        json.dumps(chat_history), draft["id"], source_key=source_key
+        json.dumps(chat_history),
+        draft["id"],
+        source_key=source_key,
     )
     recap, state = await _panel_data()
     return {
-        "reply":                reply,
-        "draft_id":             str(draft["id"]),
-        "draft_recap":          recap,
-        "draft_state":          state,
-        "summary_card":         summary_card,
-        "has_pdf_preview":      has_pdf_preview,
-        "published":            published,
+        "reply": reply,
+        "draft_id": str(draft["id"]),
+        "draft_recap": recap,
+        "draft_state": state,
+        "summary_card": summary_card,
+        "has_pdf_preview": has_pdf_preview,
+        "published": published,
         "published_intent_key": published_intent_key,
-        "ready_for_publish":    ready_for_publish,
+        "ready_for_publish": ready_for_publish,
     }

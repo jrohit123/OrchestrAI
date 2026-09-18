@@ -2,24 +2,49 @@
 SQL safety validator and schema loader.
 Used by the tool-calling agent in agent.py.
 """
+
 import re
+
 from app.db import fetch_all
 from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
 _DANGEROUS = [
-    r'\bDROP\b', r'\bDELETE\b', r'\bTRUNCATE\b', r'\bALTER\b',
-    r'\bCREATE\b', r'\bINSERT\b', r'\bUPDATE\b', r'\bGRANT\b',
-    r'\bEXEC(UTE)?\b', r';\s*--', r'\bpg_\w+',
-    r'\binformation_schema\b', r'\bpg_catalog\b'
+    r"\bDROP\b",
+    r"\bDELETE\b",
+    r"\bTRUNCATE\b",
+    r"\bALTER\b",
+    r"\bCREATE\b",
+    r"\bINSERT\b",
+    r"\bUPDATE\b",
+    r"\bGRANT\b",
+    r"\bEXEC(UTE)?\b",
+    r";\s*--",
+    r"\bpg_\w+",
+    r"\binformation_schema\b",
+    r"\bpg_catalog\b",
 ]
 
 SENSITIVE_COLS = {
-    'org_id', 'user_id', 'role_id', 'customer_id', 'invoice_id',
-    'quotation_id', 'order_id', 'created_by', 'updated_by', 'scheduled_by',
-    'decided_by', 'requester_id', 'approver_role', 'workflow_id',
-    'otp_hash', 'config', 'phone', 'email',
+    "org_id",
+    "user_id",
+    "role_id",
+    "customer_id",
+    "invoice_id",
+    "quotation_id",
+    "order_id",
+    "created_by",
+    "updated_by",
+    "scheduled_by",
+    "decided_by",
+    "requester_id",
+    "approver_role",
+    "workflow_id",
+    "otp_hash",
+    "config",
+    "phone",
+    "email",
 }
 
 
@@ -28,14 +53,20 @@ def _safe(sql: str) -> tuple[bool, str]:
     for p in _DANGEROUS:
         if re.search(p, upper, re.IGNORECASE):
             return False, f"Blocked: {p}"
-    if not upper.strip().startswith('SELECT'):
+    if not upper.strip().startswith("SELECT"):
         return False, "Only SELECT allowed"
-    if ';' in sql.rstrip(';'):
+    if ";" in sql.rstrip(";"):
         return False, "Multiple statements blocked"
     return True, "ok"
 
 
-async def execute_query(sql: str, params: list, user: dict, response_format: str = "generic", business_glossary: dict = None) -> str:
+async def execute_query(
+    sql: str,
+    params: list,
+    user: dict,
+    response_format: str = "generic",
+    business_glossary: dict = None,
+) -> str:
     """
     Execute a validated SELECT query and return formatted results.
     Used by read workflows with empty entity_schema.
@@ -56,9 +87,7 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
 
     # Check readable_tables permission
     readable_tables = set(user.get("readable_tables", []))
-    referenced_tables = set(re.findall(
-        r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE
-    ))
+    referenced_tables = set(re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE))
     not_allowed = referenced_tables - readable_tables
     if not_allowed:
         return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
@@ -76,10 +105,15 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
         clean = []
         for r in rows:
             row = {
-                k: v for k, v in dict(r).items()
+                k: v
+                for k, v in dict(r).items()
                 if k not in SENSITIVE_COLS
-                and not (isinstance(v, str) and len(v) > 30 and "-" in v
-                         and k.endswith("_id"))
+                and not (
+                    isinstance(v, str)
+                    and len(v) > 30
+                    and "-" in v
+                    and k.endswith("_id")
+                )
             }
             clean.append(row)
 
@@ -99,9 +133,9 @@ async def execute_query(sql: str, params: list, user: dict, response_format: str
         else:
             # Generic JSON format (default)
             import json
+
             return json.dumps(clean, default=str, indent=2)
 
     except Exception as e:
         logger.error(f"execute_query failed: {e}", exc_info=True)
-        return f"ERROR: {str(e)}"
-
+        return f"ERROR: {e!s}"

@@ -2,39 +2,49 @@
 Schema utilities for database operations.
 Provides shared functions for fetching schema information with proper filtering.
 """
+
 import json
 import re
-from app.db import fetch_all, fetch_one
 
+from app.db import fetch_all, fetch_one
 
 # System/internal tables that should be excluded from business schema
 # These are workflow engine tables, not business domain tables
 SYSTEM_TABLE_BLOCKLIST = {
-    'audit_log', 'otp_tokens', 'pending_approvals',
-    'credentials', 'workflows', 'workflow_drafts', 'scheduled_reports'
+    "audit_log",
+    "otp_tokens",
+    "pending_approvals",
+    "credentials",
+    "workflows",
+    "workflow_drafts",
+    "scheduled_reports",
 }
 
 
 async def get_business_schema(source_key: str) -> dict:
     """
     Get all business table schemas (excluding system/workflow tables).
-    
+
     This uses a blocklist approach rather than an allowlist, making it
     domain-agnostic and future-proof for new business tables.
-    
+
     Args:
         source_key: Database source key for multi-tenancy
-        
+
     Returns:
         Dict mapping table_name -> list of column names
     """
-    cols = await fetch_all("""
+    cols = await fetch_all(
+        """
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
-    """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
+    """,
+        list(SYSTEM_TABLE_BLOCKLIST),
+        source_key=source_key,
+    )
 
     table_cols: dict = {}
     for r in cols:
@@ -58,7 +68,9 @@ async def get_column_descriptions(org_id: str, source_key: str) -> dict:
     Returns {} if the org has none configured yet — callers must treat
     missing descriptions as normal, not an error; this is opt-in enrichment.
     """
-    row = await fetch_one("SELECT settings FROM orgs WHERE id = $1", org_id, source_key=source_key)
+    row = await fetch_one(
+        "SELECT settings FROM orgs WHERE id = $1", org_id, source_key=source_key
+    )
     if not row or not row.get("settings"):
         return {}
     settings = row["settings"]
@@ -89,11 +101,14 @@ async def get_column_types(source_key: str) -> dict:
     """
     if source_key in _COLUMN_TYPE_CACHE:
         return _COLUMN_TYPE_CACHE[source_key]
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
-    """, source_key=source_key)
+    """,
+        source_key=source_key,
+    )
     types = {(r["table_name"], r["column_name"]): r["data_type"] for r in rows}
     _COLUMN_TYPE_CACHE[source_key] = types
     return types
@@ -121,13 +136,16 @@ async def get_enum_constraints(source_key: str) -> dict:
     if source_key in _ENUM_CONSTRAINT_CACHE:
         return _ENUM_CONSTRAINT_CACHE[source_key]
 
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT rel.relname AS table_name, pg_get_constraintdef(con.oid) AS def
         FROM pg_constraint con
         JOIN pg_class rel ON rel.oid = con.conrelid
         JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
         WHERE con.contype = 'c' AND nsp.nspname = 'public'
-    """, source_key=source_key)
+    """,
+        source_key=source_key,
+    )
 
     parsed: dict = {}
     pattern = re.compile(

@@ -27,16 +27,19 @@ top of validate_workflow_config, not a replacement gate. Swallow and log,
 return no problems, and let the deterministic validator remain the hard
 gate it already is.
 """
+
 import json
+
+from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
-from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
-_FIELD_MAPPING_PROMPT  = _read(PROMPTS_DIR / "critic_field_mapping.txt")
-_STEPS_LOGIC_PROMPT    = _read(PROMPTS_DIR / "critic_steps_logic.txt")
-_CROSS_CHECK_PROMPT    = _read(PROMPTS_DIR / "cross_check_mapping.txt")
+_FIELD_MAPPING_PROMPT = _read(PROMPTS_DIR / "critic_field_mapping.txt")
+_STEPS_LOGIC_PROMPT = _read(PROMPTS_DIR / "critic_steps_logic.txt")
+_CROSS_CHECK_PROMPT = _read(PROMPTS_DIR / "cross_check_mapping.txt")
+
 
 def _pick_cross_check_provider() -> str | None:
     """
@@ -52,6 +55,7 @@ def _pick_cross_check_provider() -> str | None:
     is, so it stays correct automatically if the order ever changes.
     """
     from app.services import llm_router
+
     order = llm_router.PROVIDER_ORDER
     return order[1] if len(order) > 1 else None
 
@@ -59,11 +63,13 @@ def _pick_cross_check_provider() -> str | None:
 def _extract_json(text: str) -> dict:
     text = (text or "").strip()
     if "```" in text:
-        text = text[text.find("{"):text.rfind("}") + 1]
+        text = text[text.find("{") : text.rfind("}") + 1]
     return json.loads(text)
 
 
-async def critique_field_mappings(spec: dict, description_block: str, schema_text: str) -> list[str]:
+async def critique_field_mappings(
+    spec: dict, description_block: str, schema_text: str
+) -> list[str]:
     """Reviews entity_schema's table/column mappings against the original
     request and the schema. Returns a list of problem strings, empty if
     nothing looked wrong (or the critique call itself failed — see module
@@ -118,7 +124,9 @@ async def critique_steps_logic(spec: dict, description_block: str) -> list[str]:
     prompt = _STEPS_LOGIC_PROMPT.format(
         description_block=description_block,
         steps_json=json.dumps(steps, indent=2, default=str),
-        entity_schema_json=json.dumps(spec.get("entity_schema") or {}, indent=2, default=str),
+        entity_schema_json=json.dumps(
+            spec.get("entity_schema") or {}, indent=2, default=str
+        ),
     )
     try:
         response = await _llm_chat(
@@ -142,7 +150,9 @@ async def critique_steps_logic(spec: dict, description_block: str) -> list[str]:
     return []
 
 
-async def cross_check_field_mappings(spec: dict, description_block: str, schema_text: str) -> list[str]:
+async def cross_check_field_mappings(
+    spec: dict, description_block: str, schema_text: str
+) -> list[str]:
     """
     Independent second opinion on entity_schema's table/column mappings,
     deliberately routed through a different provider (see
@@ -161,8 +171,12 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
     """
     entity_schema = spec.get("entity_schema") or {}
     field_names = [
-        f for f, fs in entity_schema.items()
-        if isinstance(fs, dict) and not fs.get("computed") and fs.get("table") and fs.get("column")
+        f
+        for f, fs in entity_schema.items()
+        if isinstance(fs, dict)
+        and not fs.get("computed")
+        and fs.get("table")
+        and fs.get("column")
     ]
     if not field_names or not _CROSS_CHECK_PROMPT:
         return []
@@ -181,7 +195,9 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
         )
         proposed = _extract_json(response.choices[0].message.content)
     except Exception as e:
-        logger.info(f"Cross-check call failed, skipping (reinforcement-only, fails open): {e}")
+        logger.info(
+            f"Cross-check call failed, skipping (reinforcement-only, fails open): {e}"
+        )
         return []
 
     if not isinstance(proposed, dict):
@@ -192,9 +208,16 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
         their_answer = proposed.get(field)
         if not isinstance(their_answer, dict):
             continue
-        our_table, our_col = entity_schema[field].get("table"), entity_schema[field].get("column")
+        our_table, our_col = (
+            entity_schema[field].get("table"),
+            entity_schema[field].get("column"),
+        )
         their_table, their_col = their_answer.get("table"), their_answer.get("column")
-        if their_table and their_col and (their_table, their_col) != (our_table, our_col):
+        if (
+            their_table
+            and their_col
+            and (their_table, their_col) != (our_table, our_col)
+        ):
             warnings.append(
                 f"cross-check disagreement on '{field}': compiled as {our_table}.{our_col}, "
                 f"independent second opinion proposed {their_table}.{their_col} — worth a human look, "
@@ -203,7 +226,9 @@ async def cross_check_field_mappings(spec: dict, description_block: str, schema_
     return warnings
 
 
-async def critique_spec(spec: dict, description_block: str, schema_text: str) -> list[str]:
+async def critique_spec(
+    spec: dict, description_block: str, schema_text: str
+) -> list[str]:
     """Runs both critics and returns the combined problem list. Order
     doesn't matter — both results feed into the same retry loop the same
     way workflow_validator.py's problems already do."""

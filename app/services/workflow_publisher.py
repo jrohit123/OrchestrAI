@@ -5,8 +5,10 @@ Uses ON CONFLICT DO UPDATE so publishing an existing workflow updates it in-plac
 The old row is NOT versioned (versions table deferred) — the draft row itself
 stays as the history with status='published'.
 """
+
 import json
-from app.db import fetch_one, fetch_all, execute
+
+from app.db import execute, fetch_all, fetch_one
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 
 
@@ -21,6 +23,7 @@ class PublishConflict(Exception):
     here — see workflow_publisher module docs for why this doesn't attempt
     an automatic merge.
     """
+
     def __init__(self, intent_key: str, current_version: int, based_on_version: int):
         self.intent_key = intent_key
         self.current_version = current_version
@@ -52,7 +55,9 @@ def _referenced_tables(entity_schema: dict) -> set:
             continue
         if spec.get("table"):
             tables.add(spec["table"])
-        item_schema = (spec.get("item_schema") or {}) if spec.get("type") == "array" else {}
+        item_schema = (
+            (spec.get("item_schema") or {}) if spec.get("type") == "array" else {}
+        )
         for ispec in item_schema.values():
             if isinstance(ispec, dict) and ispec.get("table"):
                 tables.add(ispec["table"])
@@ -60,7 +65,10 @@ def _referenced_tables(entity_schema: dict) -> set:
 
 
 async def sync_role_grants(
-    intent_key: str, org_id: str, desired_roles: list[str], source_key: str,
+    intent_key: str,
+    org_id: str,
+    desired_roles: list[str],
+    source_key: str,
     entity_schema: dict | str | None = None,
 ) -> None:
     """
@@ -89,7 +97,9 @@ async def sync_role_grants(
     """
     tables_needed = _referenced_tables(_parse_jsonb(entity_schema, {}) or {})
     all_roles = await fetch_all(
-        "SELECT id, name, permissions, readable_tables FROM roles WHERE org_id = $1", org_id, source_key=source_key
+        "SELECT id, name, permissions, readable_tables FROM roles WHERE org_id = $1",
+        org_id,
+        source_key=source_key,
     )
     desired = set(desired_roles or [])
     for r in all_roles:
@@ -99,12 +109,16 @@ async def sync_role_grants(
             await execute(
                 "UPDATE roles SET permissions = array_append(permissions, $1) "
                 "WHERE id = $2 AND NOT $1 = ANY(permissions)",
-                intent_key, r["id"], source_key=source_key
+                intent_key,
+                r["id"],
+                source_key=source_key,
             )
         elif has_it and not wants_it:
             await execute(
                 "UPDATE roles SET permissions = array_remove(permissions, $1) WHERE id = $2",
-                intent_key, r["id"], source_key=source_key
+                intent_key,
+                r["id"],
+                source_key=source_key,
             )
 
         if wants_it and tables_needed:
@@ -112,7 +126,9 @@ async def sync_role_grants(
             if missing:
                 await execute(
                     "UPDATE roles SET readable_tables = readable_tables || $1::text[] WHERE id = $2",
-                    list(missing), r["id"], source_key=source_key
+                    list(missing),
+                    r["id"],
+                    source_key=source_key,
                 )
 
 
@@ -132,11 +148,12 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
 
     # Validate consistency before writing to live table
     from app.services.workflow_validator import validate_workflow_config
+
     problems = validate_workflow_config(draft)
     if problems:
         raise ValueError(
-            "Cannot publish — config is inconsistent:\n" +
-            "\n".join(f"  • {p}" for p in problems)
+            "Cannot publish — config is inconsistent:\n"
+            + "\n".join(f"  • {p}" for p in problems)
         )
 
     # Belt-and-suspenders: compile_workflow_spec already dry-runs the query
@@ -146,8 +163,9 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     # other path (a resumed old draft, a direct edit) can't ship a query
     # that fails against the real schema.
     if draft.get("workflow_type") == "read" and draft.get("sql_template"):
-        from app.services.workflow_compiler import dry_run_sql_template
         from app.services.json_utils import parse_jsonb
+        from app.services.workflow_compiler import dry_run_sql_template
+
         sql_params_order = parse_jsonb(draft.get("sql_params_order"), []) or []
         dry_run_error = await dry_run_sql_template(
             draft["sql_template"], sql_params_order, org_id, source_key
@@ -157,7 +175,9 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
 
     existing = await fetch_one(
         "SELECT id, version FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, draft["intent_key"], source_key=source_key
+        org_id,
+        draft["intent_key"],
+        source_key=source_key,
     )
 
     # Optimistic concurrency: a draft copied from a live workflow (via
@@ -183,7 +203,8 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     # mismatch was never caught until it ran for the first time live:
     # UndefinedColumnError: column "adapter_method" of relation "workflows"
     # does not exist. Do not add them back without adding the columns first.
-    row = await fetch_one("""
+    row = await fetch_one(
+        """
         INSERT INTO workflows (
             org_id, name, intent_key, description, workflow_type,
             training_phrases, entity_schema, calc_rules, steps,
@@ -235,9 +256,9 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
         draft.get("description", ""),
         draft.get("workflow_type") or "action",
         _j(draft.get("training_phrases"), "[]"),
-        _j(draft.get("entity_schema"),    "{}"),
-        _j(draft.get("calc_rules"),       "{}"),
-        _j(draft.get("steps"),            "[]"),
+        _j(draft.get("entity_schema"), "{}"),
+        _j(draft.get("calc_rules"), "{}"),
+        _j(draft.get("steps"), "[]"),
         draft.get("sql_template"),
         _j(draft.get("sql_params_order"), "[]"),
         draft.get("response_format") or "generic",
@@ -253,7 +274,7 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
         draft.get("slash_command"),
         draft.get("command_description"),
         draft.get("menu_section") or "other",
-        source_key=source_key
+        source_key=source_key,
     )
     workflow_id = row["id"]
 
@@ -261,31 +282,46 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
     # unlike jsonb — no _parse_jsonb needed here).
     granted_roles = draft.get("granted_roles") or []
     await sync_role_grants(
-        draft["intent_key"], org_id, granted_roles, source_key,
+        draft["intent_key"],
+        org_id,
+        granted_roles,
+        source_key,
         entity_schema=draft.get("entity_schema"),
     )
 
     # Snapshot what just went live — the only history this workflow has.
     # Powers the "N changes vs live" diff view and the conflict message
     # above; not surfaced as a browsable history/rollback UI (yet).
-    await execute("""
+    await execute(
+        """
         INSERT INTO workflow_versions (
             workflow_id, org_id, version, intent_key, name,
             entity_schema, gates, granted_roles, steps, calc_rules,
             sql_template, slash_command, source_draft_id
         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$12,$13)
     """,
-        workflow_id, org_id, new_version, draft["intent_key"], draft.get("name"),
-        _j(draft.get("entity_schema"), "{}"), _j(draft.get("gates"), "[]"), granted_roles,
-        _j(draft.get("steps"), "[]"), _j(draft.get("calc_rules"), "{}"),
-        draft.get("sql_template"), draft.get("slash_command"), draft["id"],
-        source_key=source_key
+        workflow_id,
+        org_id,
+        new_version,
+        draft["intent_key"],
+        draft.get("name"),
+        _j(draft.get("entity_schema"), "{}"),
+        _j(draft.get("gates"), "[]"),
+        granted_roles,
+        _j(draft.get("steps"), "[]"),
+        _j(draft.get("calc_rules"), "{}"),
+        draft.get("sql_template"),
+        draft.get("slash_command"),
+        draft["id"],
+        source_key=source_key,
     )
 
     # Mark draft as published
     await execute(
         "UPDATE workflow_drafts SET status = 'published', published_workflow_id = $2, updated_at = now() WHERE id = $1",
-        draft["id"], workflow_id, source_key=source_key
+        draft["id"],
+        workflow_id,
+        source_key=source_key,
     )
 
     return {

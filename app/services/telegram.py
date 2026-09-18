@@ -2,7 +2,9 @@
 telegram.py — Telegram Bot API adapter.
 Mirrors whatsapp.py's function signatures exactly so messaging.py can dispatch cleanly.
 """
+
 import httpx
+
 from app.config import required
 from app.logging_config import get_context_logger
 
@@ -21,6 +23,7 @@ class TelegramRateLimitedError(Exception):
     happening before: one failed send -> fallback send -> fallback's
     fallback send, all 429, all in the same request).
     """
+
     def __init__(self, retry_after: int):
         self.retry_after = retry_after
         super().__init__(f"Telegram rate-limited, retry after {retry_after}s")
@@ -40,19 +43,19 @@ async def send_text(to: str, message: str):
     """Send a plain text Telegram message. `to` is the raw chat_id (no tg: prefix)."""
     # Try with Markdown first, fall back to plain text if Telegram rejects it
     async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{BASE_URL}/sendMessage", json={
-            "chat_id": to,
-            "text": message,
-            "parse_mode": "Markdown"
-        })
+        resp = await client.post(
+            f"{BASE_URL}/sendMessage",
+            json={"chat_id": to, "text": message, "parse_mode": "Markdown"},
+        )
         _raise_if_rate_limited(resp)
         if resp.status_code == 400:
             # Markdown parsing failed — retry as plain text
-            logger.warning(f"Telegram Markdown parsing failed for chat_id {to}, retrying as plain text")
-            resp = await client.post(f"{BASE_URL}/sendMessage", json={
-                "chat_id": to,
-                "text": message
-            })
+            logger.warning(
+                f"Telegram Markdown parsing failed for chat_id {to}, retrying as plain text"
+            )
+            resp = await client.post(
+                f"{BASE_URL}/sendMessage", json={"chat_id": to, "text": message}
+            )
             _raise_if_rate_limited(resp)
         if resp.status_code != 200:
             logger.error(f"Telegram API error: {resp.status_code} - {resp.text}")
@@ -69,33 +72,44 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     """
     keyboard = [[{"text": b["title"], "callback_data": b["id"]}] for b in buttons[:3]]
     async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{BASE_URL}/sendMessage", json={
-            "chat_id": to,
-            "text": body,
-            "parse_mode": "Markdown",
-            "reply_markup": {"inline_keyboard": keyboard}
-        })
-        _raise_if_rate_limited(resp)
-        if resp.status_code == 400:
-            resp = await client.post(f"{BASE_URL}/sendMessage", json={
+        resp = await client.post(
+            f"{BASE_URL}/sendMessage",
+            json={
                 "chat_id": to,
                 "text": body,
-                "reply_markup": {"inline_keyboard": keyboard}
-            })
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": keyboard},
+            },
+        )
+        _raise_if_rate_limited(resp)
+        if resp.status_code == 400:
+            resp = await client.post(
+                f"{BASE_URL}/sendMessage",
+                json={
+                    "chat_id": to,
+                    "text": body,
+                    "reply_markup": {"inline_keyboard": keyboard},
+                },
+            )
             _raise_if_rate_limited(resp)
         resp.raise_for_status()
     return resp.json()
 
 
-async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = "",
-                         mime_type: str = "application/pdf"):
+async def send_document(
+    to: str,
+    pdf_bytes: bytes,
+    filename: str,
+    caption: str = "",
+    mime_type: str = "application/pdf",
+):
     """Send a document (PDF, Excel, ...). `mime_type` defaults to PDF for
     backwards compatibility with every existing caller."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{BASE_URL}/sendDocument",
             data={"chat_id": to, "caption": caption},
-            files={"document": (filename, pdf_bytes, mime_type)}
+            files={"document": (filename, pdf_bytes, mime_type)},
         )
         _raise_if_rate_limited(resp)
         resp.raise_for_status()
@@ -116,19 +130,25 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
             keyboard.append([{"text": row["title"], "callback_data": row["id"]}])
             total += 1
     async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{BASE_URL}/sendMessage", json={
-            "chat_id": to,
-            "text": body,
-            "parse_mode": "Markdown",
-            "reply_markup": {"inline_keyboard": keyboard}
-        })
-        _raise_if_rate_limited(resp)
-        if resp.status_code == 400:
-            resp = await client.post(f"{BASE_URL}/sendMessage", json={
+        resp = await client.post(
+            f"{BASE_URL}/sendMessage",
+            json={
                 "chat_id": to,
                 "text": body,
-                "reply_markup": {"inline_keyboard": keyboard}
-            })
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": keyboard},
+            },
+        )
+        _raise_if_rate_limited(resp)
+        if resp.status_code == 400:
+            resp = await client.post(
+                f"{BASE_URL}/sendMessage",
+                json={
+                    "chat_id": to,
+                    "text": body,
+                    "reply_markup": {"inline_keyboard": keyboard},
+                },
+            )
             _raise_if_rate_limited(resp)
         resp.raise_for_status()
     return resp.json()

@@ -7,7 +7,9 @@ standard provider fallback ladder (OpenAI -> Gemini -> Groq) — if one
 provider fails, the next takes over — same as every other LLM call in this
 codebase, rather than maintaining a second hand-rolled provider path.
 """
+
 import json
+
 from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
@@ -43,7 +45,7 @@ async def interpret_price(rate_text: str, weight: float, qty: int) -> dict:
         )
         text = response.choices[0].message.content.strip()
         if "```" in text:
-            text = text[text.find("{"):text.rfind("}") + 1]
+            text = text[text.find("{") : text.rfind("}") + 1]
         result = json.loads(text)
         unit_price = float(result.get("unit_price", 0))
     except Exception as e:

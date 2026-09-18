@@ -1,17 +1,16 @@
-import os
 import asyncpg
-import traceback
+from dotenv import load_dotenv
+
 from app.config import required
 from app.logging_config import get_context_logger
-from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = get_context_logger(__name__)
 
 _routing_pool = None
-_pools: dict[str, "asyncpg.Pool"] = {}   # source_key -> pool, cached
-#pool
+_pools: dict[str, "asyncpg.Pool"] = {}  # source_key -> pool, cached
+# pool
 
 
 async def init_db():
@@ -22,11 +21,11 @@ async def init_db():
         min_size=1,
         max_size=5,
         init=_set_timezone,
-        statement_cache_size=0
+        statement_cache_size=0,
     )
     logger.info("Routing DB connected")
     # Pre-warm all known data sources
-    #Hi this is Kartik
+    # Hi this is Kartik
     rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
     for row in rows:
         try:
@@ -46,6 +45,10 @@ async def close_db():
     _pools = {}
     if _routing_pool:
         await _routing_pool.close()
+        # Without this, a call after close_db() (e.g. a late-firing scheduler
+        # job during shutdown) would see a truthy _routing_pool and try to use
+        # the now-closed pool instead of recreating one.
+        _routing_pool = None
 
 
 async def get_pool(source_key: str) -> "asyncpg.Pool":
@@ -57,14 +60,16 @@ async def get_pool(source_key: str) -> "asyncpg.Pool":
         "SELECT database_url FROM data_sources WHERE source_key = $1", source_key
     )
     if not row:
-        raise RuntimeError(f"No data_sources row for source_key='{source_key}' in routing DB")
+        raise RuntimeError(
+            f"No data_sources row for source_key='{source_key}' in routing DB"
+        )
 
     pool = await asyncpg.create_pool(
         dsn=row["database_url"],
         min_size=2,
         max_size=10,
         init=_set_timezone,
-        statement_cache_size=0
+        statement_cache_size=0,
     )
     _pools[source_key] = pool
     return pool
@@ -94,7 +99,9 @@ async def get_source_key_for_channel(channel: str) -> str:
         "SELECT source_key FROM data_sources WHERE messaging_channel = $1", channel
     )
     if not rows:
-        raise RuntimeError(f"No data_sources row configured for messaging_channel='{channel}'")
+        raise RuntimeError(
+            f"No data_sources row configured for messaging_channel='{channel}'"
+        )
     if len(rows) > 1:
         raise RuntimeError(
             f"Multiple data_sources rows configured for messaging_channel='{channel}': "

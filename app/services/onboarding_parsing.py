@@ -9,6 +9,7 @@ security-relevant — OTP correctness is still checked by otp_service.py's
 exact hash comparison; these helpers only figure out WHAT candidate value
 the user meant to submit.
 """
+
 import re
 
 _EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
@@ -86,7 +87,9 @@ def resolve_role_by_text(text: str, options: list[dict]) -> dict | None:
     if exact:
         return exact
 
-    contains = [o for o in options if o["name"].lower() in low or low in o["name"].lower()]
+    contains = [
+        o for o in options if o["name"].lower() in low or low in o["name"].lower()
+    ]
     if len(contains) == 1:
         return contains[0]
     return None

@@ -15,16 +15,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install ruff
-      - run: ruff check app/ tests/
-      - run: ruff format --check app/ tests/
+      - run: ruff check app/
+      - run: ruff format --check app/
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements.txt
-      - run: pip install pytest pytest-asyncio fakeredis ruff
-      - run: pytest tests/ -v --tb=short
+  # No `test` job: the pytest suite was deliberately removed (commit 7e0bf5e,
+  # "Remove pytest test suite and its config") but this workflow wasn't
+  # updated to match, so it failed on every push since. Re-add a `test` job
+  # here if/when a real test suite comes back.

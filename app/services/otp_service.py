@@ -1,13 +1,13 @@
-import random
 import hashlib
 import json
+import random
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from app.db import fetch_one, execute
 
 from app.config import required
+from app.db import execute, fetch_one
 from app.logging_config import get_context_logger
 
 load_dotenv()
@@ -15,8 +15,8 @@ load_dotenv()
 logger = get_context_logger(__name__)
 
 BREVO_API_KEY = required("BREVO_API_KEY")
-SENDER_EMAIL  = required("SENDER_EMAIL")
-SENDER_NAME   = required("SENDER_NAME")
+SENDER_EMAIL = required("SENDER_EMAIL")
+SENDER_NAME = required("SENDER_NAME")
 
 
 def _hash(otp: str) -> str:
@@ -30,7 +30,8 @@ async def _get_otp_config(org_id: str, source_key: str) -> dict:
         """SELECT otp_expiry_minutes, otp_max_attempts, otp_length,
                   otp_resend_cooldown_seconds
            FROM orgs WHERE id = $1""",
-        org_id, source_key=source_key
+        org_id,
+        source_key=source_key,
     )
     return {
         "expiry_minutes": row["otp_expiry_minutes"] if row else 3,
@@ -47,7 +48,7 @@ async def generate_and_send_otp(
     org_name: str,
     org_id: str,
     action_context: dict,
-    source_key: str
+    source_key: str,
 ) -> dict:
     """
     Generates OTP, saves hash to DB, sends email via Brevo.
@@ -59,7 +60,8 @@ async def generate_and_send_otp(
 
     last = await fetch_one(
         "SELECT created_at FROM otp_tokens WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
-        user_id, source_key=source_key
+        user_id,
+        source_key=source_key,
     )
     if last:
         elapsed = (datetime.now(timezone.utc) - last["created_at"]).total_seconds()
@@ -74,7 +76,7 @@ async def generate_and_send_otp(
             }
 
     otp_length = config["otp_length"]
-    otp = str(random.randint(10 ** (otp_length - 1), 10 ** otp_length - 1))
+    otp = str(random.randint(10 ** (otp_length - 1), 10**otp_length - 1))
     otp_hash = _hash(otp)
     expiry = datetime.now(timezone.utc) + timedelta(minutes=config["expiry_minutes"])
 
@@ -82,14 +84,22 @@ async def generate_and_send_otp(
     await execute(
         "UPDATE otp_tokens SET used = true WHERE user_id = $1 AND used = false",
         user_id,
-        source_key=source_key
+        source_key=source_key,
     )
 
     # Save new OTP record
-    await execute("""
+    await execute(
+        """
         INSERT INTO otp_tokens (user_id, otp_hash, action_context, expires_at, used, org_id)
         VALUES ($1, $2, $3, $4, false, $5)
-    """, user_id, otp_hash, json.dumps(action_context, default=str), expiry, org_id, source_key=source_key)
+    """,
+        user_id,
+        otp_hash,
+        json.dumps(action_context, default=str),
+        expiry,
+        org_id,
+        source_key=source_key,
+    )
 
     # Send via Brevo — raw OTP only lives here
     success = await _send_brevo_email(
@@ -118,60 +128,88 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     entered_hash = _hash(entered_otp)
     now = datetime.now(timezone.utc)
 
-    row = await fetch_one("""
+    row = await fetch_one(
+        """
         SELECT id, org_id, action_context, expires_at, attempts
         FROM otp_tokens
         WHERE user_id = $1
           AND used = false
         ORDER BY created_at DESC
         LIMIT 1
-    """, user_id, source_key=source_key)
+    """,
+        user_id,
+        source_key=source_key,
+    )
 
     if not row:
-        return {"valid": False, "reason": "No active OTP found. Reply 'retry' to get a new code."}
+        return {
+            "valid": False,
+            "reason": "No active OTP found. Reply 'retry' to get a new code.",
+        }
 
-    max_attempts = (await _get_otp_config(str(row["org_id"]), source_key))["max_attempts"]
+    max_attempts = (await _get_otp_config(str(row["org_id"]), source_key))[
+        "max_attempts"
+    ]
 
     # Check attempts
     if row["attempts"] >= max_attempts:
-        await execute("UPDATE otp_tokens SET used = true WHERE id = $1", row["id"], source_key=source_key)
-        return {"valid": False, "reason": "Too many attempts. Reply 'retry' to get a new code."}
+        await execute(
+            "UPDATE otp_tokens SET used = true WHERE id = $1",
+            row["id"],
+            source_key=source_key,
+        )
+        return {
+            "valid": False,
+            "reason": "Too many attempts. Reply 'retry' to get a new code.",
+        }
 
     # Check expiry
     if row["expires_at"] < now:
-        return {"valid": False, "reason": "Code has expired. Reply 'retry' to get a new code."}
+        return {
+            "valid": False,
+            "reason": "Code has expired. Reply 'retry' to get a new code.",
+        }
 
     # Check hash
     if row["attempts"] is not None:
         await execute(
             "UPDATE otp_tokens SET attempts = attempts + 1 WHERE id = $1",
             row["id"],
-            source_key=source_key
+            source_key=source_key,
         )
 
     # Re-fetch to check hash properly
-    valid_row = await fetch_one("""
+    valid_row = await fetch_one(
+        """
         SELECT id, action_context FROM otp_tokens
         WHERE id = $1 AND otp_hash = $2 AND used = false
-    """, row["id"], entered_hash, source_key=source_key)
+    """,
+        row["id"],
+        entered_hash,
+        source_key=source_key,
+    )
 
     if not valid_row:
         remaining = max_attempts - (row["attempts"] + 1)
         reason = (
             f"Incorrect code. {remaining} attempt(s) remaining."
-            if remaining > 0 else
-            "Incorrect code. 0 attempts remaining. Reply 'retry' to get a new code."
+            if remaining > 0
+            else "Incorrect code. 0 attempts remaining. Reply 'retry' to get a new code."
         )
         return {"valid": False, "reason": reason}
 
     # Mark used immediately — single use enforced
-    await execute("UPDATE otp_tokens SET used = true WHERE id = $1", valid_row["id"], source_key=source_key)
+    await execute(
+        "UPDATE otp_tokens SET used = true WHERE id = $1",
+        valid_row["id"],
+        source_key=source_key,
+    )
 
     return {
         "valid": True,
         "action_context": json.loads(valid_row["action_context"])
-            if isinstance(valid_row["action_context"], str)
-            else valid_row["action_context"]
+        if isinstance(valid_row["action_context"], str)
+        else valid_row["action_context"],
     }
 
 
@@ -181,7 +219,7 @@ async def _send_brevo_email(
     otp: str,
     action_desc: str,
     org_name: str,
-    expiry_minutes: int
+    expiry_minutes: int,
 ) -> bool:
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;">
@@ -205,14 +243,14 @@ async def _send_brevo_email(
         "sender": {"name": SENDER_NAME, "email": SENDER_EMAIL},
         "to": [{"email": to_email, "name": user_name}],
         "subject": f"🔐 Your OrchestrAI Code — {org_name}",
-        "htmlContent": html
+        "htmlContent": html,
     }
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://api.brevo.com/v3/smtp/email",
             json=payload,
-            headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"}
+            headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"},
         )
         return resp.status_code == 201
 
@@ -246,11 +284,11 @@ async def send_email_with_pdf(
     """
 
     payload = {
-        "sender":      {"name": SENDER_NAME, "email": SENDER_EMAIL},
-        "to":          [{"email": to_email, "name": to_name}],
-        "subject":     subject,
+        "sender": {"name": SENDER_NAME, "email": SENDER_EMAIL},
+        "to": [{"email": to_email, "name": to_name}],
+        "subject": subject,
         "htmlContent": html_body,
-        "attachment":  [{"name": filename, "content": pdf_b64}],
+        "attachment": [{"name": filename, "content": pdf_b64}],
     }
 
     try:
@@ -258,11 +296,8 @@ async def send_email_with_pdf(
             resp = await client.post(
                 "https://api.brevo.com/v3/smtp/email",
                 json=payload,
-                headers={
-                    "api-key": BREVO_API_KEY,
-                    "Content-Type": "application/json"
-                },
-                timeout=15.0
+                headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"},
+                timeout=15.0,
             )
             return resp.status_code == 201
     except Exception as e:

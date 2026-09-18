@@ -5,14 +5,18 @@ Extracted from admin.py so both the chat builder and the legacy free-text path
 call the same logic. Takes either a workflow_drafts row OR a plain {"description": "..."}
 dict and returns a full workflow spec + plain_english_summary.
 """
+
 import json
+
+from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
-from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
-_COMPILER_WRAPPER, _, _COMPILER_RULES = _read(PROMPTS_DIR / "workflow_compiler.txt").partition("\n===RULES===\n")
+_COMPILER_WRAPPER, _, _COMPILER_RULES = _read(
+    PROMPTS_DIR / "workflow_compiler.txt"
+).partition("\n===RULES===\n")
 
 
 def _parse(val, default):
@@ -24,7 +28,9 @@ def _parse(val, default):
     return val if val is not None else default
 
 
-async def dry_run_sql_template(sql_template: str, sql_params_order: list, org_id: str, source_key: str) -> str | None:
+async def dry_run_sql_template(
+    sql_template: str, sql_params_order: list, org_id: str, source_key: str
+) -> str | None:
     """
     Plan a compiled read-workflow query against the REAL schema via EXPLAIN —
     this parses and plans the query (checking every table/column reference
@@ -36,6 +42,7 @@ async def dry_run_sql_template(sql_template: str, sql_params_order: list, org_id
     Returns an error message string, or None if the query plans cleanly.
     """
     from app.db import fetch_one
+
     params = [org_id] + [None] * len(sql_params_order)
     try:
         await fetch_one(f"EXPLAIN {sql_template}", *params, source_key=source_key)
@@ -44,7 +51,9 @@ async def dry_run_sql_template(sql_template: str, sql_params_order: list, org_id
         return f"sql_template does not run against the live schema — {type(e).__name__}: {e}"
 
 
-async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "platform") -> dict:
+async def compile_workflow_spec(
+    draft: dict, org_id: str, source_key: str = "platform"
+) -> dict:
     """
     Compile a workflow_drafts row (or legacy {"description":"..."} dict) into
     a full spec dict including plain_english_summary.
@@ -53,15 +62,20 @@ async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "pla
     """
     # Load schema for context using shared business schema function
     from app.services.schema_utils import (
-        get_business_schema, format_schema_text, get_column_descriptions,
-        get_enum_constraints, get_column_types,
+        format_schema_text,
+        get_business_schema,
+        get_column_descriptions,
+        get_column_types,
+        get_enum_constraints,
     )
 
     table_cols = await get_business_schema(source_key=source_key)
     column_descriptions = await get_column_descriptions(org_id, source_key)
     enum_constraints = await get_enum_constraints(source_key)
     column_types = await get_column_types(source_key)
-    schema_text = format_schema_text(table_cols, column_descriptions, enum_constraints, column_types)
+    schema_text = format_schema_text(
+        table_cols, column_descriptions, enum_constraints, column_types
+    )
 
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):
@@ -75,15 +89,17 @@ async def compile_workflow_spec(draft: dict, org_id: str, source_key: str = "pla
         # draft. Found live: reproduced on two separate test workflows, one
         # with an approval gate and one with an OTP threshold.
         from app.services.workflow_builder_agent import _describe_gate
+
         draft_gates_for_prompt = _parse(draft.get("gates"), [])
         gates_text = (
             "\n".join(_describe_gate(g) for g in draft_gates_for_prompt)
-            if draft_gates_for_prompt else "(none set)"
+            if draft_gates_for_prompt
+            else "(none set)"
         )
-        description_block = f"""PURPOSE: {draft.get('purpose', '')}
-WORKFLOW TYPE HINT: {draft.get('workflow_type', 'unclear — infer from purpose')}
-FIELDS DISCUSSED WITH THE ADMIN: {', '.join(raw_fields) if raw_fields else '(none specified yet)'}
-BUSINESS RULES MENTIONED: {draft.get('business_rules') or '(none)'}
+        description_block = f"""PURPOSE: {draft.get("purpose", "")}
+WORKFLOW TYPE HINT: {draft.get("workflow_type", "unclear — infer from purpose")}
+FIELDS DISCUSSED WITH THE ADMIN: {", ".join(raw_fields) if raw_fields else "(none specified yet)"}
+BUSINESS RULES MENTIONED: {draft.get("business_rules") or "(none)"}
 CONSTRAINTS ALREADY SET (state these accurately in plain_english_summary — do not say "no OTP or approval rules" if any are listed here):
 {gates_text}"""
         # Always check for PDF analysis regardless of how the draft was built
@@ -97,16 +113,20 @@ CONSTRAINTS ALREADY SET (state these accurately in plain_english_summary — do 
     if pdf_analysis:
         pdf_context = f"""
 ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructions:
-  doc_type_guess  : {pdf_analysis.get('doc_type_guess')}
-  theme           : {json.dumps(pdf_analysis.get('theme', {}))}
-  render_instructions: {pdf_analysis.get('render_instructions', '')}
+  doc_type_guess  : {pdf_analysis.get("doc_type_guess")}
+  theme           : {json.dumps(pdf_analysis.get("theme", {}))}
+  render_instructions: {pdf_analysis.get("render_instructions", "")}
 """
 
-    prompt = _COMPILER_WRAPPER.format(
-        description_block=description_block,
-        pdf_context=pdf_context,
-        schema_text=schema_text,
-    ) + "\n" + _COMPILER_RULES
+    prompt = (
+        _COMPILER_WRAPPER.format(
+            description_block=description_block,
+            pdf_context=pdf_context,
+            schema_text=schema_text,
+        )
+        + "\n"
+        + _COMPILER_RULES
+    )
 
     last_error = "Unknown error"
     for attempt in range(3):
@@ -139,7 +159,7 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             # A no-op for a response that's already pure JSON (find("{")==0,
             # rfind("}")==len-1), so this changes nothing for that case.
             if "{" in content:
-                content = content[content.find("{"):content.rfind("}") + 1]
+                content = content[content.find("{") : content.rfind("}") + 1]
 
             spec = json.loads(content)
 
@@ -148,8 +168,7 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             if isinstance(raw_steps, str):
                 raw_steps = json.loads(raw_steps)
             spec["steps"] = [
-                json.loads(s) if isinstance(s, str) else s
-                for s in raw_steps
+                json.loads(s) if isinstance(s, str) else s for s in raw_steps
             ]
 
             # Auto-fix: ensure every calc_rules field is marked computed:true in entity_schema
@@ -161,7 +180,11 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             # Fix aggregate-level computed fields
             for field_name in aggregate_rules:
                 if field_name not in entity_schema:
-                    entity_schema[field_name] = {"type": "float", "required": False, "computed": True}
+                    entity_schema[field_name] = {
+                        "type": "float",
+                        "required": False,
+                        "computed": True,
+                    }
                 else:
                     entity_schema[field_name]["computed"] = True
                     entity_schema[field_name]["required"] = False
@@ -172,7 +195,11 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
                 item_schema = items_def.get("item_schema") or {}
                 for field_name in item_rules:
                     if field_name not in item_schema:
-                        item_schema[field_name] = {"type": "float", "required": False, "computed": True}
+                        item_schema[field_name] = {
+                            "type": "float",
+                            "required": False,
+                            "computed": True,
+                        }
                     else:
                         item_schema[field_name]["computed"] = True
                         item_schema[field_name]["required"] = False
@@ -183,7 +210,11 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
 
             # Passthrough: if PDF was uploaded, use extractor's render_instructions verbatim
             # Never let the compiler rewrite what the extractor already got right
-            pdf_analysis = _parse(draft.get("pdf_sample_analysis"), None) if isinstance(draft, dict) else None
+            pdf_analysis = (
+                _parse(draft.get("pdf_sample_analysis"), None)
+                if isinstance(draft, dict)
+                else None
+            )
             if pdf_analysis and isinstance(pdf_analysis, dict):
                 spec["pdf_config"] = {
                     **(spec.get("pdf_config") or {}),
@@ -221,9 +252,10 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
 
             # Validate consistency before accepting this attempt
             from app.services.workflow_validator import validate_workflow_config
+
             problems = validate_workflow_config(spec)
             if problems:
-                last_error = f"Attempt {attempt+1}: " + "; ".join(problems)
+                last_error = f"Attempt {attempt + 1}: " + "; ".join(problems)
                 logger.warning(f"Validation failed — retrying: {last_error}")
                 continue
 
@@ -237,31 +269,34 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             # Postgres rejects it live.
             if spec.get("workflow_type") == "read" and spec.get("sql_template"):
                 dry_run_error = await dry_run_sql_template(
-                    spec["sql_template"], spec.get("sql_params_order") or [], org_id, source_key
+                    spec["sql_template"],
+                    spec.get("sql_params_order") or [],
+                    org_id,
+                    source_key,
                 )
                 if dry_run_error:
-                    last_error = f"Attempt {attempt+1}: {dry_run_error}"
+                    last_error = f"Attempt {attempt + 1}: {dry_run_error}"
                     logger.warning(f"SQL dry-run failed — retrying: {last_error}")
                     continue
 
             # Validate mandatory fields
             if not spec.get("training_phrases") or len(spec["training_phrases"]) < 5:
-                last_error = f"Attempt {attempt+1}: insufficient training_phrases"
+                last_error = f"Attempt {attempt + 1}: insufficient training_phrases"
                 continue
             if not spec.get("entity_schema"):
-                last_error = f"Attempt {attempt+1}: empty entity_schema"
+                last_error = f"Attempt {attempt + 1}: empty entity_schema"
                 continue
             if not spec.get("business_glossary"):
-                last_error = f"Attempt {attempt+1}: empty business_glossary"
+                last_error = f"Attempt {attempt + 1}: empty business_glossary"
                 continue
             if not spec.get("llm_system_prompt"):
-                last_error = f"Attempt {attempt+1}: empty llm_system_prompt"
+                last_error = f"Attempt {attempt + 1}: empty llm_system_prompt"
                 continue
             if spec.get("workflow_type") == "action" and not spec.get("steps"):
-                last_error = f"Attempt {attempt+1}: action workflow missing steps"
+                last_error = f"Attempt {attempt + 1}: action workflow missing steps"
                 continue
             if not spec.get("plain_english_summary"):
-                last_error = f"Attempt {attempt+1}: missing plain_english_summary"
+                last_error = f"Attempt {attempt + 1}: missing plain_english_summary"
                 continue
 
             # Semantic critique — everything above only checks that the JSON is
@@ -274,10 +309,18 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             # workflow_critic.py docstring): a critique-call error never blocks
             # publishing, it only adds problems when it actually completes and
             # finds something.
-            from app.services.workflow_critic import critique_spec, cross_check_field_mappings
-            critique_problems = await critique_spec(spec, description_block, schema_text)
+            from app.services.workflow_critic import (
+                critique_spec,
+                cross_check_field_mappings,
+            )
+
+            critique_problems = await critique_spec(
+                spec, description_block, schema_text
+            )
             if critique_problems:
-                last_error = f"Attempt {attempt+1} (semantic review): " + "; ".join(critique_problems)
+                last_error = f"Attempt {attempt + 1} (semantic review): " + "; ".join(
+                    critique_problems
+                )
                 logger.warning(f"Critique flagged issues — retrying: {last_error}")
                 continue
 
@@ -287,9 +330,13 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
             # isn't proof of error either. Surfaced for a human to see, never
             # blocks or retries on its own.
             try:
-                cross_check_warnings = await cross_check_field_mappings(spec, description_block, schema_text)
+                cross_check_warnings = await cross_check_field_mappings(
+                    spec, description_block, schema_text
+                )
                 if cross_check_warnings:
-                    logger.info(f"Cross-check flagged (non-blocking): {'; '.join(cross_check_warnings)}")
+                    logger.info(
+                        f"Cross-check flagged (non-blocking): {'; '.join(cross_check_warnings)}"
+                    )
                     # A warning that only reaches a server log never reaches the
                     # admin who's actually deciding whether to publish — fold it
                     # into the one place they're already shown, plain_english_summary.
@@ -298,14 +345,18 @@ ADMIN UPLOADED A SAMPLE PDF — replicate this exact layout in render_instructio
                         f"{len(cross_check_warnings)} field mapping(s) in this workflow. "
                         "Worth double-checking the field details before publishing."
                     )
-                    spec["plain_english_summary"] = (spec.get("plain_english_summary") or "") + note
+                    spec["plain_english_summary"] = (
+                        spec.get("plain_english_summary") or ""
+                    ) + note
             except Exception as e:
-                logger.info(f"Cross-check step failed entirely, ignoring (non-blocking): {e}")
+                logger.info(
+                    f"Cross-check step failed entirely, ignoring (non-blocking): {e}"
+                )
 
             return spec
 
         except json.JSONDecodeError as e:
-            last_error = f"Attempt {attempt+1}: JSON parse error — {e}"
+            last_error = f"Attempt {attempt + 1}: JSON parse error — {e}"
             continue
 
     raise ValueError(f"Compilation failed after 3 attempts: {last_error}")

@@ -7,15 +7,16 @@ straight openpyxl table is both simpler and faster. No logo either: a
 spreadsheet is a data-download for reuse (filtering, pivoting, re-import),
 not a branded document to hand someone — the PDF already covers that case.
 """
+
 from io import BytesIO
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 HEADER_FILL = PatternFill(start_color="185FA5", end_color="185FA5", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
-TITLE_FONT  = Font(bold=True, size=14)
+TITLE_FONT = Font(bold=True, size=14)
 SUBTITLE_FONT = Font(italic=True, color="6B7280")
 
 _MAX_COL_WIDTH = 60
@@ -36,7 +37,7 @@ def generate_excel(rows: list, title: str, subtitle: str = "") -> bytes:
     columns: list[str] = []
     seen = set()
     for row in rows:
-        for key in row.keys():
+        for key in row:
             if key not in seen:
                 seen.add(key)
                 columns.append(key)
@@ -57,7 +58,9 @@ def generate_excel(rows: list, title: str, subtitle: str = "") -> bytes:
 
     header_row = next_row
     for col_idx, col_name in enumerate(columns, start=1):
-        cell = ws.cell(row=header_row, column=col_idx, value=col_name.replace("_", " ").title())
+        cell = ws.cell(
+            row=header_row, column=col_idx, value=col_name.replace("_", " ").title()
+        )
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
         cell.alignment = Alignment(horizontal="left", vertical="center")
@@ -77,7 +80,9 @@ def generate_excel(rows: list, title: str, subtitle: str = "") -> bytes:
             cell_val = row.get(col_name)
             if cell_val is not None:
                 max_len = max(max_len, len(str(cell_val)))
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, _MAX_COL_WIDTH)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(
+            max_len + 2, _MAX_COL_WIDTH
+        )
 
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
 

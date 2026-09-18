@@ -1,9 +1,10 @@
+import json
+
 import redis.asyncio as aioredis
+from dotenv import load_dotenv
+
 from app.config import required
 from app.logging_config import get_context_logger
-import os
-import json
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -14,10 +15,7 @@ _redis = None
 
 async def init_redis():
     global _redis
-    _redis = await aioredis.from_url(
-        required("REDIS_URL"),
-        decode_responses=True
-    )
+    _redis = await aioredis.from_url(required("REDIS_URL"), decode_responses=True)
     logger.info("Redis connected")
 
 
@@ -25,6 +23,7 @@ async def close_redis():
     global _redis
     if _redis:
         await _redis.aclose()
+        _redis = None
 
 
 def get_redis():

@@ -1,0 +1,27 @@
+[tool.ruff.lint]
+# Rules intentionally NOT enforced here. Each one reflects an existing,
+# deliberate pattern used at scale across this codebase (dozens of call
+# sites) rather than an oversight — blind-fixing them risks changing real
+# behavior (e.g. narrowing a fail-open except could turn a logged, recovered
+# error into an unhandled crash). New code should still avoid these where a
+# more specific fix is easy; this list just stops CI from failing on the
+# existing, working pattern while still catching everything else (unused
+# imports/variables, bare excepts, import ordering, etc.).
+ignore = [
+    "BLE001", # blind `except Exception:` — this app's standard fail-open
+              # pattern (log and continue) at ~50 call sites: webhook replies,
+              # scheduler jobs, health checks. Narrowing each to its precise
+              # exception type is real work best done per-call-site, not in bulk.
+    "RUF013", # implicit `Optional` (`x: str = None` instead of `str | None`) —
+              # a style preference used consistently throughout; not a bug.
+    "G201",   # `logger.error(..., exc_info=True)` instead of `logger.exception(...)` —
+              # logging style preference, functionally equivalent.
+    "DTZ005", # `datetime.now()` without tzinfo
+    "DTZ007", # `datetime.strptime()` without tzinfo
+    "DTZ011", # `date.today()`
+              # ^ naive-datetime rules — this app runs on IST business dates
+              # (case numbering, report scheduling) where naive-local-time was
+              # a deliberate choice in several places; auditing which call
+              # sites should be made timezone-aware is a real review, not a
+              # mechanical fix.
+]

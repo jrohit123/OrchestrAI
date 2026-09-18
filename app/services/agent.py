@@ -1,20 +1,23 @@
-﻿"""
+"""
 Tool-calling agent.
 Replaces the entire classifier + intent_matcher + intent_analyzer pipeline.
 Zero domain hardcoding. Works for any schema, any industry.This is what is not working
 """
+
+import datetime as _dt
 import json
 import os
 import re
-import datetime as _dt
+
 from openai import AsyncOpenAI
-from app.db import fetch_all, fetch_one, execute
+
 from app.config import required
-from app.services.prompt_loader import load_prompt, PROMPTS_DIR, _read
-from app.services.query_engine import _safe, SENSITIVE_COLS
-from app.services.json_utils import parse_jsonb as _parse_jsonb
+from app.db import execute, fetch_all, fetch_one
 from app.logging_config import get_context_logger
+from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
+from app.services.query_engine import SENSITIVE_COLS, _safe
 
 logger = get_context_logger(__name__)
 
@@ -50,12 +53,15 @@ def _build_confirm_summary_lines(entity_schema: dict, fields: dict) -> list[str]
         lines.append(f"  • {label}: {val}")
     return lines or None
 
+
 # ── IST timezone for greetings ────────────────────────────────────────────────
 try:
     import zoneinfo
+
     _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 except ImportError:
     import pytz
+
     _IST = pytz.timezone("Asia/Kolkata")
 
 # ── Schema cache (per org, reloaded on restart) ──────────────────────────────
@@ -88,37 +94,35 @@ def _time_of_day_greeting(ist_hour: int) -> str:
 async def _build_greeting_response_with_menu(user: dict, message: str) -> dict:
     """Build greeting with interactive menu instead of text."""
     from app.services.menu import build_menu_sections
-    
-    now_ist   = _dt.datetime.now(_IST)
-    tod       = _time_of_day_greeting(now_ist.hour)
+
+    now_ist = _dt.datetime.now(_IST)
+    tod = _time_of_day_greeting(now_ist.hour)
     first_name = user["user_name"].split()[0]
-    org       = user.get("org_name", "")
-    
+    org = user.get("org_name", "")
+
     greeting_text = (
         f"{tod}, *{first_name}!* 👋\n\n"
         f"I'm your ERP assistant for *{org}*.\n"
         f"Here's what I can help you with:"
     )
-    
+
     sections = await build_menu_sections(user["org_id"], user)
-    
-    return {
-        "text": greeting_text,
-        "menu_sections": sections,
-        "button_label": "📋 Menu"
-    }
+
+    return {"text": greeting_text, "menu_sections": sections, "button_label": "📋 Menu"}
 
 
 async def _build_help_response(user: dict) -> str:
     """Build a detailed capability guide from DB workflows — no hardcoded labels."""
     from app.db import fetch_all as _fetch_all
-    role       = user.get("role", "user").title()
+
+    role = user.get("role", "user").title()
     first_name = user["user_name"].split()[0]
-    perms      = set(user.get("permissions", []))
+    perms = set(user.get("permissions", []))
 
     workflows = await _fetch_all(
         "SELECT intent_key, name, description, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"], source_key=user["source_key"]
+        user["org_id"],
+        source_key=user["source_key"],
     )
 
     read_caps, action_caps = [], []
@@ -138,7 +142,11 @@ async def _build_help_response(user: dict) -> str:
     if action_caps:
         sections.append("*⚡ What you can create/action:*\n" + "\n\n".join(action_caps))
 
-    body = "\n\n".join(sections) if sections else "Ask me anything about your business data."
+    body = (
+        "\n\n".join(sections)
+        if sections
+        else "Ask me anything about your business data."
+    )
 
     return (
         f"Hi *{first_name}!* Here's your full menu as *{role}*:\n\n"
@@ -152,7 +160,9 @@ async def _build_help_response(user: dict) -> str:
     )
 
 
-async def _get_schema(org_id: str, source_key: str = "platform", readable_tables: list = None) -> str:
+async def _get_schema(
+    org_id: str, source_key: str = "platform", readable_tables: list = None
+) -> str:
     """
     Read information_schema at runtime for this org's database.
     Returns a compact schema string + 2 sample rows per table.
@@ -161,20 +171,28 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
     """
     if readable_tables is None:
         readable_tables = []
-    
+
     cache_key = f"{org_id}:{','.join(sorted(readable_tables))}"
     if cache_key in _schema_cache:
         return _schema_cache[cache_key]
 
     # Get column structure
-    from app.services.schema_utils import SYSTEM_TABLE_BLOCKLIST, get_column_descriptions
-    cols = await fetch_all("""
+    from app.services.schema_utils import (
+        SYSTEM_TABLE_BLOCKLIST,
+        get_column_descriptions,
+    )
+
+    cols = await fetch_all(
+        """
         SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name NOT IN (SELECT unnest($1::text[]))
         ORDER BY table_name, ordinal_position
-    """, list(SYSTEM_TABLE_BLOCKLIST), source_key=source_key)
+    """,
+        list(SYSTEM_TABLE_BLOCKLIST),
+        source_key=source_key,
+    )
     column_descriptions = await get_column_descriptions(org_id, source_key)
 
     table_cols: dict[str, list] = {}
@@ -199,6 +217,7 @@ async def _get_schema(org_id: str, source_key: str = "platform", readable_tables
 
 _sheets_schema_cache: str | None = None
 
+
 async def _get_sheets_schema() -> str:
     """Cached tab/column listing for the Sheets side — same idea as
     _get_schema() but for Google Sheets instead of Postgres."""
@@ -209,12 +228,15 @@ async def _get_sheets_schema() -> str:
         _sheets_schema_cache = ""
         return ""
     from app.services.sheets_client import get_all_tab_headers
+
     try:
         tabs = await get_all_tab_headers()
     except Exception as e:
         logger.warning(f"Could not load Sheets schema: {e}")
         return ""
-    parts = [f"- {tab} (Google Sheets tab): {', '.join(cols)}" for tab, cols in tabs.items()]
+    parts = [
+        f"- {tab} (Google Sheets tab): {', '.join(cols)}" for tab, cols in tabs.items()
+    ]
     _sheets_schema_cache = "\n".join(parts)
     return _sheets_schema_cache
 
@@ -244,7 +266,7 @@ TOOLS = [
                 "than one written fresh on every call. Use query_database only when no configured "
                 "workflow covers the question — a genuinely ad-hoc lookup. "
                 "ORG SCOPING — use the literal marker :org_id (not a $ placeholder) anywhere "
-                "you need to filter by organization, e.g. \"WHERE c.org_id = :org_id\". It is "
+                'you need to filter by organization, e.g. "WHERE c.org_id = :org_id". It is '
                 "substituted automatically and is NOT part of params[] and does NOT consume a "
                 "placeholder number. "
                 "YOUR OWN PARAMS — start numbering at $1. params[0] is $1, params[1] is $2, and "
@@ -252,7 +274,7 @@ TOOLS = [
                 "invisible to this numbering. ILIKE for name searches. LIMIT 50 max. "
                 "CRITICAL: params[] must contain EXACTLY one value per DISTINCT placeholder "
                 "number — nothing more. If the same placeholder (e.g. $1) appears more than "
-                "once in the SQL text — such as wrapping it twice for ILIKE, e.g. \"name ILIKE "
+                'once in the SQL text — such as wrapping it twice for ILIKE, e.g. "name ILIKE '
                 "'%' || $1 || '%'\" — it is still ONE value used twice; do NOT add a second "
                 "params[] entry for the repeat. If the query has only the :org_id filter and no "
                 "other condition (e.g. 'show all X'), params must be an empty array []. "
@@ -273,17 +295,17 @@ TOOLS = [
                 "properties": {
                     "sql": {
                         "type": "string",
-                        "description": "A safe PostgreSQL SELECT query"
+                        "description": "A safe PostgreSQL SELECT query",
                     },
                     "params": {
                         "type": "array",
                         "description": "Values for $1, $2, $3... in order. org_id is NOT one of these — use the :org_id marker in sql instead.",
-                        "items": {}
-                    }
+                        "items": {},
+                    },
                 },
-                "required": ["sql"]
-            }
-        }
+                "required": ["sql"],
+            },
+        },
     },
     {
         "type": "function",
@@ -307,7 +329,7 @@ TOOLS = [
                 "properties": {
                     "intent_key": {
                         "type": "string",
-                        "description": "The exact intent_key of the matching workflow, from WORKFLOW SCHEMAS"
+                        "description": "The exact intent_key of the matching workflow, from WORKFLOW SCHEMAS",
                     },
                     "params": {
                         "type": "object",
@@ -315,12 +337,12 @@ TOOLS = [
                             "Field name → extracted value, only for fields the user actually "
                             "mentioned. Use the exact field names listed under that workflow's "
                             "'Params to extract' — omit anything not mentioned."
-                        )
-                    }
+                        ),
+                    },
                 },
-                "required": ["intent_key"]
-            }
-        }
+                "required": ["intent_key"],
+            },
+        },
     },
     {
         "type": "function",
@@ -341,16 +363,16 @@ TOOLS = [
                 "properties": {
                     "tab": {
                         "type": "string",
-                        "description": "Exact tab name, e.g. 'Suppliers', 'RawMaterialStock', 'PurchaseOrders'"
+                        "description": "Exact tab name, e.g. 'Suppliers', 'RawMaterialStock', 'PurchaseOrders'",
                     },
                     "filters": {
                         "type": "object",
-                        "description": "Column:value pairs to filter rows by (partial match). Omit to fetch all rows."
-                    }
+                        "description": "Column:value pairs to filter rows by (partial match). Omit to fetch all rows.",
+                    },
                 },
-                "required": ["tab"]
-            }
-        }
+                "required": ["tab"],
+            },
+        },
     },
     {
         "type": "function",
@@ -367,21 +389,21 @@ TOOLS = [
                 "properties": {
                     "intent_key": {
                         "type": "string",
-                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')"
+                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')",
                     },
                     "fields": {
                         "type": "object",
-                        "description": "Fields to update in the draft (e.g., {customer_id: '...', amount: 92000})"
+                        "description": "Fields to update in the draft (e.g., {customer_id: '...', amount: 92000})",
                     },
                     "stage": {
                         "type": "string",
                         "enum": ["collecting", "awaiting_confirmation"],
-                        "description": "Stage of the draft. Default 'collecting'. Set to 'awaiting_confirmation' when all fields are collected."
-                    }
+                        "description": "Stage of the draft. Default 'collecting'. Set to 'awaiting_confirmation' when all fields are collected.",
+                    },
                 },
-                "required": []
-            }
-        }
+                "required": [],
+            },
+        },
     },
     {
         "type": "function",
@@ -406,22 +428,22 @@ TOOLS = [
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": "The clarifying question to ask"
+                        "description": "The clarifying question to ask",
                     },
                     "options": {
                         "type": "array",
                         "description": "Optional list of choices to present",
-                        "items": {"type": "string"}
+                        "items": {"type": "string"},
                     },
                     "candidates": {
                         "type": "array",
                         "description": "Optional list of candidate rows from database for disambiguation context",
-                        "items": {"type": "object"}
-                    }
+                        "items": {"type": "object"},
+                    },
                 },
-                "required": ["question"]
-            }
-        }
+                "required": ["question"],
+            },
+        },
     },
     {
         "type": "function",
@@ -436,11 +458,8 @@ TOOLS = [
                 "Always prefer this over describing options as plain text when the user wants to SEE/SELECT "
                 "from a menu (as opposed to a general 'what can you do' capability question, which can be text)."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
     {
         "type": "function",
@@ -462,11 +481,8 @@ TOOLS = [
                 "matching workflow tool directly, or call clarify to confirm which workflow it matches. "
                 "show_help is reserved for messages with NO other content at all."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
     {
         "type": "function",
@@ -505,42 +521,45 @@ TOOLS = [
                 "properties": {
                     "rows": {
                         "type": "array",
-                        "description": "The data rows from query_database"
+                        "description": "The data rows from query_database",
                     },
-                    "title": {
-                        "type": "string",
-                        "description": "PDF title"
-                    },
+                    "title": {"type": "string", "description": "PDF title"},
                     "subtitle": {
                         "type": "string",
-                        "description": "Optional subtitle or date range"
+                        "description": "Optional subtitle or date range",
                     },
                     "doc_type": {
                         "type": "string",
-                        "enum": ["report", "invoice", "quotation", "statement", "orders"],
-                        "description": "Document type. Default 'report' for any multi-record list."
+                        "enum": [
+                            "report",
+                            "invoice",
+                            "quotation",
+                            "statement",
+                            "orders",
+                        ],
+                        "description": "Document type. Default 'report' for any multi-record list.",
                     },
                     "extra_context": {
                         "type": "object",
-                        "description": "Additional metadata (customer details, totals) for invoice/statement types"
+                        "description": "Additional metadata (customer details, totals) for invoice/statement types",
                     },
                     "send_via": {
                         "type": "string",
                         "enum": ["whatsapp", "email", "both"],
-                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'."
+                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'.",
                     },
                     "forward_to": {
                         "type": "string",
-                        "description": "Phone number of another user to send this PDF to instead of the current user. Use when asked to 'send to [name]', 'forward to [name]', 'share with [name]'. Look up their phone from the users table first."
+                        "description": "Phone number of another user to send this PDF to instead of the current user. Use when asked to 'send to [name]', 'forward to [name]', 'share with [name]'. Look up their phone from the users table first.",
                     },
                     "forward_to_name": {
                         "type": "string",
-                        "description": "Name of the recipient for the forward caption (e.g. 'Rajeswari')"
-                    }
+                        "description": "Name of the recipient for the forward caption (e.g. 'Rajeswari')",
+                    },
                 },
-                "required": ["rows", "title"]
-            }
-        }
+                "required": ["rows", "title"],
+            },
+        },
     },
     {
         "type": "function",
@@ -565,33 +584,33 @@ TOOLS = [
                 "properties": {
                     "rows": {
                         "type": "array",
-                        "description": "The data rows from query_database"
+                        "description": "The data rows from query_database",
                     },
                     "title": {
                         "type": "string",
-                        "description": "Sheet title / filename"
+                        "description": "Sheet title / filename",
                     },
                     "subtitle": {
                         "type": "string",
-                        "description": "Optional subtitle or date range"
+                        "description": "Optional subtitle or date range",
                     },
                     "send_via": {
                         "type": "string",
                         "enum": ["whatsapp", "email", "both"],
-                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'."
+                        "description": "Delivery method. Default 'whatsapp'. Use 'email' ONLY when user explicitly says 'email only', 'mail only', 'just email', or similar exclusive language. Use 'both' ONLY when user explicitly says 'email and whatsapp', 'send both', or similar inclusive language. Otherwise use 'whatsapp'.",
                     },
                     "forward_to": {
                         "type": "string",
-                        "description": "Phone number of another user to send this to instead of the current user."
+                        "description": "Phone number of another user to send this to instead of the current user.",
                     },
                     "forward_to_name": {
                         "type": "string",
-                        "description": "Name of the recipient for the forward caption"
-                    }
+                        "description": "Name of the recipient for the forward caption",
+                    },
                 },
-                "required": ["rows", "title"]
-            }
-        }
+                "required": ["rows", "title"],
+            },
+        },
     },
     {
         "type": "function",
@@ -608,16 +627,16 @@ TOOLS = [
                 "properties": {
                     "action_description": {
                         "type": "string",
-                        "description": "Plain English description of what will happen"
+                        "description": "Plain English description of what will happen",
                     },
                     "details": {
                         "type": "object",
-                        "description": "Key details of the action (customer, amount, etc.)"
-                    }
+                        "description": "Key details of the action (customer, amount, etc.)",
+                    },
                 },
-                "required": ["action_description"]
-            }
-        }
+                "required": ["action_description"],
+            },
+        },
     },
     {
         "type": "function",
@@ -645,55 +664,55 @@ TOOLS = [
                     "action": {
                         "type": "string",
                         "enum": ["create", "list", "pause", "resume", "delete"],
-                        "description": "What to do"
+                        "description": "What to do",
                     },
                     "query_text": {
                         "type": "string",
-                        "description": "The exact query to run on schedule, in the user's own words (whatever they asked to see repeated). Required for create."
+                        "description": "The exact query to run on schedule, in the user's own words (whatever they asked to see repeated). Required for create.",
                     },
                     "report_label": {
                         "type": "string",
-                        "description": "Short human-readable name (e.g. 'Daily Outstanding Report'). Required for create."
+                        "description": "Short human-readable name (e.g. 'Daily Outstanding Report'). Required for create.",
                     },
                     "schedule_type": {
                         "type": "string",
                         "enum": ["minutely", "hourly", "daily", "weekly", "monthly"],
-                        "description": "Frequency type. Required for create."
+                        "description": "Frequency type. Required for create.",
                     },
                     "interval_minutes": {
                         "type": "integer",
-                        "description": "For minutely: how often in minutes (e.g. 30 = every 30 min). Min 1."
+                        "description": "For minutely: how often in minutes (e.g. 30 = every 30 min). Min 1.",
                     },
                     "hour": {
                         "type": "integer",
-                        "description": "Hour in IST 24h format (0-23). Required for daily/weekly/monthly."
+                        "description": "Hour in IST 24h format (0-23). Required for daily/weekly/monthly.",
                     },
                     "minute": {
                         "type": "integer",
-                        "description": "Minute (0-59). Default 0."
+                        "description": "Minute (0-59). Default 0.",
                     },
                     "day_of_week": {
                         "type": "string",
-                        "enum": ["mon","tue","wed","thu","fri","sat","sun"],
-                        "description": "Day of week for weekly schedules."
+                        "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                        "description": "Day of week for weekly schedules.",
                     },
                     "day_of_month": {
                         "type": "integer",
-                        "description": "Day of month (1-31) for monthly schedules."
+                        "description": "Day of month (1-31) for monthly schedules.",
                     },
                     "delivery": {
                         "type": "string",
                         "enum": ["whatsapp", "email", "both"],
-                        "description": "Where to send. Default 'whatsapp'."
+                        "description": "Where to send. Default 'whatsapp'.",
                     },
                     "report_id": {
                         "type": "string",
-                        "description": "UUID of the schedule to pause/resume/delete."
-                    }
+                        "description": "UUID of the schedule to pause/resume/delete.",
+                    },
                 },
-                "required": ["action"]
-            }
-        }
+                "required": ["action"],
+            },
+        },
     },
     {
         "type": "function",
@@ -718,24 +737,24 @@ TOOLS = [
                 "properties": {
                     "recipient_phone": {
                         "type": "string",
-                        "description": "WhatsApp phone number of the recipient (from users table)"
+                        "description": "WhatsApp phone number of the recipient (from users table)",
                     },
                     "recipient_name": {
                         "type": "string",
-                        "description": "Name of the recipient user"
+                        "description": "Name of the recipient user",
                     },
                     "message": {
                         "type": "string",
-                        "description": "The text message or report summary to send"
+                        "description": "The text message or report summary to send",
                     },
                     "sender_name": {
                         "type": "string",
-                        "description": "Name of the person sending (current user)"
-                    }
+                        "description": "Name of the person sending (current user)",
+                    },
                 },
-                "required": ["recipient_phone", "message"]
-            }
-        }
+                "required": ["recipient_phone", "message"],
+            },
+        },
     },
     {
         "type": "function",
@@ -753,37 +772,47 @@ TOOLS = [
                 "correction to one field (e.g. 'change priority to low') — "
                 "use update_draft for that instead."
             ),
-            "parameters": {"type": "object", "properties": {}}
-        }
-    }
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
 # ── System prompt builder — reads from DB, zero hardcoding ───────────────────
 
+
 async def _build_system_prompt(user: dict) -> str:
-    schema = await _get_schema(user["org_id"], user["source_key"], user.get("readable_tables", []))
+    schema = await _get_schema(
+        user["org_id"], user["source_key"], user.get("readable_tables", [])
+    )
     sheets_schema = await _get_sheets_schema()
     today = __import__("datetime").date.today().strftime("%d %b %Y")
 
     # Load org record for industry/slug
     org_row = await fetch_one(
         "SELECT name, industry, slug, gst_rate, default_making_charge_pct FROM orgs WHERE id = $1",
-        user["org_id"], source_key=user["source_key"]
+        user["org_id"],
+        source_key=user["source_key"],
     )
 
     # Load workflows entity_schema for slot-filling guidance
-    workflows = await fetch_all("""
+    workflows = await fetch_all(
+        """
         SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases,
                workflow_type, sql_template, sql_params_order
         FROM workflows
         WHERE org_id = $1 AND is_active = true
-    """, user["org_id"], source_key=user["source_key"])
+    """,
+        user["org_id"],
+        source_key=user["source_key"],
+    )
 
     # Build workflow schema guidance
     workflow_schema_text = ""
     if workflows:
-        workflow_schema_text = "\n\n=== WORKFLOW SCHEMAS — REQUIRED FIELDS FOR EACH ACTION ===\n"
+        workflow_schema_text = (
+            "\n\n=== WORKFLOW SCHEMAS — REQUIRED FIELDS FOR EACH ACTION ===\n"
+        )
         for wf in workflows:
             intent_key = wf.get("intent_key")
             entity_schema = wf.get("entity_schema", {})
@@ -824,29 +853,47 @@ async def _build_system_prompt(user: dict) -> str:
                 )
 
             if entity_schema:
-                workflow_schema_text += f"  Required fields:\n"
+                workflow_schema_text += "  Required fields:\n"
                 for field_name, field_def in entity_schema.items():
                     if field_def.get("required"):
                         required = "REQUIRED"
                     elif field_def.get("required_if"):
                         _cond = field_def["required_if"]
-                        _trigger = _cond.get("equals") or ", ".join(str(v) for v in _cond.get("in", []))
+                        _trigger = _cond.get("equals") or ", ".join(
+                            str(v) for v in _cond.get("in", [])
+                        )
                         required = f"REQUIRED WHEN {_cond['field']} is {_trigger}"
                     else:
                         required = "optional"
                     field_type = field_def.get("type", "string")
-                    computed   = " [COMPUTED — do not fill, system calculates this]" if field_def.get("computed") else ""
-                    description = f" — {field_def.get('description', '')}" if field_def.get("description") else ""
+                    computed = (
+                        " [COMPUTED — do not fill, system calculates this]"
+                        if field_def.get("computed")
+                        else ""
+                    )
+                    description = (
+                        f" — {field_def.get('description', '')}"
+                        if field_def.get("description")
+                        else ""
+                    )
                     enum_vals = field_def.get("enum")
                     enum_hint = (
-                        f" — MUST be exactly one of: {', '.join(enum_vals)}"
-                        f" (map whatever the user said to the matching one of these, "
-                        f"don't pass their literal words through)"
-                    ) if enum_vals else ""
+                        (
+                            f" — MUST be exactly one of: {', '.join(enum_vals)}"
+                            f" (map whatever the user said to the matching one of these, "
+                            f"don't pass their literal words through)"
+                        )
+                        if enum_vals
+                        else ""
+                    )
                     date_hint = (
-                        f" — MUST be normalized to YYYY-MM-DD before saving, regardless of "
-                        f"how the user phrased it ('15 sept', '15 Sep 2026', 'next Tuesday')"
-                    ) if field_def.get("format") == "date" else ""
+                        (
+                            " — MUST be normalized to YYYY-MM-DD before saving, regardless of "
+                            "how the user phrased it ('15 sept', '15 Sep 2026', 'next Tuesday')"
+                        )
+                        if field_def.get("format") == "date"
+                        else ""
+                    )
                     workflow_schema_text += f"    - {field_name} ({field_type}, {required}){computed}{description}{enum_hint}{date_hint}\n"
 
                 # Add note about computed fields if any exist
@@ -859,12 +906,14 @@ async def _build_system_prompt(user: dict) -> str:
                     )
 
             if business_glossary:
-                workflow_schema_text += f"  Business glossary:\n"
+                workflow_schema_text += "  Business glossary:\n"
                 for term, meaning in business_glossary.items():
                     workflow_schema_text += f"    - '{term}' means: {meaning}\n"
 
             if llm_prompt:
-                workflow_schema_text += f"  Workflow-specific instructions: {llm_prompt}\n"
+                workflow_schema_text += (
+                    f"  Workflow-specific instructions: {llm_prompt}\n"
+                )
 
             # Pre-compiled query: a tested SELECT this workflow's own creator
             # already reviewed, versus query_database's freshly-improvised SQL
@@ -884,16 +933,18 @@ async def _build_system_prompt(user: dict) -> str:
                 real_params = [p for p in params_order if p != "$current_user"]
                 workflow_schema_text += (
                     f"  PRE-COMPILED QUERY AVAILABLE — for this intent, call "
-                    f"run_workflow_query(intent_key=\"{intent_key}\", params={{...}}) "
+                    f'run_workflow_query(intent_key="{intent_key}", params={{...}}) '
                     f"instead of query_database. Do not write raw SQL for this workflow.\n"
                 )
                 if real_params:
                     workflow_schema_text += (
                         f"    Params to extract from the message (omit any not mentioned — "
-                        f"omitted means \"don't filter on this\"): {', '.join(real_params)}\n"
+                        f'omitted means "don\'t filter on this"): {", ".join(real_params)}\n'
                     )
                 else:
-                    workflow_schema_text += "    No params needed — call with params={}.\n"
+                    workflow_schema_text += (
+                        "    No params needed — call with params={}.\n"
+                    )
 
         workflow_schema_text += "\n=== END WORKFLOW SCHEMAS ===\n"
 
@@ -915,15 +966,23 @@ async def _build_system_prompt(user: dict) -> str:
             f"Standard making charges {org_row['default_making_charge_pct']}%"
             " (use ONLY when user does not state a making charge — never override an explicit value)"
         )
-    org_defaults_line = ("ORG DEFAULTS: " + " | ".join(org_defaults_parts)) if org_defaults_parts else ""
+    org_defaults_line = (
+        ("ORG DEFAULTS: " + " | ".join(org_defaults_parts))
+        if org_defaults_parts
+        else ""
+    )
 
     # Only mention Google Sheets at all if this org actually has a sheet configured —
     # otherwise every org (including ones with no Sheets integration) got an unconditional
     # "(none configured)" block plus sheet-routing rules that don't apply to them.
     sheets_block = (
-        "GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):\n"
-        f"{sheets_schema}"
-    ) if sheets_schema else ""
+        (
+            "GOOGLE SHEETS DATA (separate source — use query_sheet tool, NEVER query_database, for these):\n"
+            f"{sheets_schema}"
+        )
+        if sheets_schema
+        else ""
+    )
 
     return _AGENT_SYSTEM_WRAPPER_TEMPLATE.format(
         org_name=user["org_name"],
@@ -947,7 +1006,10 @@ async def _build_system_prompt(user: dict) -> str:
 # way, rather than each having its own half-implementation of "how do I turn
 # params_order into real bind values."
 
-def _resolve_sql_params(params_order: list, user: dict, extracted: dict | None = None) -> list:
+
+def _resolve_sql_params(
+    params_order: list, user: dict, extracted: dict | None = None
+) -> list:
     """
     Turn a workflow's sql_params_order into real $2, $3... bind values.
     "$current_user" is a compiler-emitted sentinel (see workflow_compiler.txt
@@ -987,8 +1049,10 @@ def _params_resolvable_without_message(params_order: list, entity_schema: dict) 
 # ── Draft validation helper ────────────────────────────────────────────────────
 
 # Stale draft thresholds in minutes
-_DRAFT_STALE_MINUTES   = 30   # collecting stage — abandon after 30 min of inactivity
-_CONFIRM_STALE_MINUTES = 10   # awaiting_confirmation — shorter: stale unconfirmed writes are riskier
+_DRAFT_STALE_MINUTES = 30  # collecting stage — abandon after 30 min of inactivity
+_CONFIRM_STALE_MINUTES = (
+    10  # awaiting_confirmation — shorter: stale unconfirmed writes are riskier
+)
 
 # Max reprompt attempts before forcing a clean restart
 _MAX_REPROMPT_COUNT = 3
@@ -1005,12 +1069,17 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
     if stage not in ("collecting", "awaiting_confirmation"):
         return False
     # Use a shorter threshold for confirmation-stage drafts
-    threshold = _CONFIRM_STALE_MINUTES if stage == "awaiting_confirmation" else _DRAFT_STALE_MINUTES
+    threshold = (
+        _CONFIRM_STALE_MINUTES
+        if stage == "awaiting_confirmation"
+        else _DRAFT_STALE_MINUTES
+    )
     created = pending_action.get("created_at")
     if not created:
         return False
     try:
         import datetime as _datetime_mod
+
         if isinstance(created, str):
             created_dt = _datetime_mod.datetime.fromisoformat(created)
         else:
@@ -1024,12 +1093,18 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
     except Exception:
         return False
 
-async def _validate_draft(intent_key: str, fields: dict, org_id: str, source_key: str) -> dict:
+
+async def _validate_draft(
+    intent_key: str, fields: dict, org_id: str, source_key: str
+) -> dict:
     """Validate draft fields. Thin wrapper over qa_verifier for backward compatibility."""
-    from app.services.qa_verifier import verify_draft, VerificationError
+    from app.services.qa_verifier import VerificationError, verify_draft
+
     wf = await fetch_one(
         "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-        intent_key, org_id, source_key=source_key
+        intent_key,
+        org_id,
+        source_key=source_key,
     )
     if not wf:
         return {"missing_fields": [], "complete": True}
@@ -1037,10 +1112,14 @@ async def _validate_draft(intent_key: str, fields: dict, org_id: str, source_key
         await verify_draft(dict(wf), fields, org_id, source_key)
         return {"missing_fields": [], "complete": True}
     except VerificationError as e:
-        return {"missing_fields": e.missing_fields + e.invalid_fields, "complete": False}
+        return {
+            "missing_fields": e.missing_fields + e.invalid_fields,
+            "complete": False,
+        }
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
+
 
 async def _execute_tool(
     tool_name: str,
@@ -1063,17 +1142,21 @@ async def _execute_tool(
 
         # Check readable_tables permission
         readable_tables = set(user.get("readable_tables", []))
-        referenced_tables = set(re.findall(
-            r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE
-        ))
+        referenced_tables = set(
+            re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE)
+        )
         not_allowed = referenced_tables - readable_tables
         if not_allowed:
-            return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
+            return (
+                f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
+            )
 
         # Validate SQL against live schema — check referenced tables actually exist.
         # This replaces a hardcoded denylist with an always-correct schema check.
-        schema_text = await _get_schema(user["org_id"], user["source_key"], list(readable_tables))
-        known_tables = set(re.findall(r'^- (\w+):', schema_text, re.MULTILINE))
+        schema_text = await _get_schema(
+            user["org_id"], user["source_key"], list(readable_tables)
+        )
+        known_tables = set(re.findall(r"^- (\w+):", schema_text, re.MULTILINE))
         unknown_tables = referenced_tables - known_tables
         if unknown_tables:
             return (
@@ -1102,14 +1185,16 @@ async def _execute_tool(
         # guarding against injection from this call — it's a cheap sanity check
         # that fails loudly if the org lookup upstream ever returns something
         # malformed, instead of silently running a query scoped to garbage.
-        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(user["org_id"])):
-            logger.error(f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}")
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(user["org_id"])):
+            logger.error(
+                f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}"
+            )
             return "ERROR: internal error resolving org — please try again"
-        if ':org_id' not in sql:
+        if ":org_id" not in sql:
             return (
                 "ERROR: this query has no org scoping. Every query_database call must "
                 "filter on org_id using the literal :org_id marker (e.g. "
-                "\"WHERE c.org_id = :org_id\") — never a $-numbered placeholder for it. "
+                '"WHERE c.org_id = :org_id") — never a $-numbered placeholder for it. '
                 "Add that filter and retry."
             )
         # \b after :org_id (not before) is deliberate — PostgreSQL cast syntax
@@ -1118,12 +1203,12 @@ async def _execute_tool(
         # enough to avoid accidentally catching a longer identifier that just
         # happens to start with "org_id" (there isn't one in this schema, but
         # cheap to be exact rather than rely on that staying true).
-        sql = re.sub(r':org_id\b', f"'{user['org_id']}'::uuid", sql)
+        sql = re.sub(r":org_id\b", f"'{user['org_id']}'::uuid", sql)
 
         # Computed AFTER the :org_id substitution above, so any $N the model
         # wrote is counted as-is — the substituted org_id literal contains no
         # $ characters, so it can't shift or inflate this count.
-        placeholder_nums = sorted(set(int(n) for n in re.findall(r'\$(\d+)', sql)))
+        placeholder_nums = sorted({int(n) for n in re.findall(r"\$(\d+)", sql)})
         max_placeholder = max(placeholder_nums, default=0)
 
         if max_placeholder > len(params):
@@ -1161,10 +1246,15 @@ async def _execute_tool(
             clean = []
             for r in rows:
                 row = {
-                    k: v for k, v in dict(r).items()
+                    k: v
+                    for k, v in dict(r).items()
                     if k not in SENSITIVE_COLS
-                    and not (isinstance(v, str) and len(v) > 30 and "-" in v
-                             and k.endswith("_id"))
+                    and not (
+                        isinstance(v, str)
+                        and len(v) > 30
+                        and "-" in v
+                        and k.endswith("_id")
+                    )
                 }
                 clean.append(row)
 
@@ -1175,16 +1265,18 @@ async def _execute_tool(
 
         except Exception as e:
             logger.error(f"query_database failed: {e}", exc_info=True)
-            return f"ERROR: {str(e)}"
+            return f"ERROR: {e!s}"
 
     elif tool_name == "run_workflow_query":
         intent_key = tool_input.get("intent_key", "")
-        extracted  = tool_input.get("params") or {}
+        extracted = tool_input.get("params") or {}
 
         wf = await fetch_one(
             "SELECT workflow_type, sql_template, sql_params_order, entity_schema, business_glossary "
             "FROM workflows WHERE org_id = $1 AND intent_key = $2 AND is_active = true",
-            user["org_id"], intent_key, source_key=user["source_key"]
+            user["org_id"],
+            intent_key,
+            source_key=user["source_key"],
         )
         if not wf:
             return f"ERROR: no active workflow with intent_key '{intent_key}'"
@@ -1208,18 +1300,20 @@ async def _execute_tool(
                 glossary = {}
 
         from app.services.query_engine import execute_query
+
         params = _resolve_sql_params(params_order, user, extracted)
         return await execute_query(
             sql=wf["sql_template"],
             params=params,
             user=user,
             response_format="generic",
-            business_glossary=glossary
+            business_glossary=glossary,
         )
 
     elif tool_name == "query_sheet":
         from app.services.sheets_client import sheet_fetch_filtered
-        tab     = tool_input.get("tab", "")
+
+        tab = tool_input.get("tab", "")
         filters = tool_input.get("filters", {}) or {}
         try:
             rows = await sheet_fetch_filtered(tab, filters)
@@ -1227,15 +1321,13 @@ async def _execute_tool(
                 return "EMPTY: No rows returned"
             return json.dumps(rows[:50], default=str)
         except Exception as e:
-            return f"ERROR: {str(e)}"
+            return f"ERROR: {e!s}"
 
     elif tool_name == "clarify":
         question = tool_input.get("question", "")
         options = tool_input.get("options", [])
         if options:
-            opts_text = "\n".join(
-                f"{i+1}. {o}" for i, o in enumerate(options)
-            )
+            opts_text = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
             return f"CLARIFY_SENT: {question}\n{opts_text}"
         return f"CLARIFY_SENT: {question}"
 
@@ -1246,18 +1338,18 @@ async def _execute_tool(
         return {"type": "show_help"}
 
     elif tool_name == "generate_pdf":
-        from app.services.pdf_engine import generate_pdf as _gen_pdf
         from app.services.messaging import send_document
+        from app.services.pdf_engine import generate_pdf as _gen_pdf
         from app.services.pdf_preprocessor import preprocess_rows
 
-        rows          = tool_input.get("rows", [])
-        title         = tool_input.get("title", "Report")
-        subtitle      = tool_input.get("subtitle", "")
-        doc_type      = tool_input.get("doc_type", "report")
+        rows = tool_input.get("rows", [])
+        title = tool_input.get("title", "Report")
+        subtitle = tool_input.get("subtitle", "")
+        doc_type = tool_input.get("doc_type", "report")
         extra_context = tool_input.get("extra_context", {})
-        send_via      = tool_input.get("send_via", "whatsapp")
-        forward_to    = tool_input.get("forward_to")       # phone of another user to send to
-        forward_name  = tool_input.get("forward_to_name")  # their name for caption
+        send_via = tool_input.get("send_via", "whatsapp")
+        forward_to = tool_input.get("forward_to")  # phone of another user to send to
+        forward_name = tool_input.get("forward_to_name")  # their name for caption
 
         # For quotations: rows are always empty — all data is in extra_context. Allow it.
         # For invoices: if items array is empty, construct a synthetic line item from amount.
@@ -1271,18 +1363,21 @@ async def _execute_tool(
                 if extra_context.get("gst_rate") is None:
                     return "ERROR: gst_rate missing from context — cannot compute invoice without the org's tax rate"
                 raw_amount = float(extra_context.get("amount", 0))
-                gst_rate   = float(extra_context["gst_rate"])
-                subtotal   = round(raw_amount / (1 + gst_rate / 100), 2)
-                gst_val    = round(raw_amount - subtotal, 2)
-                rows = [{
-                    "description": extra_context.get("item_description") or "As per order",
-                    "qty": 1,
-                    "unit_price": subtotal,    # ex-GST unit price
-                    "gst": gst_val,
-                    "total": raw_amount        # GST-inclusive line total
-                }]
+                gst_rate = float(extra_context["gst_rate"])
+                subtotal = round(raw_amount / (1 + gst_rate / 100), 2)
+                gst_val = round(raw_amount - subtotal, 2)
+                rows = [
+                    {
+                        "description": extra_context.get("item_description")
+                        or "As per order",
+                        "qty": 1,
+                        "unit_price": subtotal,  # ex-GST unit price
+                        "gst": gst_val,
+                        "total": raw_amount,  # GST-inclusive line total
+                    }
+                ]
                 # Also inject pre-computed amounts so LLM doesn't recalculate
-                extra_context["subtotal"]   = subtotal
+                extra_context["subtotal"] = subtotal
                 extra_context["gst_amount"] = gst_val
                 extra_context["total_amount"] = raw_amount
             else:
@@ -1310,11 +1405,15 @@ async def _execute_tool(
         # ──────────────────────────────────────────────────────────────────────
 
         try:
-            org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"], source_key=user["source_key"])
+            org_row = await fetch_one(
+                "SELECT name FROM orgs WHERE id = $1",
+                user["org_id"],
+                source_key=user["source_key"],
+            )
             org_name = org_row["name"] if org_row else user["org_name"]
 
             pdf_bytes = await _gen_pdf(
-                rows=enriched_rows,            # ← use enriched rows
+                rows=enriched_rows,  # ← use enriched rows
                 title=title,
                 org_name=org_name,
                 subtitle=subtitle,
@@ -1323,7 +1422,7 @@ async def _execute_tool(
                 org_id=user["org_id"],
                 source_key=user["source_key"],
             )
-            safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".pdf"
+            safe_filename = re.sub(r"[^\w\-]", "_", title)[:50] + ".pdf"
 
             results = []
 
@@ -1342,7 +1441,7 @@ async def _execute_tool(
                     to=phone,
                     pdf_bytes=pdf_bytes,
                     filename=safe_filename,
-                    caption=f"📄 {title}"
+                    caption=f"📄 {title}",
                 )
                 results.append(_channel_label(phone))
 
@@ -1353,15 +1452,18 @@ async def _execute_tool(
                     to=forward_to,
                     pdf_bytes=pdf_bytes,
                     filename=safe_filename,
-                    caption=f"📨 *From {sender_name}:* 📄 {title}"
+                    caption=f"📨 *From {sender_name}:* 📄 {title}",
                 )
-                results.append(f"{_channel_label(forward_to)} → {forward_name or forward_to}")
+                results.append(
+                    f"{_channel_label(forward_to)} → {forward_name or forward_to}"
+                )
 
             # Email delivery
             if send_via in ("email", "both"):
                 user_email = user.get("email")
                 if user_email:
                     from app.services.otp_service import send_email_with_pdf
+
                     email_sent = await send_email_with_pdf(
                         to_email=user_email,
                         to_name=user.get("user_name", "User"),
@@ -1369,7 +1471,7 @@ async def _execute_tool(
                         body=f"Please find attached: <b>{title}</b>",
                         pdf_bytes=pdf_bytes,
                         filename=safe_filename,
-                        org_name=org_name
+                        org_name=org_name,
                     )
                     if email_sent:
                         results.append(f"Email ({user_email})")
@@ -1383,17 +1485,17 @@ async def _execute_tool(
 
         except Exception as e:
             logger.error(f"PDF generation error: {e}", exc_info=True)
-            return f"ERROR generating PDF: {str(e)}"
+            return f"ERROR generating PDF: {e!s}"
 
     elif tool_name == "generate_excel":
         from app.services.excel_engine import generate_excel as _gen_excel
         from app.services.messaging import send_document
 
-        rows         = tool_input.get("rows", [])
-        title        = tool_input.get("title", "Export")
-        subtitle     = tool_input.get("subtitle", "")
-        send_via     = tool_input.get("send_via", "whatsapp")
-        forward_to   = tool_input.get("forward_to")
+        rows = tool_input.get("rows", [])
+        title = tool_input.get("title", "Export")
+        subtitle = tool_input.get("subtitle", "")
+        send_via = tool_input.get("send_via", "whatsapp")
+        forward_to = tool_input.get("forward_to")
         forward_name = tool_input.get("forward_to_name")
 
         if not rows:
@@ -1404,8 +1506,10 @@ async def _execute_tool(
 
         try:
             excel_bytes = _gen_excel(rows=rows, title=title, subtitle=subtitle)
-            safe_filename = re.sub(r'[^\w\-]', '_', title)[:50] + ".xlsx"
-            xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            safe_filename = re.sub(r"[^\w\-]", "_", title)[:50] + ".xlsx"
+            xlsx_mime = (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
             results = []
 
@@ -1428,14 +1532,21 @@ async def _execute_tool(
                     caption=f"📨 *From {sender_name}:* 📊 {title}",
                     mime_type=xlsx_mime,
                 )
-                results.append(f"{_channel_label(forward_to)} → {forward_name or forward_to}")
+                results.append(
+                    f"{_channel_label(forward_to)} → {forward_name or forward_to}"
+                )
 
             if send_via in ("email", "both"):
                 user_email = user.get("email")
                 if user_email:
-                    org_row  = await fetch_one("SELECT name FROM orgs WHERE id = $1", user["org_id"], source_key=user["source_key"])
+                    org_row = await fetch_one(
+                        "SELECT name FROM orgs WHERE id = $1",
+                        user["org_id"],
+                        source_key=user["source_key"],
+                    )
                     org_name = org_row["name"] if org_row else user["org_name"]
                     from app.services.otp_service import send_email_with_pdf
+
                     email_sent = await send_email_with_pdf(
                         to_email=user_email,
                         to_name=user.get("user_name", "User"),
@@ -1443,7 +1554,7 @@ async def _execute_tool(
                         body=f"Please find attached: <b>{title}</b>",
                         pdf_bytes=excel_bytes,
                         filename=safe_filename,
-                        org_name=org_name
+                        org_name=org_name,
                     )
                     if email_sent:
                         results.append(f"Email ({user_email})")
@@ -1457,7 +1568,7 @@ async def _execute_tool(
 
         except Exception as e:
             logger.error(f"Excel generation error: {e}", exc_info=True)
-            return f"ERROR generating Excel: {str(e)}"
+            return f"ERROR generating Excel: {e!s}"
 
     elif tool_name == "update_draft":
         intent_key = tool_input.get("intent_key")
@@ -1469,23 +1580,37 @@ async def _execute_tool(
         intent_switched = False
         if not intent_key:
             from app.services.draft_store import get_active_draft
-            existing_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+
+            existing_draft = await get_active_draft(
+                user["org_id"], user["user_id"], user["source_key"]
+            )
             if existing_draft:
                 intent_key = existing_draft.get("intent_key")
                 logger.debug(f"Inferred intent_key from existing draft: {intent_key}")
             elif pending_action and pending_action.get("intent_key"):
                 intent_key = pending_action["intent_key"]
-                logger.debug(f"Inferred intent_key from in-memory pending_action: {intent_key}")
+                logger.debug(
+                    f"Inferred intent_key from in-memory pending_action: {intent_key}"
+                )
             else:
-                logger.warning("update_draft called without intent_key and no existing draft found")
-                return "ERROR: No intent_key provided and no existing draft to infer from"
+                logger.warning(
+                    "update_draft called without intent_key and no existing draft found"
+                )
+                return (
+                    "ERROR: No intent_key provided and no existing draft to infer from"
+                )
         else:
             # Check if this is an intent switch
             from app.services.draft_store import get_active_draft
-            existing_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+
+            existing_draft = await get_active_draft(
+                user["org_id"], user["user_id"], user["source_key"]
+            )
             if existing_draft and existing_draft.get("intent_key") != intent_key:
                 intent_switched = True
-                logger.info(f"Intent switch detected: {existing_draft.get('intent_key')} → {intent_key}")
+                logger.info(
+                    f"Intent switch detected: {existing_draft.get('intent_key')} → {intent_key}"
+                )
 
         # Permission check as EARLY as possible — this used to only happen
         # in action_executor.py at final confirm+execute time, meaning a
@@ -1505,7 +1630,7 @@ async def _execute_tool(
             return (
                 "PERMISSION_DENIED — do not collect any fields or proceed with this "
                 "request. Tell the user exactly this: \"You don't have permission to "
-                "do that. Please ask a committee member or admin.\""
+                'do that. Please ask a committee member or admin."'
             )
 
         # Guard: the LLM must always pass an object. A malformed call (e.g.
@@ -1514,10 +1639,12 @@ async def _execute_tool(
         # subsequent turn with "'list' object is not a mapping". Reject
         # instead of storing it.
         if not isinstance(fields, dict):
-            logger.warning(f"update_draft called with non-dict fields ({type(fields).__name__}) — rejecting")
+            logger.warning(
+                f"update_draft called with non-dict fields ({type(fields).__name__}) — rejecting"
+            )
             return (
                 "ERROR: fields must be a JSON object mapping field names to values "
-                "(e.g. {\"items\": [...]}), not a bare list. Re-call update_draft "
+                '(e.g. {"items": [...]}), not a bare list. Re-call update_draft '
                 "with the correct format."
             )
 
@@ -1526,27 +1653,35 @@ async def _execute_tool(
 
         # Server-side guardrail: auto-correct misclassified making charges
         # If making_charge_pct > 100, it's almost certainly a flat Rupee amount misclassified as percentage
-        for item in (fields.get("items") or []):
+        for item in fields.get("items") or []:
             pct = item.get("making_charge_pct")
             if pct is not None and pct > 100:
                 item["making_charges_flat"] = pct
                 item.pop("making_charge_pct", None)
-                logger.debug(f"Auto-corrected making_charge_pct={pct} → making_charges_flat (flat)")
+                logger.debug(
+                    f"Auto-corrected making_charge_pct={pct} → making_charges_flat (flat)"
+                )
 
         # Validate draft against workflow schema
-        validation = await _validate_draft(intent_key, fields, user["org_id"], user["source_key"])
+        validation = await _validate_draft(
+            intent_key, fields, user["org_id"], user["source_key"]
+        )
 
         # Build a data-driven, human-readable hint for exactly what's still
-        # missing, sourced from the workflow's entity_schema `description` 
+        # missing, sourced from the workflow's entity_schema `description`
         # (falls back to a prettified field name). Gives the LLM a grounded
         # question to ask instead of improvising one.
         missing_field_hints = []
         if validation.get("missing_fields"):
             wf_for_hints = await fetch_one(
                 "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-                intent_key, user["org_id"], source_key=user["source_key"]
+                intent_key,
+                user["org_id"],
+                source_key=user["source_key"],
             )
-            schema_for_hints = _parse_jsonb((wf_for_hints or {}).get("entity_schema"), {}) or {}
+            schema_for_hints = (
+                _parse_jsonb((wf_for_hints or {}).get("entity_schema"), {}) or {}
+            )
             for f in validation["missing_fields"]:
                 base = f.split("[")[0].split(".")[0]
                 spec = schema_for_hints.get(base, {})
@@ -1557,6 +1692,7 @@ async def _execute_tool(
 
         # Persist to database (write-through cache)
         from app.services.draft_store import upsert_draft
+
         await upsert_draft(
             org_id=user["org_id"],
             user_id=user["user_id"],
@@ -1576,43 +1712,43 @@ async def _execute_tool(
             "raw_text": message,
             "missing_fields": validation.get("missing_fields", []),
             "missing_field_hints": missing_field_hints,
-            "complete": validation.get("complete", False)
+            "complete": validation.get("complete", False),
         }
 
     elif tool_name == "confirm_action":
         action_desc = tool_input.get("action_description", "")
         details = tool_input.get("details", {})
-        details_str = "\n".join(
-            f"  • {k}: {v}" for k, v in details.items()
-        ) if details else ""
 
         # Return session patch for webhook to persist
         return {
             "type": "confirm_pending",
             "action_description": action_desc,
             "details": details,
-            "stage": "awaiting_confirmation"
+            "stage": "awaiting_confirmation",
         }
 
     elif tool_name == "manage_schedule":
-        from app.scheduler.jobs import (
-            create_scheduled_report, list_scheduled_reports,
-            pause_scheduled_report, resume_scheduled_report,
-            delete_scheduled_report, compute_next_run
-        )
         import datetime as _dt
+
+        from app.scheduler.jobs import (
+            create_scheduled_report,
+            delete_scheduled_report,
+            list_scheduled_reports,
+            pause_scheduled_report,
+            resume_scheduled_report,
+        )
 
         action = tool_input.get("action")
 
         if action == "create":
-            query_text    = tool_input.get("query_text", "")
-            report_label  = tool_input.get("report_label", query_text[:50])
+            query_text = tool_input.get("query_text", "")
+            report_label = tool_input.get("report_label", query_text[:50])
             schedule_type = tool_input.get("schedule_type", "daily")
-            delivery      = tool_input.get("delivery", "whatsapp")
-            hour          = tool_input.get("hour")
-            minute        = tool_input.get("minute", 0)
-            day_of_week   = tool_input.get("day_of_week")
-            day_of_month  = tool_input.get("day_of_month")
+            delivery = tool_input.get("delivery", "whatsapp")
+            hour = tool_input.get("hour")
+            minute = tool_input.get("minute", 0)
+            day_of_week = tool_input.get("day_of_week")
+            day_of_month = tool_input.get("day_of_month")
             interval_mins = tool_input.get("interval_minutes")
 
             if not query_text:
@@ -1644,11 +1780,13 @@ async def _execute_tool(
                 "id": result["id"],
                 "report_label": report_label,
                 "schedule_type": schedule_type,
-                "next_run": next_run_ist.strftime("%d %b %Y at %I:%M %p IST")
+                "next_run": next_run_ist.strftime("%d %b %Y at %I:%M %p IST"),
             }
 
         elif action == "list":
-            rows = await list_scheduled_reports(user["user_id"], source_key=user["source_key"])
+            rows = await list_scheduled_reports(
+                user["user_id"], source_key=user["source_key"]
+            )
             if not rows:
                 return {"type": "schedule_list", "schedules": [], "count": 0}
             schedules = []
@@ -1664,40 +1802,61 @@ async def _execute_tool(
                         next_str = str(next_run)
                 else:
                     next_str = "—"
-                schedules.append({
-                    "id": str(r["id"]),
-                    "label": r["report_label"],
-                    "schedule_type": r["schedule_type"],
-                    "active": r["is_active"],
-                    "next_run": next_str,
-                    "run_count": r["run_count"]
-                })
-            return {"type": "schedule_list", "schedules": schedules, "count": len(schedules)}
+                schedules.append(
+                    {
+                        "id": str(r["id"]),
+                        "label": r["report_label"],
+                        "schedule_type": r["schedule_type"],
+                        "active": r["is_active"],
+                        "next_run": next_str,
+                        "run_count": r["run_count"],
+                    }
+                )
+            return {
+                "type": "schedule_list",
+                "schedules": schedules,
+                "count": len(schedules),
+            }
 
         elif action in ("pause", "resume", "delete"):
             report_id = tool_input.get("report_id")
             if not report_id:
                 # No ID given — try to match by label from the list
-                rows = await list_scheduled_reports(user["user_id"], source_key=user["source_key"])
+                rows = await list_scheduled_reports(
+                    user["user_id"], source_key=user["source_key"]
+                )
                 if not rows:
-                    return f"ERROR: No schedules found for this user"
+                    return "ERROR: No schedules found for this user"
                 # Return the list so the LLM can pick the right one
-                schedules = [{"id": str(r["id"]), "label": r["report_label"],
-                              "schedule_type": r["schedule_type"],
-                              "hour": r["hour"], "minute": r["minute"],
-                              "active": r["is_active"]} for r in rows]
+                schedules = [
+                    {
+                        "id": str(r["id"]),
+                        "label": r["report_label"],
+                        "schedule_type": r["schedule_type"],
+                        "hour": r["hour"],
+                        "minute": r["minute"],
+                        "active": r["is_active"],
+                    }
+                    for r in rows
+                ]
                 return {
                     "type": "schedule_list_for_action",
                     "action": action,
                     "schedules": schedules,
-                    "message": f"Multiple schedules found. Use the id field to {action} the correct one."
+                    "message": f"Multiple schedules found. Use the id field to {action} the correct one.",
                 }
             if action == "pause":
-                ok = await pause_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
+                ok = await pause_scheduled_report(
+                    report_id, user["user_id"], source_key=user["source_key"]
+                )
             elif action == "resume":
-                ok = await resume_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
+                ok = await resume_scheduled_report(
+                    report_id, user["user_id"], source_key=user["source_key"]
+                )
             else:
-                ok = await delete_scheduled_report(report_id, user["user_id"], source_key=user["source_key"])
+                ok = await delete_scheduled_report(
+                    report_id, user["user_id"], source_key=user["source_key"]
+                )
             if not ok:
                 # ID might be correct but user_id check failed — try without user check
                 # (could happen if scheduled by a different session)
@@ -1705,17 +1864,23 @@ async def _execute_tool(
                     if action == "pause":
                         await execute(
                             "UPDATE scheduled_reports SET is_active = false WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"], source_key=user["source_key"]
+                            report_id,
+                            user["org_id"],
+                            source_key=user["source_key"],
                         )
                     elif action == "resume":
                         await execute(
                             "UPDATE scheduled_reports SET is_active = true WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"], source_key=user["source_key"]
+                            report_id,
+                            user["org_id"],
+                            source_key=user["source_key"],
                         )
                     else:
                         await execute(
                             "DELETE FROM scheduled_reports WHERE id = $1 AND org_id = $2",
-                            report_id, user["org_id"], source_key=user["source_key"]
+                            report_id,
+                            user["org_id"],
+                            source_key=user["source_key"],
                         )
                     ok = True
                 except Exception:
@@ -1725,11 +1890,14 @@ async def _execute_tool(
         return "ERROR: Unknown manage_schedule action"
 
     elif tool_name == "send_to_user":
-        from app.services.messaging import send_text as _send_text, send_document as _send_doc
+        from app.services.messaging import send_text as _send_text
+
         recipient_phone = tool_input.get("recipient_phone", "")
-        recipient_name  = tool_input.get("recipient_name", "someone")
-        message         = tool_input.get("message", "")
-        sender_name     = tool_input.get("sender_name") or user.get("user_name", "A colleague")
+        recipient_name = tool_input.get("recipient_name", "someone")
+        message = tool_input.get("message", "")
+        sender_name = tool_input.get("sender_name") or user.get(
+            "user_name", "A colleague"
+        )
 
         if not recipient_phone or not message:
             return "ERROR: recipient_phone and message are required"
@@ -1737,7 +1905,9 @@ async def _execute_tool(
         # Validate phone against users table — prevents wrong numbers from context bleed
         valid = await fetch_one(
             "SELECT name, phone FROM users WHERE org_id = $1 AND phone = $2",
-            user["org_id"], recipient_phone, source_key=user["source_key"]
+            user["org_id"],
+            recipient_phone,
+            source_key=user["source_key"],
         )
         if not valid:
             return (
@@ -1754,22 +1924,27 @@ async def _execute_tool(
                 "type": "sent_to_user",
                 "recipient": confirmed_name,
                 "recipient_phone": recipient_phone,
-                "success": True
+                "success": True,
             }
         except Exception as e:
-            return f"ERROR sending to {confirmed_name}: {str(e)}"
+            return f"ERROR sending to {confirmed_name}: {e!s}"
 
     elif tool_name == "cancel_draft":
         from app.services.draft_store import close_draft
-        await close_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+
+        await close_draft(
+            user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
+        )
         return {"type": "draft_cancelled"}
 
 
-async def _summarize_turns(conversation_history: list, existing: str | None = None) -> str:
+async def _summarize_turns(
+    conversation_history: list, existing: str | None = None
+) -> str:
     """Summarize overflow conversation turns using a cheap LLM call."""
     if not conversation_history:
         return existing or ""
-    
+
     # Build a simple summary from the conversation
     # For now, just concatenate key points - could be enhanced with LLM call
     summary_parts = []
@@ -1778,7 +1953,7 @@ async def _summarize_turns(conversation_history: list, existing: str | None = No
         content = msg.get("content", "")
         if content:
             summary_parts.append(f"{role}: {content[:200]}")
-    
+
     summary = " | ".join(summary_parts)
     if existing:
         summary = f"{existing} | {summary}"
@@ -1786,6 +1961,7 @@ async def _summarize_turns(conversation_history: list, existing: str | None = No
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
+
 
 async def run_agent(
     message: str,
@@ -1815,6 +1991,7 @@ async def run_agent(
     # ── Fast-path: direct workflow execution by intent_key ─────────────────
     # If message is exactly a workflow intent_key the user has permission for, execute it
     from app.db import fetch_all as _fetch_all
+
     perms = set(user.get("permissions", []))
     workflows = await _fetch_all(
         "SELECT intent_key, name, workflow_type, sql_template, entity_schema, "
@@ -1822,10 +1999,13 @@ async def run_agent(
         "pdf_config, response_template, otp_required, otp_threshold, approval_threshold, "
         "steps, calc_rules "
         "FROM workflows WHERE org_id = $1 AND is_active = true",
-        user["org_id"], source_key=user["source_key"]
+        user["org_id"],
+        source_key=user["source_key"],
     )
-    workflow_map = {w["intent_key"]: dict(w) for w in workflows if w["intent_key"] in perms}
-    
+    workflow_map = {
+        w["intent_key"]: dict(w) for w in workflows if w["intent_key"] in perms
+    }
+
     if msg_stripped in workflow_map:
         wf = workflow_map[msg_stripped]
         logger.info(f"Direct workflow execution: {wf['intent_key']}")
@@ -1836,9 +2016,11 @@ async def run_agent(
             except (json.JSONDecodeError, TypeError):
                 entity_schema = {}
 
-        all_optional = all(
-            not (spec.get("required")) for spec in entity_schema.values()
-        ) if entity_schema else True
+        all_optional = (
+            all(not (spec.get("required")) for spec in entity_schema.values())
+            if entity_schema
+            else True
+        )
 
         read_params_order = wf.get("sql_params_order") or []
         if isinstance(read_params_order, str):
@@ -1848,10 +2030,12 @@ async def run_agent(
                 read_params_order = []
 
         if (
-            wf["workflow_type"] == "read" and wf.get("sql_template")
+            wf["workflow_type"] == "read"
+            and wf.get("sql_template")
             and _params_resolvable_without_message(read_params_order, entity_schema)
         ):
             from app.services.query_engine import execute_query
+
             # A bare intent_key match (menu tap / slash command, no message
             # content to extract from) can still resolve "$current_user" —
             # that comes from the session, not the message — everything else
@@ -1864,7 +2048,7 @@ async def run_agent(
                 params=params,
                 user=user,
                 response_format="generic",  # always JSON here — formatting happens below
-                business_glossary=wf.get("business_glossary", {})
+                business_glossary=wf.get("business_glossary", {}),
             )
             history_to_save = [{"role": "user", "content": message}]
 
@@ -1880,7 +2064,7 @@ async def run_agent(
                     glossary = {}
 
             format_prompt = _RESPONSE_FORMATTING_PROMPT.format(
-                workflow_name=wf['name'],
+                workflow_name=wf["name"],
                 glossary_json=json.dumps(glossary),
                 raw_data=raw_result,
             )
@@ -1894,11 +2078,15 @@ async def run_agent(
                 formatted = format_response.choices[0].message.content.strip()
                 # Safety check: catch truncated output before it reaches the user
                 if format_response.choices[0].finish_reason == "length":
-                    logger.warning(f"Formatting response truncated (finish_reason=length) — falling back to raw data")
+                    logger.warning(
+                        "Formatting response truncated (finish_reason=length) — falling back to raw data"
+                    )
                     formatted = raw_result
                 # Safety check: if formatting LLM returns empty, fall back to raw data
                 elif not formatted:
-                    logger.warning(f"Formatting LLM returned empty response, falling back to raw data")
+                    logger.warning(
+                        "Formatting LLM returned empty response, falling back to raw data"
+                    )
                     formatted = raw_result
             except Exception as e:
                 logger.error(f"Formatting LLM call failed: {e}")
@@ -1906,8 +2094,12 @@ async def run_agent(
 
             # Final safety check: never return empty string
             if not formatted:
-                logger.error(f"Both formatting LLM and raw_result are empty, returning error message. raw_result length: {len(str(raw_result))}")
-                formatted = "❌ Sorry, I couldn't process that request. Please try again."
+                logger.error(
+                    f"Both formatting LLM and raw_result are empty, returning error message. raw_result length: {len(str(raw_result))}"
+                )
+                formatted = (
+                    "❌ Sorry, I couldn't process that request. Please try again."
+                )
 
             # Save both user message and assistant response to history for PDF generation context
             history_to_save.append({"role": "assistant", "content": formatted})
@@ -1923,8 +2115,11 @@ async def run_agent(
             # draft and ask for the first missing required field, driven by
             # entity_schema — no LLM call needed, so it can never come back empty.
             if entity_schema and not all_optional:
-                from app.services.draft_store import upsert_draft, get_active_draft
-                existing = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+                from app.services.draft_store import get_active_draft, upsert_draft
+
+                existing = await get_active_draft(
+                    user["org_id"], user["user_id"], user["source_key"]
+                )
                 if existing and existing.get("intent_key") == wf["intent_key"]:
                     fields = existing.get("fields") or {}
                     if isinstance(fields, str):
@@ -1935,9 +2130,12 @@ async def run_agent(
                 else:
                     fields = {}
                     await upsert_draft(
-                        org_id=user["org_id"], user_id=user["user_id"],
-                        intent_key=wf["intent_key"], fields=fields,
-                        stage="collecting", source_key=user["source_key"],
+                        org_id=user["org_id"],
+                        user_id=user["user_id"],
+                        intent_key=wf["intent_key"],
+                        fields=fields,
+                        stage="collecting",
+                        source_key=user["source_key"],
                         reset_fields=True,  # D1: reset fields when switching workflows
                     )
 
@@ -1951,37 +2149,56 @@ async def run_agent(
 
                 if first_missing:
                     fname, fspec = first_missing
-                    question = fspec.get("description") or f"What is the {fname.replace('_', ' ')}?"
+                    question = (
+                        fspec.get("description")
+                        or f"What is the {fname.replace('_', ' ')}?"
+                    )
                     if fspec.get("enum"):
                         question += f" ({' / '.join(fspec['enum'])})"
                     reply_text = f"I'll help you with *{wf['name']}*. {question}"
-                    history_to_save = [{"role": "user", "content": message},
-                                        {"role": "assistant", "content": reply_text}]
-                    return reply_text, history_to_save, {
-                        "pending_action": {
-                            "intent_key": wf["intent_key"],
-                            "fields": fields,
-                            "stage": "collecting",
-                            "created_at": __import__("datetime").datetime.now().isoformat(),
-                        }
-                    }
+                    history_to_save = [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": reply_text},
+                    ]
+                    return (
+                        reply_text,
+                        history_to_save,
+                        {
+                            "pending_action": {
+                                "intent_key": wf["intent_key"],
+                                "fields": fields,
+                                "stage": "collecting",
+                                "created_at": __import__("datetime")
+                                .datetime.now()
+                                .isoformat(),
+                            }
+                        },
+                    )
                 message = f"Continue the {wf['name']} workflow — required fields may already be collected; review and confirm if ready."
             else:
                 message = f"Execute the {wf['name']} workflow."
-    
+
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
     if conversation_history:
         # Find the most recent assistant message
         last_assistant_msg = next(
             (m for m in reversed(conversation_history) if m.get("role") == "assistant"),
-            None
+            None,
         )
-        last_assistant = last_assistant_msg.get("content", "") if last_assistant_msg else ""
+        last_assistant = (
+            last_assistant_msg.get("content", "") if last_assistant_msg else ""
+        )
 
         if "🤔" in last_assistant:
             # User is responding to a clarify menu
-            if msg_stripped.lower() in ("all", "all of them", "summary", "everyone", "sab"):
+            if msg_stripped.lower() in (
+                "all",
+                "all of them",
+                "summary",
+                "everyone",
+                "sab",
+            ):
                 # User wants all options - append this context
                 message = "Show results for all options (summary)"
             elif msg_stripped.isdigit():
@@ -1990,19 +2207,24 @@ async def run_agent(
                 selected_option = None
                 for line in lines:
                     stripped_line = line.strip()
-                    if stripped_line.startswith(msg_stripped + ".") or \
-                       stripped_line.startswith(msg_stripped + " "):
-                        selected_option = stripped_line[len(msg_stripped):].lstrip(". ").strip()
+                    if stripped_line.startswith(
+                        (msg_stripped + ".", msg_stripped + " ")
+                    ):
+                        selected_option = (
+                            stripped_line[len(msg_stripped) :].lstrip(". ").strip()
+                        )
                         break
                 if selected_option:
                     # Provide the full context: what the user was doing + what they picked
-                    draft_intent = (pending_action or {}).get("intent_key", "the previous request")
+                    draft_intent = (pending_action or {}).get(
+                        "intent_key", "the previous request"
+                    )
                     message = (
                         f"User selected option {msg_stripped}: {selected_option}. "
                         f"Continue with {draft_intent} for this customer/selection."
                     )
     # ─────────────────────────────────────────────────────────────────────────
-    
+
     # Format pending action context for LLM
     def _format_pending_action_context(pending_action: dict | None) -> str:
         if not pending_action:
@@ -2010,9 +2232,13 @@ async def run_agent(
         fields = pending_action.get("fields") or {}
         correction = pending_action.get("correction_hint", "")
         correction_line = (
-            f"\nThe user just said: \"{correction}\" — treat this as a correction to the draft above. "
-            "Update only the relevant field(s), keep everything else.\n"
-        ) if correction else ""
+            (
+                f'\nThe user just said: "{correction}" — treat this as a correction to the draft above. '
+                "Update only the relevant field(s), keep everything else.\n"
+            )
+            if correction
+            else ""
+        )
         return (
             "\n=== ACTIVE DRAFT (internal context — do NOT discard or replace unless user changes it) ===\n"
             f"Intent: {pending_action.get('intent_key')}\n"
@@ -2031,10 +2257,13 @@ async def run_agent(
     draft_summary = None
     if pending_action:
         from app.services.draft_store import get_active_draft
-        db_draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+
+        db_draft = await get_active_draft(
+            user["org_id"], user["user_id"], user["source_key"]
+        )
         if db_draft:
             draft_summary = db_draft.get("conversation_summary")
-    
+
     if len(conversation_history) > limit:
         overflow = conversation_history[:-limit]
         # Fold dropped turns into a rolling summary (one cheap LLM call)
@@ -2048,6 +2277,7 @@ async def run_agent(
         # history crossed the context limit).
         if pending_action and pending_action.get("intent_key"):
             from app.services.draft_store import upsert_draft
+
             # Parse fields if it's a JSON string from DB
             fields = pending_action.get("fields", {})
             if isinstance(fields, str):
@@ -2065,7 +2295,7 @@ async def run_agent(
                 source_key=user["source_key"],
             )
         conversation_history = conversation_history[-limit:]
-    
+
     # Inject summary into system prompt if it exists
     if draft_summary:
         # This will be added to the system prompt in _build_system_prompt
@@ -2076,7 +2306,7 @@ async def run_agent(
         logger.debug(f"System prompt built, length: {len(system_prompt)}")
     except Exception as e:
         logger.error(f"Error building system prompt: {e}", exc_info=True)
-        return f"Error building system prompt: {str(e)}", [], {}
+        return f"Error building system prompt: {e!s}", [], {}
 
     # Abandon stale collecting drafts — they belong to old conversations.
     # Close it in the DB immediately (not just in-memory) and signal the
@@ -2084,9 +2314,14 @@ async def run_agent(
     # stays active and webhook.py's rehydration logic silently brings the
     # exact same stale draft back on the very next message.
     if _is_draft_stale(pending_action):
-        logger.info(f"Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning")
+        logger.info(
+            f"Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning"
+        )
         from app.services.draft_store import close_draft as _close_stale_draft
-        await _close_stale_draft(user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"])
+
+        await _close_stale_draft(
+            user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
+        )
         pending_action = None
         session_patch["pending_action"] = None
 
@@ -2099,9 +2334,7 @@ async def run_agent(
     if pending_action and not _is_draft_stale(pending_action):
         system_prompt += "\n\n" + _format_pending_action_context(pending_action)
 
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
 
     if conversation_history:
         messages.extend(conversation_history)
@@ -2120,23 +2353,29 @@ async def run_agent(
     if re.fullmatch(r"\s*\d+\s*", message or ""):
         chosen_n = int(message.strip())
         last_assistant = next(
-            (m for m in reversed(conversation_history or []) if m.get("role") == "assistant"),
-            None
+            (
+                m
+                for m in reversed(conversation_history or [])
+                if m.get("role") == "assistant"
+            ),
+            None,
         )
         if last_assistant:
             list_lines = re.findall(
                 rf"(?m)^\s*{chosen_n}\.\s*(.+)$", last_assistant.get("content", "")
             )
             if list_lines:
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"SYSTEM NOTE: The user's reply \"{message.strip()}\" selects option {chosen_n} "
-                        f"from your own numbered list: \"{list_lines[0].strip()}\". Resolve this to the "
-                        f"correct field value now and call update_draft immediately with it — do not ask "
-                        f"the same question again."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f'SYSTEM NOTE: The user\'s reply "{message.strip()}" selects option {chosen_n} '
+                            f'from your own numbered list: "{list_lines[0].strip()}". Resolve this to the '
+                            f"correct field value now and call update_draft immediately with it — do not ask "
+                            f"the same question again."
+                        ),
+                    }
+                )
 
     # When a corrective retry is triggered below (fake-narration/fake-failure/
     # etc. detected), this flips to True for exactly the next LLM call. That
@@ -2153,7 +2392,6 @@ async def run_agent(
 
         # Route through central LLM router (see llm_router.py for current provider order)
         response = None
-        used_provider = None
         try:
             response = await _llm_chat(
                 messages=messages,
@@ -2166,39 +2404,52 @@ async def run_agent(
             force_tool_choice = False
         except Exception as e:
             from app.services.llm_router import AllProvidersFailed
+
             if isinstance(e, AllProvidersFailed):
                 logger.error(f"All LLM providers failed: {e.errors}", exc_info=True)
                 # The draft is intentionally left intact — this is a transient infra
                 # failure, not a user error. They should be able to say "yes" and have
                 # it work once capacity returns.
                 return (
-                    "⚠️ I'm having trouble reaching my AI service right now. "
-                    "Your request has been saved — please resend your last message in "
-                    "a minute and I'll pick up exactly where we left off.",
+                    (
+                        "⚠️ I'm having trouble reaching my AI service right now. "
+                        "Your request has been saved — please resend your last message in "
+                        "a minute and I'll pick up exactly where we left off."
+                    ),
                     [],
                     {},
                 )
             else:
                 logger.error(f"Unexpected agent failure: {e}", exc_info=True)
                 return (
-                    "⚠️ Something went wrong on my end. Please try again, or type "
-                    "*menu* to start over.",
+                    (
+                        "⚠️ Something went wrong on my end. Please try again, or type "
+                        "*menu* to start over."
+                    ),
                     [],
                     {},
                 )
-        
+
         if not response:
             logger.error("No response received from any LLM provider")
-            return "Failed to get a response from the AI service. Please try again.", [], {}
+            return (
+                "Failed to get a response from the AI service. Please try again.",
+                [],
+                {},
+            )
 
         if response.choices[0].finish_reason == "length":
-            logger.warning(f"Response truncated (stop_reason=length) — aborting tool call")
+            logger.warning(
+                "Response truncated (stop_reason=length) — aborting tool call"
+            )
             history_to_save = _serialize_history(messages)
             return (
-                "⚠️ That request returned too much data to process in one go. "
-                "Try narrowing it down — e.g. ask for a specific customer or date range.",
+                (
+                    "⚠️ That request returned too much data to process in one go. "
+                    "Try narrowing it down — e.g. ask for a specific customer or date range."
+                ),
                 history_to_save,
-                {}
+                {},
             )
 
         assistant_message = response.choices[0].message
@@ -2213,7 +2464,9 @@ async def run_agent(
             # key/provider that responds normally, instead of surfacing a
             # user-facing failure for what is really a transient blank reply.
             if not content.strip() and iteration < max_iterations - 1:
-                logger.warning(f"Empty LLM response with no tool calls on iteration {iteration+1} — retrying")
+                logger.warning(
+                    f"Empty LLM response with no tool calls on iteration {iteration + 1} — retrying"
+                )
                 continue
 
             # Catch the model fabricating a failure apology instead of actually
@@ -2231,29 +2484,38 @@ async def run_agent(
             # (below) correctly reset state and let an honest failure message
             # through instead of needing to be "corrected".
             fake_failure = bool(
-                re.search(r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)", content, re.IGNORECASE)
+                re.search(
+                    r"(sorry|apolog).{0,60}(error|trouble|issue|couldn.?t|unable|fail)",
+                    content,
+                    re.IGNORECASE,
+                )
                 and re.search(
                     r"(fetch|retriev|data|load|pdf|excel|spreadsheet|xlsx|document|generat|process|handle|complete|"
                     r"register|create|file|book|save|submit|confirm|update|insert)",
-                    content, re.IGNORECASE
+                    content,
+                    re.IGNORECASE,
                 )
             )
             if fake_failure:
-                logger.warning(f"Detected fabricated-failure response — forcing retry: {content[:150]}")
+                logger.warning(
+                    f"Detected fabricated-failure response — forcing retry: {content[:150]}"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You did not actually call any tool — no query, PDF, or "
-                        "Excel generation was run, so there was no real error. If the user is asking "
-                        "for data, you MUST call query_database with a real SELECT query. If the user "
-                        "is asking for a PDF/document, you MUST call generate_pdf with real rows. If "
-                        "the user is asking for Excel/a spreadsheet, you MUST call generate_excel with "
-                        "real rows (re-run query_database first if needed to get the data). Do not "
-                        "apologize about a failure unless you actually called the tool and it returned "
-                        "an ERROR."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You did not actually call any tool — no query, PDF, or "
+                            "Excel generation was run, so there was no real error. If the user is asking "
+                            "for data, you MUST call query_database with a real SELECT query. If the user "
+                            "is asking for a PDF/document, you MUST call generate_pdf with real rows. If "
+                            "the user is asking for Excel/a spreadsheet, you MUST call generate_excel with "
+                            "real rows (re-run query_database first if needed to get the data). Do not "
+                            "apologize about a failure unless you actually called the tool and it returned "
+                            "an ERROR."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
@@ -2273,21 +2535,31 @@ async def run_agent(
             # (asking for a MISSING or ambiguous field) naturally won't trigger this,
             # because the draft won't look complete yet.
             active_draft = session_patch.get("pending_action") or pending_action
-            active_draft_confirmable = active_draft and active_draft.get("stage") in ("collecting", "awaiting_confirmation")
+            active_draft_confirmable = active_draft and active_draft.get("stage") in (
+                "collecting",
+                "awaiting_confirmation",
+            )
             draft_looks_complete = False
             if active_draft_confirmable and active_draft.get("intent_key"):
                 try:
                     from app.services.qa_verifier import _validate_schema
+
                     wf_row = await fetch_one(
                         "SELECT entity_schema FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-                        active_draft["intent_key"], user["org_id"], source_key=user["source_key"]
+                        active_draft["intent_key"],
+                        user["org_id"],
+                        source_key=user["source_key"],
                     )
                     if wf_row:
                         schema = _parse_jsonb(wf_row.get("entity_schema"), {}) or {}
-                        missing, invalid = _validate_schema(schema, active_draft.get("fields", {}))
+                        missing, invalid = _validate_schema(
+                            schema, active_draft.get("fields", {})
+                        )
                         draft_looks_complete = not missing and not invalid
                 except Exception as schema_check_err:
-                    logger.warning(f"draft-completeness check failed (non-fatal): {schema_check_err}")
+                    logger.warning(
+                        f"draft-completeness check failed (non-fatal): {schema_check_err}"
+                    )
             # Wording/shape-based fallback — deliberately NOT gated on an active
             # draft already existing, because the very FIRST message in a
             # conversation has no draft yet (update_draft hasn't been called
@@ -2298,45 +2570,64 @@ async def run_agent(
             # confirm" block instead of calling the tool. This is recognisable
             # by SHAPE (a bulleted field list ending in an invitation to reply
             # yes/confirm) regardless of provider-specific wording.
-            is_legacy_confirm_block = "⚠️" in content and ("confirm" in content.lower() or "yes" in content.lower())
-            is_asking_to_proceed = bool(re.search(
-                r"(shall i|should i|do you want me to|can i go ahead|go ahead and|"
-                r"i'll proceed|i will proceed|proceed with this|confirm (?:that|this)|"
-                r"just to confirm|reply .{0,10}yes.{0,10}(to confirm|to save|to proceed))",
-                content, re.IGNORECASE
-            ))
+            is_legacy_confirm_block = "⚠️" in content and (
+                "confirm" in content.lower() or "yes" in content.lower()
+            )
+            is_asking_to_proceed = bool(
+                re.search(
+                    r"(shall i|should i|do you want me to|can i go ahead|go ahead and|"
+                    r"i'll proceed|i will proceed|proceed with this|confirm (?:that|this)|"
+                    r"just to confirm|reply .{0,10}yes.{0,10}(to confirm|to save|to proceed))",
+                    content,
+                    re.IGNORECASE,
+                )
+            )
             # Reproduced live: gpt-4o-mini's fake confirm blocks aren't always
             # "- Field: value" bullets — a NUMBERED list ("1. **Date**: ...")
             # is just as common and the old [-•]-only pattern missed it
             # entirely, letting the whole interception silently no-op for
             # that shape. \d+[.)] catches "1." / "2)" the same way.
-            bullet_field_lines = re.findall(r"(?m)^\s*(?:[-•]|\d+[.)])\s*\**[\w \(\)]+\**\s*:", content)
-            invites_confirmation = bool(re.search(
-                r"reply\s+\**yes\**|let'?s confirm|confirm(?:ing)?\s+(?:the\s+)?(?:following\s+)?"
-                r"(?:details|information|registration|action|now)|"
-                r"once i have your confirmation|"
-                r"let me know if you (?:want to|'?d like to) (?:make any )?change|"
-                r"(?:let me|i'll|i will|going to)\s+(?:now\s+)?confirm|please hold on|one moment|"
-                r"before i (?:proceed|register|save|close|assign|confirm)",
-                content, re.IGNORECASE
-            ))
-            looks_like_manual_confirm_block = len(bullet_field_lines) >= 2 and invites_confirmation
-            if draft_looks_complete or is_legacy_confirm_block or is_asking_to_proceed or looks_like_manual_confirm_block:
+            bullet_field_lines = re.findall(
+                r"(?m)^\s*(?:[-•]|\d+[.)])\s*\**[\w \(\)]+\**\s*:", content
+            )
+            invites_confirmation = bool(
+                re.search(
+                    r"reply\s+\**yes\**|let'?s confirm|confirm(?:ing)?\s+(?:the\s+)?(?:following\s+)?"
+                    r"(?:details|information|registration|action|now)|"
+                    r"once i have your confirmation|"
+                    r"let me know if you (?:want to|'?d like to) (?:make any )?change|"
+                    r"(?:let me|i'll|i will|going to)\s+(?:now\s+)?confirm|please hold on|one moment|"
+                    r"before i (?:proceed|register|save|close|assign|confirm)",
+                    content,
+                    re.IGNORECASE,
+                )
+            )
+            looks_like_manual_confirm_block = (
+                len(bullet_field_lines) >= 2 and invites_confirmation
+            )
+            if (
+                draft_looks_complete
+                or is_legacy_confirm_block
+                or is_asking_to_proceed
+                or looks_like_manual_confirm_block
+            ):
                 logger.info(
                     f"Intercepted plain-text confirm/narration (draft_looks_complete={draft_looks_complete}, "
                     f"manual_confirm_block={looks_like_manual_confirm_block}) — forcing tool retry"
                 )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You printed the confirmation block as plain text. "
-                        "This does NOT work — the user's 'yes' cannot be detected without the tool. "
-                        "You MUST now call update_draft (with all collected fields and "
-                        "stage='awaiting_confirmation') followed immediately by confirm_action. "
-                        "Use the exact same details you just showed. Do it now."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You printed the confirmation block as plain text. "
+                            "This does NOT work — the user's 'yes' cannot be detected without the tool. "
+                            "You MUST now call update_draft (with all collected fields and "
+                            "stage='awaiting_confirmation') followed immediately by confirm_action. "
+                            "Use the exact same details you just showed. Do it now."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
@@ -2344,22 +2635,31 @@ async def run_agent(
             # calling manage_schedule tool. Nothing gets saved to DB in this case.
             # IMPORTANT: only intercept if manage_schedule create was NOT already called
             # successfully in this iteration — otherwise we'd create duplicates.
-            schedule_created_this_turn = session_patch.get("_schedule_created_this_turn", False)
-            if (
-                not schedule_created_this_turn
-                and ("✅ Scheduled" in content or ("scheduled" in content.lower() and "first delivery" in content.lower()))
+            schedule_created_this_turn = session_patch.get(
+                "_schedule_created_this_turn", False
+            )
+            if not schedule_created_this_turn and (
+                "✅ Scheduled" in content
+                or (
+                    "scheduled" in content.lower()
+                    and "first delivery" in content.lower()
+                )
             ):
-                logger.info(f"Intercepted plain-text schedule confirmation — forcing tool retry")
+                logger.info(
+                    "Intercepted plain-text schedule confirmation — forcing tool retry"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You printed the schedule confirmation as plain text. "
-                        "Nothing was saved — the schedule does NOT exist yet. "
-                        "You MUST call the manage_schedule tool with action='create' and all the "
-                        "details you just described. Do it now."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You printed the schedule confirmation as plain text. "
+                            "Nothing was saved — the schedule does NOT exist yet. "
+                            "You MUST call the manage_schedule tool with action='create' and all the "
+                            "details you just described. Do it now."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
@@ -2375,21 +2675,29 @@ async def run_agent(
             pdf_sent_this_turn = session_patch.get("_pdf_sent_this_turn", False)
             if (
                 not pdf_sent_this_turn
-                and re.search(r"(pdf|document)s?\b.{0,30}\bsent\b|\bsent\b.{0,30}(pdf|document)s?\b", content, re.IGNORECASE)
+                and re.search(
+                    r"(pdf|document)s?\b.{0,30}\bsent\b|\bsent\b.{0,30}(pdf|document)s?\b",
+                    content,
+                    re.IGNORECASE,
+                )
                 and re.search(r"success|✅", content, re.IGNORECASE)
             ):
-                logger.info(f"Intercepted plain-text PDF-sent confirmation — forcing tool retry")
+                logger.info(
+                    "Intercepted plain-text PDF-sent confirmation — forcing tool retry"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You said a PDF/document was sent as plain text. "
-                        "Nothing was actually generated or sent — no tool was called. You MUST "
-                        "call generate_pdf with real rows (re-run query_database first if needed "
-                        "to get the data) to actually send it. Do not claim success again unless "
-                        "generate_pdf actually returns PDF_SENT."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You said a PDF/document was sent as plain text. "
+                            "Nothing was actually generated or sent — no tool was called. You MUST "
+                            "call generate_pdf with real rows (re-run query_database first if needed "
+                            "to get the data) to actually send it. Do not claim success again unless "
+                            "generate_pdf actually returns PDF_SENT."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
@@ -2400,42 +2708,64 @@ async def run_agent(
             excel_sent_this_turn = session_patch.get("_excel_sent_this_turn", False)
             if (
                 not excel_sent_this_turn
-                and re.search(r"(excel|spreadsheet|xlsx)\b.{0,30}\bsent\b|\bsent\b.{0,30}(excel|spreadsheet|xlsx)\b", content, re.IGNORECASE)
+                and re.search(
+                    r"(excel|spreadsheet|xlsx)\b.{0,30}\bsent\b|\bsent\b.{0,30}(excel|spreadsheet|xlsx)\b",
+                    content,
+                    re.IGNORECASE,
+                )
                 and re.search(r"success|✅", content, re.IGNORECASE)
             ):
-                logger.info(f"Intercepted plain-text Excel-sent confirmation — forcing tool retry")
+                logger.info(
+                    "Intercepted plain-text Excel-sent confirmation — forcing tool retry"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You said an Excel/spreadsheet was sent as plain text. "
-                        "Nothing was actually generated or sent — no tool was called. You MUST "
-                        "call generate_excel with real rows (re-run query_database first if needed "
-                        "to get the data) to actually send it. Do not claim success again unless "
-                        "generate_excel actually returns EXCEL_SENT."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You said an Excel/spreadsheet was sent as plain text. "
+                            "Nothing was actually generated or sent — no tool was called. You MUST "
+                            "call generate_excel with real rows (re-run query_database first if needed "
+                            "to get the data) to actually send it. Do not claim success again unless "
+                            "generate_excel actually returns EXCEL_SENT."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
             # Intercept: LLM claimed the draft was cancelled/cleared in plain text
             # without actually calling the cancel_draft tool — nothing was cleared.
-            active_draft_for_cancel_check = session_patch.get("pending_action") or pending_action
+            active_draft_for_cancel_check = (
+                session_patch.get("pending_action") or pending_action
+            )
             if (
                 active_draft_for_cancel_check
-                and re.search(r"\b(cancel+ed|discard+ed|clear+ed|scrapped|start(ing)?\s+fresh)\b", content, re.IGNORECASE)
-                and re.search(r"\b(draft|complaint|request|action|quotation|invoice)\b", content, re.IGNORECASE)
+                and re.search(
+                    r"\b(cancel+ed|discard+ed|clear+ed|scrapped|start(ing)?\s+fresh)\b",
+                    content,
+                    re.IGNORECASE,
+                )
+                and re.search(
+                    r"\b(draft|complaint|request|action|quotation|invoice)\b",
+                    content,
+                    re.IGNORECASE,
+                )
             ):
-                logger.info("Intercepted plain-text draft-cancellation — forcing tool retry")
+                logger.info(
+                    "Intercepted plain-text draft-cancellation — forcing tool retry"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: You said the draft was cancelled/cleared as plain "
-                        "text. Nothing was actually cleared — the draft still exists. You MUST "
-                        "call the cancel_draft tool now to actually clear it."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: You said the draft was cancelled/cleared as plain "
+                            "text. Nothing was actually cleared — the draft still exists. You MUST "
+                            "call the cancel_draft tool now to actually clear it."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
@@ -2443,26 +2773,33 @@ async def run_agent(
             # without any tool call confirming it. This happens when a correction fails
             # (e.g., update_draft with no intent_key) and the model papered over the error
             # with a plausible-sounding refusal instead of surfacing the real issue.
-            fabricated_already_done = (
-                iteration == 0
-                and re.search(r"already\s+(been\s+)?(registered|saved|created|completed|submitted|filed)", content, re.IGNORECASE)
+            fabricated_already_done = iteration == 0 and re.search(
+                r"already\s+(been\s+)?(registered|saved|created|completed|submitted|filed)",
+                content,
+                re.IGNORECASE,
             )
             if fabricated_already_done:
-                logger.warning(f"Detected fabricated 'already done' claim — forcing retry: {content[:150]}")
+                logger.warning(
+                    f"Detected fabricated 'already done' claim — forcing retry: {content[:150]}"
+                )
                 messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM CORRECTION: Do not claim something was already saved/registered "
-                        "unless a tool call in THIS conversation actually confirmed it. If a draft "
-                        "is still awaiting confirmation, call update_draft with the correction and "
-                        "then confirm_action to re-show the updated summary."
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM CORRECTION: Do not claim something was already saved/registered "
+                            "unless a tool call in THIS conversation actually confirmed it. If a draft "
+                            "is still awaiting confirmation, call update_draft with the correction and "
+                            "then confirm_action to re-show the updated summary."
+                        ),
+                    }
+                )
                 force_tool_choice = True
                 continue  # retry this iteration
 
-            logger.info(f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}")
+            logger.info(
+                f"No tool calls, returning text response. Content length: {len(content)}, Content preview: {content[:300]}"
+            )
             history_to_save = _serialize_history(messages)
             final_content = content.strip()
 
@@ -2471,8 +2808,12 @@ async def run_agent(
             # assistant-turn leak — see draft context injection above).
             leak_markers = ("=== ACTIVE DRAFT", "[ACTIVE DRAFT", "=== END ACTIVE DRAFT")
             if any(marker in final_content for marker in leak_markers):
-                logger.warning(f"Detected leaked internal draft-context in LLM reply — stripping: {final_content[:200]}")
-                cut_idx = min(final_content.find(m) for m in leak_markers if m in final_content)
+                logger.warning(
+                    f"Detected leaked internal draft-context in LLM reply — stripping: {final_content[:200]}"
+                )
+                cut_idx = min(
+                    final_content.find(m) for m in leak_markers if m in final_content
+                )
                 final_content = final_content[:cut_idx].strip()
                 if not final_content:
                     active = pending_action or {}
@@ -2482,17 +2823,23 @@ async def run_agent(
                     )
 
             if not final_content:
-                logger.error(f"LLM returned empty content, returning fallback message. Original content: '{content}'")
-                final_content = "❌ Sorry, I couldn't process that request. Please try again."
+                logger.error(
+                    f"LLM returned empty content, returning fallback message. Original content: '{content}'"
+                )
+                final_content = (
+                    "❌ Sorry, I couldn't process that request. Please try again."
+                )
             return final_content, history_to_save, session_patch
 
         # LLM wants to call tools
         # Add assistant's response to message history
-        messages.append({
-            "role": "assistant",
-            "content": assistant_message.content,
-            "tool_calls": assistant_message.tool_calls
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": assistant_message.content,
+                "tool_calls": assistant_message.tool_calls,
+            }
+        )
 
         # Execute each tool call
         tool_results = []
@@ -2508,21 +2855,25 @@ async def run_agent(
                     user=user,
                     phone=phone,
                     message=message,
-                    pending_action=pending_action
+                    pending_action=pending_action,
                 )
             except Exception as tool_err:
-                logger.error(f"Tool {tool_call.function.name} raised: {tool_err}", exc_info=True)
+                logger.error(
+                    f"Tool {tool_call.function.name} raised: {tool_err}", exc_info=True
+                )
                 result = f"ERROR: {tool_err}"
             result_str = str(result)[:100] if result else "None"
             logger.debug(f"Tool result: {result_str}...")
 
             # Convert dict results to JSON string for OpenAI API
-            content = json.dumps(result, default=str) if isinstance(result, dict) else str(result)
-            tool_results.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "content": content
-            })
+            content = (
+                json.dumps(result, default=str)
+                if isinstance(result, dict)
+                else str(result)
+            )
+            tool_results.append(
+                {"tool_call_id": tool_call.id, "role": "tool", "content": content}
+            )
 
             # Track if manage_schedule create succeeded this turn — prevents
             # the plain-text intercept from firing again and creating duplicates
@@ -2554,31 +2905,47 @@ async def run_agent(
 
             # If this was a clarify call, stop the loop
             if tool_call.function.name == "clarify":
-                clarify_question = json.loads(tool_call.function.arguments).get("question", "")
+                clarify_question = json.loads(tool_call.function.arguments).get(
+                    "question", ""
+                )
                 options = json.loads(tool_call.function.arguments).get("options", [])
                 if options:
-                    opts = "\n".join(
-                        f"{i+1}. {o}" for i, o in enumerate(options)
-                    )
+                    opts = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
                     history_to_save = _serialize_history(messages)
                     clarify_text = f"🤔 {clarify_question}\n\n{opts}"
-                    history_to_save.append({"role": "assistant", "content": clarify_text})
-                    return clarify_text, history_to_save, session_patch  # Fix 2: return session_patch
+                    history_to_save.append(
+                        {"role": "assistant", "content": clarify_text}
+                    )
+                    return (
+                        clarify_text,
+                        history_to_save,
+                        session_patch,
+                    )  # Fix 2: return session_patch
                 history_to_save = _serialize_history(messages)
                 clarify_text = f"🤔 {clarify_question}"
                 history_to_save.append({"role": "assistant", "content": clarify_text})
-                return clarify_text, history_to_save, session_patch  # Fix 2: return session_patch
+                return (
+                    clarify_text,
+                    history_to_save,
+                    session_patch,
+                )  # Fix 2: return session_patch
 
             # If this was a show_menu call, return menu data
             if tool_call.function.name == "show_menu":
                 greeting_data = await _build_greeting_response_with_menu(user, message)
                 history_to_save = _serialize_history(messages)
-                history_to_save.append({"role": "assistant", "content": greeting_data["text"]})
-                return greeting_data["text"], history_to_save, {
-                    "_send_menu": True,
-                    "menu_sections": greeting_data["menu_sections"],
-                    "button_label": greeting_data["button_label"]
-                }
+                history_to_save.append(
+                    {"role": "assistant", "content": greeting_data["text"]}
+                )
+                return (
+                    greeting_data["text"],
+                    history_to_save,
+                    {
+                        "_send_menu": True,
+                        "menu_sections": greeting_data["menu_sections"],
+                        "button_label": greeting_data["button_label"],
+                    },
+                )
 
             # If this was a show_help call, return the detailed capability guide
             if tool_call.function.name == "show_help":
@@ -2589,7 +2956,9 @@ async def run_agent(
 
             # If this was a cancel_draft call, confirm and stop — the draft is gone
             if tool_call.function.name == "cancel_draft":
-                cancel_text = "🔄 Draft cancelled. Let me know what you'd like to do next."
+                cancel_text = (
+                    "🔄 Draft cancelled. Let me know what you'd like to do next."
+                )
                 history_to_save = _serialize_history(messages)
                 history_to_save.append({"role": "assistant", "content": cancel_text})
                 return cancel_text, history_to_save, {"pending_action": None}
@@ -2606,11 +2975,15 @@ async def run_agent(
                     # file for every single send.
                     history_to_save = _serialize_history(messages)
                     return "", history_to_save, session_patch
-                elif isinstance(result, str) and result.startswith("ERROR generating PDF:"):
+                elif isinstance(result, str) and result.startswith(
+                    "ERROR generating PDF:"
+                ):
                     # Return the error message to the user
                     error_message = f"❌ {result.replace('ERROR generating PDF: ', '')}"
                     history_to_save = _serialize_history(messages)
-                    history_to_save.append({"role": "assistant", "content": error_message})
+                    history_to_save.append(
+                        {"role": "assistant", "content": error_message}
+                    )
                     return error_message, history_to_save, session_patch
 
             # If this was a generate_excel call, stop the loop immediately —
@@ -2620,14 +2993,24 @@ async def run_agent(
                 if isinstance(result, str) and result.startswith("EXCEL_SENT:"):
                     history_to_save = _serialize_history(messages)
                     return "", history_to_save, session_patch
-                elif isinstance(result, str) and result.startswith("ERROR generating Excel:"):
-                    error_message = f"❌ {result.replace('ERROR generating Excel: ', '')}"
+                elif isinstance(result, str) and result.startswith(
+                    "ERROR generating Excel:"
+                ):
+                    error_message = (
+                        f"❌ {result.replace('ERROR generating Excel: ', '')}"
+                    )
                     history_to_save = _serialize_history(messages)
-                    history_to_save.append({"role": "assistant", "content": error_message})
+                    history_to_save.append(
+                        {"role": "assistant", "content": error_message}
+                    )
                     return error_message, history_to_save, session_patch
 
-            # If update_draft was called, capture session patch
-            if tool_call.function.name == "update_draft":
+            # If update_draft was called, capture session patch. Left as nested
+            # ifs rather than merged into `if X and Y:` — that would mean
+            # re-indenting the ~60-line body below by one level, and the risk
+            # of an indentation slip in the item-merge logic isn't worth the
+            # style win.
+            if tool_call.function.name == "update_draft":  # noqa: SIM102
                 if isinstance(result, dict) and result.get("type") == "draft_update":
                     # Build pending_action from result
                     current_draft = pending_action or {}
@@ -2639,7 +3022,9 @@ async def run_agent(
                         except (json.JSONDecodeError, TypeError):
                             old_fields = {}
                     if not isinstance(old_fields, dict):
-                        logger.warning(f"Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting")
+                        logger.warning(
+                            f"Corrupted old_fields detected (type={type(old_fields).__name__}) — resetting"
+                        )
                         old_fields = {}
                     new_fields = result.get("fields", {})
 
@@ -2664,7 +3049,9 @@ async def run_agent(
                                 for i, old_item in enumerate(old_items):
                                     if i < len(new_items):
                                         # new_items[i] may only have changed keys — merge
-                                        merged_items.append({**old_item, **new_items[i]})
+                                        merged_items.append(
+                                            {**old_item, **new_items[i]}
+                                        )
                                     else:
                                         merged_items.append(old_item)
                                 merged_fields["items"] = merged_items
@@ -2675,17 +3062,25 @@ async def run_agent(
                             merged_fields[k] = v
 
                     updated_draft = {
-                        "intent_key": result.get("intent_key") or current_draft.get("intent_key"),
-                        "stage": result.get("stage") or current_draft.get("stage", "collecting"),
+                        "intent_key": result.get("intent_key")
+                        or current_draft.get("intent_key"),
+                        "stage": result.get("stage")
+                        or current_draft.get("stage", "collecting"),
                         "fields": merged_fields,
                         "raw_text": result.get("raw_text", message),
-                        "created_at": current_draft.get("created_at") or __import__("datetime").datetime.now().isoformat()
+                        "created_at": current_draft.get("created_at")
+                        or __import__("datetime").datetime.now().isoformat(),
                     }
                     # Reset reprompt_count whenever fields actually advance
-                    if new_fields and any(k not in old_fields or old_fields[k] != v for k, v in new_fields.items()):
+                    if new_fields and any(
+                        k not in old_fields or old_fields[k] != v
+                        for k, v in new_fields.items()
+                    ):
                         updated_draft["reprompt_count"] = 0
                     else:
-                        updated_draft["reprompt_count"] = current_draft.get("reprompt_count", 0)
+                        updated_draft["reprompt_count"] = current_draft.get(
+                            "reprompt_count", 0
+                        )
                     session_patch["pending_action"] = updated_draft
                     pending_action = updated_draft  # Fix 1: refresh local var for subsequent iterations
                 # Continue loop to let LLM respond with confirmation or next question
@@ -2706,42 +3101,68 @@ async def run_agent(
 
                     # QA verification: validate + recompute via calc_rules
                     # This catches missing fields AND silently corrects LLM arithmetic
-                    from app.services.qa_verifier import verify_draft, VerificationError, diff_for_audit, _validate_schema
+                    from app.services.qa_verifier import (
+                        VerificationError,
+                        _validate_schema,
+                        diff_for_audit,
+                        verify_draft,
+                    )
+
                     workflow_row = await fetch_one(
                         "SELECT * FROM workflows WHERE intent_key=$1 AND org_id=$2 AND is_active=true",
-                        draft.get("intent_key"), user["org_id"], source_key=user["source_key"]
+                        draft.get("intent_key"),
+                        user["org_id"],
+                        source_key=user["source_key"],
                     )
                     if not workflow_row:
-                        logger.error(f"confirm_action: workflow '{draft.get('intent_key')}' not found for org {user['org_id']}")
-                        tool_results[-1]["content"] = json.dumps({
-                            "error": f"Workflow '{draft.get('intent_key')}' not found. Cannot confirm."
-                        })
+                        logger.error(
+                            f"confirm_action: workflow '{draft.get('intent_key')}' not found for org {user['org_id']}"
+                        )
+                        tool_results[-1]["content"] = json.dumps(
+                            {
+                                "error": f"Workflow '{draft.get('intent_key')}' not found. Cannot confirm."
+                            }
+                        )
                         break
 
-                    entity_schema_for_summary = _parse_jsonb(workflow_row.get("entity_schema"), {}) or {}
+                    entity_schema_for_summary = (
+                        _parse_jsonb(workflow_row.get("entity_schema"), {}) or {}
+                    )
 
                     # Check if workflow has ai_price_interpret step
                     steps = _parse_jsonb(workflow_row.get("steps"), []) or []
                     has_price_interp = any(
-                        (json.loads(s) if isinstance(s, str) else s).get("op") == "ai_price_interpret"
+                        (json.loads(s) if isinstance(s, str) else s).get("op")
+                        == "ai_price_interpret"
                         for s in steps
                     )
 
                     if has_price_interp:
                         # Only validate presence of raw required fields (customer_name, items[].description,
                         # items[].weight, etc.) — skip calc_rules entirely; unit_price isn't resolved yet.
-                        missing, invalid = _validate_schema(entity_schema_for_summary, draft.get("fields", {}))
+                        missing, invalid = _validate_schema(
+                            entity_schema_for_summary, draft.get("fields", {})
+                        )
                         if missing or invalid:
-                            logger.warning(f"confirm_action: schema validation failed — missing={missing} invalid={invalid}")
-                            tool_results[-1]["content"] = json.dumps({
-                                "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
-                            })
+                            logger.warning(
+                                f"confirm_action: schema validation failed — missing={missing} invalid={invalid}"
+                            )
+                            tool_results[-1]["content"] = json.dumps(
+                                {
+                                    "error": f"Missing: {missing}. Invalid: {invalid}. Ask the user for these before confirming."
+                                }
+                            )
                             break
-                        verified_fields = draft.get("fields", {})   # unresolved rate_text stays as-is; resolved at execution time
+                        verified_fields = draft.get(
+                            "fields", {}
+                        )  # unresolved rate_text stays as-is; resolved at execution time
                     else:
                         try:
                             verified_fields = await verify_draft(
-                                dict(workflow_row), draft.get("fields", {}), user["org_id"], user["source_key"]
+                                dict(workflow_row),
+                                draft.get("fields", {}),
+                                user["org_id"],
+                                user["source_key"],
                             )
                         except VerificationError as e:
                             logger.warning(
@@ -2749,36 +3170,52 @@ async def run_agent(
                                 f"fields={draft.get('fields', {})}"
                             )
                             missing_str = ", ".join(e.missing_fields + e.invalid_fields)
-                            tool_results[-1]["content"] = json.dumps({
-                                "error": (
-                                    f"Draft incomplete/invalid. Missing: {e.missing_fields}. "
-                                    f"Invalid: {e.invalid_fields}. "
-                                    f"Ask the user for: {missing_str} before calling confirm_action again."
-                                )
-                            })
+                            tool_results[-1]["content"] = json.dumps(
+                                {
+                                    "error": (
+                                        f"Draft incomplete/invalid. Missing: {e.missing_fields}. "
+                                        f"Invalid: {e.invalid_fields}. "
+                                        f"Ask the user for: {missing_str} before calling confirm_action again."
+                                    )
+                                }
+                            )
                             break
 
                     # Log any corrections the QA layer made
-                    mismatches = diff_for_audit(draft.get("fields", {}), verified_fields)
+                    mismatches = diff_for_audit(
+                        draft.get("fields", {}), verified_fields
+                    )
                     if mismatches:
-                        logger.info(f"Corrected LLM-drafted values before confirmation: {mismatches}")
+                        logger.info(
+                            f"Corrected LLM-drafted values before confirmation: {mismatches}"
+                        )
 
                     # Store verified fields — these are what gets executed, not the LLM's originals
                     draft["fields"] = verified_fields
-                    draft["stage"]  = "awaiting_confirmation"
+                    draft["stage"] = "awaiting_confirmation"
                     session_patch["pending_action"] = draft
 
                     # Persist to database immediately so corrections afterward can find the draft
-                    from app.services.draft_store import upsert_draft as _upsert_confirm_draft
-                    await _upsert_confirm_draft(
-                        org_id=user["org_id"], user_id=user["user_id"],
-                        intent_key=draft.get("intent_key"), fields=verified_fields,
-                        reset_fields=False,  # Same workflow, just verified fields
-                        stage="awaiting_confirmation", source_key=user["source_key"],
+                    from app.services.draft_store import (
+                        upsert_draft as _upsert_confirm_draft,
                     )
 
-                action_desc = json.loads(tool_call.function.arguments).get("action_description", "")
-                llm_details = json.loads(tool_call.function.arguments).get("details", {})
+                    await _upsert_confirm_draft(
+                        org_id=user["org_id"],
+                        user_id=user["user_id"],
+                        intent_key=draft.get("intent_key"),
+                        fields=verified_fields,
+                        reset_fields=False,  # Same workflow, just verified fields
+                        stage="awaiting_confirmation",
+                        source_key=user["source_key"],
+                    )
+
+                action_desc = json.loads(tool_call.function.arguments).get(
+                    "action_description", ""
+                )
+                llm_details = json.loads(tool_call.function.arguments).get(
+                    "details", {}
+                )
 
                 # Build the summary from the AUTHORITATIVE, server-merged draft
                 # fields — the exact values about to be persisted — rather than
@@ -2787,20 +3224,28 @@ async def run_agent(
                 # after a correction. Falls back to the LLM's `details` for
                 # workflows this generic flattener can't safely summarise (e.g.
                 # nested `items` arrays like jewellery quotations).
-                confirm_draft = session_patch.get("pending_action") or pending_action or {}
+                confirm_draft = (
+                    session_patch.get("pending_action") or pending_action or {}
+                )
                 summary_lines = _build_confirm_summary_lines(
                     entity_schema_for_summary, confirm_draft.get("fields", {})
                 )
 
                 if summary_lines:
-                    header = f"📝 *Here's what I'll save — {action_desc}:*" if action_desc else "📝 *Here's what I'll save:*"
+                    header = (
+                        f"📝 *Here's what I'll save — {action_desc}:*"
+                        if action_desc
+                        else "📝 *Here's what I'll save:*"
+                    )
                     lines = [header] + summary_lines
                 else:
                     lines = [f"⚠️ *Confirm Action*\n\n{action_desc}"]
                     if llm_details:
                         for k, v in llm_details.items():
                             lines.append(f"  • {k}: {v}")
-                lines.append("\nReply *yes* to save, *no* to cancel, or tell me what to change.")
+                lines.append(
+                    "\nReply *yes* to save, *no* to cancel, or tell me what to change."
+                )
                 confirm_text = "\n".join(lines)
                 history_to_save = _serialize_history(messages)
                 history_to_save.append({"role": "assistant", "content": confirm_text})

@@ -6,11 +6,14 @@ Register this webhook with Telegram once after deploy:
          -d "url=https://<your-app>/webhook/telegram" \
          -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 """
+
 import hmac
 import os
-from fastapi import APIRouter, Request, Response, Header
+
+from fastapi import APIRouter, Header, Request, Response
+
+from app.logging_config import bind_context, get_context_logger
 from app.redis_client import get_redis
-from app.logging_config import get_context_logger, bind_context
 
 logger = get_context_logger(__name__)
 router = APIRouter()
@@ -24,11 +27,10 @@ async def telegram_webhook(
     x_telegram_bot_api_secret_token: str = Header(None),
 ):
     # Verify secret token if configured
-    if TELEGRAM_WEBHOOK_SECRET:
-        if not hmac.compare_digest(
-            x_telegram_bot_api_secret_token or "", TELEGRAM_WEBHOOK_SECRET
-        ):
-            return Response(status_code=403)
+    if TELEGRAM_WEBHOOK_SECRET and not hmac.compare_digest(
+        x_telegram_bot_api_secret_token or "", TELEGRAM_WEBHOOK_SECRET
+    ):
+        return Response(status_code=403)
 
     update = await request.json()
 
@@ -45,15 +47,15 @@ async def telegram_webhook(
 
     # Parse message or callback_query
     callback = update.get("callback_query")
-    message  = update.get("message") or update.get("edited_message")
+    message = update.get("message") or update.get("edited_message")
 
     if callback:
-        chat_id  = str(callback["message"]["chat"]["id"])
-        text     = callback["data"]
+        chat_id = str(callback["message"]["chat"]["id"])
+        text = callback["data"]
         msg_type = "interactive"
     elif message and message.get("text"):
-        chat_id  = str(message["chat"]["id"])
-        text     = message["text"]
+        chat_id = str(message["chat"]["id"])
+        text = message["text"]
         msg_type = "text"
     else:
         # Unsupported update type (sticker, photo, etc.)
@@ -64,20 +66,27 @@ async def telegram_webhook(
 
     try:
         from app.routers.webhook import handle_message
+
         await handle_message(phone=phone, text=text, msg_type=msg_type)
     except Exception as e:
         from app.services.telegram import TelegramRateLimitedError
+
         if isinstance(e, TelegramRateLimitedError):
             # handle_message already gave up on this send because Telegram
             # is flood-controlling the bot — don't pile on another attempt.
-            logger.warning(f"Telegram handle_message rate-limited for {phone} (retry_after={e.retry_after}s)")
+            logger.warning(
+                f"Telegram handle_message rate-limited for {phone} (retry_after={e.retry_after}s)"
+            )
         else:
             logger.error(f"Telegram handle_message error: {e}", exc_info=True)
             try:
                 from app.services.telegram import send_text
+
                 await send_text(chat_id, "❌ Something went wrong. Please try again.")
-            except Exception:
-                pass
+            except Exception as fallback_err:
+                logger.warning(
+                    f"Fallback error message to {chat_id} also failed: {fallback_err}"
+                )
 
     return {"status": "ok"}
 

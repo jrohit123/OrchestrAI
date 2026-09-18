@@ -11,21 +11,23 @@ through the same deterministic validation/lookup as a regex-parsed answer
 would get. On any failure or low-confidence result, both return "no match"
 rather than guessing.
 """
+
 import json
+
 from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read
 
 logger = get_context_logger(__name__)
 
-_ROLE_MATCH_PROMPT    = _read(PROMPTS_DIR / "role_match.txt")
+_ROLE_MATCH_PROMPT = _read(PROMPTS_DIR / "role_match.txt")
 _CONFIRM_INTENT_PROMPT = _read(PROMPTS_DIR / "confirm_intent.txt")
 
 
 def _extract_json(text: str) -> dict:
     text = text.strip()
     if "```" in text:
-        text = text[text.find("{"):text.rfind("}") + 1]
+        text = text[text.find("{") : text.rfind("}") + 1]
     return json.loads(text)
 
 
@@ -56,7 +58,9 @@ async def llm_match_role(text: str, options: list[dict]) -> dict | None:
     return next((o for o in options if o["name"].lower() == picked_name), None)
 
 
-async def llm_parse_confirm_intent(text: str, name: str, email: str, role_name: str) -> dict:
+async def llm_parse_confirm_intent(
+    text: str, name: str, email: str, role_name: str
+) -> dict:
     """Classifies a reply on the registration confirm screen.
     Returns {"action": "confirm"|"cancel"|"edit"|"unclear",
              "field": "name"|"email"|"role"|None, "value": str|None}.
@@ -64,7 +68,9 @@ async def llm_parse_confirm_intent(text: str, name: str, email: str, role_name: 
     unclear = {"action": "unclear", "field": None, "value": None}
     if not _CONFIRM_INTENT_PROMPT:
         return unclear
-    prompt = _CONFIRM_INTENT_PROMPT.format(text=text, name=name, email=email, role=role_name)
+    prompt = _CONFIRM_INTENT_PROMPT.format(
+        text=text, name=name, email=email, role=role_name
+    )
     try:
         response = await _llm_chat(
             messages=[{"role": "user", "content": prompt}],

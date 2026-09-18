@@ -8,6 +8,7 @@ Routes outbound messages to WhatsApp or Telegram based on the `to` identifier:
 Usage (drop-in replacement for whatsapp imports):
     from app.services.messaging import send_text, send_buttons, send_document, send_list
 """
+
 from app.services import whatsapp
 
 # Headroom under both WhatsApp's and Telegram's ~4096-character hard cap per
@@ -81,26 +82,37 @@ async def send_text(to: str, message: str):
 
 async def telegram_send(chat_id: str, message: str):
     from app.services import telegram
+
     return await telegram.send_text(chat_id, message)
 
 
 async def send_buttons(to: str, body: str, buttons: list[dict]):
     if _is_telegram(to):
         from app.services import telegram
+
         return await telegram.send_buttons(_tg_id(to), body, buttons)
     return await whatsapp.send_buttons(to, body, buttons)
 
 
-async def send_document(to: str, pdf_bytes: bytes, filename: str, caption: str = "",
-                         mime_type: str = "application/pdf"):
+async def send_document(
+    to: str,
+    pdf_bytes: bytes,
+    filename: str,
+    caption: str = "",
+    mime_type: str = "application/pdf",
+):
     if _is_telegram(to):
         from app.services import telegram
-        return await telegram.send_document(_tg_id(to), pdf_bytes, filename, caption, mime_type)
+
+        return await telegram.send_document(
+            _tg_id(to), pdf_bytes, filename, caption, mime_type
+        )
     return await whatsapp.send_document(to, pdf_bytes, filename, caption, mime_type)
 
 
 async def send_list(to: str, body: str, button_label: str, sections: list[dict]):
     if _is_telegram(to):
         from app.services import telegram
+
         return await telegram.send_list(_tg_id(to), body, button_label, sections)
     return await whatsapp.send_list(to, body, button_label, sections)

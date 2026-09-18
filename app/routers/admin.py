@@ -1,11 +1,13 @@
+import hmac
 import json
 import re
-import hmac
 from datetime import date
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
+
 from app.config import required
-from app.db import fetch_all, fetch_one, execute, get_all_source_keys
+from app.db import execute, fetch_all, fetch_one, get_all_source_keys
 from app.logging_config import get_context_logger
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 
@@ -78,8 +80,15 @@ async def admin_page(org_slug: str):
 # not tracked, never a misleading fake zero" rule the frontend already
 # honours.
 
-async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> list | None:
-    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier, StepError
+
+async def _compute_dashboard_stats(
+    cfg: dict, org_id: str, source_key: str
+) -> list | None:
+    from app.services.step_interpreter import (
+        StepError,
+        _load_schema_allowlist,
+        _validate_identifier,
+    )
 
     cards = cfg.get("cards") or []
     if not cards:
@@ -89,11 +98,11 @@ async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> l
     out: list = []
     for card in cards:
         try:
-            table  = card["table"]
-            key    = card["key"]
-            agg    = card.get("agg", "count")
+            table = card["table"]
+            key = card["key"]
+            agg = card.get("agg", "count")
             column = card.get("column")
-            where  = card.get("where") or {}
+            where = card.get("where") or {}
 
             _validate_identifier(table, "table name")
             if table not in allowlist:
@@ -107,12 +116,20 @@ async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> l
                 if col not in allowlist[table]:
                     raise StepError(f"unknown column '{col}' on '{table}'")
 
-            where_cols   = list(where.keys())
-            where_clause = " AND ".join(f"{c} = ${i+2}" for i, c in enumerate(where_cols))
-            where_sql    = f"WHERE org_id = $1 AND {where_clause}" if where_clause else "WHERE org_id = $1"
+            where_cols = list(where.keys())
+            where_clause = " AND ".join(
+                f"{c} = ${i + 2}" for i, c in enumerate(where_cols)
+            )
+            where_sql = (
+                f"WHERE org_id = $1 AND {where_clause}"
+                if where_clause
+                else "WHERE org_id = $1"
+            )
 
             if agg == "sum" and column:
-                sql = f"SELECT COALESCE(SUM({column}), 0) AS val FROM {table} {where_sql}"
+                sql = (
+                    f"SELECT COALESCE(SUM({column}), 0) AS val FROM {table} {where_sql}"
+                )
             else:
                 sql = f"SELECT COUNT(*) AS val FROM {table} {where_sql}"
 
@@ -122,13 +139,15 @@ async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> l
             # format/color), not a bare {key: value} dict — so the frontend
             # renders whatever cards this org configured with zero hardcoded
             # knowledge of what a "stat card" for this org looks like.
-            out.append({
-                "key":    key,
-                "label":  card.get("label") or key.replace("_", " ").title(),
-                "value":  value,
-                "format": card.get("format", "number"),
-                "color":  card.get("color"),
-            })
+            out.append(
+                {
+                    "key": key,
+                    "label": card.get("label") or key.replace("_", " ").title(),
+                    "value": value,
+                    "format": card.get("format", "number"),
+                    "color": card.get("color"),
+                }
+            )
         except (KeyError, StepError) as e:
             logger.warning(f"dashboard_stats: skipping malformed card {card}: {e}")
             continue
@@ -137,16 +156,20 @@ async def _compute_dashboard_stats(cfg: dict, org_id: str, source_key: str) -> l
 
 
 async def _compute_low_stock(cfg: dict, org_id: str, source_key: str) -> dict | None:
-    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier, StepError
+    from app.services.step_interpreter import (
+        StepError,
+        _load_schema_allowlist,
+        _validate_identifier,
+    )
 
     ls = cfg.get("low_stock")
     if not ls:
         return None
 
     try:
-        table        = ls["table"]
-        qty_col      = ls["qty_column"]
-        reorder_col  = ls["reorder_column"]
+        table = ls["table"]
+        qty_col = ls["qty_column"]
+        reorder_col = ls["reorder_column"]
         display_cols = ls.get("display_columns") or [qty_col, reorder_col]
 
         allowlist = await _load_schema_allowlist(source_key)
@@ -161,18 +184,23 @@ async def _compute_low_stock(cfg: dict, org_id: str, source_key: str) -> dict | 
         cols_sql = ", ".join(display_cols)
         rows = await fetch_all(
             f"SELECT {cols_sql} FROM {table} WHERE org_id = $1 AND {qty_col} <= {reorder_col}",
-            org_id, source_key=source_key
+            org_id,
+            source_key=source_key,
         )
         # Row-shaped output the frontend renders generically: a title,
         # ordered {key, label} columns, and rows keyed by those same column
         # names — never a hardcoded "name/qty/reorder_level" assumption.
         return {
-            "title":   ls.get("label", "Low Stock Alert"),
-            "columns": [{"key": c, "label": c.replace("_", " ").title()} for c in display_cols],
-            "rows":    [dict(r) for r in rows],
+            "title": ls.get("label", "Low Stock Alert"),
+            "columns": [
+                {"key": c, "label": c.replace("_", " ").title()} for c in display_cols
+            ],
+            "rows": [dict(r) for r in rows],
         }
     except (KeyError, StepError) as e:
-        logger.warning(f"dashboard_stats.low_stock: skipping malformed config {ls}: {e}")
+        logger.warning(
+            f"dashboard_stats.low_stock: skipping malformed config {ls}: {e}"
+        )
         return None
 
 
@@ -180,7 +208,10 @@ async def _compute_low_stock(cfg: dict, org_id: str, source_key: str) -> dict | 
 async def admin_data(org_slug: str):
     source_key = await _resolve_source_key(org_slug)
 
-    org = await fetch_one("SELECT id, name, settings FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id, name, settings FROM orgs WHERE is_active = true LIMIT 1",
+        source_key=source_key,
+    )
     if not org:
         return {"error": "No active org found"}
 
@@ -188,19 +219,23 @@ async def admin_data(org_slug: str):
     org_settings = _parse_jsonb(org_dict.pop("settings", None), {})
     org_id = str(org["id"])
 
-    workflows = await fetch_all("""
+    workflows = await fetch_all(
+        """
         SELECT id, name, intent_key, is_active, otp_required,
                otp_threshold, approval_threshold, gates, last_run, workflow_type
         FROM workflows WHERE org_id = $1
         ORDER BY created_at
-    """, org_id, source_key=source_key)
+    """,
+        org_id,
+        source_key=source_key,
+    )
 
     # Dashboard stat cards and the low-stock table are entirely config-driven
     # (orgs.settings->'dashboard_stats') — see the helpers above. An org that
     # hasn't configured this simply gets no cards, never a guess at what
     # tables it might have.
     dashboard_cfg = org_settings.get("dashboard_stats") or {}
-    stats     = await _compute_dashboard_stats(dashboard_cfg, org_id, source_key)
+    stats = await _compute_dashboard_stats(dashboard_cfg, org_id, source_key)
     low_stock = await _compute_low_stock(dashboard_cfg, org_id, source_key)
 
     workflows_out = []
@@ -242,7 +277,9 @@ async def admin_activity(
     'agent'/'menu' are relabelled "Chat" since they say nothing useful.
     """
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         return {"error": "No active org found"}
     org_id = str(org["id"])
@@ -271,10 +308,13 @@ async def admin_activity(
         where += f" AND (a.input_text ILIKE ${len(params)} OR a.response_text ILIKE ${len(params)})"
 
     total_row = await fetch_one(
-        f"SELECT COUNT(*) AS n FROM audit_log a WHERE {where}", *params, source_key=source_key
+        f"SELECT COUNT(*) AS n FROM audit_log a WHERE {where}",
+        *params,
+        source_key=source_key,
     )
 
-    rows = await fetch_all(f"""
+    rows = await fetch_all(
+        f"""
         SELECT a.id, a.created_at, a.user_id, u.name AS user_name, a.intent_key,
                a.input_text, a.response_text, a.outcome, a.session_id
         FROM audit_log a
@@ -282,21 +322,30 @@ async def admin_activity(
         WHERE {where}
         ORDER BY a.created_at DESC
         LIMIT {page_size} OFFSET {offset}
-    """, *params, source_key=source_key)
+    """,
+        *params,
+        source_key=source_key,
+    )
 
-    users = await fetch_all("""
+    users = await fetch_all(
+        """
         SELECT DISTINCT u.id, u.name
         FROM audit_log a JOIN users u ON u.id = a.user_id
         WHERE a.org_id = $1
         ORDER BY u.name
-    """, org_id, source_key=source_key)
+    """,
+        org_id,
+        source_key=source_key,
+    )
 
     out_rows = []
     for r in rows:
         d = dict(r)
         d["id"] = str(d["id"])
         d["user_id"] = str(d["user_id"]) if d["user_id"] else None
-        d["workflow"] = d["intent_key"] if d["intent_key"] not in ("agent", "menu") else "Chat"
+        d["workflow"] = (
+            d["intent_key"] if d["intent_key"] not in ("agent", "menu") else "Chat"
+        )
         out_rows.append(d)
 
     return {
@@ -314,13 +363,17 @@ async def admin_activity_session(org_slug: str, session_id: str):
     the same session_id (the exact key Redis already keys this chat's
     session by), oldest first so it reads top-to-bottom like a chat."""
     source_key = await _resolve_source_key(org_slug)
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT a.created_at, u.name AS user_name, a.input_text, a.response_text
         FROM audit_log a
         LEFT JOIN users u ON u.id = a.user_id
         WHERE a.session_id = $1
         ORDER BY a.created_at ASC
-    """, session_id, source_key=source_key)
+    """,
+        session_id,
+        source_key=source_key,
+    )
     return {"rows": [dict(r) for r in rows]}
 
 
@@ -328,14 +381,18 @@ async def admin_activity_session(org_slug: str, session_id: str):
 async def toggle_otp(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
     row = await fetch_one(
-        "SELECT otp_required, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+        "SELECT otp_required, org_id FROM workflows WHERE id = $1",
+        workflow_id,
+        source_key=source_key,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     new_val = not row["otp_required"]
     await execute(
         "UPDATE workflows SET otp_required = $1 WHERE id = $2",
-        new_val, workflow_id, source_key=source_key
+        new_val,
+        workflow_id,
+        source_key=source_key,
     )
     return {"otp_required": new_val}
 
@@ -349,7 +406,9 @@ async def update_threshold(org_slug: str, workflow_id: str, request: Request):
     source_key = await _resolve_source_key(org_slug)
     await execute(
         "UPDATE workflows SET otp_threshold = $1 WHERE id = $2",
-        threshold, workflow_id, source_key=source_key
+        threshold,
+        workflow_id,
+        source_key=source_key,
     )
     return {"otp_threshold": threshold}
 
@@ -363,7 +422,9 @@ async def update_approval_threshold(org_slug: str, workflow_id: str, request: Re
     source_key = await _resolve_source_key(org_slug)
     await execute(
         "UPDATE workflows SET approval_threshold = $1 WHERE id = $2",
-        threshold, workflow_id, source_key=source_key
+        threshold,
+        workflow_id,
+        source_key=source_key,
     )
     return {"approval_threshold": threshold}
 
@@ -371,7 +432,9 @@ async def update_approval_threshold(org_slug: str, workflow_id: str, request: Re
 @router.get("/admin/{org_slug}/api/roles")
 async def get_roles(org_slug: str):
     source_key = await _resolve_source_key(org_slug)
-    roles = await fetch_all("SELECT name FROM roles ORDER BY name", source_key=source_key)
+    roles = await fetch_all(
+        "SELECT name FROM roles ORDER BY name", source_key=source_key
+    )
     return [{"name": r["name"], "selected": r["name"] == "owner"} for r in roles]
 
 
@@ -379,9 +442,13 @@ async def get_roles(org_slug: str):
 async def get_security_settings(org_slug: str):
     source_key = await _resolve_source_key(org_slug)
     org = await fetch_one(
-        "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+        "SELECT id, session_ttl_minutes FROM orgs WHERE is_active = true LIMIT 1",
+        source_key=source_key,
     )
-    return {"session_ttl_minutes": org["session_ttl_minutes"] or 480, "org_id": str(org["id"])}
+    return {
+        "session_ttl_minutes": org["session_ttl_minutes"] or 480,
+        "org_id": str(org["id"]),
+    }
 
 
 @router.post("/admin/{org_slug}/api/security/ttl")
@@ -389,13 +456,18 @@ async def update_session_ttl(org_slug: str, request: Request):
     body = await request.json()
     minutes = int(body.get("minutes", 480))
     if minutes < 5 or minutes > 10080:  # 5 min to 7 days
-        raise HTTPException(status_code=400, detail="TTL must be between 5 and 10080 minutes")
+        raise HTTPException(
+            status_code=400, detail="TTL must be between 5 and 10080 minutes"
+        )
     source_key = await _resolve_source_key(org_slug)
     org_id = body.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id required")
     await execute(
-        "UPDATE orgs SET session_ttl_minutes = $1 WHERE id = $2", minutes, org_id, source_key=source_key
+        "UPDATE orgs SET session_ttl_minutes = $1 WHERE id = $2",
+        minutes,
+        org_id,
+        source_key=source_key,
     )
     return {"session_ttl_minutes": minutes}
 
@@ -403,7 +475,10 @@ async def update_session_ttl(org_slug: str, request: Request):
 @router.get("/admin/{org_slug}/api/settings/logo")
 async def get_org_logo(org_slug: str):
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id, logo_url FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id, logo_url FROM orgs WHERE is_active = true LIMIT 1",
+        source_key=source_key,
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
     return {"logo_url": org["logo_url"], "org_id": str(org["id"])}
@@ -437,21 +512,32 @@ async def upload_org_logo(org_slug: str, request: Request):
     # exactly the same as a real hosted URL — no other code needs to care
     # which kind of value is in this column.
     import base64
+
     data_uri = f"data:{content_type};base64,{base64.b64encode(image_bytes).decode()}"
 
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
 
-    await execute("UPDATE orgs SET logo_url = $1 WHERE id = $2", data_uri, str(org["id"]), source_key=source_key)
+    await execute(
+        "UPDATE orgs SET logo_url = $1 WHERE id = $2",
+        data_uri,
+        str(org["id"]),
+        source_key=source_key,
+    )
     return {"logo_url": data_uri}
 
 
 @router.post("/admin/{org_slug}/api/sessions/clear")
 async def admin_clear_sessions(org_slug: str):
     from app.redis_client import clear_all_sessions
+
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     await clear_all_sessions(str(org["id"]))
     return {"cleared": True, "message": "All sessions cleared"}
 
@@ -467,7 +553,10 @@ async def update_gst_rate(org_slug: str, request: Request):
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id required")
     await execute(
-        "UPDATE orgs SET gst_rate = $1 WHERE id = $2", gst, org_id, source_key=source_key
+        "UPDATE orgs SET gst_rate = $1 WHERE id = $2",
+        gst,
+        org_id,
+        source_key=source_key,
     )
     return {"gst_rate": gst}
 
@@ -475,15 +564,23 @@ async def update_gst_rate(org_slug: str, request: Request):
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _JSONB_WORKFLOW_FIELDS = {
-    "training_phrases": [], "entity_schema": {}, "calc_rules": {}, "steps": [],
-    "sql_params_order": [], "business_glossary": {}, "pdf_config": None, "gates": [],
+    "training_phrases": [],
+    "entity_schema": {},
+    "calc_rules": {},
+    "steps": [],
+    "sql_params_order": [],
+    "business_glossary": {},
+    "pdf_config": None,
+    "gates": [],
 }
 
 
 @router.get("/admin/{org_slug}/api/workflow/{workflow_id}/detail")
 async def get_workflow_detail(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
-    row = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    row = await fetch_one(
+        "SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
     wd = dict(row)
@@ -492,7 +589,9 @@ async def get_workflow_detail(org_slug: str, workflow_id: str):
             wd[field] = _parse_jsonb(wd[field], default)
     granted = await fetch_all(
         "SELECT name FROM roles WHERE org_id = $1 AND $2 = ANY(permissions)",
-        wd["org_id"], wd["intent_key"], source_key=source_key
+        wd["org_id"],
+        wd["intent_key"],
+        source_key=source_key,
     )
     wd["granted_roles"] = [r["name"] for r in granted]
     return wd
@@ -512,7 +611,9 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
 
-    existing = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    existing = await fetch_one(
+        "SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+    )
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -521,51 +622,69 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
 
     if "gates" in body:
         from app.services.workflow_validator import validate_workflow_config
-        problems = validate_workflow_config({
-            "workflow_type": existing["workflow_type"], "gates": body["gates"],
-            # Same fix as the publish endpoint below: omitting steps here
-            # reads as steps=[] every time, false-positiving on every
-            # action-type workflow regardless of what it actually has.
-            "steps": existing.get("steps"),
-        })
+
+        problems = validate_workflow_config(
+            {
+                "workflow_type": existing["workflow_type"],
+                "gates": body["gates"],
+                # Same fix as the publish endpoint below: omitting steps here
+                # reads as steps=[] every time, false-positiving on every
+                # action-type workflow regardless of what it actually has.
+                "steps": existing.get("steps"),
+            }
+        )
         if problems:
-            raise HTTPException(status_code=400, detail={
-                "error": "Constraints are inconsistent — not saved.",
-                "problems": problems
-            })
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Constraints are inconsistent — not saved.",
+                    "problems": problems,
+                },
+            )
 
     if "slash_command" in body:
         cmd = (body.get("slash_command") or "").strip().lstrip("/").lower()
         if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
-            raise HTTPException(status_code=400, detail="Command: 2-32 chars, lowercase letters/digits/_")
+            raise HTTPException(
+                status_code=400,
+                detail="Command: 2-32 chars, lowercase letters/digits/_",
+            )
         dupe = await fetch_one(
             "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND id != $3",
-            existing["org_id"], cmd, workflow_id, source_key=source_key
+            existing["org_id"],
+            cmd,
+            workflow_id,
+            source_key=source_key,
         )
         if dupe:
-            raise HTTPException(status_code=409, detail=f"Command '/{cmd}' is already in use")
+            raise HTTPException(
+                status_code=409, detail=f"Command '/{cmd}' is already in use"
+            )
         body["slash_command"] = cmd
 
     sets, vals = [], []
     for field in allowed:
         if field in body:
-            sets.append(f"{field} = ${len(vals)+2}")
+            sets.append(f"{field} = ${len(vals) + 2}")
             val = body[field]
             if field in jsonb_fields:
                 val = json.dumps(val) if not isinstance(val, str) else val
-                sets[-1] = f"{field} = ${len(vals)+2}::jsonb"
+                sets[-1] = f"{field} = ${len(vals) + 2}::jsonb"
             vals.append(val)
 
     if sets:
         await execute(
             f"UPDATE workflows SET {', '.join(sets)} WHERE id = $1",
-            workflow_id, *vals, source_key=source_key
+            workflow_id,
+            *vals,
+            source_key=source_key,
         )
     elif "roles" not in body:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     if "roles" in body:
         from app.services.workflow_publisher import sync_role_grants
+
         # Same readable_tables sync the publish endpoint does — ticking a
         # role checkbox here is a second, separate path to granting a
         # workflow (not just the chat builder's publish flow), and it needs
@@ -573,7 +692,10 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
         # or a role ticked on here hits the exact same silent failure a
         # role granted via publish did before that fix.
         await sync_role_grants(
-            existing["intent_key"], str(existing["org_id"]), body["roles"] or [], source_key,
+            existing["intent_key"],
+            str(existing["org_id"]),
+            body["roles"] or [],
+            source_key,
             entity_schema=existing.get("entity_schema"),
         )
 
@@ -584,15 +706,24 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
 async def delete_workflow(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
     row = await fetch_one(
-        "SELECT intent_key, org_id FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+        "SELECT intent_key, org_id FROM workflows WHERE id = $1",
+        workflow_id,
+        source_key=source_key,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    await execute("""
+    await execute(
+        """
         UPDATE roles SET permissions = array_remove(permissions, $1)
         WHERE org_id = $2
-    """, row["intent_key"], row["org_id"], source_key=source_key)
-    await execute("DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    """,
+        row["intent_key"],
+        row["org_id"],
+        source_key=source_key,
+    )
+    await execute(
+        "DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+    )
     return {"success": True, "deleted": row["intent_key"]}
 
 
@@ -601,6 +732,7 @@ async def validate_workflow_endpoint(org_slug: str, request: Request):
     """Lint a workflow config without saving — used by the Edit modal Validate button."""
     body = await request.json()
     from app.services.workflow_validator import validate_workflow_config
+
     problems = validate_workflow_config(body)
     return {"valid": len(problems) == 0, "problems": problems}
 
@@ -609,14 +741,22 @@ async def validate_workflow_endpoint(org_slug: str, request: Request):
 async def preview_workflow_pdf(org_slug: str, draft_id: str):
     """Generate a sample PDF from a compiled draft using placeholder data."""
     from fastapi.responses import Response as FastAPIResponse
+
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft or not draft.get("pdf_config"):
-        raise HTTPException(status_code=404, detail="Nothing to preview yet — compile first")
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+        raise HTTPException(
+            status_code=404, detail="Nothing to preview yet — compile first"
+        )
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
     from app.services.workflow_previewer import generate_preview_pdf
+
     try:
         pdf_bytes = await generate_preview_pdf(dict(draft), str(org["id"]), source_key)
     except Exception as e:
@@ -637,14 +777,20 @@ async def clear_unfinished_drafts(org_slug: str):
     table's existing state machine instead of destroying rows.
     """
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         UPDATE workflow_drafts SET status = 'abandoned', updated_at = now()
         WHERE org_id = $1 AND status = 'chatting'
         RETURNING id
-    """, str(org["id"]), source_key=source_key)
+    """,
+        str(org["id"]),
+        source_key=source_key,
+    )
     return {"cleared": len(rows)}
 
 
@@ -652,12 +798,15 @@ async def clear_unfinished_drafts(org_slug: str):
 async def workflow_builder_chat(org_slug: str, request: Request):
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
     org_id = str(org["id"])
 
     from app.services.workflow_builder_agent import run_builder_agent
+
     result = await run_builder_agent(
         message=body.get("message", ""),
         org_id=org_id,
@@ -678,11 +827,14 @@ async def start_edit_via_chat(org_slug: str, workflow_id: str):
     so the builder chat can open already primed with the current state.
     """
     source_key = await _resolve_source_key(org_slug)
-    wf = await fetch_one("SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key)
+    wf = await fetch_one(
+        "SELECT * FROM workflows WHERE id = $1", workflow_id, source_key=source_key
+    )
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     from app.services.workflow_builder_agent import start_edit_draft
+
     result = await start_edit_draft(dict(wf), str(wf["org_id"]), source_key)
     return result
 
@@ -696,6 +848,7 @@ async def extract_pdf_template_endpoint(org_slug: str, request: Request):
         raise HTTPException(status_code=400, detail="pdf_file is required")
     pdf_bytes = await upload.read()
     from app.services.pdf_template_extractor import extract_pdf_template
+
     try:
         spec = await extract_pdf_template(pdf_bytes, doc_type_hint)
     except Exception as e:
@@ -707,18 +860,28 @@ async def extract_pdf_template_endpoint(org_slug: str, request: Request):
 async def get_draft_publish_info(org_slug: str, draft_id: str):
     """Return data needed for the publish panel: summary, roles, prefill values, suggested command."""
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
-    
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org")
-    
-    roles = await fetch_all("SELECT name FROM roles WHERE org_id = $1 ORDER BY name", str(org["id"]), source_key=source_key)
+
+    roles = await fetch_all(
+        "SELECT name FROM roles WHERE org_id = $1 ORDER BY name",
+        str(org["id"]),
+        source_key=source_key,
+    )
 
     # Suggest command from intent_key if not set
-    suggested_cmd = draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
+    suggested_cmd = (
+        draft.get("slash_command") or draft.get("intent_key", "").replace("_", "")[:32]
+    )
 
     gates = draft.get("gates") or []
     if isinstance(gates, str):
@@ -736,7 +899,7 @@ async def get_draft_publish_info(org_slug: str, draft_id: str):
         "gates": gates,
         "prefill": {
             "slash_command": suggested_cmd,
-        }
+        },
     }
 
 
@@ -755,7 +918,9 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     """
     source_key = await _resolve_source_key(org_slug)
 
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft or draft["status"] != "ready_for_review":
         raise HTTPException(status_code=409, detail="Draft is not ready for review")
 
@@ -771,47 +936,63 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     roles = draft.get("granted_roles") or []
     slash_command = draft.get("slash_command")
 
-    valid_roles = {r["name"] for r in await fetch_all(
-        "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
-    )}
+    valid_roles = {
+        r["name"]
+        for r in await fetch_all(
+            "SELECT name FROM roles WHERE org_id = $1", org_id, source_key=source_key
+        )
+    }
     if not roles or not set(roles) <= valid_roles:
-        raise HTTPException(422, f"Who can use this must be a non-empty subset of {sorted(valid_roles)} — "
-                                  f"go back to chat and say who should be able to use it.")
+        raise HTTPException(
+            422,
+            f"Who can use this must be a non-empty subset of {sorted(valid_roles)} — "
+            f"go back to chat and say who should be able to use it.",
+        )
 
     # Structural gate validation (types, level ordering, etc.) — same checker
     # used at every other write path to workflows (see workflow_validator.py).
     from app.services.workflow_validator import validate_workflow_config
-    gate_problems = validate_workflow_config({
-        "workflow_type": draft.get("workflow_type") or "action",
-        "gates": gates,
-        # steps must come along too — validate_workflow_config's action/steps
-        # consistency check has no way to know steps[] is actually populated
-        # if it's never in the spec it's given, and reads the omission as
-        # "empty steps" every time, false-positiving on every action-type
-        # publish regardless of what the draft actually contains. Found live:
-        # this rejected a from-scratch action workflow (create_resident_record)
-        # with a fully valid, non-empty steps[] already saved on the draft.
-        "steps": draft.get("steps"),
-    })
+
+    gate_problems = validate_workflow_config(
+        {
+            "workflow_type": draft.get("workflow_type") or "action",
+            "gates": gates,
+            # steps must come along too — validate_workflow_config's action/steps
+            # consistency check has no way to know steps[] is actually populated
+            # if it's never in the spec it's given, and reads the omission as
+            # "empty steps" every time, false-positiving on every action-type
+            # publish regardless of what the draft actually contains. Found live:
+            # this rejected a from-scratch action workflow (create_resident_record)
+            # with a fully valid, non-empty steps[] already saved on the draft.
+            "steps": draft.get("steps"),
+        }
+    )
     if gate_problems:
-        raise HTTPException(422, {"error": "Constraints are inconsistent", "problems": gate_problems})
+        raise HTTPException(
+            422, {"error": "Constraints are inconsistent", "problems": gate_problems}
+        )
 
     # Every role a gate names (approval level, or permission role_any_of) must
     # actually exist in this org — the structural checker above has no DB
     # access, so that reference check lives here instead.
     referenced_roles: set[str] = set()
     for g in gates:
-        for lvl in (g.get("levels") or []):
+        for lvl in g.get("levels") or []:
             if lvl.get("role"):
                 referenced_roles.add(lvl["role"])
-        for r in (g.get("role_any_of") or []):
+        for r in g.get("role_any_of") or []:
             referenced_roles.add(r)
     unknown_roles = referenced_roles - valid_roles
     if unknown_roles:
-        raise HTTPException(422, f"Constraints reference unknown role(s): {sorted(unknown_roles)}")
+        raise HTTPException(
+            422, f"Constraints reference unknown role(s): {sorted(unknown_roles)}"
+        )
 
     if not slash_command:
-        raise HTTPException(422, "No trigger command set yet — go back to chat and say what it should be.")
+        raise HTTPException(
+            422,
+            "No trigger command set yet — go back to chat and say what it should be.",
+        )
     cmd = slash_command.strip().lstrip("/").lower()
     if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
         raise HTTPException(422, "Command: 2-32 chars, lowercase letters/digits/_")
@@ -820,12 +1001,16 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
     # it via chat and republishing under the same command is expected)
     dupe = await fetch_one(
         "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND intent_key != $3",
-        org_id, cmd, draft.get("intent_key") or "", source_key=source_key
+        org_id,
+        cmd,
+        draft.get("intent_key") or "",
+        source_key=source_key,
     )
     if dupe:
         raise HTTPException(409, f"Command '/{cmd}' is already in use")
 
-    from app.services.workflow_publisher import publish_draft, PublishConflict
+    from app.services.workflow_publisher import PublishConflict, publish_draft
+
     draft_dict = dict(draft)
     draft_dict["slash_command"] = cmd
     try:
@@ -836,12 +1021,18 @@ async def publish_workflow_endpoint(org_slug: str, draft_id: str):
         # this refuses instead of silently overwriting. 409, not 422: the
         # draft itself is fine, it's just stale relative to what's live now.
         from app.services.workflow_builder_agent import get_live_snapshot
-        raise HTTPException(409, {
-            "error": str(e),
-            "current_version": e.current_version,
-            "based_on_version": e.based_on_version,
-            "live_snapshot": await get_live_snapshot(org_id, e.intent_key, source_key),
-        })
+
+        raise HTTPException(
+            409,
+            {
+                "error": str(e),
+                "current_version": e.current_version,
+                "based_on_version": e.based_on_version,
+                "live_snapshot": await get_live_snapshot(
+                    org_id, e.intent_key, source_key
+                ),
+            },
+        )
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:
@@ -868,29 +1059,35 @@ async def list_unfinished_drafts(org_slug: str):
     "already compiled once, still from scratch".
     """
     source_key = await _resolve_source_key(org_slug)
-    org = await fetch_one("SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key)
+    org = await fetch_one(
+        "SELECT id FROM orgs WHERE is_active = true LIMIT 1", source_key=source_key
+    )
     if not org:
         raise HTTPException(status_code=404, detail="No active org found")
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT id, name, purpose, status, updated_at, raw_fields, granted_roles,
                gates, based_on_version
         FROM workflow_drafts
         WHERE org_id = $1 AND status IN ('chatting', 'ready_for_review')
         ORDER BY updated_at DESC
-    """, str(org["id"]), source_key=source_key)
+    """,
+        str(org["id"]),
+        source_key=source_key,
+    )
 
     def _summarize(r):
         raw_fields = _parse_jsonb(r["raw_fields"], [])
         gates = _parse_jsonb(r["gates"], [])
         return {
-            "id":          str(r["id"]),
-            "name":        r["name"] or r["purpose"] or "(untitled)",
-            "status":      r["status"],
-            "updated_at":  r["updated_at"].isoformat() if r["updated_at"] else None,
+            "id": str(r["id"]),
+            "name": r["name"] or r["purpose"] or "(untitled)",
+            "status": r["status"],
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
             "field_count": len(raw_fields),
-            "has_roles":   bool(r["granted_roles"]),
-            "gate_count":  len(gates),
-            "is_edit":     r["based_on_version"] is not None,
+            "has_roles": bool(r["granted_roles"]),
+            "gate_count": len(gates),
+            "is_edit": r["based_on_version"] is not None,
         }
 
     return {"drafts": [_summarize(r) for r in rows]}
@@ -900,11 +1097,16 @@ async def list_unfinished_drafts(org_slug: str):
 async def resume_draft_endpoint(org_slug: str, draft_id: str):
     """Deterministic entry point for clicking "Continue" on a drafts-list row."""
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft or draft["status"] not in ("chatting", "ready_for_review"):
-        raise HTTPException(status_code=404, detail="Draft not found or no longer active")
+        raise HTTPException(
+            status_code=404, detail="Draft not found or no longer active"
+        )
 
     from app.services.workflow_builder_agent import resume_draft
+
     return await resume_draft(dict(draft), str(draft["org_id"]), source_key)
 
 
@@ -922,14 +1124,19 @@ async def abandon_one_draft(org_slug: str, draft_id: str):
     row = await fetch_one(
         "UPDATE workflow_drafts SET status = 'abandoned', updated_at = now() "
         "WHERE id = $1 AND status IN ('chatting', 'ready_for_review') RETURNING id",
-        draft_id, source_key=source_key
+        draft_id,
+        source_key=source_key,
     )
     if not row:
-        raise HTTPException(status_code=404, detail="Draft not found or already inactive")
+        raise HTTPException(
+            status_code=404, detail="Draft not found or already inactive"
+        )
     return {"success": True}
 
 
-async def _save_and_maybe_recompile(draft_id: str, org_id: str, source_key: str, was_compiled: bool, note: str) -> dict:
+async def _save_and_maybe_recompile(
+    draft_id: str, org_id: str, source_key: str, was_compiled: bool, note: str
+) -> dict:
     """
     Shared by the field and gate direct-edit endpoints below. If the draft
     had already been compiled once (status was 'ready_for_review'), the
@@ -943,18 +1150,34 @@ async def _save_and_maybe_recompile(draft_id: str, org_id: str, source_key: str,
     call takes as long as any other compile (a few seconds), same as
     hitting compile_and_summarize from chat already does today.
     """
-    from app.services.workflow_builder_agent import append_draft_note, compile_and_save, build_draft_recap, build_draft_state
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    from app.services.workflow_builder_agent import (
+        append_draft_note,
+        build_draft_recap,
+        build_draft_state,
+        compile_and_save,
+    )
+
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     draft = dict(draft)
     await append_draft_note(draft, note, source_key)
 
     result = {
-        "draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft),
-        "ready_for_review": False, "summary_card": None,
+        "draft_recap": build_draft_recap(draft),
+        "draft_state": build_draft_state(draft),
+        "ready_for_review": False,
+        "summary_card": None,
     }
     if was_compiled:
         compiled = await compile_and_save(draft_id, org_id, source_key)
-        fresh = dict(await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key))
+        fresh = dict(
+            await fetch_one(
+                "SELECT * FROM workflow_drafts WHERE id = $1",
+                draft_id,
+                source_key=source_key,
+            )
+        )
         result["draft_recap"] = build_draft_recap(fresh)
         result["draft_state"] = build_draft_state(fresh)
         if "error" in compiled:
@@ -981,13 +1204,16 @@ async def edit_draft_field(org_slug: str, draft_id: str, request: Request):
     """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
     org_id = str(draft["org_id"])
 
     from app.services.workflow_builder_agent import _merge_raw_fields
+
     action = body.get("action")
     existing_fields = _parse_jsonb(draft.get("raw_fields"), [])
     name = (body.get("name") or "").strip()
@@ -996,21 +1222,31 @@ async def edit_draft_field(org_slug: str, draft_id: str, request: Request):
     if action == "add":
         if not name:
             raise HTTPException(status_code=400, detail="Field name is required")
-        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, [name], None))
+        updates["raw_fields"] = json.dumps(
+            _merge_raw_fields(existing_fields, [name], None)
+        )
         note = f'directly added a field to the draft: "{name}"'
     elif action == "remove":
-        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, None, [name]))
+        updates["raw_fields"] = json.dumps(
+            _merge_raw_fields(existing_fields, None, [name])
+        )
         note = f'directly removed the field "{name}" from the draft'
     elif action == "rename":
         new_name = (body.get("new_name") or "").strip()
         if not name or not new_name:
-            raise HTTPException(status_code=400, detail="name and new_name are required")
-        updates["raw_fields"] = json.dumps(_merge_raw_fields(existing_fields, [new_name], [name]))
+            raise HTTPException(
+                status_code=400, detail="name and new_name are required"
+            )
+        updates["raw_fields"] = json.dumps(
+            _merge_raw_fields(existing_fields, [new_name], [name])
+        )
         note = f'directly renamed the field "{name}" to "{new_name}"'
     elif action == "toggle_required":
         required = bool(body.get("required"))
         existing_rules = draft.get("business_rules") or ""
-        updates["business_rules"] = f'{existing_rules}\n{name} should be {"required" if required else "optional"}.'.strip()
+        updates["business_rules"] = (
+            f"{existing_rules}\n{name} should be {'required' if required else 'optional'}.".strip()
+        )
         note = f'directly marked "{name}" as {"required" if required else "optional"}'
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
@@ -1022,9 +1258,13 @@ async def edit_draft_field(org_slug: str, draft_id: str, request: Request):
     set_parts = [f"{k} = ${i + 2}" for i, k in enumerate(updates)]
     await execute(
         f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-        draft_id, *updates.values(), source_key=source_key
+        draft_id,
+        *updates.values(),
+        source_key=source_key,
     )
-    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, note)
+    return await _save_and_maybe_recompile(
+        draft_id, org_id, source_key, was_compiled, note
+    )
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/gate")
@@ -1036,20 +1276,23 @@ async def edit_draft_gate(org_slug: str, draft_id: str, request: Request):
     still required to regenerate the matching otp_gate/approval_gate steps."""
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
     org_id = str(draft["org_id"])
 
     from app.services.workflow_builder_agent import _backfill_gate_ids, _describe_gate
+
     gates = _parse_jsonb(draft.get("gates"), [])
     action = body.get("action")
 
     if action == "add":
         gate = body.get("gate") or {}
         gates = _backfill_gate_ids(gates + [gate])
-        note = f'directly added a constraint to the draft: {_describe_gate(gate)}'
+        note = f"directly added a constraint to the draft: {_describe_gate(gate)}"
     elif action == "remove":
         gate_id = body.get("gate_id")
         gates = [g for g in gates if g.get("id") != gate_id]
@@ -1064,9 +1307,13 @@ async def edit_draft_gate(org_slug: str, draft_id: str, request: Request):
         set_parts.append("status = 'chatting'")
     await execute(
         f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-        draft_id, *vals, source_key=source_key
+        draft_id,
+        *vals,
+        source_key=source_key,
     )
-    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, note)
+    return await _save_and_maybe_recompile(
+        draft_id, org_id, source_key, was_compiled, note
+    )
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/roles")
@@ -1078,28 +1325,49 @@ async def edit_draft_roles(org_slug: str, draft_id: str, request: Request):
     """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
     org_id = str(draft["org_id"])
 
-    from app.services.workflow_builder_agent import resolve_roles, append_draft_note, build_draft_recap, build_draft_state
+    from app.services.workflow_builder_agent import (
+        append_draft_note,
+        build_draft_recap,
+        build_draft_state,
+        resolve_roles,
+    )
+
     requested = body.get("roles") or []
     resolved, unknown = await resolve_roles(requested, org_id, source_key)
     if unknown:
-        raise HTTPException(status_code=422, detail=f"Not real roles in this org: {unknown}")
+        raise HTTPException(
+            status_code=422, detail=f"Not real roles in this org: {unknown}"
+        )
 
     await execute(
         "UPDATE workflow_drafts SET granted_roles = $1, updated_at = now() WHERE id = $2",
-        resolved, draft_id, source_key=source_key
+        resolved,
+        draft_id,
+        source_key=source_key,
     )
     draft["granted_roles"] = resolved
-    await append_draft_note(draft, f"directly set who can use this to: {', '.join(resolved) or '(no one yet)'}", source_key)
-    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+    await append_draft_note(
+        draft,
+        f"directly set who can use this to: {', '.join(resolved) or '(no one yet)'}",
+        source_key,
+    )
+    return {
+        "draft_recap": build_draft_recap(draft),
+        "draft_state": build_draft_state(draft),
+    }
 
 
-@router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/discard-and-reload")
+@router.post(
+    "/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/discard-and-reload"
+)
 async def discard_and_reload_draft(org_slug: str, draft_id: str):
     """
     The "discard mine & reload latest" side of the publish-conflict screen.
@@ -1113,24 +1381,34 @@ async def discard_and_reload_draft(org_slug: str, draft_id: str):
     would silently reload the WRONG workflow.
     """
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft or not draft.get("intent_key"):
-        raise HTTPException(status_code=404, detail="Draft not found or was never linked to a workflow")
+        raise HTTPException(
+            status_code=404, detail="Draft not found or was never linked to a workflow"
+        )
 
     org_id = str(draft["org_id"])
     wf = await fetch_one(
         "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
-        org_id, draft["intent_key"], source_key=source_key
+        org_id,
+        draft["intent_key"],
+        source_key=source_key,
     )
     if not wf:
-        raise HTTPException(status_code=404, detail="That workflow no longer exists live")
+        raise HTTPException(
+            status_code=404, detail="That workflow no longer exists live"
+        )
 
     await execute(
         "UPDATE workflow_drafts SET status = 'abandoned', updated_at = now() WHERE id = $1",
-        draft_id, source_key=source_key
+        draft_id,
+        source_key=source_key,
     )
 
     from app.services.workflow_builder_agent import start_edit_draft
+
     return await start_edit_draft(dict(wf), org_id, source_key)
 
 
@@ -1141,7 +1419,9 @@ async def edit_draft_trigger(org_slug: str, draft_id: str, request: Request):
     change with no recompile: it's a routing label, not execution logic."""
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
@@ -1149,22 +1429,41 @@ async def edit_draft_trigger(org_slug: str, draft_id: str, request: Request):
 
     cmd = (body.get("slash_command") or "").strip().lstrip("/").lower()
     if not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
-        raise HTTPException(status_code=400, detail="Command: 2-32 chars, lowercase letters/digits/_")
+        raise HTTPException(
+            status_code=400, detail="Command: 2-32 chars, lowercase letters/digits/_"
+        )
     dupe = await fetch_one(
         "SELECT id FROM workflows WHERE org_id = $1 AND slash_command = $2 AND is_active = true AND intent_key != $3",
-        org_id, cmd, draft.get("intent_key") or "", source_key=source_key
+        org_id,
+        cmd,
+        draft.get("intent_key") or "",
+        source_key=source_key,
     )
     if dupe:
-        raise HTTPException(status_code=409, detail=f"Command '/{cmd}' is already in use")
+        raise HTTPException(
+            status_code=409, detail=f"Command '/{cmd}' is already in use"
+        )
 
-    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    from app.services.workflow_builder_agent import (
+        append_draft_note,
+        build_draft_recap,
+        build_draft_state,
+    )
+
     await execute(
         "UPDATE workflow_drafts SET slash_command = $1, updated_at = now() WHERE id = $2",
-        cmd, draft_id, source_key=source_key
+        cmd,
+        draft_id,
+        source_key=source_key,
     )
     draft["slash_command"] = cmd
-    await append_draft_note(draft, f"directly changed the trigger command to /{cmd}", source_key)
-    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+    await append_draft_note(
+        draft, f"directly changed the trigger command to /{cmd}", source_key
+    )
+    return {
+        "draft_recap": build_draft_recap(draft),
+        "draft_state": build_draft_state(draft),
+    }
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/description")
@@ -1174,20 +1473,32 @@ async def edit_draft_description(org_slug: str, draft_id: str, request: Request)
     impact, so safe to change with no recompile, same as roles/trigger."""
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
 
     description = (body.get("description") or "").strip()
-    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    from app.services.workflow_builder_agent import (
+        append_draft_note,
+        build_draft_recap,
+        build_draft_state,
+    )
+
     await execute(
         "UPDATE workflow_drafts SET description = $1, updated_at = now() WHERE id = $2",
-        description, draft_id, source_key=source_key
+        description,
+        draft_id,
+        source_key=source_key,
     )
     draft["description"] = description
     await append_draft_note(draft, "directly edited the description", source_key)
-    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+    return {
+        "draft_recap": build_draft_recap(draft),
+        "draft_state": build_draft_state(draft),
+    }
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/title")
@@ -1206,7 +1517,9 @@ async def edit_draft_title(org_slug: str, draft_id: str, request: Request):
     """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
@@ -1214,14 +1527,26 @@ async def edit_draft_title(org_slug: str, draft_id: str, request: Request):
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
-    from app.services.workflow_builder_agent import append_draft_note, build_draft_recap, build_draft_state
+    from app.services.workflow_builder_agent import (
+        append_draft_note,
+        build_draft_recap,
+        build_draft_state,
+    )
+
     await execute(
         "UPDATE workflow_drafts SET name = $1, updated_at = now() WHERE id = $2",
-        name, draft_id, source_key=source_key
+        name,
+        draft_id,
+        source_key=source_key,
     )
     draft["name"] = name
-    await append_draft_note(draft, f'directly renamed the workflow to "{name}"', source_key)
-    return {"draft_recap": build_draft_recap(draft), "draft_state": build_draft_state(draft)}
+    await append_draft_note(
+        draft, f'directly renamed the workflow to "{name}"', source_key
+    )
+    return {
+        "draft_recap": build_draft_recap(draft),
+        "draft_state": build_draft_state(draft),
+    }
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/type")
@@ -1234,7 +1559,9 @@ async def edit_draft_type(org_slug: str, draft_id: str, request: Request):
     """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
@@ -1242,7 +1569,9 @@ async def edit_draft_type(org_slug: str, draft_id: str, request: Request):
 
     wtype = body.get("workflow_type")
     if wtype not in ("read", "action"):
-        raise HTTPException(status_code=400, detail="workflow_type must be 'read' or 'action'")
+        raise HTTPException(
+            status_code=400, detail="workflow_type must be 'read' or 'action'"
+        )
 
     was_compiled = draft.get("status") == "ready_for_review"
     set_parts = ["workflow_type = $2"]
@@ -1251,9 +1580,17 @@ async def edit_draft_type(org_slug: str, draft_id: str, request: Request):
         set_parts.append("status = 'chatting'")
     await execute(
         f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-        draft_id, *vals, source_key=source_key
+        draft_id,
+        *vals,
+        source_key=source_key,
     )
-    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, f"directly changed the type to {wtype}")
+    return await _save_and_maybe_recompile(
+        draft_id,
+        org_id,
+        source_key,
+        was_compiled,
+        f"directly changed the type to {wtype}",
+    )
 
 
 @router.post("/admin/{org_slug}/api/workflow-builder/draft/{draft_id}/business-rule")
@@ -1269,7 +1606,9 @@ async def edit_draft_business_rule(org_slug: str, draft_id: str, request: Reques
     """
     body = await request.json()
     source_key = await _resolve_source_key(org_slug)
-    draft = await fetch_one("SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key)
+    draft = await fetch_one(
+        "SELECT * FROM workflow_drafts WHERE id = $1", draft_id, source_key=source_key
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft = dict(draft)
@@ -1283,9 +1622,13 @@ async def edit_draft_business_rule(org_slug: str, draft_id: str, request: Reques
         set_parts.append("status = 'chatting'")
     await execute(
         f"UPDATE workflow_drafts SET {', '.join(set_parts)}, updated_at = now() WHERE id = $1",
-        draft_id, *vals, source_key=source_key
+        draft_id,
+        *vals,
+        source_key=source_key,
     )
-    return await _save_and_maybe_recompile(draft_id, org_id, source_key, was_compiled, "directly edited the business rules")
+    return await _save_and_maybe_recompile(
+        draft_id, org_id, source_key, was_compiled, "directly edited the business rules"
+    )
 
 
 def _build_html() -> str:
@@ -1751,7 +2094,7 @@ function _escapeHtml(s) {
 function _highlightJson(value) {
   const json = _escapeHtml(JSON.stringify(value, null, 2));
   return json.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\\s*:)?|\b(true|false|null)\b|-?\\d+(?:\\.\\d*)?(?:[eE][+\\-]?\\d+)?)/g,
     (match) => {
       let cls = 'jv-num';
       if (/^"/.test(match)) cls = /:$/.test(match) ? 'jv-key' : 'jv-str';

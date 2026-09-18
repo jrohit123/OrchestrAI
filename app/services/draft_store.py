@@ -1,17 +1,32 @@
-from app.db import fetch_one, execute
 import json
 
+from app.db import execute, fetch_one
+
+
 async def get_active_draft(org_id: str, user_id: str, source_key: str) -> dict | None:
-    row = await fetch_one("""
+    row = await fetch_one(
+        """
         SELECT * FROM user_drafts
         WHERE org_id=$1 AND user_id=$2
           AND stage NOT IN ('done','cancelled') AND expires_at > now()
-    """, org_id, user_id, source_key=source_key)
+    """,
+        org_id,
+        user_id,
+        source_key=source_key,
+    )
     return dict(row) if row else None
 
-async def upsert_draft(org_id, user_id, intent_key, fields: dict,
-                       stage="collecting", summary: str | None = None, source_key: str = None,
-                       reset_fields: bool = False):
+
+async def upsert_draft(
+    org_id,
+    user_id,
+    intent_key,
+    fields: dict,
+    stage="collecting",
+    summary: str | None = None,
+    source_key: str = None,
+    reset_fields: bool = False,
+):
     """
     reset_fields=True  → replace fields wholesale (use when switching intent)
     reset_fields=False → merge into existing fields (normal slot filling)
@@ -19,8 +34,11 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
     if not source_key:
         raise ValueError("upsert_draft: source_key is required")
     if not isinstance(fields, dict):
-        raise TypeError(f"upsert_draft: fields must be a dict, got {type(fields).__name__}")
-    await execute("""
+        raise TypeError(
+            f"upsert_draft: fields must be a dict, got {type(fields).__name__}"
+        )
+    await execute(
+        """
         INSERT INTO user_drafts (org_id, user_id, intent_key, fields, stage,
                                  conversation_summary, expires_at)
         VALUES ($1,$2,$3,$4::jsonb,$5,$6,
@@ -43,11 +61,26 @@ async def upsert_draft(org_id, user_id, intent_key, fields: dict,
             -- D2: an actively-used draft must not silently expire.
             -- TTL follows the org's own session_ttl_minutes, not a fixed window.
             expires_at = now() + make_interval(mins => (SELECT COALESCE(session_ttl_minutes, 480) FROM orgs WHERE id = $1))
-    """, org_id, user_id, intent_key, json.dumps(fields, default=str), stage, summary,
-         reset_fields, source_key=source_key)
+    """,
+        org_id,
+        user_id,
+        intent_key,
+        json.dumps(fields, default=str),
+        stage,
+        summary,
+        reset_fields,
+        source_key=source_key,
+    )
+
 
 async def close_draft(org_id, user_id, final_stage: str, source_key: str):
-    await execute("""
+    await execute(
+        """
         UPDATE user_drafts SET stage=$3, updated_at=now(), expires_at=now()
         WHERE org_id=$1 AND user_id=$2 AND stage NOT IN ('done','cancelled')
-    """, org_id, user_id, final_stage, source_key=source_key)
+    """,
+        org_id,
+        user_id,
+        final_stage,
+        source_key=source_key,
+    )

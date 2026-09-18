@@ -12,8 +12,13 @@ Distinct from qa_verifier.py:
   This checks a WORKFLOW'S SCHEMA against ITSELF (per-definition, at save time).
   Different layers, both needed.
 """
+
 import json
 import re
+
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 
 def _parse(val, default=None):
@@ -33,13 +38,15 @@ def validate_workflow_config(spec: dict) -> list[str]:
     """
     problems = []
 
-    entity_schema   = _parse(spec.get("entity_schema"), {}) or {}
-    calc_rules      = _parse(spec.get("calc_rules"), {}) or {}
-    item_rules      = calc_rules.get("item_rules") or {}
+    entity_schema = _parse(spec.get("entity_schema"), {}) or {}
+    calc_rules = _parse(spec.get("calc_rules"), {}) or {}
+    item_rules = calc_rules.get("item_rules") or {}
     aggregate_rules = calc_rules.get("aggregate_rules") or {}
-    items_def       = entity_schema.get("items") or {}
-    item_schema     = (items_def.get("item_schema") if isinstance(items_def, dict) else None) or {}
-    steps           = _parse(spec.get("steps"), []) or []
+    items_def = entity_schema.get("items") or {}
+    item_schema = (
+        items_def.get("item_schema") if isinstance(items_def, dict) else None
+    ) or {}
+    steps = _parse(spec.get("steps"), []) or []
     # Every place that WRITES workflow_type (compile_and_summarize,
     # workflow_publisher.py) defaults a missing/empty value to "action" via
     # `spec.get("workflow_type") or "action"`. If this check used a plain
@@ -50,7 +57,7 @@ def validate_workflow_config(spec: dict) -> list[str]:
     # the exact "workflow_type is 'action' but steps[] is empty" failure
     # this function exists to catch. Normalize the same way here so it's
     # caught at the true point of origin instead of one write later.
-    workflow_type   = spec.get("workflow_type") or "action"
+    workflow_type = spec.get("workflow_type") or "action"
 
     # ── 1. Every calc_rules output must be declared computed:true ────────────
     for field in item_rules:
@@ -79,8 +86,14 @@ def validate_workflow_config(spec: dict) -> list[str]:
                 f"computed fields are filled by the system, not collected from the user"
             )
         # Check item_schema too
-        for sub_field, sub_fs in (item_schema.items() if field == "items" else {}.items()):
-            if isinstance(sub_fs, dict) and sub_fs.get("computed") and sub_fs.get("required"):
+        for sub_field, sub_fs in (
+            item_schema.items() if field == "items" else {}.items()
+        ):
+            if (
+                isinstance(sub_fs, dict)
+                and sub_fs.get("computed")
+                and sub_fs.get("required")
+            ):
                 problems.append(
                     f"entity_schema.items.item_schema['{sub_field}'] is both computed and required"
                 )
@@ -101,12 +114,13 @@ def validate_workflow_config(spec: dict) -> list[str]:
         if isinstance(step, str):
             try:
                 step = json.loads(step)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Skipping unparseable step in $computed check: {e}")
                 continue
         if not isinstance(step, dict):
             continue
         params = step.get("params") or {}
-        for _, v in params.items():
+        for v in params.values():
             if isinstance(v, str) and v.startswith("$computed."):
                 field = v.split(".", 1)[1]
                 if field not in produced_computed:
@@ -150,19 +164,25 @@ def validate_workflow_config(spec: dict) -> list[str]:
         if not gate_id:
             problems.append(f"gates[{idx}] is missing 'id'")
         elif gate_id in seen_gate_ids:
-            problems.append(f"gates[{idx}] has duplicate id '{gate_id}' — gate ids must be unique")
+            problems.append(
+                f"gates[{idx}] has duplicate id '{gate_id}' — gate ids must be unique"
+            )
         else:
             seen_gate_ids.add(gate_id)
 
         gate_type = gate.get("type")
         if gate_type not in ("otp", "approval_chain", "permission"):
-            problems.append(f"{label}: type must be 'otp', 'approval_chain', or 'permission' (got {gate_type!r})")
+            problems.append(
+                f"{label}: type must be 'otp', 'approval_chain', or 'permission' (got {gate_type!r})"
+            )
             continue
 
         if gate_type == "approval_chain":
             levels = gate.get("levels")
             if not levels or not isinstance(levels, list):
-                problems.append(f"{label}: approval_chain gate must have a non-empty levels[] array")
+                problems.append(
+                    f"{label}: approval_chain gate must have a non-empty levels[] array"
+                )
                 continue
             prev_level_num = None
             prev_max = None
@@ -188,7 +208,11 @@ def validate_workflow_config(spec: dict) -> list[str]:
                         f"{label}.levels[{lvl_idx}]: unreachable — the previous level has "
                         f"max_amount=null (no ceiling), so this level can never trigger"
                     )
-                if max_amount is not None and prev_max is not None and max_amount <= prev_max:
+                if (
+                    max_amount is not None
+                    and prev_max is not None
+                    and max_amount <= prev_max
+                ):
                     problems.append(
                         f"{label}.levels[{lvl_idx}]: max_amount ({max_amount}) must be greater "
                         f"than the previous level's max_amount ({prev_max})"
@@ -197,14 +221,19 @@ def validate_workflow_config(spec: dict) -> list[str]:
                 prev_max = max_amount
         elif gate_type == "permission":
             if not gate.get("role_any_of"):
-                problems.append(f"{label}: permission gate must have a non-empty role_any_of[] array")
+                problems.append(
+                    f"{label}: permission gate must have a non-empty role_any_of[] array"
+                )
 
     # ── 8. status literals in db.insert_row/db.update_row must be lowercase ──
     for step in steps:
         if isinstance(step, str):
             try:
                 step = json.loads(step)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Skipping unparseable step in status-literal check: {e}"
+                )
                 continue
         if not isinstance(step, dict):
             continue
@@ -235,7 +264,7 @@ def validate_workflow_config(spec: dict) -> list[str]:
             if not token.isdigit():
                 problems.append(
                     f"sql_template contains non-numeric placeholder '${token}' — "
-                    f"parameter values (including sentinels like \"$current_user\") "
+                    f'parameter values (including sentinels like "$current_user") '
                     f"must be passed positionally as $1, $2... with the actual "
                     f"name/sentinel only in sql_params_order, never inlined in the SQL text"
                 )
@@ -267,7 +296,10 @@ def validate_workflow_config(spec: dict) -> list[str]:
         if isinstance(step, str):
             try:
                 step = json.loads(step)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Skipping unparseable step in resolve_entity composite-key check: {e}"
+                )
                 continue
         if not isinstance(step, dict) or step.get("op") != "resolve_entity":
             continue

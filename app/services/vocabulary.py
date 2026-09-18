@@ -26,11 +26,19 @@ crash, no guessed English/Hindi words); the message just falls through to
 the normal LLM agent turn instead. See migrations/seed_vocabulary.sql for
 the one-time data seed that gives existing orgs their current behaviour.
 """
+
 import re
+
 from app.db import fetch_one
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 
-_VOCAB_KEYS = ("confirm_words", "cancel_words", "cancel_tokens", "self_reference_words", "retry_words")
+_VOCAB_KEYS = (
+    "confirm_words",
+    "cancel_words",
+    "cancel_tokens",
+    "self_reference_words",
+    "retry_words",
+)
 
 
 def matches_vocab(text: str, words: frozenset) -> bool:
@@ -48,10 +56,11 @@ def matches_vocab(text: str, words: frozenset) -> bool:
     if not words:
         return False
     text = text.strip().lower()
-    pattern = r'^(?:' + '|'.join(re.escape(w) for w in words) + r')\b'
+    pattern = r"^(?:" + "|".join(re.escape(w) for w in words) + r")\b"
     return bool(re.match(pattern, text))
 
-_cache: dict[str, dict] = {}   # org_id -> {key: frozenset}
+
+_cache: dict[str, dict] = {}  # org_id -> {key: frozenset}
 
 
 async def get_vocabulary(org_id: str, source_key: str) -> dict:
@@ -69,8 +78,12 @@ async def get_vocabulary(org_id: str, source_key: str) -> dict:
     if org_id in _cache:
         return _cache[org_id]
 
-    row = await fetch_one("SELECT settings FROM orgs WHERE id = $1", org_id, source_key=source_key)
-    org_vocab = (_parse_jsonb(row["settings"], {}) if row else {}).get("vocabulary") or {}
+    row = await fetch_one(
+        "SELECT settings FROM orgs WHERE id = $1", org_id, source_key=source_key
+    )
+    org_vocab = (_parse_jsonb(row["settings"], {}) if row else {}).get(
+        "vocabulary"
+    ) or {}
 
     resolved = {
         key: frozenset(w.lower() for w in (org_vocab.get(key) or []))

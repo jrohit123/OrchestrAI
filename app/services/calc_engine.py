@@ -16,26 +16,34 @@ than assuming the rules are already in dependency order.
 MONEY HANDLING: All monetary values use Decimal for precision.
 Binary float rounding produces paisa drift that will not reconcile.
 """
-from decimal import Decimal, ROUND_HALF_UP
+
 import datetime as _dt
-from simpleeval import EvalWithCompoundTypes, InvalidExpression
+from decimal import ROUND_HALF_UP, Decimal
 
 # Register Decimal with simpleeval
-from simpleeval import DEFAULT_FUNCTIONS
-DEFAULT_FUNCTIONS['Decimal'] = Decimal
+from simpleeval import DEFAULT_FUNCTIONS, EvalWithCompoundTypes, InvalidExpression
+
+DEFAULT_FUNCTIONS["Decimal"] = Decimal
 
 _ALLOWED_FUNCTIONS = {
-    "round":       lambda x, d=2: round(x, d),
-    "abs":         abs,
-    "min":         min,
-    "max":         max,
-    "sum_field":   lambda items, field: sum(Decimal(i.get(field) or 0) for i in (items or [])),
+    "round": lambda x, d=2: round(x, d),
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "sum_field": lambda items, field: sum(
+        Decimal(i.get(field) or 0) for i in (items or [])
+    ),
     "count_field": lambda items: len(items or []),
-    "Decimal":     Decimal,
-    "due_from_tat": lambda value, unit: _dt.datetime.now(_dt.timezone.utc) + (
-        _dt.timedelta(minutes=value) if unit == "minutes" else
-        _dt.timedelta(hours=value)   if unit == "hours"   else
-        _dt.timedelta(days=value)
+    "Decimal": Decimal,
+    "due_from_tat": lambda value, unit: (
+        _dt.datetime.now(_dt.timezone.utc)
+        + (
+            _dt.timedelta(minutes=value)
+            if unit == "minutes"
+            else _dt.timedelta(hours=value)
+            if unit == "hours"
+            else _dt.timedelta(days=value)
+        )
     ),
 }
 
@@ -50,7 +58,9 @@ def _eval(expr: str, names: dict):
     return ev.eval(expr)
 
 
-def _resolve_multipass(rules: dict, names: dict, out: dict, label: str, error_suffix: str) -> dict:
+def _resolve_multipass(
+    rules: dict, names: dict, out: dict, label: str, error_suffix: str
+) -> dict:
     """
     Evaluate `rules` (field_name -> expression string) against `names`,
     without assuming any particular order between rules. Rules may
@@ -73,7 +83,7 @@ def _resolve_multipass(rules: dict, names: dict, out: dict, label: str, error_su
             if isinstance(result, float):
                 result = Decimal(str(result))
             if isinstance(result, Decimal):
-                result = result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                result = result.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             out[field] = result
             names[field] = out[field]
             del pending[field]
@@ -100,7 +110,9 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     # not something safe to guess a number for (it changes the invoice amount).
     # making_charges can be flat (direct value) or percentage-based
     # Keep making_charges_flat in context even if None (for calc rule fallback check)
-    making_charge_pct = item.get("making_charge_pct", context.get("default_making_charge_pct"))
+    making_charge_pct = item.get(
+        "making_charge_pct", context.get("default_making_charge_pct")
+    )
     if making_charge_pct is None and item.get("making_charges_flat") is None:
         raise CalcError(
             "making_charge_pct missing on item and no default_making_charge_pct set for org"
@@ -112,7 +124,14 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
         "making_charges_flat": item.get("making_charges_flat"),
     }
     # Filter out None values EXCEPT for making_charges_flat (needed for fallback logic)
-    names = {**context, **{k: v for k, v in item_with_defaults.items() if v is not None or k == "making_charges_flat"}}
+    names = {
+        **context,
+        **{
+            k: v
+            for k, v in item_with_defaults.items()
+            if v is not None or k == "making_charges_flat"
+        },
+    }
     out = dict(item_with_defaults)
     return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
@@ -136,15 +155,14 @@ def compute_draft(calc_rules: dict, fields: dict, context: dict) -> dict:
     if not calc_rules:
         return dict(fields)
 
-    item_rules      = calc_rules.get("item_rules") or {}
+    item_rules = calc_rules.get("item_rules") or {}
     aggregate_rules = calc_rules.get("aggregate_rules") or {}
 
     new_fields = dict(fields)
 
     if item_rules and isinstance(fields.get("items"), list):
         new_fields["items"] = [
-            compute_item_rules(item_rules, item, context)
-            for item in fields["items"]
+            compute_item_rules(item_rules, item, context) for item in fields["items"]
         ]
 
     if aggregate_rules:

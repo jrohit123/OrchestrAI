@@ -1,14 +1,16 @@
-from fastapi import FastAPI, Request, HTTPException
 from contextlib import asynccontextmanager
-from app.db import init_db, close_db, get_pool
-from app.redis_client import init_redis, close_redis, get_redis
-from app.routers.webhook import router as webhook_router
+
+import httpx
+from fastapi import FastAPI, Request
+from openai import AsyncOpenAI
+
+from app.db import close_db, get_pool, init_db
+from app.logging_config import bind_context, get_context_logger, setup_logging
+from app.redis_client import close_redis, get_redis, init_redis
 from app.routers.admin import router as admin_router
 from app.routers.telegram_webhook import router as telegram_router
+from app.routers.webhook import router as webhook_router
 from app.scheduler.jobs import start_scheduler, stop_scheduler
-from app.logging_config import setup_logging, bind_context, get_context_logger
-from openai import AsyncOpenAI
-import httpx
 
 logger = get_context_logger(__name__)
 
@@ -33,13 +35,14 @@ async def add_correlation_id(request: Request, call_next):
     """Add correlation ID to request context for logging."""
     # Try to get correlation ID from header (Meta sends this)
     correlation_id = request.headers.get("X-Request-ID") or ""
-    
+
     # Bind context for this request
     bind_context(correlation_id_val=correlation_id)
-    
+
     response = await call_next(request)
     response.headers["X-Request-ID"] = correlation_id
     return response
+
 
 app.include_router(webhook_router)
 app.include_router(admin_router)
@@ -57,12 +60,16 @@ async def debug_schema(source_key: str):
     """Debug: show what tables are visible for a given source_key."""
     try:
         from app.db import fetch_all
-        rows = await fetch_all("""
+
+        rows = await fetch_all(
+            """
             SELECT table_name, column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'public'
             ORDER BY table_name, ordinal_position
-        """, source_key=source_key)
+        """,
+            source_key=source_key,
+        )
         tables: dict = {}
         for r in rows:
             tables.setdefault(r["table_name"], []).append(r["column_name"])
@@ -75,6 +82,7 @@ async def debug_schema(source_key: str):
 async def clear_schema_cache():
     """Force-clear the in-memory schema cache so next request re-reads from DB."""
     from app.services.agent import invalidate_schema_cache
+
     invalidate_schema_cache()
     return {"cleared": True}
 
@@ -82,14 +90,12 @@ async def clear_schema_cache():
 @app.get("/health")
 async def health():
     """Health check with dependency status."""
-    status = {
-        "status": "ok",
-        "dependencies": {}
-    }
-    
+    status = {"status": "ok", "dependencies": {}}
+
     # Check database
     try:
         from app.db import get_default_source_key
+
         source_key = await get_default_source_key()
         pool = get_pool(source_key)
         async with pool.acquire() as conn:
@@ -97,9 +103,9 @@ async def health():
         status["dependencies"]["database"] = "ok"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        status["dependencies"]["database"] = f"error: {str(e)}"
+        status["dependencies"]["database"] = f"error: {e!s}"
         status["status"] = "degraded"
-    
+
     # Check Redis
     try:
         redis = get_redis()
@@ -111,9 +117,9 @@ async def health():
             status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Redis health check failed: {e}")
-        status["dependencies"]["redis"] = f"error: {str(e)}"
+        status["dependencies"]["redis"] = f"error: {e!s}"
         status["status"] = "degraded"
-    
+
     # Check OpenAI API
     try:
         client = AsyncOpenAI()
@@ -121,9 +127,9 @@ async def health():
         status["dependencies"]["openai"] = "ok"
     except Exception as e:
         logger.error(f"OpenAI health check failed: {e}")
-        status["dependencies"]["openai"] = f"error: {str(e)}"
+        status["dependencies"]["openai"] = f"error: {e!s}"
         status["status"] = "degraded"
-    
+
     # Check Cerebras API (if configured)
     try:
         cerebras_key = __import__("os").getenv("CEREBRAS_API_KEY")
@@ -132,22 +138,25 @@ async def health():
                 response = await client.get(
                     "https://api.cerebras.ai/v1/models",
                     headers={"Authorization": f"Bearer {cerebras_key}"},
-                    timeout=5.0
+                    timeout=5.0,
                 )
                 if response.status_code == 200:
                     status["dependencies"]["cerebras"] = "ok"
                 else:
-                    status["dependencies"]["cerebras"] = f"error: status {response.status_code}"
+                    status["dependencies"]["cerebras"] = (
+                        f"error: status {response.status_code}"
+                    )
                     status["status"] = "degraded"
         else:
             status["dependencies"]["cerebras"] = "not_configured"
     except Exception as e:
         logger.error(f"Cerebras health check failed: {e}")
-        status["dependencies"]["cerebras"] = f"error: {str(e)}"
-    
+        status["dependencies"]["cerebras"] = f"error: {e!s}"
+
     # Check scheduler
     try:
         from app.scheduler.jobs import scheduler
+
         if scheduler and scheduler.running:
             status["dependencies"]["scheduler"] = "ok"
         else:
@@ -155,24 +164,28 @@ async def health():
             status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Scheduler health check failed: {e}")
-        status["dependencies"]["scheduler"] = f"error: {str(e)}"
+        status["dependencies"]["scheduler"] = f"error: {e!s}"
         status["status"] = "degraded"
 
     # Check LLM ladder state
     try:
-        from app.services.llm_router import _COOLDOWN_UNTIL, _build_ladder
         import time as _t
+
+        from app.services.llm_router import _COOLDOWN_UNTIL, _build_ladder
+
         _now = _t.monotonic()
         status["dependencies"]["llm_ladder"] = [
             {
                 "provider": a.label,
-                "state": "cooling" if _COOLDOWN_UNTIL.get(a.label, 0) > _now else "ready",
+                "state": "cooling"
+                if _COOLDOWN_UNTIL.get(a.label, 0) > _now
+                else "ready",
                 "resumes_in_s": max(0, round(_COOLDOWN_UNTIL.get(a.label, 0) - _now)),
             }
             for a in _build_ladder()
         ]
     except Exception as e:
         logger.error(f"LLM ladder health check failed: {e}")
-        status["dependencies"]["llm_ladder"] = f"error: {str(e)}"
+        status["dependencies"]["llm_ladder"] = f"error: {e!s}"
 
     return status

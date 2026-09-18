@@ -12,11 +12,13 @@ Everything else that was here has been removed:
   - accounting.create_invoice calls → replaced by execute_pending_action
   - _log                  → done in webhook.py directly
 """
+
 import json
-from app.db import fetch_one, execute
-from app.services.messaging import send_text, send_buttons
-from app.redis_client import set_session
+
+from app.db import execute, fetch_one
 from app.logging_config import get_context_logger
+from app.redis_client import set_session
+from app.services.messaging import send_buttons, send_text
 
 logger = get_context_logger(__name__)
 
@@ -32,13 +34,17 @@ async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
 
     if pending and pending.get("type") == "security_auth":
         await set_session(session_id, {"otp_verified": True})
-        return "✅ Identity verified! Session active for 4h. Please resend your request."
+        return (
+            "✅ Identity verified! Session active for 4h. Please resend your request."
+        )
 
     # Fallback for any other legacy pending_intent shapes
     return "✅ Verified! Please resend your original request."
 
 
-async def handle_approval_response(phone: str, action: str, approval_id: str, user: dict):
+async def handle_approval_response(
+    phone: str, action: str, approval_id: str, user: dict
+):
     """
     Called when an approver taps Approve or Reject on a pending_approvals
     button. If the workflow's gate has more levels left in its
@@ -53,11 +59,16 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
     org_id = user["org_id"]
 
     # Fetch by primary key, scoped to org and pending status
-    approval = await fetch_one("""
+    approval = await fetch_one(
+        """
         SELECT id, requester_id, approver_role, intent_key, context, status, gate_id, level
         FROM pending_approvals
         WHERE id = $1 AND org_id = $2 AND status = 'pending'
-    """, approval_id, org_id, source_key=user["source_key"])
+    """,
+        approval_id,
+        org_id,
+        source_key=user["source_key"],
+    )
 
     if not approval:
         await send_text(phone, "No pending approval found or already handled.")
@@ -74,9 +85,9 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
     # always populated with a role NAME (see approver_role_name there) — the
     # two never matched, so this check silently always fell through to the
     # generic "approve" permission below. Compare role name to role name.
-    user_role_name    = user.get("role")
-    approver_role     = approval["approver_role"]
-    user_permissions  = user.get("permissions", [])
+    user_role_name = user.get("role")
+    approver_role = approval["approver_role"]
+    user_permissions = user.get("permissions", [])
 
     if user_role_name != approver_role and "approve" not in user_permissions:
         await send_text(phone, "You are not authorised to approve this request.")
@@ -86,12 +97,17 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
     if str(approval["requester_id"]) == user["user_id"]:
         await send_text(phone, "You cannot approve your own request.")
         # Log rejection
-        await execute("""
+        await execute(
+            """
             INSERT INTO audit_log (org_id, user_id, intent_key, outcome, steps_taken)
             VALUES ($1, $2, $3, 'rejected', $4::jsonb)
-        """, org_id, user["user_id"], approval["intent_key"],
+        """,
+            org_id,
+            user["user_id"],
+            approval["intent_key"],
             json.dumps({"approval_id": approval_id, "reason": "self_approval_blocked"}),
-            source_key=user["source_key"])
+            source_key=user["source_key"],
+        )
         return
 
     ctx = approval["context"]
@@ -100,7 +116,8 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
 
     # Mark as decided
     new_status = "approved" if action == "action:approve" else "rejected"
-    await execute("""
+    await execute(
+        """
         UPDATE pending_approvals
         SET status = $1, decided_by = $2, decided_at = NOW()
         WHERE id = $3
@@ -108,60 +125,79 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
         new_status,
         user["user_id"],
         approval["id"],
-        source_key=user["source_key"]
+        source_key=user["source_key"],
     )
 
     # Extract amount from context for logging
     amount = ctx.get("pending_action", {}).get("fields", {}).get("total_amount", 0)
 
     # Log approval decision to audit_log
-    await execute("""
+    await execute(
+        """
         INSERT INTO audit_log (org_id, user_id, intent_key, outcome, steps_taken)
         VALUES ($1, $2, $3, $4, $5::jsonb)
-    """, org_id, user["user_id"], approval["intent_key"], new_status,
-        json.dumps({
-            "approval_id": approval_id,
-            "gate_id": approval.get("gate_id"),
-            "level": approval.get("level"),
-            "amount": amount,
-            "decided_by": user["user_id"],
-            "decided_by_name": user.get("user_name", "")
-        }),
-        source_key=user["source_key"]
+    """,
+        org_id,
+        user["user_id"],
+        approval["intent_key"],
+        new_status,
+        json.dumps(
+            {
+                "approval_id": approval_id,
+                "gate_id": approval.get("gate_id"),
+                "level": approval.get("level"),
+                "amount": amount,
+                "decided_by": user["user_id"],
+                "decided_by_name": user.get("user_name", ""),
+            }
+        ),
+        source_key=user["source_key"],
     )
 
     requester_phone = ctx.get("requester_phone", "")
-    requester_name  = ctx.get("requester_name", "Your colleague")
+    requester_name = ctx.get("requester_name", "Your colleague")
 
     if action == "action:reject":
         await send_text(phone, "❌ Action rejected.")
         if requester_phone:
             await send_text(
                 requester_phone,
-                f"❌ Your request was *rejected* by {user['user_name']}."
+                f"❌ Your request was *rejected* by {user['user_name']}.",
             )
         return
 
     # ── Multi-level chain: advance to the next level instead of resuming ────
     required_queue = ctx.get("required_queue") or []
-    queue_index     = ctx.get("queue_index", 0)
+    queue_index = ctx.get("queue_index", 0)
 
     if queue_index + 1 < len(required_queue):
         nxt = required_queue[queue_index + 1]
         next_ctx = {**ctx, "queue_index": queue_index + 1}
-        next_approver = await _find_approver_for_role(nxt.get("role"), org_id, user["source_key"])
+        next_approver = await _find_approver_for_role(
+            nxt.get("role"), org_id, user["source_key"]
+        )
 
-        next_row = await execute("""
+        next_row = await execute(
+            """
             INSERT INTO pending_approvals
             (org_id, requester_id, approver_role, intent_key, context, status, gate_id, level)
             VALUES ($1, $2, $3, $4, $5::jsonb, 'pending', $6, $7)
             RETURNING id
-        """, org_id, ctx.get("requester_id"), nxt.get("role") or "approver",
-            approval["intent_key"], json.dumps(next_ctx, default=str),
-            nxt.get("gate_id"), nxt.get("level"), source_key=user["source_key"])
+        """,
+            org_id,
+            ctx.get("requester_id"),
+            nxt.get("role") or "approver",
+            approval["intent_key"],
+            json.dumps(next_ctx, default=str),
+            nxt.get("gate_id"),
+            nxt.get("level"),
+            source_key=user["source_key"],
+        )
         next_approval_id = next_row[0]["id"]
 
-        await send_text(phone, "✅ Your approval is recorded. Escalating to the next approver.")
+        await send_text(
+            phone, "✅ Your approval is recorded. Escalating to the next approver."
+        )
         if next_approver:
             level_note = f" — level {nxt.get('level')} of {len(required_queue)}"
             await send_buttons(
@@ -175,8 +211,8 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
                 ),
                 buttons=[
                     {"id": f"action:approve:{next_approval_id}", "title": "✅ Approve"},
-                    {"id": f"action:reject:{next_approval_id}",  "title": "❌ Reject"}
-                ]
+                    {"id": f"action:reject:{next_approval_id}", "title": "❌ Reject"},
+                ],
             )
         else:
             logger.warning(
@@ -196,25 +232,27 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
     # perms") deny EVERY approval resume unconditionally — approved actions
     # never actually executed. Resolve the requester's real user record
     # (permissions, role, role_id) instead of reconstructing a fake one.
-    requester_user = await resolve_identity(requester_phone) if requester_phone else None
+    requester_user = (
+        await resolve_identity(requester_phone) if requester_phone else None
+    )
     if not requester_user:
         # Requester's phone couldn't be resolved (e.g. missing on record) —
         # fall back to a minimal user carrying just enough permission to
         # pass the check for THIS workflow, so the already-approved action
         # doesn't get silently rejected.
         requester_user = {
-            "user_id":     ctx.get("requester_id", user["user_id"]),
-            "org_id":      org_id,
-            "user_name":   requester_name,
-            "org_name":    user.get("org_name", ""),
-            "email":       ctx.get("requester_email", ""),
-            "role":        None,
-            "role_id":     None,
+            "user_id": ctx.get("requester_id", user["user_id"]),
+            "org_id": org_id,
+            "user_name": requester_name,
+            "org_name": user.get("org_name", ""),
+            "email": ctx.get("requester_email", ""),
+            "role": None,
+            "role_id": None,
             "permissions": [approval["intent_key"]],
-            "phone":       requester_phone,
-            "is_active":   True,
-            "org_active":  True,
-            "source_key":  user["source_key"],
+            "phone": requester_phone,
+            "is_active": True,
+            "org_active": True,
+            "source_key": user["source_key"],
         }
 
     result = await execute_pending_action(
@@ -229,27 +267,40 @@ async def handle_approval_response(phone: str, action: str, approval_id: str, us
         if requester_phone:
             await send_text(
                 requester_phone,
-                f"✅ Your request was *approved* by {user['user_name']}.\n\n{result['message']}"
+                f"✅ Your request was *approved* by {user['user_name']}.\n\n{result['message']}",
             )
     else:
-        await send_text(phone, f"✅ Approved but execution failed: {result.get('message', '?')}")
+        await send_text(
+            phone, f"✅ Approved but execution failed: {result.get('message', '?')}"
+        )
 
 
-async def _find_approver_for_role(role_name: str | None, org_id: str, source_key: str) -> dict | None:
+async def _find_approver_for_role(
+    role_name: str | None, org_id: str, source_key: str
+) -> dict | None:
     """Mirrors step_interpreter._find_approver — kept as a separate copy since
     this module intentionally has no import-time dependency on step_interpreter."""
     if role_name:
-        return await fetch_one("""
+        return await fetch_one(
+            """
             SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
             JOIN roles r ON r.id = u.role_id
             WHERE u.org_id = $1 AND r.name = $2
               AND u.is_active = true AND u.phone IS NOT NULL
             LIMIT 1
-        """, org_id, role_name, source_key=source_key)
-    return await fetch_one("""
+        """,
+            org_id,
+            role_name,
+            source_key=source_key,
+        )
+    return await fetch_one(
+        """
         SELECT u.phone, u.name, u.id, r.name as role_name FROM users u
         JOIN roles r ON r.id = u.role_id
         WHERE u.org_id = $1 AND r.is_approver = true
           AND u.is_active = true AND u.phone IS NOT NULL
         LIMIT 1
-    """, org_id, source_key=source_key)
+    """,
+        org_id,
+        source_key=source_key,
+    )

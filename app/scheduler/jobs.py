@@ -5,6 +5,7 @@ One job fires every minute. It checks scheduled_reports for anything due,
 calls run_agent with the stored query_text, and delivers the result via
 WhatsApp (text or PDF) and/or email — same as the user typing the query manually.
 """
+
 import datetime
 import json
 from zoneinfo import ZoneInfo
@@ -12,9 +13,9 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.db import fetch_all, execute, fetch_one
-from app.services.messaging import send_text
+from app.db import execute, fetch_all, fetch_one
 from app.logging_config import get_context_logger
+from app.services.messaging import send_text
 
 logger = get_context_logger(__name__)
 
@@ -23,6 +24,7 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 
 # ── Compute next_run_at from a schedule row ──────────────────────────────────
+
 
 def compute_next_run(row: dict, from_dt: datetime.datetime = None) -> datetime.datetime:
     """
@@ -45,7 +47,7 @@ def compute_next_run(row: dict, from_dt: datetime.datetime = None) -> datetime.d
         return next_dt.astimezone(datetime.timezone.utc)
 
     if stype == "daily":
-        hour   = int(row.get("hour") or 8)
+        hour = int(row.get("hour") or 8)
         minute = int(row.get("minute") or 0)
         next_dt = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if next_dt <= now_ist:
@@ -53,9 +55,9 @@ def compute_next_run(row: dict, from_dt: datetime.datetime = None) -> datetime.d
         return next_dt.astimezone(datetime.timezone.utc)
 
     if stype == "weekly":
-        hour       = int(row.get("hour") or 9)
-        minute     = int(row.get("minute") or 0)
-        day_names  = ["mon","tue","wed","thu","fri","sat","sun"]
+        hour = int(row.get("hour") or 9)
+        minute = int(row.get("minute") or 0)
+        day_names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
         target_dow = day_names.index(str(row.get("day_of_week") or "mon").lower()[:3])
         days_ahead = (target_dow - now_ist.weekday()) % 7
         next_dt = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -66,12 +68,15 @@ def compute_next_run(row: dict, from_dt: datetime.datetime = None) -> datetime.d
 
     if stype == "monthly":
         import calendar
-        hour         = int(row.get("hour") or 9)
-        minute       = int(row.get("minute") or 0)
+
+        hour = int(row.get("hour") or 9)
+        minute = int(row.get("minute") or 0)
         day_of_month = int(row.get("day_of_month") or 1)
         last_day = calendar.monthrange(now_ist.year, now_ist.month)[1]
         day_of_month = min(day_of_month, last_day)
-        next_dt = now_ist.replace(day=day_of_month, hour=hour, minute=minute, second=0, microsecond=0)
+        next_dt = now_ist.replace(
+            day=day_of_month, hour=hour, minute=minute, second=0, microsecond=0
+        )
         if next_dt <= now_ist:
             if now_ist.month == 12:
                 next_dt = next_dt.replace(year=now_ist.year + 1, month=1)
@@ -84,12 +89,14 @@ def compute_next_run(row: dict, from_dt: datetime.datetime = None) -> datetime.d
 
 # ── Main scheduled job — runs every minute ───────────────────────────────────
 
+
 async def run_scheduled_reports():
     """
     Fires every minute. Finds all active scheduled_reports whose next_run_at
     is <= now, runs each via run_agent, delivers result, updates next_run_at.
     """
     from app.db import get_all_source_keys
+
     now = datetime.datetime.now(datetime.timezone.utc)
     logger.debug(f"Tick at {now.strftime('%H:%M:%S')} UTC")
 
@@ -99,7 +106,8 @@ async def run_scheduled_reports():
 
     for source_key in source_keys:
         try:
-            due = await fetch_all("""
+            due = await fetch_all(
+                """
                 SELECT sr.*, u.name as user_name, u.role_id,
                        o.name as org_name, o.gst_rate,
                        r.permissions, r.name as role_name
@@ -109,13 +117,16 @@ async def run_scheduled_reports():
                 JOIN roles r ON r.id = u.role_id
                 WHERE sr.is_active = true
                   AND sr.next_run_at <= $1
-            """, now, source_key=source_key)
+            """,
+                now,
+                source_key=source_key,
+            )
         except Exception as e:
             # Table might not exist in some databases
             if "scheduled_reports" in str(e):
                 continue
             raise
-        
+
         # Add source_key to each row for later use
         for row in due:
             row_dict = dict(row)
@@ -130,27 +141,27 @@ async def run_scheduled_reports():
     from app.services.agent import run_agent
 
     for row in all_due:
-        report_id  = str(row["id"])
-        phone      = row["phone"]
+        report_id = str(row["id"])
+        phone = row["phone"]
         query_text = row["query_text"]
-        label      = row["report_label"]
-        delivery   = row["delivery"]
+        label = row["report_label"]
+        delivery = row["delivery"]
 
         try:
             logger.info(f"Running '{label}' for {phone}")
 
             user = {
-                "user_id":    str(row["user_id"]),
-                "org_id":     str(row["org_id"]),
-                "user_name":  row["user_name"],
-                "org_name":   row["org_name"],
-                "role":       row.get("role_name", "member"),
-                "role_id":    str(row["role_id"]),
+                "user_id": str(row["user_id"]),
+                "org_id": str(row["org_id"]),
+                "user_name": row["user_name"],
+                "org_name": row["org_name"],
+                "role": row.get("role_name", "member"),
+                "role_id": str(row["role_id"]),
                 "permissions": list(row["permissions"] or []),
-                "phone":      phone,
-                "email":      row.get("email") or "",
+                "phone": phone,
+                "email": row.get("email") or "",
                 "org_active": True,
-                "is_active":  True,
+                "is_active": True,
                 "source_key": row.get("source_key", "platform"),
             }
 
@@ -174,28 +185,41 @@ async def run_scheduled_reports():
                 await send_text(phone, header + reply)
 
             next_run = compute_next_run(dict(row), from_dt=now)
-            await execute("""
+            await execute(
+                """
                 UPDATE scheduled_reports
                 SET last_run_at = $1,
                     next_run_at = $2,
                     run_count   = run_count + 1
                 WHERE id = $3
-            """, now, next_run, report_id, source_key=row.get("source_key", "platform"))
+            """,
+                now,
+                next_run,
+                report_id,
+                source_key=row.get("source_key", "platform"),
+            )
 
-            logger.info(f"'{label}' done. Next: {next_run.astimezone(_IST).strftime('%d %b %H:%M IST')}")
+            logger.info(
+                f"'{label}' done. Next: {next_run.astimezone(_IST).strftime('%d %b %H:%M IST')}"
+            )
 
         except Exception as e:
             import traceback
+
             logger.error(f"Error running '{label}' for {phone}: {e}")
             traceback.print_exc()
             try:
                 next_run = compute_next_run(dict(row), from_dt=now)
                 await execute(
                     "UPDATE scheduled_reports SET next_run_at = $1 WHERE id = $2",
-                    next_run, report_id, source_key=row.get("source_key", "platform")
+                    next_run,
+                    report_id,
+                    source_key=row.get("source_key", "platform"),
                 )
-            except Exception:
-                pass
+            except Exception as reschedule_err:
+                logger.error(
+                    f"Failed to reschedule '{label}' after error: {reschedule_err}"
+                )
 
 
 async def run_case_reminders():
@@ -215,9 +239,12 @@ async def run_case_reminders():
         try:
             orgs = await fetch_all(
                 "SELECT id, settings FROM orgs WHERE is_active = true",
-                source_key=source_key
+                source_key=source_key,
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"run_case_reminders: could not load orgs for source_key={source_key}: {e}"
+            )
             continue
 
         for org in orgs:
@@ -231,7 +258,9 @@ async def run_case_reminders():
             org_id = str(org["id"])
 
             await _run_case_notification_pass(
-                org_id=org_id, cfg=cfg, source_key=source_key,
+                org_id=org_id,
+                cfg=cfg,
+                source_key=source_key,
                 minutes_col="reminder_threshold_minutes",
                 sent_col_key="reminder_sent_column",
                 assignee_tmpl_key="assignee_message_template",
@@ -239,7 +268,9 @@ async def run_case_reminders():
             )
             if cfg.get("tat_breach_sent_column"):
                 await _run_case_notification_pass(
-                    org_id=org_id, cfg=cfg, source_key=source_key,
+                    org_id=org_id,
+                    cfg=cfg,
+                    source_key=source_key,
                     minutes_col="tat_minutes",
                     sent_col_key="tat_breach_sent_column",
                     assignee_tmpl_key="assignee_tat_message_template",
@@ -248,12 +279,19 @@ async def run_case_reminders():
 
 
 async def _run_case_notification_pass(
-    org_id: str, cfg: dict, source_key: str,
-    minutes_col: str, sent_col_key: str,
-    assignee_tmpl_key: str, complainant_tmpl_key: str,
+    org_id: str,
+    cfg: dict,
+    source_key: str,
+    minutes_col: str,
+    sent_col_key: str,
+    assignee_tmpl_key: str,
+    complainant_tmpl_key: str,
 ):
     """One fire-once notification pass — see run_case_reminders() above."""
-    from app.services.step_interpreter import _load_schema_allowlist, _validate_identifier
+    from app.services.step_interpreter import (
+        _load_schema_allowlist,
+        _validate_identifier,
+    )
 
     table = cfg["table"]
     sent_column = cfg.get(sent_col_key)
@@ -261,9 +299,13 @@ async def _run_case_notification_pass(
         return
 
     col_keys = [
-        "case_number_column", "title_column", "priority_column",
-        "status_column", "created_at_column",
-        "assignee_id_column", "complainant_id_column",
+        "case_number_column",
+        "title_column",
+        "priority_column",
+        "status_column",
+        "created_at_column",
+        "assignee_id_column",
+        "complainant_id_column",
     ]
     cols = [cfg[k] for k in col_keys] + [sent_column]
 
@@ -297,37 +339,45 @@ async def _run_case_notification_pass(
     closed_values = cfg.get("closed_values", ["closed"])
 
     sql = f"""
-        SELECT t.{cfg['case_number_column']} AS case_number,
-               t.{cfg['title_column']} AS title,
-               t.{cfg['priority_column']} AS priority,
-               t.{cfg['status_column']} AS status,
-               t.{cfg['assignee_id_column']} AS assignee_id,
-               t.{cfg['complainant_id_column']} AS complainant_id,
+        SELECT t.{cfg["case_number_column"]} AS case_number,
+               t.{cfg["title_column"]} AS title,
+               t.{cfg["priority_column"]} AS priority,
+               t.{cfg["status_column"]} AS status,
+               t.{cfg["assignee_id_column"]} AS assignee_id,
+               t.{cfg["complainant_id_column"]} AS complainant_id,
                t.id AS row_id
         FROM {table} t
         JOIN {tat_table} ptr
-          ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg['priority_column']}
+          ON ptr.org_id = t.org_id AND ptr.priority = t.{cfg["priority_column"]}
         WHERE t.org_id = $1
-          AND t.{cfg['status_column']} != ALL($2)
+          AND t.{cfg["status_column"]} != ALL($2)
           AND t.{sent_column} IS NULL
-          AND t.{cfg['created_at_column']} + (ptr.{minutes_col} || ' minutes')::interval <= now()
+          AND t.{cfg["created_at_column"]} + (ptr.{minutes_col} || ' minutes')::interval <= now()
     """
     due = await fetch_all(sql, org_id, closed_values, source_key=source_key)
 
     for row in due:
         assignee = (
-            await fetch_one("SELECT phone FROM users WHERE id = $1",
-                             row["assignee_id"], source_key=source_key)
-            if row["assignee_id"] else None
+            await fetch_one(
+                "SELECT phone FROM users WHERE id = $1",
+                row["assignee_id"],
+                source_key=source_key,
+            )
+            if row["assignee_id"]
+            else None
         )
         complainant = (
-            await fetch_one("SELECT phone FROM users WHERE id = $1",
-                             row["complainant_id"], source_key=source_key)
-            if row["complainant_id"] else None
+            await fetch_one(
+                "SELECT phone FROM users WHERE id = $1",
+                row["complainant_id"],
+                source_key=source_key,
+            )
+            if row["complainant_id"]
+            else None
         )
 
         vals = dict(row)
-        assignee_tmpl    = cfg.get(assignee_tmpl_key)
+        assignee_tmpl = cfg.get(assignee_tmpl_key)
         complainant_tmpl = cfg.get(complainant_tmpl_key)
 
         if assignee and assignee["phone"] and assignee_tmpl:
@@ -337,98 +387,160 @@ async def _run_case_notification_pass(
         # person two near-identical messages — they already got the
         # assignee-role one above.
         same_person = (
-            assignee and complainant
-            and assignee["phone"] == complainant["phone"]
+            assignee and complainant and assignee["phone"] == complainant["phone"]
         )
-        if complainant and complainant["phone"] and complainant_tmpl and not same_person:
+        if (
+            complainant
+            and complainant["phone"]
+            and complainant_tmpl
+            and not same_person
+        ):
             await send_text(complainant["phone"], complainant_tmpl.format(**vals))
 
         await execute(
             f"UPDATE {table} SET {sent_column} = now() WHERE id = $1",
-            row["row_id"], source_key=source_key
+            row["row_id"],
+            source_key=source_key,
         )
 
 
 # ── Schedule management helpers ───────────────────────────────────────────────
 
+
 async def create_scheduled_report(
-    org_id, user_id, phone, email, query_text, report_label,
-    schedule_type, delivery="whatsapp", interval_minutes=None,
-    hour=None, minute=0, day_of_week=None, day_of_month=None,
+    org_id,
+    user_id,
+    phone,
+    email,
+    query_text,
+    report_label,
+    schedule_type,
+    delivery="whatsapp",
+    interval_minutes=None,
+    hour=None,
+    minute=0,
+    day_of_week=None,
+    day_of_month=None,
     source_key=None,
 ) -> dict:
     if not source_key:
         raise ValueError("create_scheduled_report: source_key is required")
     row = {
-        "schedule_type": schedule_type, "interval_minutes": interval_minutes,
-        "hour": hour, "minute": minute,
-        "day_of_week": day_of_week, "day_of_month": day_of_month,
+        "schedule_type": schedule_type,
+        "interval_minutes": interval_minutes,
+        "hour": hour,
+        "minute": minute,
+        "day_of_week": day_of_week,
+        "day_of_month": day_of_month,
     }
     next_run = compute_next_run(row)
-    rec = await fetch_one("""
+    rec = await fetch_one(
+        """
         INSERT INTO scheduled_reports (
             org_id, user_id, phone, email, query_text, report_label,
             schedule_type, interval_minutes, hour, minute,
             day_of_week, day_of_month, delivery, is_active, next_run_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14)
         RETURNING id, next_run_at
-    """, org_id, user_id, phone, email or "", query_text, report_label,
-        schedule_type, interval_minutes, hour, minute,
-        day_of_week, day_of_month, delivery, next_run,
-        source_key=source_key)
+    """,
+        org_id,
+        user_id,
+        phone,
+        email or "",
+        query_text,
+        report_label,
+        schedule_type,
+        interval_minutes,
+        hour,
+        minute,
+        day_of_week,
+        day_of_month,
+        delivery,
+        next_run,
+        source_key=source_key,
+    )
     return {"id": str(rec["id"]), "next_run_at": rec["next_run_at"]}
 
 
 async def list_scheduled_reports(user_id: str, source_key: str = None) -> list:
     if not source_key:
         raise ValueError("list_scheduled_reports: source_key is required")
-    rows = await fetch_all("""
+    rows = await fetch_all(
+        """
         SELECT id, report_label, schedule_type, interval_minutes,
                hour, minute, day_of_week, day_of_month,
                delivery, is_active, next_run_at, last_run_at, run_count
         FROM scheduled_reports WHERE user_id = $1 ORDER BY created_at DESC
-    """, user_id, source_key=source_key)
+    """,
+        user_id,
+        source_key=source_key,
+    )
     return [dict(r) for r in rows]
 
 
-async def pause_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+async def pause_scheduled_report(
+    report_id: str, user_id: str, source_key: str = None
+) -> bool:
     if not source_key:
         raise ValueError("pause_scheduled_report: source_key is required")
-    result = await fetch_one("""
+    result = await fetch_one(
+        """
         UPDATE scheduled_reports SET is_active = false
         WHERE id = $1 AND user_id = $2 RETURNING id
-    """, report_id, user_id, source_key=source_key)
+    """,
+        report_id,
+        user_id,
+        source_key=source_key,
+    )
     return result is not None
 
 
-async def resume_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+async def resume_scheduled_report(
+    report_id: str, user_id: str, source_key: str = None
+) -> bool:
     if not source_key:
         raise ValueError("resume_scheduled_report: source_key is required")
     now = datetime.datetime.now(datetime.timezone.utc)
     row = await fetch_one(
         "SELECT * FROM scheduled_reports WHERE id = $1 AND user_id = $2",
-        report_id, user_id, source_key=source_key
+        report_id,
+        user_id,
+        source_key=source_key,
     )
     if not row:
         return False
     next_run = compute_next_run(dict(row), from_dt=now)
-    await execute("""
+    await execute(
+        """
         UPDATE scheduled_reports SET is_active = true, next_run_at = $1
         WHERE id = $2 AND user_id = $3
-    """, next_run, report_id, user_id, source_key=source_key)
+    """,
+        next_run,
+        report_id,
+        user_id,
+        source_key=source_key,
+    )
     return True
 
 
-async def delete_scheduled_report(report_id: str, user_id: str, source_key: str = None) -> bool:
+async def delete_scheduled_report(
+    report_id: str, user_id: str, source_key: str = None
+) -> bool:
     if not source_key:
         raise ValueError("delete_scheduled_report: source_key is required")
-    result = await fetch_one("""
+    result = await fetch_one(
+        """
         DELETE FROM scheduled_reports WHERE id = $1 AND user_id = $2 RETURNING id
-    """, report_id, user_id, source_key=source_key)
+    """,
+        report_id,
+        user_id,
+        source_key=source_key,
+    )
     return result is not None
 
 
 # ── Scheduler startup/shutdown ────────────────────────────────────────────────
+
 
 def start_scheduler():
     scheduler.add_job(

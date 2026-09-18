@@ -18,15 +18,17 @@ Usage:
     # returns openai.types.chat.ChatCompletion (same interface regardless of provider)
 """
 
-import os
-import json
-import itertools
-import time
 import asyncio
+import itertools
+import json
+import os
 import random
-from pathlib import Path
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
 from openai import AsyncOpenAI
+
 from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
@@ -34,6 +36,7 @@ logger = get_context_logger(__name__)
 
 class AllProvidersFailed(Exception):
     """Raised only when every non-benched provider has been tried."""
+
     def __init__(self, errors: dict):
         self.errors = errors
         super().__init__("All LLM providers failed")
@@ -45,11 +48,11 @@ _COOLDOWN_UNTIL: dict[str, float] = {}
 
 # How long to bench a provider after each failure class.
 _COOLDOWN_SECONDS = {
-    "quota":   900.0,   # 429 / RESOURCE_EXHAUSTED — daily or minute quota
-    "server":   60.0,   # 5xx
-    "timeout":  30.0,
-    "auth":    3600.0,  # 401/403 — bad key, don't hammer it
-    "other":    15.0,
+    "quota": 900.0,  # 429 / RESOURCE_EXHAUSTED — daily or minute quota
+    "server": 60.0,  # 5xx
+    "timeout": 30.0,
+    "auth": 3600.0,  # 401/403 — bad key, don't hammer it
+    "other": 15.0,
 }
 
 # Fail fast per attempt so the ladder can actually be walked inside one
@@ -90,12 +93,12 @@ def _bench(label: str, kind: str) -> None:
 
 @dataclass
 class _Attempt:
-    label:     str
-    client:    object
-    model:     str
-    provider:  str                # "openai" | "gemini" | "groq" — for tool-reliability checks
-    key_group: str                # attempts sharing this get benched together on a quota error
-    strip:     tuple = field(default=())   # kwargs this provider rejects
+    label: str
+    client: object
+    model: str
+    provider: str  # "openai" | "gemini" | "groq" — for tool-reliability checks
+    key_group: str  # attempts sharing this get benched together on a quota error
+    strip: tuple = field(default=())  # kwargs this provider rejects
 
 
 # ── Model roster + fallback order — all data-driven, see app/ai_models_config.json ──
@@ -103,16 +106,16 @@ _CONFIG_PATH = Path(__file__).parent.parent / "ai_models_config.json"
 _MODELS_CONFIG = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
 
 PROVIDER_ORDER = _MODELS_CONFIG["provider_order"]
-OPENAI_MODELS  = _MODELS_CONFIG["openai_models"]
-GEMINI_MODELS  = _MODELS_CONFIG["gemini_models"]
-GROQ_MODELS    = _MODELS_CONFIG["groq_models"]
+OPENAI_MODELS = _MODELS_CONFIG["openai_models"]
+GEMINI_MODELS = _MODELS_CONFIG["gemini_models"]
+GROQ_MODELS = _MODELS_CONFIG["groq_models"]
 
 # Providers whose tool/function-calling is not dependable enough to drive
 # the agent's tool loop. They remain available for plain-text formatting.
 _NO_RELIABLE_TOOLS = {"groq"}
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-GROQ_BASE_URL   = "https://api.groq.com/openai/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 # ── Gemini: up to 3 keys, each gets a client ────────────────────────────────
 _gemini_clients: list[AsyncOpenAI] = []
@@ -120,17 +123,21 @@ for _env in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
     _key = os.getenv(_env)
     if _key:
         try:
-            _gemini_clients.append(AsyncOpenAI(
-                api_key=_key,
-                base_url=GEMINI_BASE_URL,
-                timeout=30.0,
-            ))
+            _gemini_clients.append(
+                AsyncOpenAI(
+                    api_key=_key,
+                    base_url=GEMINI_BASE_URL,
+                    timeout=30.0,
+                )
+            )
             logger.info(f"Gemini client registered ({_env})")
         except Exception as e:
             logger.warning(f"Failed to init Gemini client for {_env}: {e}")
 
 # Round-robin iterator over Gemini keys
-_gemini_cycle = itertools.cycle(range(len(_gemini_clients))) if _gemini_clients else None
+_gemini_cycle = (
+    itertools.cycle(range(len(_gemini_clients))) if _gemini_clients else None
+)
 
 # ── Groq ─────────────────────────────────────────────────────────────────────
 _groq_client: AsyncOpenAI | None = None
@@ -174,26 +181,38 @@ def _build_ladder(preferred_provider: str | None = None) -> list[_Attempt]:
     """
     order = PROVIDER_ORDER
     if preferred_provider and preferred_provider in PROVIDER_ORDER:
-        order = [preferred_provider] + [p for p in PROVIDER_ORDER if p != preferred_provider]
+        order = [preferred_provider] + [
+            p for p in PROVIDER_ORDER if p != preferred_provider
+        ]
 
     ladder: list[_Attempt] = []
 
     for provider in order:
         if provider == "openai" and _openai_client:
             for model in OPENAI_MODELS:
-                ladder.append(_Attempt(
-                    label=f"openai_{model}", client=_openai_client, model=model,
-                    provider="openai", key_group="openai",
-                    strip=("parallel_tool_calls",),
-                ))
+                ladder.append(
+                    _Attempt(
+                        label=f"openai_{model}",
+                        client=_openai_client,
+                        model=model,
+                        provider="openai",
+                        key_group="openai",
+                        strip=("parallel_tool_calls",),
+                    )
+                )
 
         elif provider == "groq" and _groq_client:
             for model in GROQ_MODELS:
-                ladder.append(_Attempt(
-                    label=f"groq_{model}", client=_groq_client, model=model,
-                    provider="groq", key_group="groq",
-                    strip=("parallel_tool_calls",),
-                ))
+                ladder.append(
+                    _Attempt(
+                        label=f"groq_{model}",
+                        client=_groq_client,
+                        model=model,
+                        provider="groq",
+                        key_group="groq",
+                        strip=("parallel_tool_calls",),
+                    )
+                )
 
         elif provider == "gemini" and _gemini_clients:
             n = len(_gemini_clients)
@@ -202,13 +221,15 @@ def _build_ladder(preferred_provider: str | None = None) -> list[_Attempt]:
                 idx = (start + ki) % n
                 key_group = f"gemini_k{idx + 1}"
                 for model in GEMINI_MODELS:
-                    ladder.append(_Attempt(
-                        label=f"{key_group}_{model}",
-                        client=_gemini_clients[idx],
-                        model=model,
-                        provider="gemini",
-                        key_group=key_group,
-                    ))
+                    ladder.append(
+                        _Attempt(
+                            label=f"{key_group}_{model}",
+                            client=_gemini_clients[idx],
+                            model=model,
+                            provider="gemini",
+                            key_group=key_group,
+                        )
+                    )
 
     return ladder
 
@@ -235,9 +256,11 @@ async def chat_completion(
     """
     errors: dict[str, str] = {}
 
-    base_kwargs: dict = dict(
-        max_tokens=max_tokens, temperature=temperature, messages=messages
-    )
+    base_kwargs: dict = {
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": messages,
+    }
     if tools:
         base_kwargs["tools"] = tools
     if tool_choice:
@@ -288,6 +311,6 @@ async def chat_completion(
                 continue
 
         if pass_no == 1 and any(not _cooled_down(a.label) for a in ladder):
-            break   # pass 1 had live options and they all genuinely failed
+            break  # pass 1 had live options and they all genuinely failed
 
     raise AllProvidersFailed(errors)
