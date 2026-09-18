@@ -30,8 +30,12 @@ to an id first via a JOIN or subquery matched on `users.name`, e.g.:
   SELECT c.id, c.case_number, c.title, c.status, c.priority, u.name AS assigned_to_name
   FROM cases c
   JOIN users u ON c.assigned_to_id = u.id
-  WHERE c.org_id = $1 AND u.name ILIKE $2
-  -- params: ["%<name>%"]
+  WHERE c.org_id = $1 AND u.name ILIKE '%' || $2 || '%'
+  -- params: ["<name>"]   (pass the bare name/first-name the user said —
+  -- do NOT add your own % wildcards to the param value; the SQL above
+  -- already wraps it. Users often say only a first name like "anuja" while
+  -- the stored name is "Anuja Sinkar" — the '%'||$n||'%' wrapper is what
+  -- makes that partial match work. Exactly ONE param for this query.)
 If no rows come back, say plainly that no user matching that name has any
 cases assigned (or that no such user exists) — do not report an "unknown
 user" case as if the lookup succeeded.
