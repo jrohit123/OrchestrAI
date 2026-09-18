@@ -245,9 +245,13 @@ TOOLS = [
                 "workflow covers the question — a genuinely ad-hoc lookup. "
                 "Always use $1 for org_id. Use $2, $3... for additional params. "
                 "ILIKE for name searches. LIMIT 50 max. "
-                "CRITICAL: params[] must contain EXACTLY one value per placeholder from $2 "
-                "onward, in order — nothing more. If the query has no filter (e.g. 'show all X'), "
-                "params must be an empty array []. "
+                "CRITICAL: params[] must contain EXACTLY one value per DISTINCT placeholder "
+                "number from $2 onward, in order — nothing more. If the same placeholder (e.g. "
+                "$2) appears more than once in the SQL text — such as wrapping it twice for "
+                "ILIKE, e.g. \"WHERE name ILIKE '%' || $2 || '%'\" — it is still ONE value used "
+                "twice; do NOT add a second params[] entry for the repeat. Count DISTINCT "
+                "placeholder numbers, not occurrences. If the query has no filter (e.g. 'show "
+                "all X'), params must be an empty array []. "
                 "CRITICAL: every item in params[] must be a REAL value (a name, id, number, date) "
                 "— never the literal text '$1', '$2', etc. Those placeholders only belong inside "
                 "the sql string itself. "
@@ -1088,11 +1092,16 @@ async def _execute_tool(
             # the first max_placeholder values silently binds the wrong value
             # to a placeholder whenever the extra value isn't trailing. Fail
             # closed like under-supply so the LLM fixes params[] and retries.
+            expected_len = max(max_placeholder - 1, 0)
             msg = (
-                f"SQL only references up to ${max_placeholder} but {len(full_params)} "
-                f"param(s) were supplied ($1=org_id + {len(params)} from params[]). "
-                f"Remove the unused value(s) from params so it has exactly one "
-                f"entry per placeholder from $2 onward, in order, and retry."
+                f"params[] must have EXACTLY {expected_len} item(s) but {len(params)} "
+                f"were supplied (SQL's highest placeholder is ${max_placeholder}; $1=org_id "
+                f"is automatic, so only ${'2..' + str(max_placeholder) if max_placeholder > 2 else '2'} "
+                f"need params[] entries — {expected_len} distinct number(s) total). "
+                f"If your SQL text uses the same placeholder number more than once (e.g. "
+                f"$2 appearing twice to wrap a name in ILIKE), that is still ONE value — do "
+                f"not add a duplicate entry for it. Remove the extra value(s) from params "
+                f"and retry with exactly {expected_len} item(s)."
             )
             logger.warning(f"query_database param mismatch (over-supply): {msg}")
             return f"ERROR: {msg}"
