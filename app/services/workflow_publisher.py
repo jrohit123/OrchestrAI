@@ -64,7 +64,9 @@ def extract_required_permissions(steps: list) -> set:
             try:
                 step = json.loads(step)
             except Exception as e:
-                logger.debug(f"extract_required_permissions: skipping unparseable step: {e}")
+                logger.debug(
+                    f"extract_required_permissions: skipping unparseable step: {e}"
+                )
                 continue
         if not isinstance(step, dict) or step.get("op") != "require_permission":
             continue
