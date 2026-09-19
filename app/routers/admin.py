@@ -697,6 +697,7 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
             body["roles"] or [],
             source_key,
             entity_schema=existing.get("entity_schema"),
+            steps=existing.get("steps"),
         )
 
     return {"success": True}
@@ -706,20 +707,25 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
 async def delete_workflow(org_slug: str, workflow_id: str):
     source_key = await _resolve_source_key(org_slug)
     row = await fetch_one(
-        "SELECT intent_key, org_id FROM workflows WHERE id = $1",
+        "SELECT intent_key, org_id, steps FROM workflows WHERE id = $1",
         workflow_id,
         source_key=source_key,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    await execute(
-        """
-        UPDATE roles SET permissions = array_remove(permissions, $1)
-        WHERE org_id = $2
-    """,
+    from app.services.workflow_publisher import sync_role_grants
+
+    # desired_roles=[] revokes from every role — via sync_role_grants rather
+    # than a bare array_remove so the sub-permissions this workflow's steps
+    # required (see extract_required_permissions) get cleaned up too, not
+    # just intent_key, while still protecting any of them still needed by
+    # another active workflow.
+    await sync_role_grants(
         row["intent_key"],
-        row["org_id"],
-        source_key=source_key,
+        str(row["org_id"]),
+        [],
+        source_key,
+        steps=row.get("steps"),
     )
     await execute(
         "DELETE FROM workflows WHERE id = $1", workflow_id, source_key=source_key

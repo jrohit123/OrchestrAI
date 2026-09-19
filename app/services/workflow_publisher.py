@@ -44,6 +44,32 @@ def _j(val, default=None):
     return val
 
 
+def extract_required_permissions(steps: list) -> set:
+    """Every permission string a workflow's steps can require via a
+    require_permission op — both `any_of` entries and every value in `map`
+    — independent of the workflow's own top-level intent_key permission.
+
+    A workflow granting a role access via intent_key alone doesn't mean the
+    role can actually get through the workflow: a require_permission step
+    partway through (e.g. mapping action="close" -> "close_case") can gate
+    on a DIFFERENT, finer-grained permission that nothing else grants. See
+    sync_role_grants below — this is what lets it grant the whole set a
+    role needs to actually complete the workflow, not just trigger it."""
+    perms = set()
+    for step in steps or []:
+        if isinstance(step, str):
+            try:
+                step = json.loads(step)
+            except Exception:
+                continue
+        if not isinstance(step, dict) or step.get("op") != "require_permission":
+            continue
+        params = step.get("params") or {}
+        perms.update(params.get("any_of") or [])
+        perms.update((params.get("map") or {}).values())
+    return perms
+
+
 def _referenced_tables(entity_schema: dict) -> set:
     """Every real DB table a workflow's entity_schema fields read from or
     write to — skips computed fields (no table of their own) and json_key/
@@ -70,6 +96,7 @@ async def sync_role_grants(
     desired_roles: list[str],
     source_key: str,
     entity_schema: dict | str | None = None,
+    steps: list | str | None = None,
 ) -> None:
     """
     Set a workflow's role access to EXACTLY desired_roles — grants roles that
@@ -94,32 +121,79 @@ async def sync_role_grants(
     missing. Only ever adds tables, never removes — a role losing this one
     workflow shouldn't lose table access another granted workflow still
     needs.
+
+    Also grants every fine-grained permission this workflow's steps require
+    via require_permission (see extract_required_permissions) — not just
+    intent_key. Ticking a role on here means "this role can actually use
+    this workflow end to end", not just "can trigger it and then hit a
+    permission wall on some internal step". Reproduced live: godrej's
+    assign_case workflow gates its "close" action behind a separate
+    close_case permission that no role had ever been granted — every role
+    including admin could trigger the workflow but none could actually
+    close a case, and the failure surfaced to the user as a misleading
+    "something went wrong writing to the database" message instead of a
+    permission error. Revoking is the mirror case and needs care: a
+    sub-permission is only removed from a role if no OTHER active workflow
+    that role still has access to also requires it — unticking this
+    workflow must not collaterally break a different workflow that happens
+    to share the same permission string.
     """
     tables_needed = _referenced_tables(_parse_jsonb(entity_schema, {}) or {})
+    own_sub_perms = extract_required_permissions(_parse_jsonb(steps, []) or [])
+    required_perms = {intent_key} | own_sub_perms
+
     all_roles = await fetch_all(
         "SELECT id, name, permissions, readable_tables FROM roles WHERE org_id = $1",
         org_id,
         source_key=source_key,
     )
+
+    # Every OTHER active workflow's (intent_key -> its own required sub-perms),
+    # to know what a role must keep even after losing access to THIS one.
+    other_workflows = await fetch_all(
+        "SELECT intent_key, steps FROM workflows "
+        "WHERE org_id = $1 AND is_active = true AND intent_key != $2",
+        org_id,
+        intent_key,
+        source_key=source_key,
+    )
+    other_required: dict[str, set] = {
+        row["intent_key"]: {row["intent_key"]}
+        | extract_required_permissions(_parse_jsonb(row["steps"], []) or [])
+        for row in other_workflows
+    }
+
     desired = set(desired_roles or [])
     for r in all_roles:
-        has_it = intent_key in (r["permissions"] or [])
+        role_perms = set(r["permissions"] or [])
         wants_it = r["name"] in desired
-        if wants_it and not has_it:
-            await execute(
-                "UPDATE roles SET permissions = array_append(permissions, $1) "
-                "WHERE id = $2 AND NOT $1 = ANY(permissions)",
-                intent_key,
-                r["id"],
-                source_key=source_key,
-            )
-        elif has_it and not wants_it:
-            await execute(
-                "UPDATE roles SET permissions = array_remove(permissions, $1) WHERE id = $2",
-                intent_key,
-                r["id"],
-                source_key=source_key,
-            )
+
+        # What this role would still need even without THIS workflow: the
+        # union of required perms for every other active workflow the role
+        # currently has intent_key access to.
+        still_needed: set = set()
+        for other_intent_key, perms in other_required.items():
+            if other_intent_key in role_perms:
+                still_needed |= perms
+
+        if wants_it:
+            to_add = required_perms - role_perms
+            if to_add:
+                await execute(
+                    "UPDATE roles SET permissions = permissions || $1::text[] WHERE id = $2",
+                    list(to_add),
+                    r["id"],
+                    source_key=source_key,
+                )
+        else:
+            to_remove = (required_perms & role_perms) - still_needed
+            for perm in to_remove:
+                await execute(
+                    "UPDATE roles SET permissions = array_remove(permissions, $1) WHERE id = $2",
+                    perm,
+                    r["id"],
+                    source_key=source_key,
+                )
 
         if wants_it and tables_needed:
             missing = tables_needed - set(r["readable_tables"] or [])
@@ -287,6 +361,7 @@ async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") 
         granted_roles,
         source_key,
         entity_schema=draft.get("entity_schema"),
+        steps=draft.get("steps"),
     )
 
     # Snapshot what just went live — the only history this workflow has.

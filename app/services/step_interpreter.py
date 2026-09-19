@@ -484,7 +484,12 @@ async def _op_require_permission(params: dict, ctx: dict) -> dict:
     if perms & set(required):
         return ctx
 
-    raise StepError(
+    # UserFacingStepError, not plain StepError — a permission denial is
+    # exactly the kind of message action_executor.py should show verbatim;
+    # a plain StepError here gets swallowed behind the generic "something
+    # went wrong writing to the database" banner, which is actively
+    # misleading for what's actually a permission gap, not a DB failure.
+    raise UserFacingStepError(
         params.get("denied_message")
         or "You don't have permission to do that. Please contact someone with the required access."
     )
