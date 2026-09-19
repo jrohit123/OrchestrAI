@@ -545,7 +545,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
             desc = ", ".join(
                 f"{c}={_resolve_path(ctx, p)}" for c, p in match_columns.items()
             )
-            raise StepError(f"No {table} record found matching {desc}")
+            raise UserFacingStepError(f"No {table} record found matching {desc}")
         if len(rows) > 1:
             raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
 
@@ -687,7 +687,7 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
             rows = [dict(r) for r in raw_rows]
 
     if len(rows) == 0:
-        raise StepError(f"No {table} record found matching '{name_val}'")
+        raise UserFacingStepError(f"No {table} record found matching '{name_val}'")
     if len(rows) > 1:
         raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
 
