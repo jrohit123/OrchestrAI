@@ -1,16 +1,26 @@
+import asyncpg
+
 from app.db import fetch_one, get_all_source_keys
 from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
 
+# A failure here means we couldn't check this source at all (network/DB down),
+# as opposed to the query running fine and simply finding no match. Those two
+# cases must not be conflated — see the `unreachable` handling below.
+_CONNECTION_ERRORS = (OSError, TimeoutError, asyncpg.exceptions.PostgresConnectionError)
+
 
 async def resolve_identity(phone: str) -> dict | None:
     """
     Phone number → user record with org, role, permissions, email.
-    Returns None if phone not registered.
-    Loops through all data sources to find the user.
+    Returns None only once every data source has actually been checked and
+    none matched. If a source couldn't be reached, raises instead of
+    returning None — a connection failure must never be reported to the
+    user as "not registered".
     """
     source_keys = await get_all_source_keys()
+    unreachable: list[str] = []
 
     for source_key in source_keys:
         try:
@@ -64,19 +74,33 @@ async def resolve_identity(phone: str) -> dict | None:
                     "org_settings": row.get("org_settings", {}),
                     "source_key": source_key,
                 }
+        except _CONNECTION_ERRORS as e:
+            logger.warning(
+                f"resolve_identity: source_key={source_key} unreachable, cannot confirm registration: {e}"
+            )
+            unreachable.append(source_key)
+            continue
         except Exception as e:
-            # Source key may not have the users table or connection failed, try next
+            # Source key may not have the users table — genuinely doesn't apply, try next
             logger.debug(
                 f"resolve_identity: source_key={source_key} lookup failed, trying next: {e}"
             )
             continue
 
+    if unreachable:
+        raise RuntimeError(
+            f"resolve_identity: could not verify '{phone}' — unreachable source(s): {unreachable}"
+        )
+
     return None
 
 
 async def find_unlinked_user_by_email(email: str) -> dict | None:
-    """Find a user row with this email that has no chat_id bound yet."""
+    """Find a user row with this email that has no chat_id bound yet.
+    Returns None only once every source has actually been checked; raises
+    if a source was unreachable, for the same reason resolve_identity does."""
     source_keys = await get_all_source_keys()
+    unreachable: list[str] = []
     for source_key in source_keys:
         try:
             row = await fetch_one(
@@ -99,11 +123,23 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
                     "org_name": row["org_name"],
                     "source_key": source_key,
                 }
+        except _CONNECTION_ERRORS as e:
+            logger.warning(
+                f"find_unlinked_user_by_email: source_key={source_key} unreachable: {e}"
+            )
+            unreachable.append(source_key)
+            continue
         except Exception as e:
             logger.debug(
                 f"find_unlinked_user_by_email: source_key={source_key} lookup failed, trying next: {e}"
             )
             continue
+
+    if unreachable:
+        raise RuntimeError(
+            f"find_unlinked_user_by_email: could not verify '{email}' — unreachable source(s): {unreachable}"
+        )
+
     return None
 
 

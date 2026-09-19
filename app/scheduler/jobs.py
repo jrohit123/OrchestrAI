@@ -122,10 +122,15 @@ async def run_scheduled_reports():
                 source_key=source_key,
             )
         except Exception as e:
-            # Table might not exist in some databases
-            if "scheduled_reports" in str(e):
-                continue
-            raise
+            # Table might not exist in some databases, or this source's DB
+            # might be temporarily unreachable — either way, one bad source
+            # must not stop every other org's scheduled reports from running
+            # this tick (this used to only skip on a missing-table message
+            # and re-raise everything else, which aborted the whole job).
+            logger.warning(
+                f"run_scheduled_reports: could not load due reports for source_key={source_key}: {e}"
+            )
+            continue
 
         # Add source_key to each row for later use
         for row in due:
