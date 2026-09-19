@@ -9,7 +9,10 @@ stays as the history with status='published'.
 import json
 
 from app.db import execute, fetch_all, fetch_one
+from app.logging_config import get_context_logger
 from app.services.json_utils import parse_jsonb as _parse_jsonb
+
+logger = get_context_logger(__name__)
 
 
 class PublishConflict(Exception):
@@ -60,7 +63,8 @@ def extract_required_permissions(steps: list) -> set:
         if isinstance(step, str):
             try:
                 step = json.loads(step)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"extract_required_permissions: skipping unparseable step: {e}")
                 continue
         if not isinstance(step, dict) or step.get("op") != "require_permission":
             continue
