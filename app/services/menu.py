@@ -1,7 +1,18 @@
+import hashlib
+import json
+import re
+
 from app.db import fetch_all
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 SECTION_LABELS = {"reports": "📊 Reports", "create": "✍️ Create", "other": "⚙️ More"}
 SECTION_ORDER = ["reports", "create", "other"]
+
+# Telegram BotCommand.command: lowercase letters, digits, underscores only, 1-32 chars.
+# One bad entry fails the WHOLE setMyCommands call, so invalid ones are dropped up front.
+_VALID_TG_COMMAND = re.compile(r"^[a-z0-9_]{1,32}$")
 
 
 async def get_menu_workflows(org_id: str, user: dict) -> list[dict]:
@@ -54,6 +65,61 @@ async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
             overflow -= cut
         sections = [s for s in sections if s["rows"]]
     return sections
+
+
+async def get_telegram_commands(org_id: str, user: dict) -> list[dict]:
+    """Workflow slash commands + the fixed built-ins, shaped for Telegram's
+    setMyCommands (the native '/' popup), in the same permission-filtered
+    set the WhatsApp menu already uses."""
+    workflows = await get_menu_workflows(org_id, user)
+    commands = []
+    seen = set()
+    for w in workflows:
+        cmd = (w["slash_command"] or "").strip().lower()
+        if not cmd or cmd in seen or not _VALID_TG_COMMAND.match(cmd):
+            continue
+        seen.add(cmd)
+        desc = (w["command_description"] or w["name"] or "").strip()[:256]
+        commands.append({"command": cmd, "description": desc or w["name"][:256]})
+    for cmd, desc in (
+        ("status", "See your recent submissions"),
+        ("cancel", "Clear the current draft"),
+        ("help", "Show available commands"),
+    ):
+        if cmd not in seen:
+            commands.append({"command": cmd, "description": desc})
+    return commands[:100]  # Telegram hard limit
+
+
+async def sync_telegram_commands(user: dict, chat_id: str) -> None:
+    """Push this chat's '/' command menu to Telegram if it's changed since
+    last time. Safe to call on every inbound message — a Redis fingerprint
+    check makes the common case (nothing changed) a single Redis GET with
+    no Telegram API call."""
+    from app.redis_client import get_redis
+    from app.services import telegram
+
+    commands = await get_telegram_commands(user["org_id"], user)
+    fingerprint = hashlib.sha256(
+        json.dumps(commands, sort_keys=True).encode()
+    ).hexdigest()
+
+    redis = get_redis()
+    cache_key = f"tg_cmds:{user['org_id']}:{chat_id}"
+    cached = await redis.get(cache_key) if redis else None
+    if cached == fingerprint:
+        return
+
+    try:
+        await telegram.set_commands(chat_id, commands)
+    except Exception:
+        logger.warning(
+            f"Failed to sync Telegram commands for chat {chat_id}", exc_info=True
+        )
+        return
+
+    if redis:
+        await redis.setex(cache_key, 30 * 24 * 3600, fingerprint)
 
 
 async def resolve_slash_command(org_id: str, user: dict, cmd: str) -> dict | None:

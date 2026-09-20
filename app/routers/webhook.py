@@ -660,6 +660,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
         return
 
+    if phone.startswith("tg:"):
+        from app.services.menu import sync_telegram_commands
+
+        await sync_telegram_commands(user, phone[3:])
+
     # ── Slash commands & menu ────────────────────────────────────────────
     from app.services.menu import build_menu_sections, resolve_slash_command
     from app.services.messaging import send_list

@@ -116,6 +116,30 @@ async def send_document(
     return resp.json()
 
 
+async def set_commands(chat_id: str, commands: list[dict]):
+    """
+    Register the native Telegram "/" command menu for one chat.
+    commands = [{"command": "status", "description": "..."}, ...]
+
+    Scoped to a single chat (BotCommandScopeChat) rather than set globally,
+    since which commands are available depends on the user's org and role
+    permissions, not the bot as a whole.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{BASE_URL}/setMyCommands",
+            json={
+                "commands": commands,
+                "scope": {"type": "chat", "chat_id": chat_id},
+            },
+        )
+        _raise_if_rate_limited(resp)
+        if resp.status_code != 200:
+            logger.error(f"Telegram setMyCommands error: {resp.status_code} - {resp.text}")
+        resp.raise_for_status()
+    return resp.json()
+
+
 async def send_list(to: str, body: str, button_label: str, sections: list[dict]):
     """
     Telegram has no native list widget — flatten sections into an inline keyboard.
