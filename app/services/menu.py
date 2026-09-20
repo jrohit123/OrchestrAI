@@ -68,9 +68,11 @@ async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
 
 
 async def get_telegram_commands(org_id: str, user: dict) -> list[dict]:
-    """Workflow slash commands + the fixed built-ins, shaped for Telegram's
-    setMyCommands (the native '/' popup), in the same permission-filtered
-    set the WhatsApp menu already uses."""
+    """Workflow slash commands only, shaped for Telegram's setMyCommands
+    (the native '/' popup), in the same permission-filtered set the
+    WhatsApp menu already uses. /status, /cancel, /help stay usable (see
+    webhook.py's slash-command handling) but are deliberately left out of
+    this list so the popup only shows real workflows."""
     workflows = await get_menu_workflows(org_id, user)
     commands = []
     seen = set()
@@ -81,13 +83,6 @@ async def get_telegram_commands(org_id: str, user: dict) -> list[dict]:
         seen.add(cmd)
         desc = (w["command_description"] or w["name"] or "").strip()[:256]
         commands.append({"command": cmd, "description": desc or w["name"][:256]})
-    for cmd, desc in (
-        ("status", "See your recent submissions"),
-        ("cancel", "Clear the current draft"),
-        ("help", "Show available commands"),
-    ):
-        if cmd not in seen:
-            commands.append({"command": cmd, "description": desc})
     return commands[:100]  # Telegram hard limit
 
 
