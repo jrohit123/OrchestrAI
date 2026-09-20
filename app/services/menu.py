@@ -118,6 +118,10 @@ async def sync_telegram_commands(user: dict, chat_id: str) -> None:
         )
         return
 
+    logger.info(
+        f"Synced {len(commands)} Telegram commands for chat {chat_id}: "
+        f"{[c['command'] for c in commands]}"
+    )
     if redis:
         await redis.setex(cache_key, 30 * 24 * 3600, fingerprint)
 
