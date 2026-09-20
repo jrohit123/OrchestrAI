@@ -135,7 +135,9 @@ async def set_commands(chat_id: str, commands: list[dict]):
         )
         _raise_if_rate_limited(resp)
         if resp.status_code != 200:
-            logger.error(f"Telegram setMyCommands error: {resp.status_code} - {resp.text}")
+            logger.error(
+                f"Telegram setMyCommands error: {resp.status_code} - {resp.text}"
+            )
         resp.raise_for_status()
     return resp.json()
 
