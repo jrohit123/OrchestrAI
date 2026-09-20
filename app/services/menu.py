@@ -95,35 +95,40 @@ async def sync_telegram_commands(user: dict, chat_id: str) -> None:
     """Push this chat's '/' command menu to Telegram if it's changed since
     last time. Safe to call on every inbound message — a Redis fingerprint
     check makes the common case (nothing changed) a single Redis GET with
-    no Telegram API call."""
-    from app.redis_client import get_redis
-    from app.services import telegram
+    no Telegram API call.
 
-    commands = await get_telegram_commands(user["org_id"], user)
-    fingerprint = hashlib.sha256(
-        json.dumps(commands, sort_keys=True).encode()
-    ).hexdigest()
-
-    redis = get_redis()
-    cache_key = f"tg_cmds:{user['org_id']}:{chat_id}"
-    cached = await redis.get(cache_key) if redis else None
-    if cached == fingerprint:
-        return
-
+    The whole body is one try/except (not just the API call) — a prior
+    version only wrapped the Telegram call and an upstream failure vanished
+    with no log line and no crash, which made a real bug indistinguishable
+    from "nothing to do"."""
+    logger.info(f"sync_telegram_commands: called for chat {chat_id}")
     try:
+        from app.redis_client import get_redis
+        from app.services import telegram
+
+        commands = await get_telegram_commands(user["org_id"], user)
+        fingerprint = hashlib.sha256(
+            json.dumps(commands, sort_keys=True).encode()
+        ).hexdigest()
+
+        redis = get_redis()
+        cache_key = f"tg_cmds:{user['org_id']}:{chat_id}"
+        cached = await redis.get(cache_key) if redis else None
+        if cached == fingerprint:
+            logger.info(f"sync_telegram_commands: already in sync for chat {chat_id}")
+            return
+
         await telegram.set_commands(chat_id, commands)
+        logger.info(
+            f"sync_telegram_commands: synced {len(commands)} commands for "
+            f"chat {chat_id}: {[c['command'] for c in commands]}"
+        )
+        if redis:
+            await redis.setex(cache_key, 30 * 24 * 3600, fingerprint)
     except Exception:
         logger.warning(
-            f"Failed to sync Telegram commands for chat {chat_id}", exc_info=True
+            f"sync_telegram_commands: failed for chat {chat_id}", exc_info=True
         )
-        return
-
-    logger.info(
-        f"Synced {len(commands)} Telegram commands for chat {chat_id}: "
-        f"{[c['command'] for c in commands]}"
-    )
-    if redis:
-        await redis.setex(cache_key, 30 * 24 * 3600, fingerprint)
 
 
 async def resolve_slash_command(org_id: str, user: dict, cmd: str) -> dict | None:
