@@ -36,6 +36,7 @@ async def resolve_identity(phone: str) -> dict | None:
                     r.name        AS role,
                     r.permissions AS permissions,
                     r.readable_tables AS readable_tables,
+                    r.readable_entity_types AS readable_entity_types,
                     o.id          AS org_id,
                     o.name        AS org_name,
                     o.slug        AS org_slug,
@@ -65,6 +66,9 @@ async def resolve_identity(phone: str) -> dict | None:
                     else [],
                     "readable_tables": list(row["readable_tables"])
                     if row["readable_tables"]
+                    else [],
+                    "readable_entity_types": list(row["readable_entity_types"])
+                    if row["readable_entity_types"]
                     else [],
                     "org_id": str(row["org_id"]),
                     "org_name": row["org_name"],

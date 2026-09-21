@@ -67,6 +67,47 @@ RULE 3 — entity_schema: Only entities actually needed. Per field:
   under the SAME single "custom_fields" object in that step's values/set —
   never emit "custom_fields" more than once in one step.
 
+  A WHOLE NEW KIND OF BUSINESS OBJECT — entity_records:
+  If the admin's requirement is a genuinely new kind of object with no
+  matching table anywhere in the schema shown above (not a new field on
+  something that already has a table — that's custom_fields, above), do
+  NOT ask for a new table. Use the shared "entity_records" table with a
+  new "entity_type" string instead — check the schema text for any
+  "entity_records (entity_type='...')" lines first, and reuse one of
+  those entity_type values if the admin's object is really the same kind
+  of thing; only invent a new entity_type (short, snake_case, e.g.
+  "gate_pass", "amenity_feedback") when none of the existing ones fit.
+
+  entity_records' real columns: id, org_id, entity_type, name, status,
+  ref_date, linked_id, custom_fields (jsonb), created_at, updated_at.
+  EVERY field that addresses entity_records — whether it maps one of
+  those real columns or nests in custom_fields via json_key — MUST carry
+  "entity_type" alongside "table":"entity_records" (or alongside
+  "json_key" for the custom_fields case), e.g.:
+    "vendor_name":   {"type":"string","required":true,"table":"entity_records","column":"name","entity_type":"vendor"}
+    "vendor_status": {"type":"string","required":false,"table":"entity_records","column":"status","entity_type":"vendor"}
+    "vendor_email":  {"type":"string","required":false,"json_key":"email","entity_type":"vendor"}
+  Prefer the real columns (name/status/ref_date/linked_id) for whatever
+  the object's title, lifecycle state, single relevant date, and single
+  parent-object reference actually are — they're indexed and sortable.
+  Everything else goes in custom_fields via json_key, exactly like the
+  custom_fields convention above.
+
+  entity_type is a REAL column but is NEVER auto-injected the way org_id
+  is — every steps[] op that touches entity_records (db.insert_row,
+  db.update_row, resolve_entity) MUST set it explicitly:
+    "values": {"entity_type": "vendor", "name": "$fields.vendor_name",
+               "custom_fields": {"email": "$fields.vendor_email"}}
+  For a resolve_entity lookup scoped to one entity_type, use
+  match_columns (not match_column/name_from — that only supports one
+  column and can't also pin entity_type):
+    {"op":"resolve_entity","params":{"into":"vendor","table":"entity_records",
+      "match_columns":{"entity_type":"vendor","name":"$fields.vendor_name"}}}
+  For a read-type workflow's sql_template against entity_records, always
+  hardcode the entity_type literal in the WHERE clause (not a parameter):
+    SELECT name, status, custom_fields FROM entity_records
+    WHERE org_id = $1 AND entity_type = 'vendor' ORDER BY created_at DESC
+
   DATE COLUMNS — CRITICAL, this prevents live insert/update failures:
   When the schema shows a column marked "(date field)", the field mapped to
   it MUST include "format":"date":

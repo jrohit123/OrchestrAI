@@ -60,6 +60,44 @@ def _safe(sql: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+_ENTITY_TYPE_EQ = re.compile(r"entity_type\s*=\s*'([^']+)'", re.IGNORECASE)
+_ENTITY_TYPE_IN = re.compile(r"entity_type\s+IN\s*\(([^)]+)\)", re.IGNORECASE)
+
+
+def check_entity_records_access(sql: str, readable_entity_types) -> tuple[bool, str]:
+    """
+    entity_records is one physical table standing in for what used to be
+    several separate tables — some sensitive (e.g. invoices). Once they
+    share a table, readable_tables' table-level check can no longer tell
+    them apart, so a role granted one entity_type's workflow could
+    otherwise read every other entity_type through the same table name.
+
+    Every query touching entity_records must name the entity_type(s) it
+    wants as a literal in the SQL text — no filter at all is rejected
+    (that would return every entity_type's rows at once) — and every
+    literal named must be in the caller's readable_entity_types.
+
+    Same regex-based safety-net philosophy as _safe()/the readable_tables
+    check above: not a full SQL parser, but it closes the actual leak
+    this table design introduces, which a bare table-name allowlist can't.
+    """
+    if not re.search(r"\bentity_records\b", sql, re.IGNORECASE):
+        return True, "ok"
+
+    literals = set(_ENTITY_TYPE_EQ.findall(sql))
+    for group in _ENTITY_TYPE_IN.findall(sql):
+        literals.update(v.strip().strip("'") for v in group.split(","))
+
+    if not literals:
+        return False, "entity_records queries must filter on a specific entity_type"
+
+    not_allowed = literals - set(readable_entity_types or [])
+    if not_allowed:
+        return False, f"not permitted to read entity_type(s): {', '.join(sorted(not_allowed))}"
+
+    return True, "ok"
+
+
 async def execute_query(
     sql: str,
     params: list,
@@ -91,6 +129,10 @@ async def execute_query(
     not_allowed = referenced_tables - readable_tables
     if not_allowed:
         return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
+
+    ok, reason = check_entity_records_access(sql, user.get("readable_entity_types"))
+    if not ok:
+        return f"ERROR: {reason}"
 
     # Add LIMIT if not present (prevent runaway queries)
     if "LIMIT" not in sql.upper():

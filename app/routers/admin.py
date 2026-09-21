@@ -397,6 +397,31 @@ async def toggle_otp(org_slug: str, workflow_id: str):
     return {"otp_required": new_val}
 
 
+@router.post("/admin/{org_slug}/api/workflow/{workflow_id}/toggle-active")
+async def toggle_workflow_active(org_slug: str, workflow_id: str):
+    """
+    The workflow list's Active checkbox used to call /toggle above by
+    mistake — that endpoint flips otp_required, not is_active, so the
+    checkbox never actually did what it displayed. This is the real one,
+    and unlike a bare column flip it keeps role grants in sync via
+    set_workflow_active (see workflow_publisher.py) instead of leaving
+    permissions stale on a workflow nobody can reach anymore.
+    """
+    source_key = await _resolve_source_key(org_slug)
+    row = await fetch_one(
+        "SELECT is_active FROM workflows WHERE id = $1",
+        workflow_id,
+        source_key=source_key,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    from app.services.workflow_publisher import set_workflow_active
+
+    new_val = await set_workflow_active(workflow_id, not row["is_active"], source_key)
+    return {"is_active": new_val}
+
+
 @router.post("/admin/{org_slug}/api/workflow/{workflow_id}/threshold")
 async def update_threshold(org_slug: str, workflow_id: str, request: Request):
     body = await request.json()
@@ -617,7 +642,10 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    allowed = ["name", "description", "is_active", "gates", "slash_command"]
+    # is_active is handled separately below, via set_workflow_active — a
+    # bare column flip here would leave role grants pointed at a workflow
+    # that's just been turned off (or missing on one just turned back on).
+    allowed = ["name", "description", "gates", "slash_command"]
     jsonb_fields = {"gates"}
 
     if "gates" in body:
@@ -679,8 +707,13 @@ async def update_workflow(org_slug: str, workflow_id: str, request: Request):
             *vals,
             source_key=source_key,
         )
-    elif "roles" not in body:
+    elif "roles" not in body and "is_active" not in body:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "is_active" in body and bool(body["is_active"]) != existing["is_active"]:
+        from app.services.workflow_publisher import set_workflow_active
+
+        await set_workflow_active(workflow_id, bool(body["is_active"]), source_key)
 
     if "roles" in body:
         from app.services.workflow_publisher import sync_role_grants
@@ -2056,7 +2089,7 @@ function renderWorkflows(workflows) {
 }
 
 async function toggleActive(id, active) {
-  await authenticatedFetch(API(`/workflow/${id}/toggle`), {method:'POST'});
+  await authenticatedFetch(API(`/workflow/${id}/toggle-active`), {method:'POST'});
 }
 
 async function deleteWorkflow(id, name) {

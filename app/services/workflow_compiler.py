@@ -66,6 +66,7 @@ async def compile_workflow_spec(
         get_business_schema,
         get_column_descriptions,
         get_column_types,
+        get_entity_type_catalog,
         get_enum_constraints,
     )
 
@@ -76,6 +77,9 @@ async def compile_workflow_spec(
     schema_text = format_schema_text(
         table_cols, column_descriptions, enum_constraints, column_types
     )
+    entity_type_catalog = await get_entity_type_catalog(org_id, source_key)
+    if entity_type_catalog:
+        schema_text += "\n" + entity_type_catalog
 
     # Detect if this is a chat-built draft or a legacy free-text description
     if "purpose" in draft and draft.get("purpose"):

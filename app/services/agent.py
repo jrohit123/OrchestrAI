@@ -17,7 +17,7 @@ from app.logging_config import get_context_logger
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
-from app.services.query_engine import SENSITIVE_COLS, _safe
+from app.services.query_engine import SENSITIVE_COLS, _safe, check_entity_records_access
 
 logger = get_context_logger(__name__)
 
@@ -161,7 +161,10 @@ async def _build_help_response(user: dict) -> str:
 
 
 async def _get_schema(
-    org_id: str, source_key: str = "platform", readable_tables: list = None
+    org_id: str,
+    source_key: str = "platform",
+    readable_tables: list = None,
+    readable_entity_types: list = None,
 ) -> str:
     """
     Read information_schema at runtime for this org's database.
@@ -171,8 +174,13 @@ async def _get_schema(
     """
     if readable_tables is None:
         readable_tables = []
+    if readable_entity_types is None:
+        readable_entity_types = []
 
-    cache_key = f"{org_id}:{','.join(sorted(readable_tables))}"
+    cache_key = (
+        f"{org_id}:{','.join(sorted(readable_tables))}"
+        f":{','.join(sorted(readable_entity_types))}"
+    )
     if cache_key in _schema_cache:
         return _schema_cache[cache_key]
 
@@ -211,6 +219,37 @@ async def _get_schema(
     # NOTE: Sample rows removed to prevent hallucination
     # Schema samples were causing LLM to use example data (Jain Gold Works, etc.)
     parts = [f"- {t}: {', '.join(cols)}" for t, cols in table_cols.items()]
+
+    # entity_records holds several previously-separate entity types behind
+    # one physical table, discriminated by entity_type — the base columns
+    # above don't tell the LLM what's actually inside each entity_type's
+    # custom_fields, so ad-hoc questions about e.g. 'vendor' would have no
+    # idea 'category'/'contact_person' exist. Fill that in per entity_type,
+    # restricted to what this role can actually see (readable_entity_types)
+    # — KEY NAMES ONLY, never values, for the same hallucination reason
+    # sample rows were removed above.
+    if "entity_records" in table_cols and readable_entity_types:
+        for et in sorted(readable_entity_types):
+            rows = await fetch_all(
+                "SELECT custom_fields FROM entity_records "
+                "WHERE org_id = $1 AND entity_type = $2 "
+                "AND custom_fields != '{}'::jsonb LIMIT 20",
+                org_id,
+                et,
+                source_key=source_key,
+            )
+            keys: set[str] = set()
+            for r in rows:
+                cf = r["custom_fields"]
+                if isinstance(cf, str):
+                    cf = json.loads(cf)
+                keys.update((cf or {}).keys())
+            if keys:
+                parts.append(
+                    f"- entity_records (entity_type='{et}') custom_fields keys: "
+                    f"{', '.join(sorted(keys))}"
+                )
+
     _schema_cache[cache_key] = "\n".join(parts)
     return _schema_cache[cache_key]
 
@@ -288,7 +327,13 @@ TOOLS = [
                 "('my', 'mine', 'I filed', no other name mentioned). It does NOT apply to a query "
                 "about a DIFFERENT named person (e.g. 'cases assigned to anuja') — for those, "
                 "params[] holds ONLY the other person's name/search term; never add the asking "
-                "user's own id just because a person is mentioned somewhere in the request."
+                "user's own id just because a person is mentioned somewhere in the request. "
+                "ENTITY_RECORDS TABLE — it holds several unrelated kinds of records "
+                "(see the 'entity_records (entity_type=...)' lines in the schema below for which "
+                "ones exist and what's inside each). ALWAYS include a literal "
+                "\"entity_type = 'x'\" (or \"entity_type IN (...)\") filter naming exactly which "
+                "kind you mean — a query against entity_records with no entity_type filter is "
+                "rejected outright, since it would mix every kind of record together."
             ),
             "parameters": {
                 "type": "object",
@@ -783,7 +828,10 @@ TOOLS = [
 
 async def _build_system_prompt(user: dict) -> str:
     schema = await _get_schema(
-        user["org_id"], user["source_key"], user.get("readable_tables", [])
+        user["org_id"],
+        user["source_key"],
+        user.get("readable_tables", []),
+        user.get("readable_entity_types", []),
     )
     sheets_schema = await _get_sheets_schema()
     today = __import__("datetime").date.today().strftime("%d %b %Y")
@@ -1151,10 +1199,19 @@ async def _execute_tool(
                 f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
             )
 
+        ok, reason = check_entity_records_access(
+            sql, user.get("readable_entity_types")
+        )
+        if not ok:
+            return f"ERROR: {reason}"
+
         # Validate SQL against live schema — check referenced tables actually exist.
         # This replaces a hardcoded denylist with an always-correct schema check.
         schema_text = await _get_schema(
-            user["org_id"], user["source_key"], list(readable_tables)
+            user["org_id"],
+            user["source_key"],
+            list(readable_tables),
+            user.get("readable_entity_types", []),
         )
         known_tables = set(re.findall(r"^- (\w+):", schema_text, re.MULTILINE))
         unknown_tables = referenced_tables - known_tables

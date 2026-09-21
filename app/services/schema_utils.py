@@ -53,6 +53,51 @@ async def get_business_schema(source_key: str) -> dict:
     return table_cols
 
 
+async def get_entity_type_catalog(org_id: str, source_key: str) -> str:
+    """
+    Which entity_type values already exist in entity_records for this org,
+    and what keys their custom_fields actually carry — so the compiler
+    reuses an existing entity_type instead of inventing a near-duplicate
+    (e.g. 'vendor' again under 'vendors'), and knows what's already there
+    to build on. Key names only, never values (compiler prompts are
+    LLM input same as any other schema text — showing real data invites
+    the same hallucination risk sample rows were removed for elsewhere).
+    Returns "" if entity_records doesn't exist yet for this source, or has
+    no rows — both normal, not errors.
+    """
+    try:
+        types = await fetch_all(
+            "SELECT DISTINCT entity_type FROM entity_records WHERE org_id = $1 "
+            "ORDER BY entity_type",
+            org_id,
+            source_key=source_key,
+        )
+    except Exception:
+        return ""
+
+    lines = []
+    for row in types:
+        et = row["entity_type"]
+        samples = await fetch_all(
+            "SELECT custom_fields FROM entity_records "
+            "WHERE org_id = $1 AND entity_type = $2 AND custom_fields != '{}'::jsonb "
+            "LIMIT 20",
+            org_id,
+            et,
+            source_key=source_key,
+        )
+        keys: set = set()
+        for s in samples:
+            cf = s["custom_fields"]
+            if isinstance(cf, str):
+                cf = json.loads(cf)
+            keys.update((cf or {}).keys())
+        keys_text = f" — custom_fields keys so far: {', '.join(sorted(keys))}" if keys else ""
+        lines.append(f"entity_records (entity_type='{et}'){keys_text}")
+
+    return "\n".join(lines)
+
+
 async def get_column_descriptions(org_id: str, source_key: str) -> dict:
     """
     Per-org column meanings, stored at orgs.settings->'column_descriptions'

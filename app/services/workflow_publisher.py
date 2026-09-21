@@ -96,6 +96,29 @@ def _referenced_tables(entity_schema: dict) -> set:
     return tables
 
 
+def _referenced_entity_types(entity_schema: dict) -> set:
+    """Every entity_records 'entity_type' a workflow's entity_schema fields
+    address (see the generic-entity convention: a field marks itself with
+    "entity_type" whether it maps a real entity_records column or nests
+    under custom_fields via json_key — unlike the per-table custom_fields
+    convention, json_key fields here still carry "entity_type" since it's
+    the only thing that says which slice of the one shared table they
+    belong to). Covers item_schema-nested fields too."""
+    types = set()
+    for spec in (entity_schema or {}).values():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("entity_type"):
+            types.add(spec["entity_type"])
+        item_schema = (
+            (spec.get("item_schema") or {}) if spec.get("type") == "array" else {}
+        )
+        for ispec in item_schema.values():
+            if isinstance(ispec, dict) and ispec.get("entity_type"):
+                types.add(ispec["entity_type"])
+    return types
+
+
 async def sync_role_grants(
     intent_key: str,
     org_id: str,
@@ -145,11 +168,19 @@ async def sync_role_grants(
     to share the same permission string.
     """
     tables_needed = _referenced_tables(_parse_jsonb(entity_schema, {}) or {})
+    entity_types_needed = _referenced_entity_types(_parse_jsonb(entity_schema, {}) or {})
+    if entity_types_needed:
+        # entity_records is one physical table shared by every generic
+        # entity_type — readable_tables alone can't tell them apart (see
+        # check_entity_records_access in query_engine.py), so a workflow
+        # touching any entity_type always needs the table grant too.
+        tables_needed = tables_needed | {"entity_records"}
     own_sub_perms = extract_required_permissions(_parse_jsonb(steps, []) or [])
     required_perms = {intent_key} | own_sub_perms
 
     all_roles = await fetch_all(
-        "SELECT id, name, permissions, readable_tables FROM roles WHERE org_id = $1",
+        "SELECT id, name, permissions, readable_tables, readable_entity_types "
+        "FROM roles WHERE org_id = $1",
         org_id,
         source_key=source_key,
     )
@@ -210,6 +241,75 @@ async def sync_role_grants(
                     r["id"],
                     source_key=source_key,
                 )
+
+        if wants_it and entity_types_needed:
+            missing_types = entity_types_needed - set(r["readable_entity_types"] or [])
+            if missing_types:
+                await execute(
+                    "UPDATE roles SET readable_entity_types = readable_entity_types || $1::text[] WHERE id = $2",
+                    list(missing_types),
+                    r["id"],
+                    source_key=source_key,
+                )
+
+
+async def set_workflow_active(
+    workflow_id: str, new_active: bool, source_key: str
+) -> bool:
+    """
+    Flip a live workflow's is_active and keep role grants in step with it —
+    deactivating a workflow through the admin panel used to just flip the
+    column, leaving every role that had the workflow's intent_key (and its
+    require_permission sub-perms, e.g. assign_case's close_case/add_case_comment)
+    still holding those permissions for a workflow nobody could actually
+    reach anymore. Same staleness bug sync_role_grants was built to prevent
+    at publish time, just reached through a different door.
+
+    Deactivating revokes via sync_role_grants(desired_roles=[]) — identical
+    to what delete_workflow already does, minus the delete.
+
+    Reactivating restores whatever roles last had it. granted_roles isn't
+    stored on the live workflows row itself (see publish_draft), so the only
+    record of "who had it before it was turned off" is this workflow's most
+    recent workflow_versions snapshot.
+    """
+    row = await fetch_one(
+        "SELECT org_id, intent_key, steps, entity_schema, is_active "
+        "FROM workflows WHERE id = $1",
+        workflow_id,
+        source_key=source_key,
+    )
+    if not row:
+        raise ValueError("Workflow not found")
+    if row["is_active"] == new_active:
+        return new_active
+
+    if new_active:
+        last = await fetch_one(
+            "SELECT granted_roles FROM workflow_versions "
+            "WHERE workflow_id = $1 ORDER BY version DESC LIMIT 1",
+            workflow_id,
+            source_key=source_key,
+        )
+        desired_roles = (last["granted_roles"] if last else None) or []
+    else:
+        desired_roles = []
+
+    await sync_role_grants(
+        row["intent_key"],
+        str(row["org_id"]),
+        desired_roles,
+        source_key,
+        entity_schema=row.get("entity_schema"),
+        steps=row.get("steps"),
+    )
+    await execute(
+        "UPDATE workflows SET is_active = $1 WHERE id = $2",
+        new_active,
+        workflow_id,
+        source_key=source_key,
+    )
+    return new_active
 
 
 async def publish_draft(draft: dict, org_id: str, source_key: str = "platform") -> dict:
