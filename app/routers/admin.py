@@ -238,10 +238,24 @@ async def admin_data(org_slug: str):
     stats = await _compute_dashboard_stats(dashboard_cfg, org_id, source_key)
     low_stock = await _compute_low_stock(dashboard_cfg, org_id, source_key)
 
+    # A workflow's granted roles aren't stored on the workflows row itself
+    # (see workflow_publisher.py) — the live source of truth is "which roles
+    # have this intent_key in their permissions". Computed once here for the
+    # whole list instead of a per-row query, so the list view and the Access
+    # popover can both show it without another round trip.
+    roles = await fetch_all(
+        "SELECT name, permissions FROM roles WHERE org_id = $1",
+        org_id,
+        source_key=source_key,
+    )
+
     workflows_out = []
     for w in workflows:
         wd = dict(w)
         wd["gates"] = _parse_jsonb(wd.get("gates"), [])
+        wd["granted_roles"] = [
+            r["name"] for r in roles if wd["intent_key"] in (r["permissions"] or [])
+        ]
         workflows_out.append(wd)
 
     return {
@@ -1758,6 +1772,13 @@ input:checked+.slider:before{transform:translateX(18px)}
 .gate-row.is-new{border-color:#8b5cf6;background:#f5f3ff}
 .role-chip-sm{border:1px solid #e8edf5;background:#fff;border-radius:12px;padding:3px 9px;font-size:11px;cursor:pointer;margin:2px}
 .role-chip-sm.on{background:#185FA5;border-color:#185FA5;color:#fff}
+/* Access popover (workflow list) */
+.access-btn{background:#f0f4f8;color:#374151;border:1px solid #e8edf5;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
+.access-btn:hover{background:#e5e9ef}
+.access-popover{position:fixed;background:#fff;border:1px solid #e8edf5;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.12);padding:10px;min-width:180px;z-index:1000}
+.access-popover-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin-bottom:6px;padding:0 4px}
+.access-popover-item{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 4px;border-radius:5px;cursor:pointer}
+.access-popover-item:hover{background:#f7f9fb}
 .mini-form-sm{background:#fff;border:1px dashed #e8edf5;border-radius:6px;padding:8px;margin-top:6px}
 .mini-form-sm input,.mini-form-sm select{width:100%;border:1px solid #e8edf5;border-radius:5px;padding:5px 7px;font-size:12px;margin-bottom:6px;font-family:inherit}
 .link-btn-sm{background:none;border:none;color:#185FA5;font-weight:600;font-size:11px;cursor:pointer;padding:0}
@@ -1798,8 +1819,9 @@ input:checked+.slider:before{transform:translateX(18px)}
       </div>
       <table style="table-layout:fixed">
         <thead><tr>
-          <th style="width:46%">Name</th><th style="width:16%">Type</th>
-          <th style="width:16%">Active</th><th style="width:22%">Actions</th>
+          <th style="width:36%">Name</th><th style="width:14%">Type</th>
+          <th style="width:13%">Active</th><th style="width:16%">Access</th>
+          <th style="width:21%">Actions</th>
         </tr></thead>
         <tbody id="workflowsTable"></tbody>
       </table>
@@ -2064,10 +2086,15 @@ async function uploadLogo(input) {
 }
 
 // ── Workflow List ─────────────────────────────────────────────────
+// Cached so the Access popover can look up/update a workflow's granted_roles
+// by id without a round trip — renderWorkflows is the only writer.
+let workflowsCache = [];
+
 function renderWorkflows(workflows) {
+  workflowsCache = workflows;
   const tbody = document.getElementById('workflowsTable');
   if (!workflows.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:20px">No workflows yet — click Build New Workflow to add one</td></tr>';
     return;
   }
   tbody.innerHTML = workflows.map(w => `
@@ -2080,12 +2107,82 @@ function renderWorkflows(workflows) {
           <span class="slider"></span>
         </label>
       </td>
+      <td>
+        <button class="access-btn" id="accessBtn-${w.id}" onclick="toggleAccessMenu('${w.id}', this)">
+          👥 ${(w.granted_roles || []).length} role${(w.granted_roles || []).length === 1 ? '' : 's'} ▾
+        </button>
+      </td>
       <td style="white-space:nowrap">
         <button class="btn btn-gray" onclick="openEditLogic('${w.id}')" style="margin-right:4px">✏️ Edit</button>
         <button class="btn btn-danger" onclick="deleteWorkflow('${w.id}','${w.name}')">🗑️</button>
       </td>
     </tr>
   `).join('');
+}
+
+// ── Access popover — quick role toggle without opening Edit Logic ─────────
+let openAccessMenuId = null;
+
+async function toggleAccessMenu(id, btnEl) {
+  if (openAccessMenuId === id) { closeAccessMenu(); return; }
+  closeAccessMenu();
+  if (!orgRolesList.length) await refreshOrgRoles();
+
+  const wf = workflowsCache.find(w => w.id === id);
+  if (!wf) return;
+  const granted = new Set(wf.granted_roles || []);
+
+  const rect = btnEl.getBoundingClientRect();
+  const pop = document.createElement('div');
+  pop.className = 'access-popover';
+  pop.id = 'accessPopover';
+  pop.style.top = `${rect.bottom + 6}px`;
+  pop.style.left = `${rect.left}px`;
+  pop.innerHTML = `
+    <div class="access-popover-title">Who can use this</div>
+    ${orgRolesList.map(r => `
+      <label class="access-popover-item">
+        <input type="checkbox" ${granted.has(r) ? 'checked' : ''} onchange="toggleWorkflowRoleAccess('${id}', '${escAttr(r)}', this.checked)">
+        ${escHtml(r)}
+      </label>
+    `).join('')}
+  `;
+  document.body.appendChild(pop);
+  openAccessMenuId = id;
+  // Deferred so the click that opened the menu doesn't immediately close it
+  // via this same listener (it's registered after that click finishes bubbling).
+  setTimeout(() => document.addEventListener('click', _onAccessMenuOutsideClick), 0);
+}
+
+function closeAccessMenu() {
+  const pop = document.getElementById('accessPopover');
+  if (pop) pop.remove();
+  openAccessMenuId = null;
+  document.removeEventListener('click', _onAccessMenuOutsideClick);
+}
+
+function _onAccessMenuOutsideClick(e) {
+  const pop = document.getElementById('accessPopover');
+  if (pop && !pop.contains(e.target) && !e.target.closest('.access-btn')) closeAccessMenu();
+}
+
+async function toggleWorkflowRoleAccess(id, role, checked) {
+  const wf = workflowsCache.find(w => w.id === id);
+  if (!wf) return;
+  const current = new Set(wf.granted_roles || []);
+  if (checked) current.add(role); else current.delete(role);
+  const roles = Array.from(current);
+
+  const r = await authenticatedFetch(API(`/workflow/${id}`), {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({roles})
+  });
+  if (!r || !r.ok) { alert('Could not update access — try again.'); return; }
+
+  wf.granted_roles = roles;
+  const btn = document.getElementById(`accessBtn-${id}`);
+  if (btn) btn.innerHTML = `👥 ${roles.length} role${roles.length === 1 ? '' : 's'} ▾`;
 }
 
 async function toggleActive(id, active) {
