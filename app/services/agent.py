@@ -331,7 +331,7 @@ TOOLS = [
                 "ENTITY_RECORDS TABLE — it holds several unrelated kinds of records "
                 "(see the 'entity_records (entity_type=...)' lines in the schema below for which "
                 "ones exist and what's inside each). ALWAYS include a literal "
-                "\"entity_type = 'x'\" (or \"entity_type IN (...)\") filter naming exactly which "
+                '"entity_type = \'x\'" (or "entity_type IN (...)") filter naming exactly which '
                 "kind you mean — a query against entity_records with no entity_type filter is "
                 "rejected outright, since it would mix every kind of record together."
             ),
@@ -1199,9 +1199,7 @@ async def _execute_tool(
                 f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
             )
 
-        ok, reason = check_entity_records_access(
-            sql, user.get("readable_entity_types")
-        )
+        ok, reason = check_entity_records_access(sql, user.get("readable_entity_types"))
         if not ok:
             return f"ERROR: {reason}"
 

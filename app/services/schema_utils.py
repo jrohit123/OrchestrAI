@@ -92,7 +92,9 @@ async def get_entity_type_catalog(org_id: str, source_key: str) -> str:
             if isinstance(cf, str):
                 cf = json.loads(cf)
             keys.update((cf or {}).keys())
-        keys_text = f" — custom_fields keys so far: {', '.join(sorted(keys))}" if keys else ""
+        keys_text = (
+            f" — custom_fields keys so far: {', '.join(sorted(keys))}" if keys else ""
+        )
         lines.append(f"entity_records (entity_type='{et}'){keys_text}")
 
     return "\n".join(lines)

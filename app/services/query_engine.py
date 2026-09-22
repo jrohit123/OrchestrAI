@@ -93,7 +93,10 @@ def check_entity_records_access(sql: str, readable_entity_types) -> tuple[bool, 
 
     not_allowed = literals - set(readable_entity_types or [])
     if not_allowed:
-        return False, f"not permitted to read entity_type(s): {', '.join(sorted(not_allowed))}"
+        return (
+            False,
+            f"not permitted to read entity_type(s): {', '.join(sorted(not_allowed))}",
+        )
 
     return True, "ok"
 

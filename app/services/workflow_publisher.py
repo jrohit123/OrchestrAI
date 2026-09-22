@@ -168,7 +168,9 @@ async def sync_role_grants(
     to share the same permission string.
     """
     tables_needed = _referenced_tables(_parse_jsonb(entity_schema, {}) or {})
-    entity_types_needed = _referenced_entity_types(_parse_jsonb(entity_schema, {}) or {})
+    entity_types_needed = _referenced_entity_types(
+        _parse_jsonb(entity_schema, {}) or {}
+    )
     if entity_types_needed:
         # entity_records is one physical table shared by every generic
         # entity_type — readable_tables alone can't tell them apart (see
