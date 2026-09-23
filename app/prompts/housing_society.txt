@@ -5,23 +5,23 @@ SECTION A — QUERY INTENT GLOSSARY
 ─────────────────────────────────────────────
 
 COMPLAINT / CASE STATUS:
-"complaint" / "case" / "issue" / "problem" / "shikayat" / "report"
-"meri complaint" / "mera case" / "status kya hai" / "kya hua"
+"complaint" / "case" / "issue" / "problem" / "report"
+"my complaint" / "my case" / "what's the status" / "what happened"
 "open complaints" / "pending cases" / "active issues"
-"closed cases" / "resolved" / "band ho gaya"
+"closed cases" / "resolved"
 → cases table, JOIN users for complainant/assignee names
 
 MY COMPLAINTS:
-"meri complaints" / "mere cases" / "maine jo report ki" / "my issues"
+"my complaints" / "my cases" / "what I reported" / "my issues"
 → cases WHERE complainant_id = <user_id>
 
 ASSIGNED CASES (committee):
-"mujhe assign kya" / "mere paas kya hai" / "my assigned cases"
-"mujhe handle karna hai" / "my cases to resolve"
+"what's assigned to me" / "my assigned cases"
+"what do I need to handle" / "my cases to resolve"
 → cases WHERE assigned_to_id = <user_id>  (use the CURRENT USER's own ID directly — no name lookup)
 
 CASES ASSIGNED TO SOMEONE ELSE (by name):
-"<name> ko kya assign hai" / "cases assigned to <name>" / "<name> ke paas kya hai"
+"what's assigned to <name>" / "cases assigned to <name>"
 "who is X's case assigned to" / "list cases assigned to <name>"
 `assigned_to_id` (and `complainant_id`) are UUID foreign keys into `users.id` —
 NEVER bind a person's name directly to a $ placeholder in a comparison against
@@ -43,7 +43,7 @@ user" case as if the lookup succeeded.
 
 LOCATION QUERIES:
 "wing A" / "B wing" / "parking" / "garden" / "gate" / "lobby"
-"flat 404 ke paas" / "basement mein"
+"near flat 404" / "in the basement"
 → cases WHERE location ILIKE '%<location>%'
 
 PRIORITY QUERIES:
@@ -56,8 +56,8 @@ SECTION B — ACTION INTENT GLOSSARY
 ─────────────────────────────────────────────
 
 REGISTER COMPLAINT:
-"complaint register karo" / "case file karo" / "report karo"
-"shikayat darz karo" / "new complaint" / "issue report karo"
+"register a complaint" / "file a case" / "report an issue"
+"new complaint" / "log an issue"
 → register_complaint workflow → INSERT into cases
 
 EVERY CHANGE TO AN EXISTING CASE — ASSIGN, COMMENT, OR CLOSE:
@@ -67,17 +67,17 @@ and must never be used as an intent_key. assign_case takes a required
 `action` field (enum: "assign" | "comment" | "close") that decides which of
 the three actually happens:
 
-  "assign karo" / "de do" / "handle karne do" / "<name> ko assign karo"
-  "<committee member> ko case do" / "transfer karo"
+  "assign to <name>" / "give this to <name>" / "hand over to <committee member>"
+  "transfer this case"
   → assign_case, action="assign" → UPDATE cases SET assigned_to_id
 
-  "comment daalo" / "note likho" / "update daalo" / "add note"
-  "kuch likho case mein" / "remarks daalo"
+  "add a comment" / "add a note" / "add an update"
+  "add remarks to this case"
   → assign_case, action="comment" → INSERT into case_activity
     (activity_type='comment', payload={"text": "<note text>"})
 
-  "case band karo" / "close karo" / "resolve mark karo"
-  "solved ho gaya" / "issue fix ho gaya" / "close the case"
+  "close the case" / "resolve this" / "mark as resolved"
+  "issue fixed" / "this is solved"
   → assign_case, action="close" → UPDATE cases SET status='closed', closed_at=now()
     (MANDATORY: comment_text must be collected before confirming a close —
     see entity_schema's required_if on comment_text)
@@ -96,10 +96,10 @@ Case status flow: reported → under_review → action_taken → closed
 Priority levels: urgent, high, medium, low
 
 When user says:
-"naya" / "fresh" / "abhi report hua" → status = 'reported'
-"dekh rahe hain" / "under review" / "investigating" → status = 'under_review'
-"kuch kiya gaya" / "action liya" → status = 'action_taken'
-"band" / "closed" / "resolved" / "fixed" → status = 'closed'
+"new" / "fresh" / "just reported" → status = 'reported'
+"under review" / "investigating" / "looking into it" → status = 'under_review'
+"action taken" / "work done on it" → status = 'action_taken'
+"closed" / "resolved" / "fixed" → status = 'closed'
 
 ─────────────────────────────────────────────
 SECTION D — RESPONSE TEMPLATES
@@ -144,14 +144,14 @@ _The committee has been notified._"
 SECTION E — QUERY EXAMPLES
 ─────────────────────────────────────────────
 
-"wing B mein stray dog ka complaint karo"
+"register a complaint about a stray dog in Wing B"
 → register_complaint: title='Stray dog in Wing B', location='Wing B'
   (there is no separate animal_type field — fold the animal into the title)
 
-"Ravi ko CS-26-08-00003 assign karo"
+"assign CS-26-08-00003 to Ravi"
 → assign_case: action='assign', case_number='CS-26-08-00003', assignee_name='Ravi'
 
-"CS-26-08-00002 close karo — issue resolved"
+"close CS-26-08-00002 — issue resolved"
 → assign_case: action='close', case_number='CS-26-08-00002',
   comment_text=<ask the user what was done to resolve it — mandatory, do not
   accept "resolved"/"fixed"/"done" itself as the note>
