@@ -18,6 +18,7 @@ Binary float rounding produces paisa drift that will not reconcile.
 """
 
 import datetime as _dt
+from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
 # Register Decimal with simpleeval
@@ -50,6 +51,40 @@ _ALLOWED_FUNCTIONS = {
 
 class CalcError(Exception):
     pass
+
+
+def _normalize_numbers(d: dict) -> defaultdict:
+    """
+    Coerce every plain int/float leaf to Decimal before evaluation, and make
+    the result a defaultdict(None) — a calc_rules expression referencing an
+    optional field the current item/draft simply doesn't have (e.g. a
+    fallback ternary like `x if x is not None else y` on a field this
+    workflow's entity_schema marks optional) should see None, not blow up
+    with NameNotDefined. simpleeval looks names up via __getitem__, so a
+    defaultdict is all it takes — no per-field allowlist of "which names
+    are allowed to be missing".
+
+    Decimal coercion itself: inputs arrive as a mix of types by nature, not
+    by mistake — asyncpg decodes a Postgres `numeric` column (e.g.
+    orgs.default_making_charge_pct) as Decimal natively, while a value the
+    user typed in chat and the LLM parsed into a field is a plain float.
+    simpleeval's arithmetic operators refuse to mix Decimal with float
+    ("unsupported operand type(s) for *: 'decimal.Decimal' and 'float'") —
+    reproduced live: an item specifying its own making_charge_pct (float)
+    against a line_subtotal already turned Decimal by an earlier pass here.
+    Normalizing once, upfront, means every expression sees one consistent
+    numeric type instead of only working by accident when both operands
+    already match.
+    """
+    out = defaultdict(lambda: None)
+    for k, v in d.items():
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = Decimal(str(v))
+        else:
+            out[k] = v
+    return out
 
 
 def _eval(expr: str, names: dict):
@@ -101,37 +136,21 @@ def compute_item_rules(item_rules: dict, item: dict, context: dict) -> dict:
     Apply per-line-item calc_rules to a single item dict.
     `context` = org-level values this workflow's rules reference.
     The engine has no opinion on what those values are.
+
+    Every item field is passed through as-is, None included — a rule that
+    needs a fallback (e.g. "this item's own rate, else the org's default")
+    expresses that itself as a ternary expression referencing both names,
+    same as any other calc_rules logic. The engine doesn't special-case
+    any field name to make that possible; `x if x is not None else y` is
+    plain simpleeval syntax, not a language extension. A field genuinely
+    missing everywhere it could come from surfaces as a normal CalcError
+    from _resolve_multipass below (a TypeError/KeyError evaluating the
+    expression) — not a bespoke pre-check for one workflow's fields.
     """
     if not item_rules:
         return dict(item)
-    # Ensure qty defaults to 1 if not present
-    # making_charge_pct falls back to the org's default_making_charge_pct if the
-    # item doesn't specify its own — but if neither is set, that's a data gap,
-    # not something safe to guess a number for (it changes the invoice amount).
-    # making_charges can be flat (direct value) or percentage-based
-    # Keep making_charges_flat in context even if None (for calc rule fallback check)
-    making_charge_pct = item.get(
-        "making_charge_pct", context.get("default_making_charge_pct")
-    )
-    if making_charge_pct is None and item.get("making_charges_flat") is None:
-        raise CalcError(
-            "making_charge_pct missing on item and no default_making_charge_pct set for org"
-        )
-    item_with_defaults = {
-        **item,
-        "qty": item.get("qty", 1),
-        "making_charge_pct": making_charge_pct,
-        "making_charges_flat": item.get("making_charges_flat"),
-    }
-    # Filter out None values EXCEPT for making_charges_flat (needed for fallback logic)
-    names = {
-        **context,
-        **{
-            k: v
-            for k, v in item_with_defaults.items()
-            if v is not None or k == "making_charges_flat"
-        },
-    }
+    item_with_defaults = {**item, "qty": item.get("qty", 1)}
+    names = _normalize_numbers({**context, **item_with_defaults})
     out = dict(item_with_defaults)
     return _resolve_multipass(item_rules, names, out, "item_rules", f"on item {item}")
 
@@ -142,7 +161,9 @@ def compute_aggregate_rules(aggregate_rules: dict, fields: dict, context: dict) 
     """
     if not aggregate_rules:
         return {}
-    names = {**context, **{k: v for k, v in fields.items() if v is not None}}
+    names = _normalize_numbers(
+        {**context, **{k: v for k, v in fields.items() if v is not None}}
+    )
     out = {}
     return _resolve_multipass(aggregate_rules, names, out, "aggregate_rules", "")
 

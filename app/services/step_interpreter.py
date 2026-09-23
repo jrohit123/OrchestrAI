@@ -547,7 +547,10 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
             )
             raise UserFacingStepError(f"No {table} record found matching {desc}")
         if len(rows) > 1:
-            raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
+            display_cols = ",".join(match_columns.keys())
+            raise StepError(
+                f"AMBIGUOUS:{table}:{display_cols}:{json.dumps(rows, default=str)}"
+            )
 
         resolved = dict(rows[0])
         ctx[into] = resolved
@@ -689,7 +692,9 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     if len(rows) == 0:
         raise UserFacingStepError(f"No {table} record found matching '{name_val}'")
     if len(rows) > 1:
-        raise StepError(f"AMBIGUOUS:{table}:{json.dumps(rows, default=str)}")
+        raise StepError(
+            f"AMBIGUOUS:{table}:{match_col}:{json.dumps(rows, default=str)}"
+        )
 
     resolved = dict(rows[0])
     ctx[into] = resolved
@@ -1125,6 +1130,18 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
         **analysis,
     }
 
+    # Which of extra_context's keys are actual totals the PDF must never
+    # let the LLM recalculate — driven by this workflow's own entity_schema
+    # "computed": true fields (the same convention that already marks a
+    # field as system-derived everywhere else), not a fixed list of names
+    # that only ever meant something for whichever org's workflow wrote it.
+    entity_schema = _parse_jsonb(workflow.get("entity_schema"), {}) or {}
+    canonical_fields = [
+        name
+        for name, spec in entity_schema.items()
+        if isinstance(spec, dict) and spec.get("computed")
+    ]
+
     pdf_bytes = await generate_pdf(
         rows=rows,
         title=title,
@@ -1135,6 +1152,7 @@ async def _op_generate_pdf(params: dict, ctx: dict) -> dict:
         pdf_config=pdf_config,
         org_id=ctx["org_id"],
         source_key=ctx["source_key"],
+        canonical_fields=canonical_fields,
     )
     ctx["pdf_bytes"] = pdf_bytes
     return ctx
@@ -1646,10 +1664,16 @@ async def run_workflow_steps(
     except StepError as e:
         msg = str(e)
         if msg.startswith("AMBIGUOUS:"):
-            _, table, candidates_json = msg.split(":", 2)
+            _, table, display_cols, candidates_json = msg.split(":", 3)
             return {
                 "status": "ambiguous",
                 "table": table,
+                # Whichever column(s) this lookup actually matched on — the
+                # natural, workflow-agnostic label for "which one did you
+                # mean" (a case matched on case_number, a resident matched
+                # on wing+flat_no, a vendor matched on name — no fixed
+                # column-name allowlist needed to cover all three).
+                "display_columns": display_cols.split(","),
                 "candidates": json.loads(candidates_json),
             }
         if msg.startswith("PRICE_AMBIGUOUS:"):

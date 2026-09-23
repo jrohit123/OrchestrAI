@@ -111,9 +111,16 @@ async def execute_pending_action(
 
     if result["status"] == "ambiguous":
         candidates = result.get("candidates", [])
+        # Label each candidate with whatever column(s) this lookup actually
+        # matched on (see step_interpreter.py's AMBIGUOUS handling) — a
+        # case shows its case_number, a resident shows wing+flat_no, a
+        # vendor shows its name, with no fixed field-name list to maintain
+        # per entity type. Falls back to "?" only if the lookup somehow
+        # didn't report which columns it used.
+        display_cols = result.get("display_columns") or []
         opts = "\n".join(
-            f"{i + 1}. {c.get('case_number') or c.get('name') or '?'}"
-            + (f" — {c['title']}" if c.get("title") else "")
+            f"{i + 1}. "
+            + (", ".join(str(c.get(col)) for col in display_cols if c.get(col)) or "?")
             for i, c in enumerate(candidates[:5])
         )
         return {

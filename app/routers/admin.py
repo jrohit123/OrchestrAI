@@ -581,23 +581,50 @@ async def admin_clear_sessions(org_slug: str):
     return {"cleared": True, "message": "All sessions cleared"}
 
 
-@router.post("/admin/{org_slug}/api/gst-rate")
-async def update_gst_rate(org_slug: str, request: Request):
+@router.post("/admin/{org_slug}/api/org-setting")
+async def update_org_setting(org_slug: str, request: Request):
+    """
+    Generic replacement for the old one-off /api/gst-rate endpoint — writes
+    any single column on `orgs`, not just gst_rate. A dedicated endpoint per
+    setting doesn't scale: baanganga's default_making_charge_pct needs the
+    exact same "write one org-level number" logic and had no endpoint at
+    all before this — it would otherwise mean hand-writing another
+    near-identical route every time a workflow needs a new org-level knob.
+    Validated against the live schema allowlist, same check
+    step_interpreter.py's db.update_row uses for arbitrary tables — a
+    field name that isn't a real column on orgs is rejected outright, so
+    this can't be pointed at a different table or an invented column.
+    """
+    from app.services.step_interpreter import _load_schema_allowlist
+
     body = await request.json()
-    if body.get("gst_rate") is None:
-        raise HTTPException(status_code=400, detail="gst_rate required")
-    gst = float(body["gst_rate"])
-    source_key = await _resolve_source_key(org_slug)
+    field = body.get("field")
+    if not field:
+        raise HTTPException(status_code=400, detail="field required")
+    if "value" not in body:
+        raise HTTPException(status_code=400, detail="value required")
     org_id = body.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id required")
+
+    source_key = await _resolve_source_key(org_slug)
+    allowlist = await _load_schema_allowlist(source_key)
+    if field not in allowlist.get("orgs", set()):
+        raise HTTPException(
+            status_code=400, detail=f"'{field}' is not a column on orgs"
+        )
+    if field in ("id", "slug", "created_at", "is_active", "plan"):
+        raise HTTPException(
+            status_code=400, detail=f"'{field}' is not settable through this endpoint"
+        )
+
     await execute(
-        "UPDATE orgs SET gst_rate = $1 WHERE id = $2",
-        gst,
+        f"UPDATE orgs SET {field} = $1 WHERE id = $2",
+        body["value"],
         org_id,
         source_key=source_key,
     )
-    return {"gst_rate": gst}
+    return {field: body["value"]}
 
 
 # â”€â”€ New endpoints: workflow detail, edit, delete, chat builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

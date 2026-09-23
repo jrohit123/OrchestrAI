@@ -127,6 +127,12 @@ async def generate_preview_pdf(spec: dict, org_id: str, source_key: str) -> byte
     row_data = {**sample_fields}
     rows = [row_data]
 
+    canonical_fields = [
+        name
+        for name, spec_field in entity_schema.items()
+        if isinstance(spec_field, dict) and spec_field.get("computed")
+    ]
+
     return await generate_pdf(
         rows=rows,
         title=f"[PREVIEW] {title}",
@@ -135,4 +141,5 @@ async def generate_preview_pdf(spec: dict, org_id: str, source_key: str) -> byte
         doc_type=pdf_config.get("doc_type", "report"),
         extra_context=extra,
         pdf_config=pdf_config,
+        canonical_fields=canonical_fields,
     )

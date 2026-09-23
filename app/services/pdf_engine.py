@@ -114,6 +114,7 @@ async def generate_pdf(
     pdf_config: dict = None,
     org_id: str = None,
     source_key: str = None,
+    canonical_fields: list = None,
 ) -> bytes:
     """Generate a professional A4 PDF. Returns bytes. Raises on error."""
     html = await _build_html(
@@ -124,6 +125,7 @@ async def generate_pdf(
         doc_type=doc_type,
         extra_context=extra_context or {},
         pdf_config=pdf_config or {},
+        canonical_fields=canonical_fields,
     )
 
     # Logo injection is deliberately a plain post-processing step, same
@@ -262,7 +264,14 @@ def _build_doctype_instructions(
 
 
 async def _build_html(
-    rows, title, org_name, subtitle, doc_type, extra_context, pdf_config=None
+    rows,
+    title,
+    org_name,
+    subtitle,
+    doc_type,
+    extra_context,
+    pdf_config=None,
+    canonical_fields=None,
 ) -> str:
     today = datetime.now().strftime("%d %b %Y")
     today_long = datetime.now().strftime("%d %B %Y")
@@ -312,15 +321,18 @@ async def _build_html(
 """
 
     # Build canonical totals block — explicit values to prevent the LLM from
-    # guessing or recalculating amounts that are already correct
-    canonical_keys = (
-        "subtotal",
-        "gst_amount",
-        "total_amount",
-        "grand_total",
-        "amount",
-        "metal_cost",
-        "making_charges",
+    # guessing or recalculating amounts that are already correct. The field
+    # names come from the workflow's own entity_schema (every "computed":
+    # true field — see _op_generate_pdf), not a fixed tuple: a hardcoded
+    # list here can only ever protect the specific total names one org
+    # happened to use (reproduced live: "metal_cost"/"making_charges" only
+    # meant anything for a jewelry workflow — any other org's own total
+    # field names got no protection at all without a code change). A
+    # handful of common generic names are kept as a fallback for callers
+    # that don't pass canonical_fields at all (e.g. the preview path).
+    canonical_keys = tuple(
+        canonical_fields
+        or ("subtotal", "gst_amount", "total_amount", "grand_total", "amount")
     )
     canonical_lines = [
         f"  {k} = {extra_context[k]}"
