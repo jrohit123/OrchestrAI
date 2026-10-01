@@ -26,6 +26,14 @@ from simpleeval import DEFAULT_FUNCTIONS, EvalWithCompoundTypes, InvalidExpressi
 
 DEFAULT_FUNCTIONS["Decimal"] = Decimal
 
+
+def _due_from_tat(value, unit):
+    # whole numbers reach formulas as Decimal (see _normalize_numbers) and
+    # timedelta refuses Decimal, so hand it a float
+    span = unit if unit in ("minutes", "hours") else "days"
+    return _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(**{span: float(value)})
+
+
 _ALLOWED_FUNCTIONS = {
     "round": lambda x, d=2: round(x, d),
     "abs": abs,
@@ -36,16 +44,7 @@ _ALLOWED_FUNCTIONS = {
     ),
     "count_field": lambda items: len(items or []),
     "Decimal": Decimal,
-    "due_from_tat": lambda value, unit: (
-        _dt.datetime.now(_dt.timezone.utc)
-        + (
-            _dt.timedelta(minutes=value)
-            if unit == "minutes"
-            else _dt.timedelta(hours=value)
-            if unit == "hours"
-            else _dt.timedelta(days=value)
-        )
-    ),
+    "due_from_tat": _due_from_tat,
 }
 
 
