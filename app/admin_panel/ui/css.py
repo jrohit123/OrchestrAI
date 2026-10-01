@@ -145,13 +145,13 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .quote{white-space:pre-wrap;background:var(--mute-soft);border-radius:8px;padding:8px 10px;margin-top:4px}
 .thread{display:grid;gap:12px;padding:4px 2px;max-height:68vh;overflow:auto;align-content:start}
 .msg{display:grid;gap:3px;max-width:80%}
-.msg.them{justify-self:start}
-.msg.bot{justify-self:end}
+.msg.them{justify-self:end}
+.msg.bot{justify-self:start}
 .msg .who{font-size:11.5px;color:var(--muted);padding:0 6px}
-.msg.bot .who{text-align:right}
+.msg.them .who{text-align:right}
 .msg .b{white-space:pre-wrap;overflow-wrap:anywhere;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.45}
-.msg.them .b{background:var(--mute-soft);border-bottom-left-radius:4px}
-.msg.bot .b{background:var(--brand-soft);border-bottom-right-radius:4px}
+.msg.them .b{background:var(--brand-soft);border-bottom-right-radius:4px}
+.msg.bot .b{background:var(--mute-soft);border-bottom-left-radius:4px}
 .tcell{display:grid;gap:3px}
 .tcell input{width:100%;max-width:140px}
 .picker{position:relative}
