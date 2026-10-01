@@ -120,13 +120,16 @@ async def _build_help_response(user: dict) -> str:
     perms = set(user.get("permissions", []))
 
     workflows = await _fetch_all(
-        "SELECT intent_key, name, description, workflow_type FROM workflows WHERE org_id = $1 AND is_active = true",
+        "SELECT intent_key, name, description, workflow_type, to_jsonb(w) ->> 'kind' AS kind "
+        "FROM workflows w WHERE org_id = $1 AND is_active = true",
         user["org_id"],
         source_key=user["source_key"],
     )
 
     read_caps, action_caps = [], []
     for wf in workflows:
+        if wf["kind"] == "block":
+            continue  # only other workflows run these
         if wf["intent_key"] in perms or not perms:
             label = f"🔍 *{wf['name']}*"
             if wf.get("description"):
@@ -844,16 +847,20 @@ async def _build_system_prompt(user: dict) -> str:
     )
 
     # Load workflows entity_schema for slot-filling guidance
+    # to_jsonb(w) ->> 'kind' reads the column when the org's database has one and gives NULL when
+    # it does not, so this works for every org. Building blocks are only ever run by other
+    # workflows, so the assistant is not told about them as things a person can ask for.
     workflows = await fetch_all(
         """
         SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases,
-               workflow_type, sql_template, sql_params_order
-        FROM workflows
+               workflow_type, sql_template, sql_params_order, to_jsonb(w) ->> 'kind' AS kind
+        FROM workflows w
         WHERE org_id = $1 AND is_active = true
     """,
         user["org_id"],
         source_key=user["source_key"],
     )
+    workflows = [wf for wf in workflows if wf.get("kind") != "block"]
 
     # Build workflow schema guidance
     workflow_schema_text = ""
