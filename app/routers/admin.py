@@ -43,6 +43,19 @@ async def _resolve_source_key(org_slug: str) -> str:
 @router.get("/admin/{org_slug}", response_class=HTMLResponse)
 async def admin_page(org_slug: str):
     await _resolve_source_key(org_slug)  # 404s on an unknown org
+    from app.admin_panel.pages import render_page
+
+    return HTMLResponse(
+        content=render_page(org_slug),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/admin/{org_slug}/legacy", response_class=HTMLResponse)
+async def admin_legacy_page(org_slug: str):
+    """The classic single-page dashboard, kept for the workflow builder."""
+    await _resolve_source_key(org_slug)
     return HTMLResponse(content=_build_html(), media_type="text/html; charset=utf-8")
 
 
