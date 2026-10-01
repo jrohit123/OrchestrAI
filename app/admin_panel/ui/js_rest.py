@@ -1,66 +1,4 @@
 JS = r"""
-// ───────────────────────── Workflows ─────────────────────────
-const refName = x => x ? pretty(String(x).replace(/^\$(fields|user|case|computed)\./, '').replace(/\.(phone|name|id)$/, '')) : 'the person';
-function describeStep(s) {
-  const p = s.params || {}, t = p.table ? pretty(p.table).toLowerCase() : 'record';
-  const known = {
-    'resolve_entity': () => 'Find the ' + t + ' that matches “' + refName(p.name_from) + '”',
-    'derive_field': () => 'Work out ' + pretty(p.field || 'a value').toLowerCase(),
-    'compute': () => 'Do a calculation',
-    'conflict_check': () => 'Check for clashes before saving',
-    'require_permission': () => 'Check this person is allowed to do it',
-    'otp_gate': () => 'Ask for a one-time code',
-    'approval_gate': () => 'Ask someone to approve first',
-    'db.insert_row': () => 'Save a new ' + t,
-    'db.update_row': () => 'Update the ' + t,
-    'db.upsert_row': () => 'Save or update the ' + t,
-    'db.delete_row': () => 'Delete from ' + t,
-    'notify.user': () => 'Send a message to ' + refName(p.to),
-    'notify.whatsapp': () => 'Send the confirmation message',
-    'pdf.generate': () => 'Make a PDF',
-    'ai_price_interpret': () => 'Understand the price the person typed',
-  };
-  return (known[s.op] ? known[s.op]() : pretty(s.op)) + (s.when ? ' (only in some cases)' : '');
-}
-async function stepsModal(w) {
-  const d = await api.get('/workflows/' + w.id);
-  const fields = Object.entries(d.entity_schema || {});
-  modal({ title: w.name, wide: true, body: h('div', { class: 'stack' },
-    d.description ? h('div', null, d.description) : null,
-    h('div', { class: 'muted small' }, 'Technical name: ' + d.intent_key + ' · ' + (d.workflow_type === 'read' ? 'only reads information' : 'does something') + (d.training_phrases.length ? ' · ' + plural(d.training_phrases.length, 'example phrase') : '')),
-    fields.length ? h('div', null, h('b', null, 'What it asks for'), h('div', { class: 'chips', style: { marginTop: '6px' } }, fields.map(([k, v]) => h('span', { class: 'chip' }, (v && v.label) || pretty(k))))) : null,
-    d.gates.length ? h('div', null, h('b', null, 'Safeguards'), h('div', { class: 'muted small' }, d.gates.map(g => pretty(g.type || 'rule')).join(', '))) : null,
-    h('div', null, h('b', null, 'What it does, in order'), d.steps.length ? h('ol', { style: { margin: '6px 0 0', paddingLeft: '20px' } }, d.steps.map(s => h('li', { style: { margin: '4px 0' } }, describeStep(s), ' ', h('span', { class: 'muted small' }, s.op)))) : h('div', { class: 'muted' }, d.workflow_type === 'read' ? 'It answers by looking things up with a saved query, so it has no steps that change anything.' : 'No steps.')),
-    h('div', { class: 'muted small' }, 'To change what it does, use the workflow builder in the classic dashboard.')), actions: [{ label: 'Close' }] });
-}
-function accessModal(w, roles, done) {
-  const boxes = roles.map(r => { const cb = h('input', { type: 'checkbox', checked: w.granted_roles.includes(r.name) }); return { r, cb, el: h('label', { class: 'row' }, cb, r.name) }; });
-  modal({ title: 'Who can use “' + w.name + '”', body: h('div', { class: 'stack' }, boxes.map(b => b.el), h('div', { class: 'muted small' }, 'Only people with one of these roles see it in their menu or can run it.')),
-    actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, run: async () => { await api.put('/workflows/' + w.id + '/roles', { roles: boxes.filter(b => b.cb.checked).map(b => b.r.name) }); toast('Saved', 'ok'); done(); } }] });
-}
-SECTIONS.workflows = {
-  title: 'Workflows', sub: 'What people can ask the assistant to do, and who may use it',
-  async render(root) {
-    const d = await api.get('/workflows');
-    const again = () => { clear(root); SECTIONS.workflows.render(root); };
-    root.append(h('div', { class: 'row between', style: { marginBottom: '12px' } }, h('div', { class: 'muted' }, 'Switch a workflow off to hide it from the menu and the assistant without deleting it.'),
-      h('a', { class: 'btn', href: '/admin/' + encodeURIComponent(ORG) + '/legacy', target: '_blank', rel: 'noopener' }, 'Build or change a workflow ↗')));
-    const kindOn = S.boot.caps.workflow_kind;
-    root.append(h('div', { class: 'card' }, table([
-      { label: 'On', render: w => switchEl(w.is_active, async v => { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; }) },
-      { label: 'Workflow', render: w => h('div', null, h('b', null, w.name), h('div', { class: 'muted small' }, w.description || w.intent_key), w.slash_command ? h('div', { class: 'muted small' }, '/' + w.slash_command) : null) },
-      kindOn ? { label: 'Kind', render: w => badge(w.kind === 'case_action' ? 'Case action' : pretty(w.kind), w.kind === 'workflow' ? '' : 'violet') } : null,
-      { label: 'Who can use it', render: w => h('div', { class: 'row' }, w.granted_roles.length ? h('div', { class: 'chips' }, w.granted_roles.map(r => badge(r, 'brand'))) : h('span', { class: 'muted' }, w.kind === 'block' ? 'Used by other workflows' : 'Nobody'),
-        w.kind === 'block' ? null : h('button', { class: 'btn sm ghost', onclick: () => accessModal(w, d.roles, again) }, 'Change')) },
-      { label: 'Steps', cls: 'num', render: w => w.step_count },
-      { label: 'Last used', render: w => w.last_run ? ago(w.last_run) : h('span', { class: 'muted' }, 'never') },
-      S.boot.caps.cases ? { label: 'Cases made', cls: 'num', render: w => w.cases_made || '—' } : null,
-      { label: '', render: w => h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => stepsModal(w).catch(e => toast(e.message, 'bad')) }, 'See steps'),
-        h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmBox('Delete “' + w.name + '”? This cannot be undone. To just hide it, switch it off instead.', { ok: 'Delete', danger: true })) return; try { await api.del('/workflows/' + w.id); toast('Deleted', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Delete')) },
-    ].filter(Boolean), d.rows, { emptyTitle: 'No workflows yet', emptyText: 'Create the first one in the workflow builder.' })));
-  },
-};
-
 // ───────────────────────── Activity & chats ─────────────────────────
 async function transcriptModal(sessionId, fallback) {
   let rows = [];
@@ -231,8 +169,9 @@ async function renderSection(sec, r) {
   const impl = SECTIONS[sec.key];
   const tab = sec.tabs ? (sec.tabs.find(t => t.key === r.tab) || sec.tabs[0]) : null;
   r.tab = tab ? tab.key : '';
-  const head = h('div', { class: 'page-head' }, h('div', null, h('h1', null, sec.label), h('div', { class: 'sub' }, impl.sub || '')));
-  const tabs = tab ? h('div', { class: 'tabs' }, sec.tabs.map(t => h('a', { class: 'tab' + (t.key === tab.key ? ' active' : ''), href: href(sec.key, t.key === sec.tabs[0].key ? '' : t.key) }, t.label))) : null;
+  const editing = sec.key === 'workflows' && r.q.w;
+  const head = editing ? null : h('div', { class: 'page-head' }, h('div', null, h('h1', null, sec.label), h('div', { class: 'sub' }, impl.sub || '')));
+  const tabs = tab && !editing ? h('div', { class: 'tabs' }, sec.tabs.map(t => h('a', { class: 'tab' + (t.key === tab.key ? ' active' : ''), href: href(sec.key, t.key === sec.tabs[0].key ? '' : t.key) }, t.label))) : null;
   const content = h('div', null, h('div', { class: 'empty' }, 'Loading…'));
   fill(document.getElementById('main'), head, tabs, content);
   document.title = sec.label + ' · ' + S.boot.org.name;
@@ -253,7 +192,11 @@ async function onRoute() {
   const sec = S.boot.sections.find(s => s.key === r.section);
   if (!sec) { location.replace(href(S.boot.sections[0].key)); return; }
   const sig = sigOf(r);
-  if (sig !== lastSig) { lastSig = sig; await renderSection(sec, r); }
+  if (sig !== lastSig) {
+    if (S.leaveGuard && !S.leaveGuard()) { history.replaceState(null, '', lastHash); return; }
+    lastSig = sig; lastHash = location.hash;
+    await renderSection(sec, r);
+  }
   syncDrawer(r);
 }
 function buildShell(app) {

@@ -72,7 +72,7 @@ const money = n => '₹' + new Intl.NumberFormat('en-IN').format(Number(n || 0))
 const num = n => new Intl.NumberFormat('en-IN').format(Number(n || 0));
 
 // ───────────────────────── talking to the server ─────────────────────────
-class ApiError extends Error { constructor(msg, status) { super(msg); this.status = status; } }
+class ApiError extends Error { constructor(msg, status, data) { super(msg); this.status = status; this.data = data || null; } }
 function errorText(data, res) {
   const d = data && data.detail;
   if (typeof d === 'string') return d;
@@ -94,7 +94,7 @@ async function request(url, opts) {
   catch (e) { throw new ApiError('Cannot reach the server. Check your connection and try again.', 0); }
   let data = null;
   if ((res.headers.get('content-type') || '').includes('json')) data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(errorText(data, res), res.status);
+  if (!res.ok) throw new ApiError(errorText(data, res), res.status, data);
   return data;
 }
 function qs(q) {
@@ -295,7 +295,7 @@ function personPicker(o) {
 }
 
 // ───────────────────────── routing (the address bar) ─────────────────────────
-let drawerKey = '', lastSig = '';
+let drawerKey = '', lastSig = '', lastHash = '#/overview';
 function parseRoute() {
   const raw = location.hash.replace(/^#\/?/, '');
   const i = raw.indexOf('?');

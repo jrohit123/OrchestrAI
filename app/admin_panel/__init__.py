@@ -11,9 +11,20 @@ from app.admin_panel import (
     pages,
     people,
     routing,
+    studio,
     workflows,
 )
 
 router = APIRouter()
-for _module in (pages, meta, overview, cases, people, routing, workflows, activity):
+for _module in (
+    pages,
+    meta,
+    overview,
+    cases,
+    people,
+    routing,
+    workflows,
+    studio,
+    activity,
+):
     router.include_router(_module.router)

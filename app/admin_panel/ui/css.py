@@ -168,4 +168,54 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
   .two{grid-template-columns:1fr}
   .kv{grid-template-columns:100px 1fr}
 }
+
+.studio-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 12px;position:sticky;top:0;z-index:20;background:var(--bg);padding:6px 0}
+.namebox{font-size:18px;font-weight:600;border:1px solid transparent;background:transparent;min-width:200px;flex:1 1 220px;max-width:420px}
+.namebox:hover,.namebox:focus{border-color:var(--line2);background:var(--panel)}
+.studio-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;align-items:start}
+.steps{display:grid;gap:0}
+.addpt{display:flex;justify-content:center;height:22px;align-items:center;position:relative}
+.addpt .btn.ghost{opacity:0;padding:0 10px;height:20px;font-size:13px;transition:opacity .1s}
+.addpt:hover .btn.ghost,.addpt .btn.ghost:focus{opacity:1}
+.addpt:last-child{height:auto;padding:10px 0 0}
+.stcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.stcard.open{border-color:var(--brand)}
+.stcard.flash{background:var(--ok-soft)}
+.st-head{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;cursor:pointer}
+.st-head .num{width:24px;height:24px;border-radius:50%;background:var(--mute-soft);color:var(--muted);font-size:12px;font-weight:600;display:grid;place-items:center;flex:none}
+.st-head .glyph{width:22px;text-align:center;font-size:16px;color:var(--brand);flex:none;line-height:24px}
+.st-title{font-weight:600;overflow-wrap:anywhere}
+.ib{border:0;background:none;padding:2px 7px;min-width:26px;cursor:pointer;color:var(--muted);border-radius:6px}
+.ib:hover{background:var(--mute-soft);color:var(--ink)}
+.stepform{padding:4px 14px 14px 56px;display:grid;gap:2px;border-top:1px solid var(--line)}
+.stepform .field{margin-bottom:8px}
+.vp{display:grid;gap:6px}
+.vp select,.vp input,.vp textarea{width:100%}
+.maprow{display:grid;grid-template-columns:minmax(120px,.7fr) minmax(0,1.3fr) auto;gap:8px;align-items:start}
+.cond{display:grid;grid-template-columns:minmax(0,1.2fr) 130px minmax(0,1fr) auto;gap:8px;align-items:start}
+.tags{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tags input{min-width:140px;flex:1}
+.tags .chip .x{font-size:15px;padding:0 2px}
+.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 12px}
+.prob{font-size:12.5px;padding:4px 14px 8px 56px}
+.prob.bad{color:var(--bad)}.prob.warn{color:var(--warn)}
+.code{background:var(--mute-soft);border-radius:8px;padding:10px 12px;overflow:auto;font:12px/1.5 ui-monospace,monospace;margin:0;white-space:pre-wrap}
+.addgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.addtile{display:grid;gap:3px;text-align:left;border:1px solid var(--line2);background:var(--panel);border-radius:10px;padding:10px 12px;cursor:pointer}
+.addtile:hover{border-color:var(--brand);background:var(--brand-soft)}
+.chatdock{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;position:sticky;top:64px;max-height:calc(100vh - 90px)}
+.chatlog{padding:10px;overflow:auto;display:grid;gap:8px;align-content:start;min-height:160px;flex:1}
+.bubble{padding:8px 11px;border-radius:12px;max-width:95%;font-size:13.5px;overflow-wrap:anywhere}
+.bubble.user{background:var(--brand);color:var(--brand-ink);justify-self:end}
+.bubble.assistant{background:var(--mute-soft)}
+.bubble.error{background:var(--bad-soft);color:var(--bad)}
+.chatin{padding:10px;border-top:1px solid var(--line);display:grid;gap:8px}
+.chatin textarea{min-height:56px}
+.proposal{margin-top:8px;display:grid;gap:6px}
+.diff{border-radius:8px;overflow:hidden;border:1px solid var(--line);font-size:12.5px}
+.dl{padding:5px 8px}
+.dl.add{background:var(--ok-soft);color:var(--ok)}
+.dl.del{background:var(--bad-soft);color:var(--bad);text-decoration:line-through}
+@media (max-width:1100px){.studio-grid{grid-template-columns:1fr}.chatdock{position:static;max-height:none}}
+@media (max-width:700px){.maprow,.cond{grid-template-columns:1fr}.stepform{padding-left:14px}.prob{padding-left:14px}}
 """

@@ -93,6 +93,14 @@ async def _load_schema_allowlist(source_key: str) -> dict:
     return allowlist
 
 
+def invalidate_schema_allowlist(source_key: str | None = None) -> None:
+    """Forget the cached table list so tables added by a migration are seen at once."""
+    if source_key is None:
+        _schema_allowlist.clear()
+    else:
+        _schema_allowlist.pop(source_key, None)
+
+
 def _validate_identifier(name: str, identifier_type: str = "identifier") -> None:
     """Validate an identifier against strict regex (AP-10)."""
     if not isinstance(name, str):
@@ -1502,6 +1510,93 @@ async def _op_conflict_check(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+_MISSING = object()
+_MAX_BLOCK_DEPTH = 5
+
+
+async def _op_run_workflow(params: dict, ctx: dict) -> dict:
+    """
+    Run another workflow's steps as one step of this one — how a big workflow is built from
+    small building blocks, so changing a block once changes every workflow that runs it.
+
+        {"op": "run_workflow", "params": {"workflow": "find_case",
+                                          "inputs": {"case_number": "$fields.reference"}}}
+
+    The block sees everything the caller has (fields, the user, records found so far).
+    "inputs" adds or renames fields for the length of the call only. Records the block finds
+    (resolve_entity ... into) and rows it saves stay available to the steps after it. A block
+    cannot ask for an OTP code or approval: there is nobody to resume it half way.
+    """
+    key = params.get("workflow")
+    if not key:
+        raise StepError("run_workflow: no workflow named")
+
+    stack = ctx.setdefault("_call_stack", [ctx["workflow"].get("intent_key")])
+    if key in stack:
+        raise StepError(
+            f"run_workflow: '{key}' would run itself ({' > '.join(map(str, stack))} > {key})"
+        )
+    if len(stack) >= _MAX_BLOCK_DEPTH:
+        raise StepError("run_workflow: blocks inside blocks go too deep")
+
+    row = await fetch_one(
+        "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2",
+        ctx["org_id"],
+        key,
+        source_key=ctx["source_key"],
+    )
+    if not row:
+        raise StepError(f"run_workflow: there is no workflow called '{key}'")
+    block = dict(row)
+    if not block.get("is_active"):
+        raise StepError(f"run_workflow: '{block.get('name') or key}' is switched off")
+    steps = _parse_jsonb(block.get("steps"), []) or []
+    if not steps:
+        raise StepError(
+            f"run_workflow: '{block.get('name') or key}' has no steps to run"
+        )
+
+    inputs = _resolve_values(params.get("inputs") or {}, ctx)
+    saved = {k: ctx["fields"].get(k, _MISSING) for k in inputs}
+    outer_workflow, outer_index = ctx["workflow"], ctx.get("_step_index")
+    ctx["fields"].update(inputs)
+    ctx["workflow"] = block
+    stack.append(key)
+    try:
+        for i, step in enumerate(steps):
+            if isinstance(step, str):
+                step = json.loads(step)
+            if not _step_enabled(step, ctx):
+                continue
+            op_name = step.get("op")
+            if op_name in ("otp_gate", "approval_gate"):
+                raise StepError(
+                    f"run_workflow: '{key}' asks for a code or approval, which a building block cannot do"
+                )
+            op_fn = PRIMITIVES.get(op_name)
+            if not op_fn:
+                raise StepError(f"Unknown step op: '{op_name}' in '{key}'")
+            logger.info(f"Block '{key}' step {i + 1}/{len(steps)}: {op_name}")
+            try:
+                ctx = await op_fn(step.get("params", {}), ctx)
+            except (VerificationError, StepError):
+                raise
+            except Exception as e:
+                raise StepError(
+                    f"Unexpected failure in step '{op_name}' of '{key}': {e}"
+                )
+    finally:
+        stack.pop()
+        ctx["workflow"] = outer_workflow
+        ctx["_step_index"] = outer_index
+        for k, v in saved.items():
+            if v is _MISSING:
+                ctx["fields"].pop(k, None)
+            else:
+                ctx["fields"][k] = v
+    return ctx
+
+
 # ── Op registry — adding a new op never requires changing action_executor.py ─
 
 PRIMITIVES = {
@@ -1523,6 +1618,7 @@ PRIMITIVES = {
     "notify.whatsapp": _op_notify_whatsapp,
     "notify.user": _op_notify_user,  # NEW
     "derive_field": _op_derive_field,  # NEW
+    "run_workflow": _op_run_workflow,  # run another workflow as one step
 }
 
 

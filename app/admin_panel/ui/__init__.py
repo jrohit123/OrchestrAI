@@ -10,6 +10,8 @@ from app.admin_panel.ui import (
     js_people,
     js_rest,
     js_routing,
+    js_studio,
+    js_studio_form,
 )
 
 APP_CSS = css.CSS
@@ -18,7 +20,16 @@ APP_CSS = css.CSS
 APP_JS = (
     "(() => {\n'use strict';\n"
     + "\n".join(
-        part.JS for part in (js_core, js_overview_cases, js_people, js_routing, js_rest)
+        part.JS
+        for part in (
+            js_core,
+            js_overview_cases,
+            js_people,
+            js_routing,
+            js_studio_form,
+            js_studio,
+            js_rest,
+        )
     )
     + "\n})();\n"
 )

@@ -1,0 +1,32 @@
+A WORKFLOW IS A LIST OF STEPS
+Each step is {"op": "<step type>", "params": {...}} and may also have "when": {...} (see CONDITIONS).
+Steps run from top to bottom. If a step fails, the workflow stops and the person sees a message.
+The person who starts a workflow provides "fields" (listed under FIELDS). Steps read them as $fields.<name>.
+
+STEP TYPES (op: what it does. Settings: name (kind, required?))
+{step_types}
+
+VALUES
+Any setting of kind "value" can be:
+ - "$fields.<name>"  what the person typed. The names are listed under FIELDS.
+ - "$<alias>.<column>"  a column of a record found by an earlier resolve_entity step. The alias is that step's "into".
+ - "$inserted.<table>.<column>"  a row an earlier db.insert_row step saved.
+ - "$user.user_id", "$user.name", "$user.phone", "$user.email", "$user.role"  the person who started the workflow.
+ - "$org_id"
+ - a fixed text or number. In db.* steps the special fixed values NOW(), TODAY, TODAY+7 and TODAY+30 also work for dates. They are text, so always write them in quotes: "NOW()", "TODAY+7".
+Kind "map_value" is an object {key: value}. For database steps the keys are column names.
+
+CONDITIONS
+"when": {"field": "$fields.action", "equals": "close"}
+Other tests: "not_equals", "in" (a list), "not_in", "exists" (true or false), "gt", "gte", "lt", "lte".
+Several tests: {"and": [ {...}, {...} ]}. A step without "when" always runs.
+
+RULES
+- Use only tables and columns listed under SCHEMA. Never invent one.
+- A step that uses $<alias> must come after the resolve_entity step whose "into" is that alias.
+- A record found by a step that has a "when" only exists in that situation. If another situation needs the same record, add a step that finds it there too.
+- Never change a step the admin did not ask about: keep its order and settings exactly as they are.
+- Values of status columns are lowercase.
+- To reuse a building block (a workflow listed under BUILDING BLOCKS) write {"op": "run_workflow", "params": {"workflow": "<its key>"}} instead of copying its steps. A block already sees all the fields and records the workflow has.
+- Never put otp_gate or approval_gate inside a building block.
+- Use only the step types listed above.
