@@ -4,6 +4,7 @@ import httpx
 from fastapi import FastAPI, Request
 from openai import AsyncOpenAI
 
+from app.admin_panel import router as admin_panel_router
 from app.db import close_db, get_pool, init_db
 from app.logging_config import bind_context, get_context_logger, setup_logging
 from app.redis_client import close_redis, get_redis, init_redis
@@ -45,6 +46,7 @@ async def add_correlation_id(request: Request, call_next):
 
 
 app.include_router(webhook_router)
+app.include_router(admin_panel_router)
 app.include_router(admin_router)
 app.include_router(telegram_router)
 
