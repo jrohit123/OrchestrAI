@@ -4,10 +4,22 @@ async function transcriptModal(sessionId, fallback) {
   let rows = [];
   if (sessionId) rows = (await classic.get('/activity/session', { session_id: sessionId })).rows;
   else if (fallback) rows = [fallback];
-  modal({ title: 'Conversation', wide: true, body: rows.length ? h('div', { class: 'stack' }, rows.map(r => h('div', null,
-    h('div', { class: 'muted small' }, (r.user_name || 'Person') + ' · ' + fmtDT(r.created_at)),
-    r.input_text ? h('div', { class: 'quote' }, r.input_text) : null,
-    r.response_text ? h('div', { class: 'quote', style: { background: 'var(--brand-soft)' } }, r.response_text) : null))) : empty('Nothing recorded', ''), actions: [{ label: 'Close' }] });
+  const thread = h('div', { class: 'thread' });
+  rows.forEach(r => {
+    if (r.input_text) thread.append(h('div', { class: 'msg them' }, h('div', { class: 'who' }, (r.user_name || 'Person') + ' · ' + fmtDT(r.created_at)), h('div', { class: 'b' }, rich(r.input_text))));
+    if (r.response_text) thread.append(h('div', { class: 'msg bot' }, h('div', { class: 'who' }, 'Assistant'), h('div', { class: 'b' }, rich(r.response_text))));
+  });
+  modal({ title: 'Conversation', wide: true, body: rows.length ? thread : empty('Nothing recorded', ''), actions: [{ label: 'Close' }] });
+  setTimeout(() => { thread.scrollTop = thread.scrollHeight; }, 0);
+}
+// WhatsApp-style *bold* shown as bold instead of with the stars
+function rich(text) {
+  const out = [];
+  String(text).split(/(\*[^*\n]+\*)/g).forEach(part => {
+    if (/^\*[^*\n]+\*$/.test(part)) out.push(h('b', null, part.slice(1, -1)));
+    else if (part) out.push(part);
+  });
+  return out;
 }
 const clip = (s, n) => !s ? '' : (s.length > n ? s.slice(0, n) + '…' : s);
 async function renderChats(root, route) {
@@ -120,11 +132,16 @@ async function logoCard() {
 async function targetsCard() {
   const d = await api.get('/targets');
   const rows = [...d.rows, ...d.missing.map(p => ({ priority: p, tat_minutes: '', reminder_threshold_minutes: '' }))];
-  const inputs = rows.map(r => ({ r, tat: h('input', { type: 'number', min: 1, value: r.tat_minutes, style: { width: '110px' } }), rem: h('input', { type: 'number', min: 0, value: r.reminder_threshold_minutes, style: { width: '110px' } }) }));
-  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Response times'), h('div', { class: 'card-b stack' },
+  // each box shows what its minutes mean ("≈ 8 h") underneath, and keeps it up to date as you type
+  const nice = (input, out) => { const upd = () => { out.textContent = input.value !== '' ? '≈ ' + minutes(Number(input.value)) : ''; }; input.addEventListener('input', upd); upd(); return h('div', { class: 'tcell' }, input, out); };
+  const inputs = rows.map(r => {
+    const tat = h('input', { type: 'number', min: 1, value: r.tat_minutes }), rem = h('input', { type: 'number', min: 0, value: r.reminder_threshold_minutes });
+    return { r, tat, rem, tatCell: nice(tat, h('span', { class: 'muted small' })), remCell: nice(rem, h('span', { class: 'muted small' })) };
+  });
+  return h('div', { class: 'card', style: { gridColumn: '1 / -1' } }, h('div', { class: 'card-h' }, 'Response times'), h('div', { class: 'card-b stack' },
     h('div', { class: 'muted small' }, 'How long each priority gets, and when the reminder goes to whoever has the case. Changes apply to open cases too.'),
-    h('table', { class: 't' }, h('thead', null, h('tr', null, h('th', null, 'Priority'), h('th', null, 'Target (minutes)'), h('th', null, 'Remind after (minutes)'), h('th', null, ''))),
-      h('tbody', null, inputs.map(i => h('tr', null, h('td', null, prioBadge(i.r.priority)), h('td', null, i.tat), h('td', null, i.rem), h('td', { class: 'muted small' }, i.tat.value ? '≈ ' + minutes(Number(i.tat.value)) : ''))))),
+    h('div', { class: 'tablewrap' }, h('table', { class: 't' }, h('thead', null, h('tr', null, h('th', null, 'Priority'), h('th', null, 'Target (minutes)'), h('th', null, 'Remind after (minutes)'))),
+      h('tbody', null, inputs.map(i => h('tr', null, h('td', null, prioBadge(i.r.priority)), h('td', null, i.tatCell), h('td', null, i.remCell)))))),
     h('div', null, h('button', { class: 'btn primary', onclick: async () => {
       try { await api.put('/targets', { rows: inputs.filter(i => i.tat.value !== '').map(i => ({ priority: i.r.priority, tat_minutes: Number(i.tat.value), reminder_threshold_minutes: Number(i.rem.value || 0) })) }); toast('Saved', 'ok'); }
       catch (e) { toast(e.message, 'bad'); } } }, 'Save response times'))));
@@ -141,7 +158,7 @@ async function sessionCard() {
 async function statusCard() {
   const d = await api.get('/status');
   const LABELS = { cases: 'Cases', categories: 'Categories', routing: 'Routing rules', parties: 'People on a case', grants: 'Special access', events: 'Change log', seats: 'Seats', residents: 'Residents', audit: 'Chat log', targets: 'Response times', workflow_kind: 'Workflow kinds' };
-  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What this organisation’s database supports'), h('div', { class: 'card-b stack' },
+  return h('details', { class: 'card', style: { gridColumn: '1 / -1' } }, h('summary', { class: 'card-h', style: { cursor: 'pointer' } }, 'Technical details, for support (what this database supports)'), h('div', { class: 'card-b stack' },
     d.caps.cases && !d.case_model_installed ? notice('The case model (categories, routing, seats, special access) is not fully installed in this database, so those screens are hidden. Missing: ' + d.case_model_missing.map(pretty).join(', ') + '.', 'warn') : null,
     h('div', { class: 'chips' }, Object.entries(LABELS).map(([k, l]) => h('span', { class: 'badge ' + (d.caps[k] ? 'ok' : '') }, (d.caps[k] ? '✓ ' : '✗ ') + l))),
     h('div', { class: 'muted small' }, 'Cases count as finished when their status is: ' + d.closed_values.join(', ') + '. ' + plural(d.counts.users, 'person', 'people') + ', ' + plural(d.counts.workflows, 'workflow') + '.')));
@@ -153,7 +170,8 @@ SECTIONS.settings = {
       h('div', { class: 'row' }, 'Your name', h('input', { type: 'text', value: name, placeholder: 'e.g. Kartik', style: { width: '220px' }, onchange: e => { setName(e.target.value.trim()); toast('Saved on this browser', 'ok'); } })),
       h('div', { class: 'muted small' }, 'Written next to every change you make, so the change log shows who did it. It is a label, not a login.')));
     const parts = await Promise.all([logoCard(), S.boot.caps.targets ? targetsCard() : null, sessionCard(), statusCard()]);
-    root.append(h('div', { class: 'grid g2', style: { alignItems: 'start' } }, [...parts, mine(getName())].filter(Boolean)));
+    const [logo, targets, session, status] = parts;
+    root.append(h('div', { class: 'grid g2', style: { alignItems: 'start' } }, [logo, session, targets, mine(getName()), status].filter(Boolean)));
   },
 };
 

@@ -143,6 +143,17 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .tl.comment .dot{background:var(--violet)} .tl.assignment .dot{background:var(--info)} .tl.status_change .dot,.tl.reopen .dot{background:var(--ok)}
 .tl .when{color:var(--muted);font-size:12px}
 .quote{white-space:pre-wrap;background:var(--mute-soft);border-radius:8px;padding:8px 10px;margin-top:4px}
+.thread{display:grid;gap:12px;padding:4px 2px;max-height:68vh;overflow:auto;align-content:start}
+.msg{display:grid;gap:3px;max-width:80%}
+.msg.them{justify-self:start}
+.msg.bot{justify-self:end}
+.msg .who{font-size:11.5px;color:var(--muted);padding:0 6px}
+.msg.bot .who{text-align:right}
+.msg .b{white-space:pre-wrap;overflow-wrap:anywhere;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.45}
+.msg.them .b{background:var(--mute-soft);border-bottom-left-radius:4px}
+.msg.bot .b{background:var(--brand-soft);border-bottom-right-radius:4px}
+.tcell{display:grid;gap:3px}
+.tcell input{width:100%;max-width:140px}
 .picker{position:relative}
 .picker .results{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:var(--panel);border:1px solid var(--line2);border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,.18);z-index:70;max-height:260px;overflow:auto}
 .picker .opt{padding:8px 10px;cursor:pointer;display:flex;gap:8px;align-items:center;justify-content:space-between}
