@@ -1,0 +1,11 @@
+UPDATE workflows SET is_active = false WHERE intent_key IN ('register_complaint', 'assign_case');
+UPDATE workflows SET slash_command = NULL WHERE intent_key IN ('register_complaint', 'assign_case');
+UPDATE workflows SET slash_command = 'complaint', is_active = true WHERE intent_key = 'file_a_complaint';
+UPDATE workflows SET slash_command = 'assign', is_active = true WHERE intent_key = 'case_pass_on';
+UPDATE workflows SET slash_command = 'update', is_active = true WHERE intent_key = 'case_add_update';
+UPDATE workflows SET slash_command = 'close', is_active = true WHERE intent_key = 'case_close_with_note';
+UPDATE roles SET permissions = array_append(permissions, 'file_a_complaint') WHERE name IN ('admin', 'committee', 'member', 'owner', 'tenant') AND NOT ('file_a_complaint' = ANY(permissions));
+UPDATE roles SET permissions = array_append(permissions, 'case_pass_on') WHERE name IN ('admin', 'committee') AND NOT ('case_pass_on' = ANY(permissions));
+UPDATE roles SET permissions = array_append(permissions, 'case_add_update') WHERE name IN ('admin', 'committee') AND NOT ('case_add_update' = ANY(permissions));
+UPDATE roles SET permissions = array_append(permissions, 'case_close_with_note') WHERE name IN ('admin', 'committee') AND NOT ('case_close_with_note' = ANY(permissions));
+SELECT intent_key, kind, is_active, slash_command FROM workflows WHERE kind = 'workflow' ORDER BY intent_key;
