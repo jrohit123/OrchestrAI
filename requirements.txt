@@ -16,3 +16,4 @@ gspread==6.1.2
 google-auth==2.29.0
 google-generativeai==0.8.3
 structlog==24.1.0
+sqlglot==30.21.0

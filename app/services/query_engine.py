@@ -5,7 +5,7 @@ Used by the tool-calling agent in agent.py.
 
 import re
 
-from app.db import fetch_all
+from app.db import fetch_all_readonly
 from app.logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
@@ -144,7 +144,9 @@ async def execute_query(
     try:
         full_params = [user["org_id"]] + list(params)
         logger.info(f"execute_query running: {sql[:200]}")
-        rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
+        rows = await fetch_all_readonly(
+            sql, *full_params, source_key=user["source_key"], timeout_ms=10000
+        )
 
         # Strip sensitive columns
         clean = []

@@ -122,6 +122,17 @@ async def fetch_all(query: str, *args, source_key: str):
         return await conn.fetch(query, *args)
 
 
+async def fetch_all_readonly(
+    query: str, *args, source_key: str, timeout_ms: int = 5000
+):
+    """For SQL a person or the model wrote: a read-only transaction (the database itself refuses
+    any change, whatever the text says) with a time limit."""
+    pool = await get_pool(source_key)
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        return await conn.fetch(query, *args)
+
+
 async def execute(query: str, *args, source_key: str):
     pool = await get_pool(source_key)
     async with pool.acquire() as conn:

@@ -9,15 +9,17 @@ import json
 import os
 import re
 
+import asyncpg
 from openai import AsyncOpenAI
 
 from app.config import required
-from app.db import execute, fetch_all, fetch_one
+from app.db import execute, fetch_all, fetch_all_readonly, fetch_one
 from app.logging_config import get_context_logger
+from app.services import sql_guard
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
-from app.services.query_engine import SENSITIVE_COLS, _safe, check_entity_records_access
+from app.services.query_engine import SENSITIVE_COLS, check_entity_records_access
 
 logger = get_context_logger(__name__)
 
@@ -1195,23 +1197,44 @@ async def _execute_tool(
         # actually sent. Cheap at INFO level; removing it re-blinds this path.
         logger.info(f"query_database raw call — sql={sql!r} params={params!r}")
 
-        # Check readable_tables permission
+        # The per-organisation switch, then a parse-based guard (see sql_guard.py). The guard checks
+        # every table and column the query touches, adds the organisation filter itself and caps
+        # the rows. The query then runs in a read-only transaction with a time limit.
+        allowed, why = await sql_guard.ai_sql_allowed(user)
+        if not allowed:
+            return f"ERROR: {why}"
+
         readable_tables = set(user.get("readable_tables", []))
-        referenced_tables = set(
-            re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE)
-        )
-        not_allowed = referenced_tables - readable_tables
-        if not_allowed:
-            return (
-                f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
-            )
 
         ok, reason = check_entity_records_access(sql, user.get("readable_entity_types"))
         if not ok:
             return f"ERROR: {reason}"
 
-        # Validate SQL against live schema — check referenced tables actually exist.
-        # This replaces a hardcoded denylist with an always-correct schema check.
+        # org_id is a trusted server-side value (resolved from the authenticated session, never
+        # model-controlled). A query may still write the :org_id marker, so it is replaced by the
+        # literal here; the guard adds the organisation filter on its own either way.
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(user["org_id"])):
+            logger.error(
+                f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}"
+            )
+            return "ERROR: internal error resolving org — please try again"
+        sql = re.sub(r":org_id\b", f"'{user['org_id']}'::uuid", sql)
+
+        try:
+            sql, referenced_tables = sql_guard.prepare(
+                sql,
+                allowed_tables=readable_tables,
+                org_id=str(user["org_id"]),
+                org_scoped_tables=await sql_guard.org_scoped_tables(user["source_key"]),
+                hidden_columns=SENSITIVE_COLS,
+            )
+        except sql_guard.GuardError as e:
+            logger.warning(
+                f"query_database blocked: {e} — sql={tool_input.get('sql')!r}"
+            )
+            return f"ERROR: Query blocked — {e}"
+
+        # A table the person may read but that does not exist: say which tables do.
         schema_text = await _get_schema(
             user["org_id"],
             user["source_key"],
@@ -1227,49 +1250,7 @@ async def _execute_tool(
                 f"Correct the query and retry."
             )
 
-        ok, reason = _safe(sql)
-        if not ok:
-            return f"ERROR: Query blocked — {reason}"
-
-        # org_id is a trusted server-side value (resolved from the authenticated
-        # session, never model-controlled) — it is injected as a literal via the
-        # :org_id marker rather than as a numbered $N placeholder. This means the
-        # model's own params[] maps 1:1 onto the $1, $2... it writes, with no
-        # hidden offset to account for. The previous design auto-injected org_id
-        # as $1 behind the scenes while asking the model to start its own params
-        # at $2 — an invisible-offset bookkeeping task that small models proved
-        # unable to do reliably (confirmed from production logs: the model kept
-        # re-supplying its own id as an extra, redundant leading param). Making
-        # $1 belong to the model unconditionally removes the failure mode at its
-        # source instead of pattern-matching symptoms of it.
-        # Shape-check before string-interpolating org_id into the SQL text below.
-        # It's a trusted server-side value, not model/user input, so this isn't
-        # guarding against injection from this call — it's a cheap sanity check
-        # that fails loudly if the org lookup upstream ever returns something
-        # malformed, instead of silently running a query scoped to garbage.
-        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(user["org_id"])):
-            logger.error(
-                f"query_database: user['org_id'] is not a UUID: {user['org_id']!r}"
-            )
-            return "ERROR: internal error resolving org — please try again"
-        if ":org_id" not in sql:
-            return (
-                "ERROR: this query has no org scoping. Every query_database call must "
-                "filter on org_id using the literal :org_id marker (e.g. "
-                '"WHERE c.org_id = :org_id") — never a $-numbered placeholder for it. '
-                "Add that filter and retry."
-            )
-        # \b after :org_id (not before) is deliberate — PostgreSQL cast syntax
-        # like ::uuid also starts with a colon, and a leading \b would fail to
-        # match between two colons. Matching only the trailing boundary is
-        # enough to avoid accidentally catching a longer identifier that just
-        # happens to start with "org_id" (there isn't one in this schema, but
-        # cheap to be exact rather than rely on that staying true).
-        sql = re.sub(r":org_id\b", f"'{user['org_id']}'::uuid", sql)
-
-        # Computed AFTER the :org_id substitution above, so any $N the model
-        # wrote is counted as-is — the substituted org_id literal contains no
-        # $ characters, so it can't shift or inflate this count.
+        # The model's params map 1:1 onto the $1, $2... it wrote. Check the counts match.
         placeholder_nums = sorted({int(n) for n in re.findall(r"\$(\d+)", sql)})
         max_placeholder = max(placeholder_nums, default=0)
 
@@ -1293,16 +1274,14 @@ async def _execute_tool(
             logger.warning(f"query_database param mismatch (over-supply): {msg}")
             return f"ERROR: {msg}"
 
-        # full_params == params exactly now (org_id no longer gets prepended
-        # here — it's already a literal inside `sql` from the substitution
-        # above). Kept as its own name rather than reusing `params` directly
-        # so the fetch_all call below reads the same regardless of how the
-        # two lists relate, in case that ever changes again.
-        full_params = list(params)
-
         try:
-            logger.info(f"Executing SQL query: {sql[:200]}")
-            rows = await fetch_all(sql, *full_params, source_key=user["source_key"])
+            logger.info(f"Executing SQL query: {sql[:300]}")
+            rows = await fetch_all_readonly(
+                sql,
+                *list(params),
+                source_key=user["source_key"],
+                timeout_ms=sql_guard.QUERY_TIMEOUT_MS,
+            )
 
             # Strip sensitive columns
             clean = []
@@ -1325,6 +1304,8 @@ async def _execute_tool(
 
             return json.dumps(clean, default=str)
 
+        except asyncpg.exceptions.QueryCanceledError:
+            return "ERROR: the query took too long. Ask for less data or add a filter."
         except Exception as e:
             logger.error(f"query_database failed: {e}", exc_info=True)
             return f"ERROR: {e!s}"
