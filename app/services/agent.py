@@ -20,6 +20,7 @@ from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
 from app.services.query_engine import SENSITIVE_COLS, check_entity_records_access
+from app.services.report_format import format_list
 
 logger = get_context_logger(__name__)
 
@@ -1178,6 +1179,49 @@ async def _validate_draft(
 # ── Tool execution ────────────────────────────────────────────────────────────
 
 
+async def _llm_format_report(wf: dict, raw_result: str) -> str:
+    """The older way: a language model words the rows of a report. Used for reports whose
+    response_format is not 'list'."""
+    glossary = wf.get("business_glossary") or {}
+    if isinstance(glossary, str):
+        try:
+            glossary = json.loads(glossary)
+        except (json.JSONDecodeError, TypeError):
+            glossary = {}
+
+    format_prompt = _RESPONSE_FORMATTING_PROMPT.format(
+        workflow_name=wf["name"],
+        glossary_json=json.dumps(glossary),
+        raw_data=raw_result,
+    )
+
+    try:
+        format_response = await _llm_chat(
+            messages=[{"role": "user", "content": format_prompt}],
+            max_tokens=8192,
+            temperature=0.1,
+        )
+        formatted = format_response.choices[0].message.content.strip()
+        # Safety check: catch truncated output before it reaches the user
+        if format_response.choices[0].finish_reason == "length":
+            logger.warning(
+                "Formatting response truncated (finish_reason=length) — falling back to raw data"
+            )
+            formatted = raw_result
+        # Safety check: if formatting LLM returns empty, fall back to raw data
+        elif not formatted:
+            logger.warning(
+                "Formatting LLM returned empty response, falling back to raw data"
+            )
+            formatted = raw_result
+    except Exception as e:
+        logger.error(f"Formatting LLM call failed: {e}")
+        formatted = (
+            raw_result  # fall back to raw JSON rather than losing the data entirely
+        )
+    return formatted
+
+
 async def _execute_tool(
     tool_name: str,
     tool_input: dict,
@@ -1315,7 +1359,8 @@ async def _execute_tool(
         extracted = tool_input.get("params") or {}
 
         wf = await fetch_one(
-            "SELECT workflow_type, sql_template, sql_params_order, entity_schema, business_glossary "
+            "SELECT name, workflow_type, sql_template, sql_params_order, entity_schema, "
+            "business_glossary, response_format "
             "FROM workflows WHERE org_id = $1 AND intent_key = $2 AND is_active = true",
             user["org_id"],
             intent_key,
@@ -1345,13 +1390,17 @@ async def _execute_tool(
         from app.services.query_engine import execute_query
 
         params = _resolve_sql_params(params_order, user, extracted)
-        return await execute_query(
+        raw = await execute_query(
             sql=wf["sql_template"],
             params=params,
             user=user,
             response_format="generic",
             business_glossary=glossary,
         )
+        if (wf.get("response_format") or "") == "list":
+            # finished by code, so the model cannot drop a row or change a value
+            return {"type": "report_reply", "text": format_list(wf["name"], raw)}
+        return raw
 
     elif tool_name == "query_sheet":
         from app.services.sheets_client import sheet_fetch_filtered
@@ -2095,45 +2144,13 @@ async def run_agent(
             )
             history_to_save = [{"role": "user", "content": message}]
 
-            # Data is fetched deterministically above — the LLM's only job now
-            # is formatting real rows into a WhatsApp-friendly reply, not
-            # deciding whether/how to fetch. Removes the failure mode where
-            # the model skips the tool call entirely.
-            glossary = wf.get("business_glossary") or {}
-            if isinstance(glossary, str):
-                try:
-                    glossary = json.loads(glossary)
-                except (json.JSONDecodeError, TypeError):
-                    glossary = {}
-
-            format_prompt = _RESPONSE_FORMATTING_PROMPT.format(
-                workflow_name=wf["name"],
-                glossary_json=json.dumps(glossary),
-                raw_data=raw_result,
-            )
-
-            try:
-                format_response = await _llm_chat(
-                    messages=[{"role": "user", "content": format_prompt}],
-                    max_tokens=8192,
-                    temperature=0.1,
-                )
-                formatted = format_response.choices[0].message.content.strip()
-                # Safety check: catch truncated output before it reaches the user
-                if format_response.choices[0].finish_reason == "length":
-                    logger.warning(
-                        "Formatting response truncated (finish_reason=length) — falling back to raw data"
-                    )
-                    formatted = raw_result
-                # Safety check: if formatting LLM returns empty, fall back to raw data
-                elif not formatted:
-                    logger.warning(
-                        "Formatting LLM returned empty response, falling back to raw data"
-                    )
-                    formatted = raw_result
-            except Exception as e:
-                logger.error(f"Formatting LLM call failed: {e}")
-                formatted = raw_result  # fall back to raw JSON rather than losing the data entirely
+            # Data is fetched deterministically above. A report whose response_format is
+            # 'list' is also worded by code (every row shown exactly as stored); any other
+            # report is still worded by the language model, as before.
+            if (wf.get("response_format") or "") == "list":
+                formatted = format_list(wf["name"], raw_result)
+            else:
+                formatted = await _llm_format_report(wf, raw_result)
 
             # Final safety check: never return empty string
             if not formatted:
@@ -2945,6 +2962,16 @@ async def run_agent(
                 and result.startswith("EXCEL_SENT:")
             ):
                 session_patch["_excel_sent_this_turn"] = True
+
+            # A report worded by code is already the final reply
+            if (
+                tool_call.function.name == "run_workflow_query"
+                and isinstance(result, dict)
+                and result.get("type") == "report_reply"
+            ):
+                history_to_save = _serialize_history(messages)
+                history_to_save.append({"role": "assistant", "content": result["text"]})
+                return result["text"], history_to_save, session_patch
 
             # If this was a clarify call, stop the loop
             if tool_call.function.name == "clarify":
