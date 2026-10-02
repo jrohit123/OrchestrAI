@@ -3,7 +3,7 @@ JS = r"""
 const LEVELS = { 1: 'See only', 2: 'Can start', 3: 'Can work on', 4: 'Full control' };
 const GRANT_STATE = { live: ['Live', 'ok'], scheduled: ['Starts later', 'info'], expired: ['Expired', ''], revoked: ['Revoked', ''] };
 // Remove this line when the assistant starts reading special access.
-const ACCESS_NOTICE = 'Special access is saved here as a record. The Telegram assistant does not read it yet, so it does not change what anyone can do for now.';
+const ACCESS_NOTICE = 'Not active yet. What you add here is only a note: the Telegram assistant does not read it, so it does not change what anyone can do. To let a role use a workflow, open the workflow and go to “Details and who can use it”. To let someone act on complaints sent to them, make them the holder of a seat or name them in a rule under “Where complaints go”.';
 const homeText = x => (x.wing ? x.wing + '-' : '') + x.flat_no + ' · ' + pretty(x.residential_status);
 
 function kvEditor(initial, keyHints) {
@@ -239,7 +239,7 @@ async function renderAccessTab(root, route) {
   const state = route.q.state === 'all' ? 'all' : 'live';
   const d = await api.get('/grants', { state });
   const again = () => { clear(root); renderAccessTab(root, parseRoute()); };
-  root.append(notice(ACCESS_NOTICE), h('div', { class: 'row between', style: { marginBottom: '12px' } },
+  root.append(notice(ACCESS_NOTICE, 'warn'), h('div', { class: 'row between', style: { marginBottom: '12px' } },
     sel([['live', 'Live and upcoming'], ['all', 'Everything, including old']], state, { onchange: e => { setQuery({ state: e.target.value }); clear(root); renderAccessTab(root, parseRoute()); } }),
     h('button', { class: 'btn primary', onclick: () => grantModal(lk, null, again) }, '+ Give access')),
     h('div', { class: 'card' }, d.rows.length ? grantTable(d.rows, again, false) : empty('No special access', 'Everyone can do what their role allows.')));

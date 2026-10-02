@@ -240,28 +240,61 @@ async def _handle_email_submission(
 _MAX_PHOTOS = 5
 
 
-async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
-    """Attach photos sent in chat to the request being filled in (when its workflow takes photos)."""
-    from app.services.draft_store import get_active_draft, upsert_draft
-
-    draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
-    accepts = False
-    if draft:
-        row = await fetch_one(
-            "SELECT to_jsonb(w) -> 'settings' ->> 'photos' AS photos FROM workflows w "
-            "WHERE org_id = $1 AND intent_key = $2",
+async def _audit_turn(
+    user: dict,
+    session_id: str,
+    intent_key: str,
+    text: str,
+    reply: str,
+    outcome: str = "success",
+) -> None:
+    """One line in the activity log for a turn the engine answered itself (yes, cancel), so the
+    chat in the dashboard ends with what was done, not with "Reply yes to save". Never raises."""
+    try:
+        await execute(
+            """
+            INSERT INTO audit_log (org_id, user_id, intent_key, input_text, response_text, session_id, outcome)
+            VALUES ($1, $2, $3, $4, $5, $6 || ':' || to_char(now(), 'YYYY-MM-DD'), $7)
+            """,
             user["org_id"],
-            draft["intent_key"],
+            user["user_id"],
+            intent_key,
+            text,
+            reply,
+            session_id,
+            outcome,
             source_key=user["source_key"],
         )
-        accepts = bool(row and row["photos"] == "true")
-    if not draft or not accepts:
-        await send_text(
-            phone,
-            "📎 I can attach photos to a complaint or an update. "
-            "Start with /complaint or /update, then send the photo.",
-        )
-        return
+    except (
+        Exception
+    ) as e:  # the answer already went out; a missing log line must not break it
+        logger.warning(f"activity log not written: {e}")
+
+
+_HOLD_MINUTES = 15
+
+
+async def _photo_draft(user: dict) -> dict | None:
+    """The request being filled in, if its workflow takes photos."""
+    from app.services.draft_store import get_active_draft
+
+    draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+    if not draft:
+        return None
+    row = await fetch_one(
+        "SELECT to_jsonb(w) -> 'settings' ->> 'photos' AS photos FROM workflows w "
+        "WHERE org_id = $1 AND intent_key = $2",
+        user["org_id"],
+        draft["intent_key"],
+        source_key=user["source_key"],
+    )
+    return draft if row and row["photos"] == "true" else None
+
+
+async def _add_photos(user: dict, phone: str, draft: dict, file_ids: list[str]) -> int:
+    """Put photos on the draft (and on the chat's copy of it). Returns how many are attached."""
+    from app.services.draft_store import upsert_draft
+
     fields = draft.get("fields") or {}
     if isinstance(fields, str):
         fields = json.loads(fields)
@@ -285,10 +318,56 @@ async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
     if pending and pending.get("intent_key") == draft["intent_key"]:
         pending.setdefault("fields", {})["_photos"] = have
         await set_session(session_id, session, ttl=480 * 60)
-    note = f"📎 Photo added ({len(have)} attached)."
+    return len(have)
+
+
+def _held_key(user: dict, phone: str) -> str:
+    return f"photos_held:{user['org_id']}:{phone}"
+
+
+async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
+    """Attach photos sent in chat to the request being filled in (when its workflow takes photos).
+    A photo sent first, before /complaint or /update, is kept for a few minutes and attached as
+    soon as such a request is started."""
+    draft = await _photo_draft(user)
+    if not draft:
+        held = await get_session(_held_key(user, phone))
+        ids = list(held.get("ids") or [])
+        for file_id in file_ids:
+            if file_id not in ids:
+                ids.append(file_id)
+        await set_session(
+            _held_key(user, phone), {"ids": ids[:_MAX_PHOTOS]}, ttl=_HOLD_MINUTES * 60
+        )
+        await send_text(
+            phone,
+            "📎 Got the photo. Now start /complaint or /update and I will attach it "
+            f"(I keep it for {_HOLD_MINUTES} minutes).",
+        )
+        return
+    count = await _add_photos(user, phone, draft, file_ids)
+    note = f"📎 Photo added ({count} attached)."
     if draft["stage"] == "awaiting_confirmation":
         note += " Reply *yes* to save."
     await send_text(phone, note)
+
+
+async def _attach_held_photos(user: dict, phone: str) -> None:
+    """On the next message: if a photo is waiting and a request that takes photos is now open,
+    attach it. Never raises."""
+    try:
+        held = await get_session(_held_key(user, phone))
+        ids = held.get("ids") or []
+        if not ids:
+            return
+        draft = await _photo_draft(user)
+        if not draft:
+            return
+        count = await _add_photos(user, phone, draft, ids)
+        await delete_session(_held_key(user, phone))
+        await send_text(phone, f"📎 Attached your photo ({count} on it).")
+    except Exception as e:
+        logger.warning(f"held photo not attached: {e}")
 
 
 async def handle_message(
@@ -728,6 +807,8 @@ async def handle_message(
         await _take_photos(user, phone, attachments)
         if not text.strip():
             return
+    else:
+        await _attach_held_photos(user, phone)
 
     if phone.startswith("tg:"):
         from app.services.menu import sync_telegram_commands
@@ -1145,14 +1226,18 @@ async def handle_message(
 
     # 8. Pending action confirmation
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
+        intent = pending_action.get("intent_key") or "agent"
         if matches_vocab(text, vocab["confirm_words"]):
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
                 logger.error(f"execute_pending_action error: {e}", exc_info=True)
-                await send_text(
-                    phone,
-                    "❌ Something went wrong creating the document. Please try again.",
+                oops = (
+                    "❌ Something went wrong creating the document. Please try again."
+                )
+                await send_text(phone, oops)
+                await _audit_turn(
+                    user, session_id, intent, text, f"{oops} ({e})"[:2000], "error"
                 )
                 return
 
@@ -1171,9 +1256,9 @@ async def handle_message(
                 ]
                 session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session, ttl=session_ttl)
-                await send_text(
-                    phone, result.get("message", "Action completed successfully")
-                )
+                done = result.get("message", "Action completed successfully")
+                await send_text(phone, done)
+                await _audit_turn(user, session_id, intent, text, done)
                 await _send_action_pdf(result)
             elif result.get("stage") == "awaiting_otp":
                 pending_action["stage"] = "awaiting_otp"
@@ -1184,6 +1269,9 @@ async def handle_message(
                     ttl=session_ttl,
                 )
                 await send_text(phone, result.get("message"))
+                await _audit_turn(
+                    user, session_id, intent, text, result.get("message") or ""
+                )
             elif result.get("stage") == "awaiting_approval":
                 pending_action["stage"] = "awaiting_approval"
                 pending_action["resume_step"] = result.get("resume_step", 0)
@@ -1193,10 +1281,15 @@ async def handle_message(
                     ttl=session_ttl,
                 )
                 await send_text(phone, result.get("message"))
+                await _audit_turn(
+                    user, session_id, intent, text, result.get("message") or ""
+                )
             else:
                 session.pop("pending_action", None)
                 await set_session(session_id, session, ttl=session_ttl)
-                await send_text(phone, result.get("message", "Action failed"))
+                failed = result.get("message", "Action failed")
+                await send_text(phone, failed)
+                await _audit_turn(user, session_id, intent, text, failed, "error")
             return
 
         if matches_vocab(text, vocab["cancel_words"]):
@@ -1204,6 +1297,7 @@ async def handle_message(
                 user, session, session_id, session_ttl, reason="cancelled"
             )
             await send_text(phone, "❌ Action cancelled.")
+            await _audit_turn(user, session_id, intent, text, "❌ Action cancelled.")
             return
 
         # Unrecognised reply while awaiting confirm — check staleness first, then treat as correction

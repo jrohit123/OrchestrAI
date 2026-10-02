@@ -67,7 +67,7 @@ async function renderRulesTab(root) {
       catch (e) { toast(e.message, 'bad'); } } }, 'Who would get it?')),
       h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Add conditions'), tCond.el), result)));
   const gaps = cats.rows.filter(c => c.is_active && !c.covered && !c.children);
-  if (gaps.length) root.append(notice(plural(gaps.length, 'category', 'categories') + ' with no rule of their own or from a parent: ' + gaps.slice(0, 8).map(c => c.label).join(', ') + (gaps.length > 8 ? '…' : '') + '. Cases there stay unassigned until someone assigns them.', 'warn'));
+  if (gaps.length) root.append(notice(plural(gaps.length, 'kind of complaint', 'kinds of complaint') + ' has nobody to go to yet (' + gaps.slice(0, 6).map(c => c.label).join(', ') + (gaps.length > 6 ? ', …' : '') + '). Those stay unassigned until someone assigns them. One rule on a main kind, such as Plumbing, covers every kind under it.', 'warn'));
   root.append(h('div', { class: 'row between', style: { marginBottom: '12px' } }, h('div', { class: 'muted' }, 'Rules are checked from the most specific to the most general. The first one that fits decides.'), h('button', { class: 'btn primary', onclick: () => ruleModal(lk, null, r.context_keys, again) }, '+ New rule')));
   if (!r.rows.length) root.append(h('div', { class: 'card' }, empty('No rules yet', 'Without a rule, new cases stay unassigned until someone assigns them.')));
   root.append(h('div', { class: 'stack' }, r.rows.map(x => h('div', { class: 'card rule' + (x.is_active ? '' : ' off') },
@@ -151,7 +151,7 @@ async function renderCategoriesTab(root) {
 }
 
 SECTIONS.routing = {
-  title: 'Routing & categories', sub: 'What a case can be about, and who handles each kind',
+  title: 'Where complaints go', sub: 'The kinds of complaint, and who gets each kind',
   async render(root, route) {
     if (route.tab === 'categories') return renderCategoriesTab(root);
     return renderRulesTab(root);

@@ -1,10 +1,6 @@
 JS = r"""
 // ───────────────────────── Workflows: the list ─────────────────────────
-const KIND_GROUPS = [
-  ['workflow', 'Workflows people start', 'Started from the Telegram menu, a button, or by typing a command.'],
-  ['case_action', 'Case actions', 'Buttons on a case.'],
-  ['block', 'Building blocks', 'Small parts other workflows use, such as Find a case. Change one and every workflow that uses it changes.'],
-];
+const PARTY_PLAIN = { requester: 'who raised it', assignee: 'who has it', level2: 'level 2', helper: 'helpers', watcher: 'watchers' };
 async function ensureStudio() {
   const [cat, fl] = await Promise.all([api.get('/studio/catalog'), api.get('/workflows')]);
   ST.catalog = cat; ST.flows = fl.rows; ST.roles = fl.roles;
@@ -19,37 +15,82 @@ async function renderWorkflowList(root) {
   if (mine !== S.renderId) return;
   const kinds = !!S.boot.caps.workflow_kind;
   let text = '';
+  let tab = ST.listTab || 'workflow';
   const body = h('div', { class: 'stack' });
+  const tabsEl = h('div', { class: 'seg', role: 'group', 'aria-label': 'Which list to show' });
   const search = h('input', { type: 'search', placeholder: 'Search workflows…', style: { minWidth: '240px' } });
   search.addEventListener('input', debounce(() => { text = search.value.trim().toLowerCase(); draw(); }, 200));
   const again = async () => { await ensureStudio(); draw(); };
-  function listTable(rows) {
+  const partyChips = w => {
+    const l = (w.settings && w.settings.who_can_use) || [];
+    return l.length ? h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'On their own cases too: ', l.map(r => PARTY_PLAIN[r] || r).join(', ')) : null;
+  };
+  const whoCell = w => {
+    const roles = w.granted_roles.length ? h('div', { class: 'chips' }, w.granted_roles.map(r => badge(r, 'brand'))) : null;
+    const party = partyChips(w);
+    if (!roles && !party) return h('span', { class: 'muted' }, 'Nobody');
+    return h('div', null, roles, party);
+  };
+  const builtFrom = w => w.uses.length
+    ? h('div', null, h('div', { class: 'small muted' }, 'Built from ' + plural(w.uses.length, 'block') + ':'),
+        h('div', { class: 'chips' }, w.uses.map(u => { const b = ST.byKey[u.intent_key]; return b ? h('a', { class: 'badge violet', href: '#/workflows?w=' + b.id, onclick: e => e.stopPropagation() }, u.name) : badge(u.name, 'violet'); })))
+    : (w.workflow_type === 'read' ? h('span', { class: 'muted' }, 'A saved report') : h('span', { class: 'muted' }, 'Its own steps only'));
+  const usedBy = w => w.used_in.length
+    ? h('div', { class: 'chips' }, w.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id, onclick: e => e.stopPropagation() }, u.name)))
+    : h('span', null, badge('Not used yet', 'warn'), h('div', { class: 'muted small', style: { marginTop: '4px' } }, 'Nothing runs it. Safe to switch off and delete.'));
+  const deleteBtn = w => w.is_active ? null : h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmBox('Delete “' + w.name + '”? It is switched off already. Deleting takes it out of this list for good. A copy is kept in the history.', { ok: 'Delete', danger: true })) return; try { await api.del('/workflows/' + w.id); toast('Deleted', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Delete');
+  function listTable(rows, isBlock) {
     return table([
-      { label: 'On', render: w => switchEl(w.is_active, async v => { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; }) },
-      { label: 'Name', cls: 'wide', render: w => h('div', null, h('a', { href: '#/workflows?w=' + w.id, onclick: e => e.stopPropagation() }, h('b', null, w.name)), h('div', { class: 'muted small' }, w.description || w.intent_key), w.slash_command ? h('div', { class: 'muted small' }, '/' + w.slash_command) : null) },
-      { label: 'Who can use it / where it is used', render: w => w.kind === 'block'
-          ? (w.used_in.length ? h('div', { class: 'chips' }, w.used_in.map(u => badge(u.name, 'violet'))) : h('span', { class: 'muted' }, 'Not used yet'))
-          : (w.granted_roles.length ? h('div', { class: 'chips' }, w.granted_roles.map(r => badge(r, 'brand'))) : h('span', { class: 'muted' }, 'Nobody')) },
-      { label: 'Steps', cls: 'num', render: w => w.workflow_type === 'read' ? h('span', { class: 'muted' }, 'report') : h('div', null, plural(w.step_count, 'step'), w.uses.length ? h('div', { class: 'muted small' }, 'uses ' + plural(w.uses.length, 'block')) : null) },
-      { label: 'Last used', render: w => w.last_run ? ago(w.last_run) : h('span', { class: 'muted' }, 'never') },
-      { label: '', render: w => h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: () => openWorkflow(w.id) }, 'Open'),
-          h('button', { class: 'btn sm danger', onclick: async () => { if (w.is_active) { toast('Switch “' + w.name + '” off first. Then you can delete it. You can always switch it back on.', 'bad'); return; } if (!await confirmBox('Delete “' + w.name + '”? It is switched off already. Deleting takes it out of this list for good. A copy is kept in the history.', { ok: 'Delete', danger: true })) return; try { await api.del('/workflows/' + w.id); toast('Deleted', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Delete')) },
-    ], rows, { onRow: w => openWorkflow(w.id) });
+      { label: 'On', render: w => switchEl(w.is_active, async v => { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; draw(); }) },
+      { label: 'Name', cls: 'wide', render: w => h('div', null, h('a', { href: '#/workflows?w=' + w.id, onclick: e => e.stopPropagation() }, h('b', null, w.name)), h('div', { class: 'muted small' }, w.description || w.intent_key), w.slash_command ? h('div', { class: 'muted small' }, 'Type /' + w.slash_command) : null) },
+      isBlock ? { label: 'Which workflows run it', render: usedBy } : { label: 'Who can use it', render: whoCell },
+      isBlock ? { label: 'Steps', cls: 'num', render: w => plural(w.step_count, 'step') } : { label: 'Made of', render: builtFrom },
+      isBlock ? null : { label: 'Steps', cls: 'num', render: w => w.workflow_type === 'read' ? h('span', { class: 'muted' }, 'report') : plural(w.step_count, 'step') },
+      { label: 'Last used', render: w => w.last_used ? ago(w.last_used) : h('span', { class: 'muted' }, 'not yet') },
+      { label: '', render: w => h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: () => openWorkflow(w.id) }, 'Open'), deleteBtn(w)) },
+    ].filter(Boolean), rows, { onRow: w => openWorkflow(w.id) });
+  }
+  // which workflow is built from which block, at a glance
+  function fitTogether() {
+    const flows = ST.flows.filter(w => (w.kind || 'workflow') !== 'block' && w.uses.length);
+    const blocks = ST.flows.filter(w => w.kind === 'block');
+    const loose = blocks.filter(b => !b.used_in.length);
+    const own = ST.flows.filter(w => (w.kind || 'workflow') !== 'block' && !w.uses.length);
+    const cell = (w, b) => w.uses.some(u => u.intent_key === b.intent_key) ? h('span', { class: 'dot', title: w.name + ' runs “' + b.name + '”' }, '●') : '';
+    const used = blocks.filter(b => b.used_in.length);
+    return h('div', { class: 'stack' },
+      notice(plural(flows.length, 'workflow') + ' ' + (flows.length === 1 ? 'is' : 'are') + ' built from building blocks. ' + plural(used.length, 'block') + ' ' + (used.length === 1 ? 'is' : 'are') + ' reused. ' + (loose.length ? plural(loose.length, 'block') + ' ' + (loose.length === 1 ? 'is' : 'are') + ' not used by anything.' : 'Every block is used.')),
+      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'A dot means: this workflow runs this block', h('span', { class: 'muted small' }, 'Change a block and every workflow with a dot in its row changes.')),
+        used.length ? (table([
+          { label: 'Building block', cls: 'wide', render: b => h('a', { href: '#/workflows?w=' + b.id }, h('b', null, b.name)) },
+          ...flows.map(w => ({ label: w.name, cls: 'num', render: b => cell(w, b) })),
+          { label: 'Used by', cls: 'num', render: b => plural(b.used_in.length, 'workflow') },
+        ], used)) : empty('No block is used yet', 'Open a workflow and add a step. Under “Your building blocks” pick one.')),
+      loose.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Blocks nothing uses', h('span', { class: 'muted small' }, 'Harmless. Switch off and delete the ones you do not need.')),
+        h('div', { class: 'card-b stack' }, loose.map(b => h('div', { class: 'row between' }, h('div', null, h('a', { href: '#/workflows?w=' + b.id }, h('b', null, b.name)), h('div', { class: 'muted small' }, b.description || '')), h('div', { class: 'row' }, h('label', { class: 'row small muted' }, b.is_active ? 'On' : 'Off', switchEl(b.is_active, async v => { await api.post('/workflows/' + b.id + '/active', { is_active: v }); b.is_active = v; draw(); })), h('button', { class: 'btn sm', onclick: () => openWorkflow(b.id) }, 'Open'), deleteBtn(b)))))) : null,
+      own.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Workflows with only their own steps', h('span', { class: 'muted small' }, 'Not built from any block.')),
+        h('div', { class: 'card-b chips' }, own.map(w => h('a', { class: 'badge', href: '#/workflows?w=' + w.id }, w.name)))) : null);
+  }
+  function drawTabs() {
+    const n = k => ST.flows.filter(w => (w.kind || 'workflow') === k || (k === 'workflow' && w.kind === 'case_action')).length;
+    const b = (k, label) => h('button', { type: 'button', class: tab === k ? 'on' : '', onclick: () => { tab = ST.listTab = k; drawTabs(); draw(); } }, label);
+    fill(tabsEl, b('workflow', 'Workflows people start (' + n('workflow') + ')'), b('block', 'Building blocks (' + n('block') + ')'), b('map', 'How they fit together'));
   }
   function draw() {
     const match = w => !text || (w.name + ' ' + (w.description || '') + ' ' + w.intent_key).toLowerCase().includes(text);
     const rows = ST.flows.filter(match);
     if (!kinds) { fill(body, h('div', { class: 'card' }, rows.length ? listTable(rows) : empty('No workflows match', ''))); return; }
-    fill(body, KIND_GROUPS.filter(([k]) => k !== 'case_action' || ST.flows.some(w => w.kind === 'case_action')).map(([k, label, hint]) => {
-      const g = rows.filter(w => (w.kind || 'workflow') === k);
-      return h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('span', null, label, ' ', h('span', { class: 'muted small' }, g.length)), h('span', { class: 'muted small' }, hint)),
-        g.length ? listTable(g) : empty(text ? 'None match' : 'None yet', k === 'block' ? 'Create one with “New workflow”, or ask the chat for it.' : ''));
-    }));
+    if (tab === 'map') { fill(body, fitTogether()); return; }
+    const isBlock = tab === 'block';
+    const g = rows.filter(w => isBlock ? w.kind === 'block' : (w.kind || 'workflow') !== 'block');
+    const hint = isBlock ? 'Small parts other workflows are made from, such as Find a case. Change one and every workflow that runs it changes.' : 'What people start from the Telegram menu, a button, or by typing a command. Each is made of its own steps and/or ready-made building blocks.';
+    fill(body, h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('span', null, isBlock ? 'Building blocks' : 'Workflows people start'), h('span', { class: 'muted small' }, hint)),
+      g.length ? listTable(g, isBlock) : empty(text ? 'None match' : 'None yet', isBlock ? 'Create one with “New workflow”, or ask the chat for it.' : '')));
   }
-  fill(root, h('div', { class: 'row between', style: { marginBottom: '12px' } }, search,
+  fill(root, h('div', { class: 'row between', style: { marginBottom: '12px' } }, h('span', { class: 'row' }, kinds ? tabsEl : null, search),
     h('span', { class: 'row' }, h('a', { class: 'btn sm ghost', href: classicUrl(), target: '_blank', rel: 'noopener', title: 'Reports and PDF documents are still built in the classic builder' }, 'Classic builder for reports ↗'),
       h('button', { class: 'btn primary', onclick: () => newWorkflowModal(kinds) }, '+ New workflow'))), body);
-  draw();
+  drawTabs(); draw();
 }
 
 // ----- create: describe it in chat, start blank, or copy one -----
@@ -208,7 +249,7 @@ function drawEditor() {
   ui.undo = h('button', { class: 'btn', onclick: undo, title: 'Undo the last change' }, '↶ Undo');
   ui.dirty = h('span', { class: 'badge warn' }, 'Unsaved changes');
   ui.banner = h('div');
-  const tabs = [['steps', 'Steps'], ['details', 'Details and access'], ['asks', 'What it asks for'], ['safe', 'Safeguards'], ['history', 'History'], ['adv', 'Advanced']];
+  const tabs = [['steps', 'Steps'], ['details', 'Details and who can use it'], ['asks', 'What it asks for'], ['safe', 'Approvals and codes'], ['history', 'History'], ['adv', 'Raw JSON']];
   ui.pane = h('div');
   const power = h('span', null, d.is_active ? 'Switched on' : 'Switched off');
   fill(root,
@@ -255,7 +296,8 @@ function stepsPane() {
   ui.titleEls = []; ui.whenEls = []; ui.probEls = [];
   const list = h('div', { class: 'steps' });
   if (d.used_in.length) wrap.append(notice('This is a building block. It is run by: ' + d.used_in.map(u => u.name).join(', ') + '. Changes here change all of them.'));
-  if (d.uses.length) wrap.append(h('div', { class: 'row small muted' }, 'Runs: ', h('span', { class: 'chips' }, d.uses.map(u => badge(u.name, 'violet')))));
+  const blockSteps = EW.work.steps.filter(x => x.op === 'run_workflow').length, ownSteps = EW.work.steps.length - blockSteps;
+  if (blockSteps) wrap.append(h('div', { class: 'row small muted' }, 'Made of ' + plural(blockSteps, 'building block') + (ownSteps ? ' and ' + plural(ownSteps, 'step') + ' of its own' : '') + ': ', h('span', { class: 'chips' }, d.uses.map(u => badge(u.name, 'violet')))));
   if (!EW.work.steps.length) list.append(h('div', { class: 'card' }, empty('No steps yet', 'Add one below, or describe it to the chat and it will build it.')));
   EW.work.steps.forEach((step, i) => { list.append(insertPoint(i), stepCard(i)); });
   list.append(insertPoint(EW.work.steps.length, true));
@@ -296,6 +338,29 @@ function delStep(i) {
   const s = EW.work.steps[i];
   confirmBox('Remove this step? “' + describeStep(s) + '”', { ok: 'Remove', danger: true }).then(ok => { if (!ok) return; EW.work.steps.splice(i, 1); EW.ids.splice(i, 1); commit(true); });
 }
+// a step that runs a building block: open the block, or peek at what is inside it
+function blockPeek(step) {
+  const b = ST.byKey[step.params && step.params.workflow];
+  if (!b) return null;
+  const box = h('div', { class: 'stepform', style: { display: 'none' } });
+  let loaded = false;
+  const toggle = h('button', { class: 'btn sm ghost', type: 'button' }, 'What’s inside ▾');
+  toggle.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (box.style.display !== 'none') { box.style.display = 'none'; toggle.textContent = 'What’s inside ▾'; return; }
+    box.style.display = ''; toggle.textContent = 'Hide ▴';
+    if (loaded) return;
+    loaded = true;
+    try {
+      const d = await api.get('/workflows/' + b.id);
+      fill(box, h('div', { class: 'muted small' }, 'This block does, in order:'),
+        h('ol', { style: { margin: '4px 0 0', paddingLeft: '20px' } }, d.steps.map(x => h('li', null, describeStep(x), x.when ? h('span', { class: 'small', style: { color: 'var(--info)' } }, ' — only if ' + condText(x.when)) : null))),
+        h('div', { class: 'muted small', style: { marginTop: '6px' } }, 'Change it by opening the block. It then changes in every workflow that runs it.'));
+    } catch (err) { fill(box, notice(err.message, 'bad')); }
+  });
+  const open = h('a', { class: 'btn sm ghost', href: '#/workflows?w=' + b.id, onclick: e => e.stopPropagation(), title: 'Open the building block to change it' }, 'Open this block ↗');
+  return { actions: h('span', { class: 'row', style: { marginTop: '4px' } }, toggle, open), box };
+}
 function stepCard(i) {
   const step = EW.work.steps[i], id = EW.ids[i], open = EW.open.has(id), spec = catalogSpec(step.op);
   const title = h('div', { class: 'st-title' }, describeStep(step));
@@ -303,12 +368,13 @@ function stepCard(i) {
   const probs = h('div');
   ui.titleEls[i] = title; ui.whenEls[i] = when; ui.probEls[i] = probs;
   const btn = (label, tip, fn) => h('button', { class: 'ib', type: 'button', title: tip, 'aria-label': tip, onclick: e => { e.stopPropagation(); fn(); } }, label);
+  const peek = step.op === 'run_workflow' ? blockPeek(step) : null;
   const card = h('div', { class: 'stcard' + (open ? ' open' : '') + (EW.flash === id ? ' flash' : '') },
     h('div', { class: 'st-head', onclick: () => { open ? EW.open.delete(id) : EW.open.add(id); EW.flash = -1; drawPane(); } },
       h('span', { class: 'num' }, i + 1), h('span', { class: 'glyph' }, STEP_GLYPH[step.op] || '•'),
-      h('div', { style: { minWidth: 0, flex: 1 } }, title, when, h('div', { class: 'muted small' }, (spec ? spec.label : step.op) + ' · ', stepTag(step))),
+      h('div', { style: { minWidth: 0, flex: 1 } }, title, when, h('div', { class: 'muted small' }, (spec ? spec.label : step.op) + ' · ', stepTag(step)), peek ? peek.actions : null),
       h('span', { class: 'row', style: { gap: '2px' } }, btn('↑', 'Move up', () => moveStep(i, -1)), btn('↓', 'Move down', () => moveStep(i, 1)), btn('⧉', 'Duplicate this step', () => dupStep(i)), btn('✕', 'Remove this step', () => delStep(i)))),
-    probs,
+    probs, peek ? peek.box : null,
     open ? stepForm(step, i, commit, drawPane) : null);
   return card;
 }

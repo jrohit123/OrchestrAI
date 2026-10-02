@@ -51,7 +51,11 @@ async def list_chats(
                count(*) AS turns,
                (array_agg(a.input_text ORDER BY a.created_at DESC))[1] AS last_input,
                (array_agg(a.response_text ORDER BY a.created_at DESC))[1] AS last_reply,
-               array_remove(array_agg(DISTINCT NULLIF(NULLIF(a.intent_key, 'agent'), 'menu')), NULL) AS workflows
+               bool_or(a.outcome = 'error') AS had_error,
+               array_remove(array_agg(DISTINCT (
+                   SELECT w.name FROM workflows w
+                    WHERE w.org_id = a.org_id AND w.intent_key = a.intent_key LIMIT 1
+               )), NULL) AS workflows
           FROM audit_log a WHERE {" AND ".join(where)}
          GROUP BY COALESCE(a.session_id, a.id::text)
     """

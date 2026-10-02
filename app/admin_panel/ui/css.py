@@ -243,6 +243,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .tr .dt{font-size:12.5px;color:var(--muted)}
 .subcfg{display:grid;gap:8px;padding:10px;border:1px dashed var(--line2);border-radius:8px}
 .tile-sep{grid-column:1/-1;font-size:12px;color:var(--muted);margin-top:4px}
+.dot{color:var(--brand);font-size:16px}
 @media (max-width:1100px){.studio-grid{grid-template-columns:1fr}.chatdock{position:static;max-height:none}}
 @media (max-width:700px){.maprow,.cond{grid-template-columns:1fr}.stepform{padding-left:14px}.prob{padding-left:14px}}
 """

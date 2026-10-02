@@ -60,11 +60,18 @@ async def list_workflows(ctx: CtxDep):
         if ctx.caps.get("cases")
         else "0"
     )
+    asked = (
+        "(SELECT max(a.created_at) FROM audit_log a "
+        "WHERE a.org_id = w.org_id AND a.intent_key = w.intent_key)"
+        if ctx.caps.get("audit")
+        else "NULL::timestamptz"
+    )
     found = rows(
         await fetch_all(
             "SELECT w.id, w.name, w.intent_key, w.description, w.is_active, "
             "w.workflow_type, w.last_run, w.created_at, w.slash_command, w.menu_section, "
-            f"w.version, w.steps, {_kind_columns(ctx)}, {made} AS cases_made "
+            f"w.version, w.steps, {_kind_columns(ctx)}, {made} AS cases_made, "
+            f"{asked} AS last_asked "
             "FROM workflows w WHERE w.org_id = $1 ORDER BY w.created_at",
             ctx.org_id,
             source_key=ctx.source_key,
@@ -94,8 +101,22 @@ async def list_workflows(ctx: CtxDep):
         w["granted_roles"] = [
             r["name"] for r in roles if w["intent_key"] in (r["permissions"] or [])
         ]
+    by_id = {w["id"]: w for w in found}
     for w in found:
         w["used_in"] = used_in.get(w["intent_key"], [])
+        w["last_used"] = max(
+            (t for t in (w.get("last_run"), w.pop("last_asked", None)) if t),
+            default=None,
+        )
+    # a building block was last used when the latest workflow that runs it was
+    for w in found:
+        if w["kind"] == "block":
+            times = [
+                by_id[u["id"]]["last_used"]
+                for u in w["used_in"]
+                if u["id"] in by_id and by_id[u["id"]]["last_used"]
+            ]
+            w["last_used"] = max(times, default=None)
     return {
         "rows": found,
         "roles": [{"id": r["id"], "name": r["name"]} for r in roles],

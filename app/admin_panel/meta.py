@@ -27,7 +27,9 @@ def _sections(caps: dict[str, bool]) -> list[dict]:
     if caps.get("seats"):
         people_tabs.append({"key": "seats", "label": "Seats"})
     if caps.get("grants"):
-        people_tabs.append({"key": "access", "label": "Special access"})
+        people_tabs.append(
+            {"key": "access", "label": "Special access (not active yet)"}
+        )
     people_tabs.append({"key": "roles", "label": "Roles"})
     activity_tabs = []
     if caps.get("audit"):
@@ -45,10 +47,10 @@ def _sections(caps: dict[str, bool]) -> list[dict]:
         sections.append(
             {
                 "key": "routing",
-                "label": "Routing & categories",
+                "label": "Where complaints go",
                 "tabs": [
-                    {"key": "rules", "label": "Who handles what"},
-                    {"key": "categories", "label": "Categories"},
+                    {"key": "rules", "label": "Who gets them"},
+                    {"key": "categories", "label": "Kinds of complaint"},
                 ],
             }
         )

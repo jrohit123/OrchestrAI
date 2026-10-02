@@ -77,6 +77,14 @@ SECTIONS.overview = {
 };
 
 // ───────────────────────── Cases ─────────────────────────
+// the same person can hold several roles on a case (Level 2, then Handling it): show them once
+function onePerPerson(parties) {
+  const order = ['assignee', 'level2', 'helper', 'requester', 'watcher'];
+  const by = new Map();
+  const slot = p => { if (!by.has(p.user_id)) by.set(p.user_id, { user_id: p.user_id, name: p.name, reachable: p.reachable, roles: [], earlier: false }); return by.get(p.user_id); };
+  parties.forEach(p => { const e = slot(p); if (p.ended_at) e.earlier = true; else if (!e.roles.some(r => r.key === p.party_role)) e.roles.push({ key: p.party_role, text: PARTY[p.party_role] || pretty(p.party_role), tone: p.party_role === 'assignee' ? 'info' : '', rank: order.indexOf(p.party_role) }); });
+  return [...by.values()].map(e => { if (!e.roles.length && e.earlier) e.roles.push({ key: 'earlier', text: 'Handled earlier', tone: '', rank: 9 }); e.roles.sort((x, y) => x.rank - y.rank); e.rank = e.roles.length ? e.roles[0].rank : 9; return e; }).sort((x, y) => x.rank - y.rank);
+}
 const PARTY = { requester: 'Raised it', assignee: 'Handling it', level2: 'Level 2', helper: 'Helping', watcher: 'Watching' };
 function catOptions(lk, any, none) {
   const kids = {};
@@ -137,8 +145,8 @@ async function showCase(id) {
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the routing rules say'), h('div', { class: 'card-b' }, inner)));
     }
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on this case'),
-      d.parties.length ? h('div', { class: 'card-b stack' }, d.parties.map(p => h('div', { class: 'row between' },
-        person(p.user_id, p.name), h('span', { class: 'row' }, p.ended_at ? badge('Handled earlier') : badge(PARTY[p.party_role] || pretty(p.party_role), p.party_role === 'assignee' ? 'info' : ''), p.reachable ? null : badge('not on Telegram', 'warn'))))) : empty('Nobody yet', '')));
+      d.parties.length ? h('div', { class: 'card-b stack' }, onePerPerson(d.parties).map(p => h('div', { class: 'row between' },
+        person(p.user_id, p.name), h('span', { class: 'row' }, p.roles.map(r => badge(r.text, r.tone)), p.reachable ? null : badge('not on Telegram', 'warn'))))) : empty('Nobody yet', '')));
     if (c.description) body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What was reported'), h('div', { class: 'card-b' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, c.description))));
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Timeline'),
       h('div', { class: 'card-b' }, d.timeline.length ? h('div', { class: 'timeline' }, d.timeline.map(timelineItem)) : h('span', { class: 'muted' }, 'Nothing has happened on this case yet.'))));
