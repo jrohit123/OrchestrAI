@@ -5,7 +5,11 @@ let EW = null;                       // the workflow being edited (set by the ed
 const SPECIAL = { 'NOW()': 'now', 'TODAY': 'today', 'TODAY+7': 'a week from today', 'TODAY+30': '30 days from today' };
 const USERCOL = { user_id: 'id', name: 'name', phone: 'phone', email: 'email', role: 'role' };
 const GROUP_ORDER = ['Look up and check', 'Save changes', 'Tell people', 'Approvals', 'Other'];
-const STEP_GLYPH = { resolve_entity: '◎', conflict_check: '⛔', require_permission: '✓', derive_field: 'ƒ', compute: '∑', 'db.insert_row': '＋', 'db.update_row': '✎', 'db.upsert_row': '⇅', 'db.delete_row': '✕', 'notify.user': '✉', 'notify.whatsapp': '✉', 'pdf.generate': '▤', otp_gate: '⚿', approval_gate: '☑', ai_price_interpret: '₹', run_workflow: '▣' };
+const STEP_GLYPH = { resolve_entity: '◎', conflict_check: '⛔', require_permission: '✓', derive_field: 'ƒ', compute: '∑', 'db.insert_row': '＋', 'db.update_row': '✎', 'db.upsert_row': '⇅', 'db.delete_row': '✕', 'notify.user': '✉', 'notify.whatsapp': '✉', 'pdf.generate': '▤', otp_gate: '⚿', approval_gate: '☑', ai_price_interpret: '₹', run_workflow: '▣', 'case.categorize': '⌗', 'case.route': '➜', 'case.authorize': '✓', 'case.add_parties': '＋', 'case.attach_photos': '▤', 'notify.parties': '✉' };
+// the records some steps keep for the steps after them, which are not database tables
+const ALIAS_COLS = { route: ['assignee_id', 'assignee_name', 'assignee_phone', 'level2_ids', 'level2_names', 'target_minutes', 'rule_name', 'via'], category: ['id', 'key', 'label', 'path', 'default_priority', 'target_minutes'] };
+const AI_OPS = ['ai_price_interpret'];
+const isAiStep = s => AI_OPS.includes(s.op);
 const OPERATORS = [['equals', 'is'], ['not_equals', 'is not'], ['in', 'is one of'], ['not_in', 'is not one of'], ['exists_true', 'has a value'], ['exists_false', 'is empty'], ['gt', 'is more than'], ['gte', 'is at least'], ['lt', 'is less than'], ['lte', 'is at most']];
 
 const tlabel = t => t ? pretty(String(t).replace(/^sheet:/, '')).toLowerCase() : 'record';
@@ -79,6 +83,12 @@ function describeStep(s) {
     otp_gate: () => 'Ask for a one-time code',
     approval_gate: () => 'Ask for approval',
     ai_price_interpret: () => 'Read the typed prices',
+    'case.categorize': () => 'Work out the category from the words in the complaint',
+    'case.route': () => 'Find who handles it, who is level 2 and how long it may take',
+    'case.authorize': () => 'Check the person is on the case',
+    'case.add_parties': () => 'Put ' + vlabel(p.users_from) + ' on the case as ' + ({ level2: 'level 2', helper: 'a helper', watcher: 'a watcher' }[p.role] || 'a helper'),
+    'case.attach_photos': () => 'Attach the photos to the case',
+    'notify.parties': () => 'Tell everyone on the case',
     run_workflow: () => 'Run ' + (flow ? '“' + flow.name + '”' : p.workflow ? '“' + p.workflow + '” (missing)' : 'a building block'),
   };
   const base = by[s.op] ? by[s.op]() : pretty(s.op);
@@ -93,6 +103,8 @@ function addToEnv(env, s) {
     const into = p.into || String(p.table || '').replace(/s$/, '');
     if (into) env.aliases[into] = p.table;
     Object.keys(p.expose || {}).forEach(k => env.fields.add(k));
+  } else if (s.op === 'case.categorize') { env.aliases[p.into || 'category'] = null; env.fields.add('category_id'); env.fields.add('category_label');
+  } else if (s.op === 'case.route') { env.aliases[p.into || 'route'] = null; env.fields.add('assigned_name'); env.fields.add('route_minutes');
   } else if (s.op === 'derive_field' && p.field) env.fields.add(p.field);
   else if (s.op === 'db.insert_row' && p.table) env.inserted.add(p.table);
   else if (s.op === 'run_workflow' && p.workflow && ST.byKey[p.workflow]) Object.assign(env.aliases, ST.byKey[p.workflow].makes || {});
@@ -110,7 +122,7 @@ function valueOptions(env) {
   const f = [...env.fields].map(k => ['$fields.' + k, pretty(k)]);
   if (f.length) groups.push(['What the person typed', f]);
   const rec = [];
-  Object.entries(env.aliases).forEach(([a, t]) => colsOf(t).forEach(c => rec.push(['$' + a + '.' + c, pretty(a) + ' › ' + pretty(c)])));
+  Object.entries(env.aliases).forEach(([a, t]) => (colsOf(t).length ? colsOf(t) : (ALIAS_COLS[a] || [])).forEach(c => rec.push(['$' + a + '.' + c, pretty(a) + ' › ' + pretty(c)])));
   if (rec.length) groups.push(['A record found earlier', rec]);
   const ins = [];
   env.inserted.forEach(t => ['id', ...colsOf(t).filter(c => c !== 'id')].forEach(c => ins.push(['$inserted.' + t + '.' + c, 'New ' + tlabel(t) + ' › ' + pretty(c)])));
@@ -216,11 +228,11 @@ function mapEditor(spec, obj, tableOf, env, commit) {
     fill(box, entries.map(([k, v]) => {
       const keyCtl = colKeys
         ? sel([['', 'Column…'], ...cols.map(c => [c, pretty(c)]), ...(cols.includes(k) || !k ? [] : [[k, k + ' (missing)']])], k, { onchange: e => rename(k, e.target.value) })
-        : h('input', { type: 'text', value: k, placeholder: spec.kind === 'map_text' ? 'when it is…' : 'name', onchange: e => rename(k, e.target.value.trim()) });
+        : h('input', { type: 'text', value: k, placeholder: (spec.placeholders || [])[0] || (spec.kind === 'map_text' ? 'when it is…' : 'name'), onchange: e => rename(k, e.target.value.trim()) });
       let valCtl;
       if (spec.kind === 'map_value') valCtl = valuePicker(env, v, (nv, redraw) => { obj[k] = nv; commit(false); });
       else if (spec.kind === 'map_column') valCtl = sel([['', 'Column…'], ...colsOf(tableOf()).map(c => [c, pretty(c)])], v, { onchange: e => { obj[k] = e.target.value; commit(true); } });
-      else valCtl = h('input', { type: 'text', value: v, placeholder: 'the permission', list: 'permlist', oninput: e => { obj[k] = e.target.value; commit(false); } });
+      else valCtl = h('input', { type: 'text', value: v, placeholder: (spec.placeholders || [])[1] || 'the permission', list: spec.placeholders ? null : 'permlist', oninput: e => { obj[k] = e.target.value; commit(false); } });
       return h('div', { class: 'maprow' }, keyCtl, valCtl, h('button', { class: 'x', type: 'button', title: 'Remove', onclick: () => { delete obj[k]; commit(true); draw(); } }, '×'));
     }), h('button', { class: 'btn sm', type: 'button', onclick: () => { obj[''] = ''; draw(); } }, '+ Add'));
   }

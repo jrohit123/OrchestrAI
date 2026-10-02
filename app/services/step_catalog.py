@@ -439,6 +439,7 @@ STEP_TYPES: list[dict] = [
                 "label": "A different message for some people",
                 "kind": "map_text",
                 "advanced": True,
+                "placeholders": ["assignee, level2, helper…", "the message for them"],
                 "help": "Role (assignee, level2, helper, requester) → message.",
             },
             {
@@ -446,6 +447,7 @@ STEP_TYPES: list[dict] = [
                 "label": "Buttons under the message",
                 "kind": "map_text",
                 "advanced": True,
+                "placeholders": ["Button text", "/update {case_case_number}"],
                 "help": "Button text → command, for example /update {case_case_number}.",
             },
             {

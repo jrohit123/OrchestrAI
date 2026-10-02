@@ -1597,6 +1597,8 @@ async def _op_run_workflow(params: dict, ctx: dict) -> dict:
             f"run_workflow: '{block.get('name') or key}' has no steps to run"
         )
 
+    ctx.setdefault("_block_names", {})[key] = block.get("name") or key
+    _trace(ctx, {"op": "run_workflow", "params": params}, "ran")
     inputs = _resolve_values(params.get("inputs") or {}, ctx)
     saved = {k: ctx["fields"].get(k, _MISSING) for k in inputs}
     outer_workflow, outer_index = ctx["workflow"], ctx.get("_step_index")
@@ -1608,6 +1610,7 @@ async def _op_run_workflow(params: dict, ctx: dict) -> dict:
             if isinstance(step, str):
                 step = json.loads(step)
             if not _step_enabled(step, ctx):
+                _trace(ctx, step, "skipped", "its condition is not met")
                 continue
             op_name = step.get("op")
             if op_name in ("otp_gate", "approval_gate"):
@@ -1619,7 +1622,7 @@ async def _op_run_workflow(params: dict, ctx: dict) -> dict:
                 raise StepError(f"Unknown step op: '{op_name}' in '{key}'")
             logger.info(f"Block '{key}' step {i + 1}/{len(steps)}: {op_name}")
             try:
-                ctx = await _run_op(op_name, op_fn, step.get("params", {}), ctx)
+                ctx = await _run_op(op_name, op_fn, step, ctx)
             except (VerificationError, StepError):
                 raise
             except Exception as e:
@@ -1675,10 +1678,123 @@ def _skip_for_preview(op_name: str, params: dict, ctx: dict) -> dict:
     return ctx
 
 
-async def _run_op(op_name: str, op_fn, params: dict, ctx: dict) -> dict:
-    if ctx.get("dry_run") and op_name in _SKIP_WHEN_PREVIEWING:
-        return _skip_for_preview(op_name, params, ctx)
-    return await op_fn(params, ctx)
+_SHOW_FIRST = ("case_number", "name", "title", "status", "priority", "location")
+
+
+def _nice(v) -> str:
+    """A value as a person reads it: dates in Indian time, long ids shortened."""
+    if hasattr(v, "astimezone"):
+        from app.services.report_format import _when
+
+        return _when(v.isoformat()) or str(v)
+    text = str(v)
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text
+    ):
+        return text[:8] + "…"
+    return text
+
+
+def _pairs_text(values: dict, limit: int = 4) -> str:
+    items = [
+        f"{k.replace('_', ' ')}: {_nice(v)}"
+        for k, v in values.items()
+        if k != "org_id" and v not in (None, "") and not isinstance(v, (dict, list))
+    ]
+    return ", ".join(items[:limit]) + (" …" if len(items) > limit else "")
+
+
+def _record_text(row) -> str:
+    if not isinstance(row, dict):
+        return ""
+    picked = {k: row[k] for k in _SHOW_FIRST if row.get(k) not in (None, "")}
+    if not picked:
+        picked = {
+            k: v
+            for k, v in row.items()
+            if isinstance(v, (str, int, float))
+            and len(str(v)) < 40
+            and not k.endswith("id")
+        }
+    return _pairs_text(picked, 3)
+
+
+def _trace(ctx: dict, step: dict, status: str, detail: str | None = None) -> None:
+    """One line of what a preview ("Try it") did with a step. ran = looked something up,
+    would = would save or send when it really runs, skipped = its condition was not met."""
+    if ctx.get("trace") is None:
+        return
+    from app.services.step_sql import describe_step
+
+    ctx["trace"].append(
+        {
+            "depth": max(len(ctx.get("_call_stack") or []) - 1, 0),
+            "op": step.get("op"),
+            "text": describe_step(step, ctx.get("_block_names")),
+            "status": status,
+            "detail": detail,
+        }
+    )
+
+
+def _would_text(op_name: str, params: dict, ctx: dict) -> str:
+    if op_name in ("db.insert_row", "sheets.insert_row"):
+        return "would save: " + _pairs_text(
+            _resolve_values(params.get("values", {}), ctx)
+        )
+    if op_name in ("db.update_row", "sheets.update_row"):
+        return "would change: " + _pairs_text(
+            _resolve_values(params.get("set", {}), ctx)
+        )
+    if op_name == "db.upsert_row":
+        return "would save: " + _pairs_text(
+            _resolve_values(params.get("values", {}), ctx)
+        )
+    if op_name in ("db.delete_row", "sheets.delete_row"):
+        return "would remove it"
+    if op_name == "notify.user":
+        to = _resolve_path(ctx, params.get("to"))
+        return (
+            "would send a message" if to else "no phone number, so it would skip this"
+        )
+    if op_name == "notify.whatsapp":
+        return "would send the person the result"
+    if op_name == "pdf.generate":
+        return "would build the PDF"
+    return "would ask here"
+
+
+async def _run_op(op_name: str, op_fn, step: dict, ctx: dict) -> dict:
+    params = step.get("params", {})
+    if not ctx.get("dry_run"):
+        return await op_fn(params, ctx)
+    before = len(ctx.get("preview", []))
+    if op_name in _SKIP_WHEN_PREVIEWING:
+        ctx = _skip_for_preview(op_name, params, ctx)
+        _trace(ctx, step, "would", _would_text(op_name, params, ctx))
+        return ctx
+    try:
+        ctx = await op_fn(params, ctx)
+    except Exception as e:
+        _trace(ctx, step, "failed", str(e).split("\n")[0][:300])
+        raise
+    if op_name == "run_workflow":
+        return ctx  # the block wrote its own line before its steps
+    detail = None
+    if op_name == "resolve_entity":
+        into = params.get("into") or str(params.get("table", "")).rstrip("s")
+        detail = "found " + _record_text(ctx.get(into))
+    elif op_name == "derive_field":
+        value = ctx["fields"].get(params.get("field"))
+        if hasattr(value, "astimezone"):
+            from app.services.report_format import _when
+
+            value = _when(value.isoformat())
+        detail = f"{params.get('field')} = {value}"
+    elif ctx.get("preview", [])[before:]:
+        detail = "; ".join(ctx["preview"][before:])
+    _trace(ctx, step, "ran", detail)
+    return ctx
 
 
 async def preview_workflow(
@@ -1738,6 +1854,35 @@ async def run_workflow_steps(
     approved: bool = False,
     dry_run: bool = False,
 ) -> dict:
+    """Run a workflow (see _execute_steps). A preview also returns "trace": what each step did."""
+    trace = [] if dry_run else None
+    result = await _execute_steps(
+        workflow,
+        fields,
+        user,
+        phone,
+        resume_step,
+        otp_verified,
+        approved,
+        dry_run,
+        trace,
+    )
+    if dry_run:
+        result["trace"] = trace
+    return result
+
+
+async def _execute_steps(
+    workflow: dict,
+    fields: dict,
+    user: dict,
+    phone: str,
+    resume_step: int,
+    otp_verified: bool,
+    approved: bool,
+    dry_run: bool,
+    trace: list | None,
+) -> dict:
     """
     Execute a workflow's steps[] sequentially from resume_step.
     Returns a result dict with status: done | awaiting_otp | awaiting_approval | error | ambiguous.
@@ -1755,6 +1900,7 @@ async def run_workflow_steps(
         "workflow": workflow,
         "top_workflow": workflow,  # the workflow the person started, even inside a building block
         "dry_run": dry_run,
+        "trace": trace,
         "otp_verified": otp_verified,
         "approved": approved,
         "source_key": user["source_key"],
@@ -1796,6 +1942,7 @@ async def run_workflow_steps(
             # NEW — conditional step guard
             if not _step_enabled(step, ctx):
                 logger.info(f"Step {i + 1}/{len(steps)}: skipped by 'when' guard")
+                _trace(ctx, step, "skipped", "its condition is not met")
                 continue
 
             op_name = step.get("op")
@@ -1811,7 +1958,7 @@ async def run_workflow_steps(
             ctx["_step_index"] = i
 
             try:
-                ctx = await _run_op(op_name, op_fn, step.get("params", {}), ctx)
+                ctx = await _run_op(op_name, op_fn, step, ctx)
                 # Persist unit_price to draft immediately after ai_price_interpret
                 if op_name == "ai_price_interpret" and not dry_run:
                     from app.services.draft_store import upsert_draft

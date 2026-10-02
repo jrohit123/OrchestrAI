@@ -16,7 +16,12 @@ from app.admin_panel.common import (
     tx,
 )
 from app.db import execute, fetch_all, fetch_one
-from app.services.step_catalog import aliases_made_by, normalize_steps, used_blocks
+from app.services.step_catalog import (
+    aliases_made_by,
+    aliases_needed_by,
+    normalize_steps,
+    used_blocks,
+)
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -79,6 +84,7 @@ async def list_workflows(ctx: CtxDep):
         w["step_count"] = len(steps)
         w["settings"] = jb(w["settings"], {})
         w["makes"] = aliases_made_by(steps)
+        w["needs"] = aliases_needed_by(steps)
         w["uses"] = [
             {"intent_key": k, "name": names.get(k, k)} for k in used_blocks(steps)
         ]

@@ -1,9 +1,9 @@
 JS = r"""
 // ───────────────────────── Workflows: the list ─────────────────────────
 const KIND_GROUPS = [
-  ['workflow', 'Things people start', 'Started from the Telegram menu, or by typing.'],
-  ['case_action', 'Case actions', 'Buttons on a case, such as Pass to someone.'],
-  ['block', 'Building blocks', 'Small steps that other workflows run, such as Find a case. Change one and every workflow that runs it changes.'],
+  ['workflow', 'Workflows people start', 'Started from the Telegram menu, a button, or by typing a command.'],
+  ['case_action', 'Case actions', 'Buttons on a case.'],
+  ['block', 'Building blocks', 'Small parts other workflows use, such as Find a case. Change one and every workflow that uses it changes.'],
 ];
 async function ensureStudio() {
   const [cat, fl] = await Promise.all([api.get('/studio/catalog'), api.get('/workflows')]);
@@ -40,7 +40,7 @@ async function renderWorkflowList(root) {
     const match = w => !text || (w.name + ' ' + (w.description || '') + ' ' + w.intent_key).toLowerCase().includes(text);
     const rows = ST.flows.filter(match);
     if (!kinds) { fill(body, h('div', { class: 'card' }, rows.length ? listTable(rows) : empty('No workflows match', ''))); return; }
-    fill(body, KIND_GROUPS.map(([k, label, hint]) => {
+    fill(body, KIND_GROUPS.filter(([k]) => k !== 'case_action' || ST.flows.some(w => w.kind === 'case_action')).map(([k, label, hint]) => {
       const g = rows.filter(w => (w.kind || 'workflow') === k);
       return h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('span', null, label, ' ', h('span', { class: 'muted small' }, g.length)), h('span', { class: 'muted small' }, hint)),
         g.length ? listTable(g) : empty(text ? 'None match' : 'None yet', k === 'block' ? 'Create one with “New workflow”, or ask the chat for it.' : ''));
@@ -102,12 +102,12 @@ function newWorkflowModal(kinds) {
 }
 
 // ───────────────────────── Workflows: the editor ─────────────────────────
-const EDIT_KEYS = ['name', 'description', 'steps', 'entity_schema', 'gates', 'training_phrases', 'slash_command', 'kind', 'settings'];
+const EDIT_KEYS = ['name', 'description', 'steps', 'entity_schema', 'gates', 'training_phrases', 'slash_command', 'kind', 'settings', 'response_format'];
 function editorState(d, keep) {
-  const work = { name: d.name, description: d.description || '', steps: clone(d.steps), entity_schema: clone(d.entity_schema), gates: clone(d.gates), training_phrases: clone(d.training_phrases), slash_command: d.slash_command || '', kind: d.kind, settings: clone(d.settings) };
+  const work = { name: d.name, description: d.description || '', steps: clone(d.steps), entity_schema: clone(d.entity_schema), gates: clone(d.gates), training_phrases: clone(d.training_phrases), slash_command: d.slash_command || '', kind: d.kind, settings: clone(d.settings), response_format: d.response_format || 'generic' };
   const ids = d.steps.map((_, i) => i);
   return { id: d.id, d, work, orig: clone(work), ids, nextId: ids.length, open: new Set(), undo: [], last: JSON.stringify({ work, ids }), lastPush: 0,
-    tab: (keep && keep.tab) || 'steps', check: { errors: [], warnings: [] }, serverProblems: null, chat: (keep && keep.chat) || [], flash: -1 };
+    tab: (keep && keep.tab) || 'steps', view: (keep && keep.view) || 'plain', tech: null, check: { errors: [], warnings: [] }, serverProblems: null, chat: (keep && keep.chat) || [], flash: -1 };
 }
 const isDirty = () => !same(tidyWork(EW.work), tidyWork(EW.orig));
 const showTab = t => { EW.tab = t; drawEditor(); };
@@ -123,6 +123,7 @@ function commit(redraw) {
   EW.serverProblems = null;
   updateBar(); scheduleCheck();
   if (redraw) drawPane(); else refreshTitles();
+  if (EW.view === 'tech' && EW.tab === 'steps' && !redraw) scheduleTech();
 }
 function undo() {
   if (!EW.undo.length) { toast('Nothing to undo'); return; }
@@ -240,11 +241,17 @@ function drawPane() {
 function stepsPane() {
   const d = EW.d;
   if (d.workflow_type === 'read') {
-    return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'This workflow answers with a report'),
-      h('div', { class: 'card-b stack' }, h('div', null, 'It looks things up with a saved query instead of steps, so there is nothing to edit step by step.'),
-        h('pre', { class: 'code' }, d.sql_template || ''), h('a', { class: 'btn sm', href: classicUrl(), target: '_blank', rel: 'noopener' }, 'Change the report in the classic builder ↗')));
+    const worded = sel([['list', 'By code: every row is shown exactly as stored'], ['generic', 'By the assistant (AI): it may shorten or reword']], EW.work.response_format, { onchange: e => { EW.work.response_format = e.target.value; commit(false); drawPane(); } });
+    return h('div', { class: 'stack' },
+      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'This workflow answers with a report'),
+        h('div', { class: 'card-b stack' }, h('div', null, 'It looks things up with a saved query instead of steps, so there is nothing to edit step by step.'),
+          h('div', { class: 'techlabel' }, h('span', null, 'The SQL it runs'), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(d.sql_template || '') }, 'Copy')),
+          h('pre', { class: 'code' }, d.sql_template || ''), h('a', { class: 'btn sm', href: classicUrl(), target: '_blank', rel: 'noopener' }, 'Change the report in the classic builder ↗'))),
+      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'How the answer is worded', EW.work.response_format === 'list' ? badge('Code', 'ok') : badge('AI', 'violet')),
+        h('div', { class: 'card-b stack' }, worded, h('div', { class: 'muted small' }, 'The query always finds the rows. This only chooses who words the reply: code never drops a row or changes a number; the assistant may.'))));
   }
-  const wrap = h('div', { class: 'stack' });
+  if (EW.view === 'tech') return h('div', { class: 'stack' }, viewToolbar(), techPane());
+  const wrap = h('div', { class: 'stack' }, viewToolbar());
   ui.titleEls = []; ui.whenEls = []; ui.probEls = [];
   const list = h('div', { class: 'steps' });
   if (d.used_in.length) wrap.append(notice('This is a building block. It is run by: ' + d.used_in.map(u => u.name).join(', ') + '. Changes here change all of them.'));
@@ -260,12 +267,18 @@ function insertPoint(at, last) {
 }
 function addStepModal(at) {
   const groups = GROUP_ORDER.map(g => [g, (ST.catalog.steps || []).filter(s => s.group === g)]).filter(g => g[1].length);
-  const m = modal({ title: 'Add a step', wide: true, body: h('div', { class: 'stack' }, groups.map(([g, items]) => h('div', null, h('div', { class: 'muted small', style: { marginBottom: '4px' } }, g),
+  const blocks = ST.flows.filter(w => w.kind === 'block' && w.is_active && (!EW || w.id !== EW.id));
+  const shelf = blocks.length ? h('div', null, h('div', { class: 'muted small', style: { marginBottom: '4px' } }, 'Your building blocks: small parts that are already made'),
+    h('div', { class: 'addgrid' }, blocks.map(b => h('button', { class: 'addtile', type: 'button', onclick: () => { m.close(); addStep(at, 'run_workflow', { workflow: b.intent_key }); } },
+      h('b', null, '▣ ' + b.name), h('span', { class: 'muted small' }, b.description || ''),
+      (b.needs || []).length ? h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'needs: ' + b.needs.join(', ') + ' found first') : null)))) : null;
+  const m = modal({ title: 'Add a step', wide: true, body: h('div', { class: 'stack' }, shelf, groups.map(([g, items]) => h('div', null, h('div', { class: 'muted small', style: { marginBottom: '4px' } }, g),
     h('div', { class: 'addgrid' }, items.map(s => h('button', { class: 'addtile', type: 'button', onclick: () => { m.close(); addStep(at, s.op); } }, h('b', null, (STEP_GLYPH[s.op] || '•') + ' ' + s.label), h('span', { class: 'muted small' }, s.help))))))), actions: [{ label: 'Cancel' }] });
 }
-function addStep(at, op) {
+function addStep(at, op, given) {
   const spec = catalogSpec(op), step = { op, params: {} };
   (spec ? spec.params : []).forEach(p => { if (p.default !== undefined && p.kind !== 'column') step.params[p.key] = p.default; });
+  Object.assign(step.params, given || {});
   EW.work.steps.splice(at, 0, step); EW.ids.splice(at, 0, EW.nextId);
   EW.open.add(EW.nextId); EW.flash = EW.nextId; EW.nextId++;
   commit(true);
@@ -293,11 +306,108 @@ function stepCard(i) {
   const card = h('div', { class: 'stcard' + (open ? ' open' : '') + (EW.flash === id ? ' flash' : '') },
     h('div', { class: 'st-head', onclick: () => { open ? EW.open.delete(id) : EW.open.add(id); EW.flash = -1; drawPane(); } },
       h('span', { class: 'num' }, i + 1), h('span', { class: 'glyph' }, STEP_GLYPH[step.op] || '•'),
-      h('div', { style: { minWidth: 0, flex: 1 } }, title, when, h('div', { class: 'muted small' }, spec ? spec.label : step.op)),
+      h('div', { style: { minWidth: 0, flex: 1 } }, title, when, h('div', { class: 'muted small' }, (spec ? spec.label : step.op) + ' · ', stepTag(step))),
       h('span', { class: 'row', style: { gap: '2px' } }, btn('↑', 'Move up', () => moveStep(i, -1)), btn('↓', 'Move down', () => moveStep(i, 1)), btn('⧉', 'Duplicate this step', () => dupStep(i)), btn('✕', 'Remove this step', () => delStep(i)))),
     probs,
     open ? stepForm(step, i, commit, drawPane) : null);
   return card;
+}
+
+// ----- Plain words / Technical, the Code or AI tag, and Try it -----
+const copyText = t => navigator.clipboard.writeText(t).then(() => toast('Copied', 'ok'), () => toast('Could not copy', 'bad'));
+function stepTag(step) {
+  const ai = isAiStep(step);
+  const el = ai ? badge('AI', 'violet') : badge('Code', 'ok');
+  el.title = ai ? 'The assistant (a language model) reads the typed price here.' : 'Exact rules and SQL. No AI.';
+  return el;
+}
+function viewToolbar() {
+  const b = (k, label) => h('button', { type: 'button', class: EW.view === k ? 'on' : '', onclick: () => { EW.view = k; drawPane(); } }, label);
+  return h('div', { class: 'row between' },
+    h('div', { class: 'seg', role: 'group', 'aria-label': 'How to show the steps' }, b('plain', 'Plain words'), b('tech', 'Technical: SQL and JSON')),
+    h('button', { class: 'btn', type: 'button', onclick: tryIt }, '▶ Try it'));
+}
+let techTimer = null;
+function scheduleTech() { clearTimeout(techTimer); techTimer = setTimeout(() => { drawTech(); loadTech(); }, 350); }
+async function loadTech() {
+  const mine = EW, steps = tidySteps(EW.work.steps), sig = JSON.stringify(steps);
+  if (EW.tech && EW.tech.sig === sig) return;
+  try {
+    const r = await api.post('/studio/technical', { steps });
+    if (mine === EW) { EW.tech = { sig, data: r.steps }; if (EW.view === 'tech' && EW.tab === 'steps') drawTech(); }
+  } catch (e) { /* the JSON is still shown */ }
+}
+function techPane() {
+  ui.techBox = h('div', { class: 'tech' });
+  drawTech(); loadTech();
+  return ui.techBox;
+}
+function drawTech() {
+  if (!ui.techBox || !ui.techBox.isConnected) return;
+  const steps = tidySteps(EW.work.steps), sig = JSON.stringify(steps);
+  const data = EW.tech && EW.tech.sig === sig ? EW.tech.data : null;
+  const whole = JSON.stringify(steps, null, 2);
+  fill(ui.techBox,
+    notice('This shows exactly what the workflow does. It updates as you edit. The SQL is written out by the same rules the engine uses. Nothing here runs anything.'),
+    h('details', { class: 'card' }, h('summary', { class: 'card-h', style: { cursor: 'pointer' } }, 'The whole workflow as JSON'),
+      h('div', { class: 'card-b stack' }, h('div', null, h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(whole) }, 'Copy')), h('pre', { class: 'code' }, whole))),
+    steps.length ? steps.map((st, i) => techStep(st, i, data && data[i])) : h('div', { class: 'card' }, empty('No steps yet', 'Add one in the Plain words view.')));
+}
+function techStep(st, i, info) {
+  const sqls = info ? info.sql : null, text = JSON.stringify(st, null, 2);
+  return h('div', { class: 'stcard open' },
+    h('div', { class: 'st-head', style: { cursor: 'default' } }, h('span', { class: 'num' }, i + 1), h('span', { class: 'glyph' }, STEP_GLYPH[st.op] || '•'),
+      h('div', { style: { minWidth: 0, flex: 1 } }, h('div', { class: 'st-title' }, describeStep(st)), st.when ? h('div', { class: 'small', style: { color: 'var(--info)' } }, 'only if ' + condText(st.when)) : null, h('div', { class: 'muted small' }, st.op)),
+      stepTag(st)),
+    h('div', { class: 'stepform' },
+      h('div', null, h('div', { class: 'techlabel' }, h('span', null, 'SQL')),
+        sqls === null ? h('div', { class: 'muted small' }, 'Working out the SQL…')
+          : !sqls.length ? h('div', { class: 'muted small' }, st.op === 'run_workflow' ? 'This step runs the steps of another workflow. Open it to see its SQL.' : 'This step runs no SQL.')
+          : sqls.map(q => h('div', { style: { marginBottom: '8px' } },
+              h('div', { class: 'techlabel' }, h('span', null, q.title), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(q.sql) }, 'Copy')),
+              h('pre', { class: 'code' }, q.sql),
+              q.values.length ? h('ul', { class: 'vals' }, q.values.map(v => h('li', null, v))) : null,
+              q.note ? h('div', { class: 'muted small' }, q.note) : null))),
+      h('div', null, h('div', { class: 'techlabel' }, h('span', null, 'JSON'), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(text) }, 'Copy')), h('pre', { class: 'code' }, text))));
+}
+
+async function tryIt() {
+  let people = [];
+  try { people = (await api.get('/studio/people')).people; } catch (e) { toast(e.message, 'bad'); return; }
+  if (!people.length) { toast('No one is linked to the chat yet, so there is no one to try it as.', 'bad'); return; }
+  const as = sel(people.map(p => [p.id, p.name + ' (' + p.role + ')']), people[0].id);
+  const inputs = {};
+  const asked = Object.entries(EW.work.entity_schema || {}).filter(([, f]) => f && typeof f === 'object' && !f.computed);
+  const fieldsBox = h('div', { class: 'stack' }, asked.map(([k, f]) => {
+    const ctl = Array.isArray(f.enum) && f.enum.length ? sel([['', 'Choose…'], ...f.enum.map(x => [x, x])], '') : h('input', { type: 'text', placeholder: f.question || f.description || '' });
+    inputs[k] = ctl;
+    return field((f.label || pretty(k)) + (f.required ? ' *' : ''), ctl);
+  }));
+  const out = h('div', { class: 'stack' });
+  const run = h('button', { class: 'btn primary', type: 'button' }, 'Run the rehearsal');
+  run.addEventListener('click', async () => {
+    run.disabled = true; run.textContent = 'Trying…';
+    try {
+      const fields = {};
+      Object.entries(inputs).forEach(([k, el]) => { if (el.value.trim() !== '') fields[k] = el.value.trim(); });
+      const r = await api.post('/studio/try', { steps: tidySteps(EW.work.steps), entity_schema: EW.work.entity_schema, fields, as_user: as.value, intent_key: EW.d.intent_key, name: EW.work.name, kind: EW.work.kind });
+      fill(out, traceView(r));
+    } catch (e) { fill(out, notice(e.message, 'bad')); }
+    run.disabled = false; run.textContent = 'Run the rehearsal again';
+  });
+  modal({ title: 'Try “' + EW.work.name + '”', wide: true, body: h('div', { class: 'stack' },
+    notice('A rehearsal. Anything that only looks things up runs for real. Anything that would save or send something is skipped and described. Nothing is saved and nobody is messaged.'),
+    field('Try it as', as), asked.length ? fieldsBox : h('div', { class: 'muted' }, 'This workflow asks for nothing.'), h('div', { class: 'row' }, run), out), actions: [{ label: 'Close' }] });
+}
+function traceView(r) {
+  const icon = { ran: '✓', would: '✎', skipped: '↷', failed: '✕' };
+  const tag = { ran: 'looked up', would: 'would do', skipped: 'skipped', failed: 'stopped here' };
+  const lines = (r.trace || []).map(t => h('div', { class: 'tr ' + t.status, style: { marginLeft: (t.depth * 18) + 'px' } },
+    h('span', { class: 'ic', title: tag[t.status] }, icon[t.status] || '•'),
+    h('div', null, h('div', null, t.text, ' ', h('span', { class: 'muted small' }, '· ' + (tag[t.status] || t.status))), t.detail ? h('div', { class: 'dt' }, t.detail) : null)));
+  const end = r.status === 'preview' ? notice('It would go through' + (r.facts && r.facts.length ? ': ' + r.facts.join('. ') + '.' : '.'), 'ok')
+    : r.status === 'error' || r.status === 'ambiguous' ? notice(r.message || 'It would stop here.', 'bad') : null;
+  return h('div', { class: 'stack' }, end, h('div', { class: 'trace' }, lines.length ? lines : h('div', { class: 'muted' }, 'Nothing ran.')));
 }
 
 // ----- details and access -----
@@ -320,7 +430,20 @@ function detailsPane() {
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access)),
+    d.kind !== 'block' && S.boot.caps.cases ? peopleOnCaseCard() : null,
     d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id }, u.name)))) : null);
+}
+
+// people on a case: a workflow can be opened to them for the cases they are on
+function peopleOnCaseCard() {
+  const cfg = EW.work.settings = EW.work.settings || {};
+  const roles = [['requester', 'The person who raised the case'], ['assignee', 'The person who has the case'], ['level2', 'Level 2'], ['helper', 'Helpers, such as someone who passed it on'], ['watcher', 'Watchers']];
+  const have = new Set(cfg.who_can_use || []);
+  const save = () => { const l = roles.map(r => r[0]).filter(r => have.has(r)); if (l.length) cfg.who_can_use = l; else delete cfg.who_can_use; commit(false); };
+  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on a case'),
+    h('div', { class: 'card-b stack' }, h('div', { class: 'muted' }, 'Tick who may use this on the cases they are on, even if their role does not allow it. They can only act on their own cases.'),
+      roles.map(([k, label]) => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: have.has(k), onchange: e => { e.target.checked ? have.add(k) : have.delete(k); save(); } }), label)),
+      h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }), 'Takes photos sent in the chat while it is being filled in')));
 }
 
 // ----- what it asks for (entity_schema) -----
@@ -339,12 +462,16 @@ function asksPane() {
     return h('div', { class: 'card' }, h('div', { class: 'card-b stack' },
       h('div', { class: 'row between' }, h('b', null, pretty(k), ' ', h('span', { class: 'muted small' }, '(' + k + ')')),
         h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { if (usedBy(k) && !await confirmBox('A step uses this field. Remove it anyway?', { ok: 'Remove', danger: true })) return; delete sch[k]; commit(true); } }, 'Remove')),
-      field('How to ask for it', h('input', { type: 'text', value: f.description || '', oninput: e => { f.description = e.target.value; commit(false); } }), 'The assistant reads this to know what to ask and how to understand the answer.'),
+      field('Notes for the assistant', h('input', { type: 'text', value: f.description || '', oninput: e => { f.description = e.target.value; commit(false); } }), 'The assistant reads this to know what the field is and how to understand an answer.'),
+      h('div', { class: 'two' },
+        field('Question the bot asks', h('input', { type: 'text', value: f.question || '', placeholder: 'e.g. Which case? Send the case number.', oninput: e => { if (e.target.value) f.question = e.target.value; else delete f.question; commit(false); } }), 'Shown to the person when the bot asks for this itself. Empty: the notes are used.'),
+        field('Short name in the confirmation', h('input', { type: 'text', value: f.label || '', placeholder: pretty(k), oninput: e => { if (e.target.value) f.label = e.target.value; else delete f.label; commit(false); } }))),
+      readByEditor(f),
       h('div', { class: 'two' },
         field('Kind of answer', sel(types, f.type || 'string', { onchange: e => { f.type = e.target.value; commit(false); } })),
         field('Must it be given?', sel([['yes', 'Always'], ['no', 'Optional'], ['cond', 'Only in some cases']], req, { onchange: e => { if (e.target.value === 'cond') { delete f.required; f.required_if = f.required_if || { field: '', equals: '' }; } else { delete f.required_if; f.required = e.target.value === 'yes'; } commit(true); } }))),
       condBox,
-      field('Allowed answers', tagsEditor(Array.isArray(f.enum) ? f.enum : (f.enum = []), [], l => { if (l.length) f.enum = l; else delete f.enum; commit(false); }), 'Leave empty to allow anything. Otherwise only these.')));
+      field('Allowed answers', tagsEditor(Array.isArray(f.enum) ? f.enum : [], [], l => { if (l.length) f.enum = l; else delete f.enum; commit(false); }), 'Leave empty to allow anything. Otherwise only these.')));
   });
   const addField = () => {
     const el = document.getElementById('newfield');
@@ -360,6 +487,43 @@ function asksPane() {
   wrap.append(h('div', { class: 'muted' }, 'What the assistant collects from the person before it runs the steps. Steps read these as the person’s answers.'), ...rows, add);
   if (!keys.length) wrap.prepend(h('div', { class: 'card' }, empty('Nothing is asked', 'This workflow does not collect anything from the person.')));
   return wrap;
+}
+
+// how an answer is read: code (a lookup, as typed, fixed answers) or the assistant
+function readMode(f) {
+  const rb = f.read_by;
+  if (rb === 'typed' || rb === 'as_typed') return 'typed';
+  if (rb && typeof rb === 'object' && rb.lookup) return 'lookup';
+  if (rb === 'ai') return 'ai';
+  if (Array.isArray(f.enum) && f.enum.length) return 'choice';
+  return 'ai';
+}
+function readByEditor(f) {
+  const mode = readMode(f);
+  const byCode = mode !== 'ai';
+  const pick = sel([['ai', 'The assistant works it out (AI)'], ['typed', 'Take the answer exactly as typed (code)'], ['lookup', 'Look it up in a table (code)'], ['choice', 'One of the allowed answers (code)']], mode, { onchange: e => {
+    const v = e.target.value;
+    if (v === 'ai') { if (Array.isArray(f.enum) && f.enum.length) f.read_by = 'ai'; else delete f.read_by; }
+    else if (v === 'typed') f.read_by = 'typed';
+    else if (v === 'lookup') f.read_by = { lookup: (f.read_by && f.read_by.lookup) || { table: '', match_column: '' } };
+    else delete f.read_by;
+    commit(true);
+  } });
+  const box = h('div', { class: 'stack' }, field('How the answer is read', pick, 'Code is exact and instant, and cannot misread. The assistant is only needed for free sentences. If code is not sure, it hands the message to the assistant.'));
+  box.querySelector('label').append(' ', byCode ? badge('Code', 'ok') : badge('AI', 'violet'));
+  if (mode === 'choice' && !(Array.isArray(f.enum) && f.enum.length)) box.append(notice('Add the allowed answers below, or choose another way.', 'warn'));
+  if (mode === 'lookup') {
+    const cfg = f.read_by.lookup, cols = colsOf(cfg.table);
+    const showSet = new Set(cfg.show || []);
+    box.append(h('div', { class: 'subcfg' },
+      h('div', { class: 'two' },
+        field('Look in', sel([['', 'Choose a table…'], ...Object.keys(ST.catalog.tables).map(t => [t, pretty(t)])], cfg.table || '', { onchange: e => { cfg.table = e.target.value; cfg.match_column = ''; delete cfg.show; delete cfg.where; commit(true); } })),
+        field('Match against', sel([['', 'Choose a column…'], ...cols.map(c => [c, pretty(c)])], cfg.match_column || '', { onchange: e => { cfg.match_column = e.target.value; commit(false); } }))),
+      h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: cfg.normalize === 'identifier', onchange: e => { if (e.target.checked) cfg.normalize = 'identifier'; else delete cfg.normalize; commit(false); } }), 'It is a reference number (ignore spaces, dashes and capitals)'),
+      cols.includes('is_active') ? h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!(cfg.where && cfg.where.is_active), onchange: e => { if (e.target.checked) cfg.where = { ...(cfg.where || {}), is_active: true }; else { delete (cfg.where || {}).is_active; if (cfg.where && !Object.keys(cfg.where).length) delete cfg.where; } commit(false); } }), 'Only records that are still active') : null,
+      field('Show these when it is found', h('div', { class: 'checks' }, cols.slice(0, 40).map(c => h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: showSet.has(c), onchange: e => { e.target.checked ? showSet.add(c) : showSet.delete(c); const l = cols.filter(x => showSet.has(x)); if (l.length) cfg.show = l; else delete cfg.show; commit(false); } }), pretty(c)))), 'These columns make up the line the person sees, such as the case number and its title.')));
+  }
+  return box;
 }
 
 // ----- safeguards (gates) -----

@@ -37,6 +37,7 @@ from app.services.step_catalog import (
     used_blocks,
     validate_steps,
 )
+from app.services.step_sql import describe_step, sql_for_step, tag_for
 from app.services.workflow_validator import validate_workflow_config
 
 logger = get_context_logger(__name__)
@@ -152,6 +153,118 @@ async def validate(body: ValidateBody, ctx: CtxDep):
     )
 
 
+class TechnicalBody(BaseModel):
+    steps: list[dict]
+
+
+@router.post("/studio/technical")
+async def technical(body: TechnicalBody, ctx: CtxDep):
+    """For the Technical view: each step as a sentence, whether code or the assistant does it,
+    and the SQL it runs. Nothing is run and the database is not read for this."""
+    names = {k: v["name"] for k, v in (await load_workflows(ctx)).items()}
+    return {
+        "steps": [
+            {
+                "sentence": describe_step(step, names),
+                "tag": tag_for(step),
+                "sql": sql_for_step(step),
+            }
+            for step in body.steps
+        ]
+    }
+
+
+@router.get("/studio/people")
+async def people(ctx: CtxDep):
+    """Who 'Try it' can pretend to be: the people linked to the chat."""
+    found = await fetch_all(
+        "SELECT u.id, u.name, r.name AS role FROM users u JOIN roles r ON r.id = u.role_id "
+        "WHERE u.org_id = $1 AND u.is_active AND COALESCE(u.phone, '') <> '' ORDER BY u.name",
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    return {"people": rows(found)}
+
+
+class TryBody(BaseModel):
+    steps: list[dict]
+    entity_schema: dict = Field(default_factory=dict)
+    fields: dict = Field(default_factory=dict)
+    as_user: UUID
+    intent_key: str | None = None
+    name: str | None = None
+    kind: str = "workflow"
+
+
+@router.post("/studio/try")
+async def try_it(body: TryBody, ctx: CtxDep):
+    """Run the steps as a rehearsal: everything that only looks things up runs for real, and
+    everything that would save or send something is skipped and described. The result is what
+    each step did, step by step. Nothing is saved and nobody is messaged."""
+    from app.services.party_access import add_party_permissions
+    from app.services.step_interpreter import run_workflow_steps
+
+    who = await fetch_one(
+        "SELECT u.id, u.name, u.email, u.phone, u.is_active, u.role_id, r.name AS role, "
+        "r.permissions, r.readable_tables, r.readable_entity_types, o.name AS org_name "
+        "FROM users u JOIN roles r ON r.id = u.role_id JOIN orgs o ON o.id = u.org_id "
+        "WHERE u.id = $1 AND u.org_id = $2",
+        body.as_user,
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    if not who:
+        raise HTTPException(status_code=404, detail="That person was not found")
+    user = {
+        "user_id": str(who["id"]),
+        "user_name": who["name"],
+        "email": who["email"],
+        "phone": who["phone"],
+        "is_active": who["is_active"],
+        "role_id": str(who["role_id"]),
+        "role": who["role"],
+        "permissions": list(who["permissions"] or []),
+        "readable_tables": list(who["readable_tables"] or []),
+        "readable_entity_types": list(who["readable_entity_types"] or []),
+        "org_id": str(ctx.org_id),
+        "org_name": who["org_name"],
+        "source_key": ctx.source_key,
+    }
+    user = await add_party_permissions(user)
+    workflow = {
+        "intent_key": body.intent_key or "try_it",
+        "name": body.name or "This workflow",
+        "steps": body.steps,
+        "entity_schema": body.entity_schema,
+        "gates": [],
+        "kind": body.kind,
+    }
+    fields = {k: v for k, v in body.fields.items() if v not in (None, "")}
+    try:
+        result = await run_workflow_steps(
+            workflow, fields, user, who["phone"] or "", dry_run=True
+        )
+    except Exception as e:
+        logger.warning(f"try-it failed: {e}")
+        return {
+            "status": "error",
+            "message": "It could not be tried: " + str(e)[:300],
+            "trace": [],
+        }
+    out = {
+        "status": result.get("status"),
+        "trace": result.get("trace") or [],
+        "facts": result.get("preview", []),
+    }
+    if result.get("status") == "error":
+        out["message"] = result.get("message") or "It stopped."
+    if result.get("status") == "ambiguous":
+        out["message"] = (
+            "More than one match was found, so the person would be asked which one."
+        )
+    return out
+
+
 # ── one workflow, for the editor ─────────────────────────────────────────────
 
 
@@ -201,6 +314,7 @@ async def workflow_detail(workflow_id: UUID, ctx: CtxDep):
         "gates": jb(d["gates"], []),
         "training_phrases": jb(d["training_phrases"], []),
         "sql_template": d["sql_template"] if d["workflow_type"] == "read" else None,
+        "response_format": d.get("response_format") or "generic",
         "granted_roles": await _granted_roles(ctx, d["intent_key"]),
         "uses": [
             {"intent_key": k, "name": names.get(k, k)} for k in used_blocks(steps)
@@ -276,6 +390,7 @@ class DefinitionBody(BaseModel):
     slash_command: str | None = None
     kind: str | None = None
     settings: dict | None = None
+    response_format: str | None = None
 
 
 def _check_entity_schema(schema: dict) -> list[str]:
@@ -353,6 +468,13 @@ async def _save(
                 "calc_rules": jb(row["calc_rules"], {}),
             }
         )
+        if "response_format" in changes and changes["response_format"] not in (
+            "generic",
+            "list",
+        ):
+            problems.append(
+                "How the answer is worded: choose the assistant or the code list."
+            )
         if "slash_command" in changes:
             cmd = (changes["slash_command"] or "").strip().lstrip("/").lower()
             if cmd and not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
@@ -396,6 +518,7 @@ async def _save(
             "slash_command",
             "kind",
             "settings",
+            "response_format",
         ):
             if col not in changes:
                 continue
