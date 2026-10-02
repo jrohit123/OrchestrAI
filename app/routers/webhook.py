@@ -1,3 +1,4 @@
+import contextvars
 import hashlib
 import hmac
 import json
@@ -272,6 +273,10 @@ async def _audit_turn(
 
 
 _HOLD_MINUTES = 15
+_HELD_NOTE = (
+    "📎 Got the photo. Now tell me what it is for, for example start /complaint, "
+    f"/update or /close. I keep it for {_HOLD_MINUTES} minutes."
+)
 
 
 async def _photo_draft(user: dict) -> dict | None:
@@ -325,7 +330,9 @@ def _held_key(user: dict, phone: str) -> str:
     return f"photos_held:{user['org_id']}:{phone}"
 
 
-async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
+async def _take_photos(
+    user: dict, phone: str, file_ids: list[str], quiet: bool = False
+) -> None:
     """Attach photos sent in chat to the request being filled in (when its workflow takes photos).
     A photo sent first, before /complaint or /update, is kept for a few minutes and attached as
     soon as such a request is started."""
@@ -339,11 +346,10 @@ async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
         await set_session(
             _held_key(user, phone), {"ids": ids[:_MAX_PHOTOS]}, ttl=_HOLD_MINUTES * 60
         )
-        await send_text(
-            phone,
-            "📎 Got the photo. Now start /complaint or /update and I will attach it "
-            f"(I keep it for {_HOLD_MINUTES} minutes).",
-        )
+        if (
+            not quiet
+        ):  # with a caption the text is handled next, then the photo is attached
+            await send_text(phone, _HELD_NOTE)
         return
     count = await _add_photos(user, phone, draft, file_ids)
     note = f"📎 Photo added ({count} attached)."
@@ -352,9 +358,10 @@ async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
     await send_text(phone, note)
 
 
-async def _attach_held_photos(user: dict, phone: str) -> None:
-    """On the next message: if a photo is waiting and a request that takes photos is now open,
-    attach it. Never raises."""
+async def _attach_held_photos(user: dict, phone: str, hint: bool = False) -> None:
+    """After a turn: if a photo is waiting and a request that takes photos is now open, attach
+    it. That covers photo first then text, a photo with a caption, and a photo then /command.
+    With hint, say so when nothing could take it. Never raises."""
     try:
         held = await get_session(_held_key(user, phone))
         ids = held.get("ids") or []
@@ -362,15 +369,42 @@ async def _attach_held_photos(user: dict, phone: str) -> None:
             return
         draft = await _photo_draft(user)
         if not draft:
+            if hint:
+                await send_text(phone, _HELD_NOTE)
             return
         count = await _add_photos(user, phone, draft, ids)
         await delete_session(_held_key(user, phone))
-        await send_text(phone, f"📎 Attached your photo ({count} on it).")
+        note = f"📎 Photo added ({count} attached)."
+        if draft["stage"] == "awaiting_confirmation":
+            note += " Reply *yes* to save."
+        await send_text(phone, note)
     except Exception as e:
         logger.warning(f"held photo not attached: {e}")
 
 
+_turn_user: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "turn_user", default=None
+)
+
+
 async def handle_message(
+    phone: str,
+    text: str,
+    msg_type: str = "text",
+    attachments: list[str] | None = None,
+):
+    """One incoming message. Photos and text can come in any order, so once the turn is done
+    any photo that is waiting is attached to the request the turn just opened."""
+    _turn_user.set(None)
+    try:
+        await _handle_message(phone, text, msg_type, attachments)
+    finally:
+        user = _turn_user.get()
+        if user is not None and not (attachments and not text.strip()):
+            await _attach_held_photos(user, phone, hint=bool(attachments))
+
+
+async def _handle_message(
     phone: str,
     text: str,
     msg_type: str = "text",
@@ -803,12 +837,11 @@ async def handle_message(
 
     user = await add_party_permissions(user)
 
+    _turn_user.set(user)
     if attachments:
-        await _take_photos(user, phone, attachments)
+        await _take_photos(user, phone, attachments, quiet=bool(text.strip()))
         if not text.strip():
             return
-    else:
-        await _attach_held_photos(user, phone)
 
     if phone.startswith("tg:"):
         from app.services.menu import sync_telegram_commands
