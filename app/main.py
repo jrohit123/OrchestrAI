@@ -99,7 +99,7 @@ async def health():
         from app.db import get_default_source_key
 
         source_key = await get_default_source_key()
-        pool = get_pool(source_key)
+        pool = await get_pool(source_key)
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         status["dependencies"]["database"] = "ok"

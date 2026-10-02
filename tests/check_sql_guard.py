@@ -24,8 +24,8 @@ for key in (
 ):
     os.environ.setdefault(key, "postgresql://x@127.0.0.1:1/x" if "URL" in key else "x")
 
-from app.services.query_engine import SENSITIVE_COLS  # noqa: E402
-from app.services.sql_guard import GuardError, prepare  # noqa: E402
+from app.services.query_engine import SENSITIVE_COLS
+from app.services.sql_guard import GuardError, prepare
 
 ORG = "793eead0-31b2-4538-b9b3-1885f9e94604"
 SCOPED = {"cases", "case_activity", "users"}
@@ -60,18 +60,30 @@ GOOD = [
     "SELECT * FROM cases",
 ]
 BAD = [
-    ("comma join to a table the role may not read", "SELECT u.name FROM cases c, users u", {"cases"}),
+    (
+        "comma join to a table the role may not read",
+        "SELECT u.name FROM cases c, users u",
+        {"cases"},
+    ),
     ("a table the role may not read", "SELECT name FROM users", {"cases"}),
     ("phone renamed on the way out", "SELECT u.phone AS contact FROM users u", ALLOWED),
     ("phone inside a function", "SELECT lower(email) FROM users", ALLOWED),
-    ("hidden column through a subquery", "SELECT p FROM (SELECT phone AS p FROM users) s", ALLOWED),
+    (
+        "hidden column through a subquery",
+        "SELECT p FROM (SELECT phone AS p FROM users) s",
+        ALLOWED,
+    ),
     ("an id column in the select list", "SELECT org_id FROM cases", ALLOWED),
     ("two statements", "SELECT 1; DELETE FROM cases", ALLOWED),
     ("delete", "DELETE FROM cases", ALLOWED),
     ("update", "UPDATE cases SET status = 'closed'", ALLOWED),
     ("insert", "INSERT INTO cases (title) VALUES ('x')", ALLOWED),
     ("drop", "DROP TABLE cases", ALLOWED),
-    ("data-changing CTE", "WITH x AS (DELETE FROM cases RETURNING *) SELECT * FROM x", ALLOWED),
+    (
+        "data-changing CTE",
+        "WITH x AS (DELETE FROM cases RETURNING *) SELECT * FROM x",
+        ALLOWED,
+    ),
     ("sleep", "SELECT pg_sleep(10)", ALLOWED),
     ("system catalog", "SELECT * FROM pg_catalog.pg_tables", ALLOWED),
     ("information schema", "SELECT * FROM information_schema.columns", ALLOWED),
@@ -111,7 +123,12 @@ for given, expect in (("", 100), (" LIMIT 500", 100), (" LIMIT 10", 10)):
     m = re.search(r"LIMIT (\d+)", out)
     if not m or int(m.group(1)) != expect:
         failed += 1
-        print(f"FAIL: limit '{given}' became", m.group(0) if m else "nothing", "expected", expect)
+        print(
+            f"FAIL: limit '{given}' became",
+            m.group(0) if m else "nothing",
+            "expected",
+            expect,
+        )
 out, _ = run("SELECT title FROM cases UNION SELECT title FROM cases")
 if "LIMIT 100" not in out:
     failed += 1

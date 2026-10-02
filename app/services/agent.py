@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from app.config import required
 from app.db import execute, fetch_all, fetch_all_readonly, fetch_one
 from app.logging_config import get_context_logger
-from app.services import sql_guard
+from app.services import field_reader, sql_guard
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
@@ -32,11 +32,24 @@ _AGENT_SYSTEM_WRAPPER_TEMPLATE = _read(PROMPTS_DIR / "agent_system_wrapper.txt")
 _client = AsyncOpenAI(api_key=required("OPENAI_API_KEY"))
 
 
-def _build_confirm_summary_lines(entity_schema: dict, fields: dict) -> list[str] | None:
+def _shown_value(name: str, value, display: dict | None):
+    """The real record's label when code read this value from a lookup, else the value itself."""
+    shown = (display or {}).get(name)
+    if isinstance(shown, dict) and shown.get("value") == value and shown.get("label"):
+        return shown["label"]
+    return value
+
+
+def _build_confirm_summary_lines(
+    entity_schema: dict, fields: dict, display: dict | None = None
+) -> list[str] | None:
     """
     Build the confirm_action bullet list directly from the authoritative,
     server-merged draft fields (the exact values about to be persisted)
     instead of trusting the LLM to hand-craft a matching `details` dict.
+    `display` carries the real record behind a value code looked up (a case
+    number with its title, a person's full name), so the person sees the
+    record they are about to change.
     Returns None if the schema is empty or contains an array-typed field
     (e.g. line items) this generic flattener can't safely summarise —
     callers should fall back to the LLM-provided `details` in that case.
@@ -52,8 +65,8 @@ def _build_confirm_summary_lines(entity_schema: dict, fields: dict) -> list[str]
         val = fields.get(name)
         if val in (None, "", []):
             continue
-        label = name.replace("_", " ").title()
-        lines.append(f"  • {label}: {val}")
+        label = spec.get("label") or name.replace("_", " ").title()
+        lines.append(f"  • {label}: {_shown_value(name, val, display)}")
     return lines or None
 
 
@@ -855,7 +868,7 @@ async def _build_system_prompt(user: dict) -> str:
     # workflows, so the assistant is not told about them as things a person can ask for.
     workflows = await fetch_all(
         """
-        SELECT intent_key, entity_schema, business_glossary, llm_system_prompt, training_phrases,
+        SELECT intent_key, name, entity_schema, business_glossary, llm_system_prompt, training_phrases,
                workflow_type, sql_template, sql_params_order, to_jsonb(w) ->> 'kind' AS kind
         FROM workflows w
         WHERE org_id = $1 AND is_active = true
@@ -864,6 +877,11 @@ async def _build_system_prompt(user: dict) -> str:
         source_key=user["source_key"],
     )
     workflows = [wf for wf in workflows if wf.get("kind") != "block"]
+    # Only what this person may use is described in full. The rest is named once, so a request for
+    # it gets a plain "you do not have permission" instead of a half-started conversation.
+    allowed_keys = set(user.get("permissions") or [])
+    not_allowed = [wf for wf in workflows if wf["intent_key"] not in allowed_keys]
+    workflows = [wf for wf in workflows if wf["intent_key"] in allowed_keys]
 
     # Build workflow schema guidance
     workflow_schema_text = ""
@@ -1005,6 +1023,19 @@ async def _build_system_prompt(user: dict) -> str:
                     )
 
         workflow_schema_text += "\n=== END WORKFLOW SCHEMAS ===\n"
+
+    if not_allowed:
+        names = ", ".join(
+            f"{wf.get('name') or wf['intent_key']} ({wf['intent_key']})"
+            for wf in not_allowed
+        )
+        workflow_schema_text += (
+            "\n=== NOT ALLOWED FOR THIS PERSON ===\n"
+            f"These exist but this person may not use them: {names}.\n"
+            "If they ask for one of these, do not start it. Tell them they do not have "
+            "permission and to ask a committee member or admin.\n"
+            "=== END NOT ALLOWED ===\n"
+        )
 
     # Load layered domain prompt from files
     domain_prompt = load_prompt(dict(org_row) if org_row else {})
@@ -2055,6 +2086,374 @@ async def _summarize_turns(
 # ── Main agent loop ───────────────────────────────────────────────────────────
 
 
+def _now_iso() -> str:
+    return _dt.datetime.now().isoformat()
+
+
+def _with_history(history: list | None, user_text: str, reply: str, limit: int) -> list:
+    """The conversation so far plus this turn, kept to the org's context size."""
+    out = list(history or []) + [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": reply},
+    ]
+    return out[-limit:] if limit else out
+
+
+def _field_label(name: str, spec: dict) -> str:
+    text = (spec or {}).get("label") or name.replace("_", " ")
+    return text[:1].upper() + text[1:]
+
+
+def _acknowledge(schema: dict, display: dict, accepted: dict) -> str:
+    """One line per value that code just read and found a real record for."""
+    lines = []
+    for name in accepted:
+        shown = (display or {}).get(name)
+        if isinstance(shown, dict) and shown.get("label"):
+            lines.append(f"✔ {_field_label(name, schema.get(name))}: {shown['label']}")
+    return "\n".join(lines)
+
+
+async def _confirm_by_code(
+    user: dict,
+    wf: dict,
+    fields: dict,
+    display: dict,
+    *,
+    message: str,
+    history: list | None,
+    limit: int,
+):
+    """Every answer is in: check them, save the checked draft and show what will be saved.
+
+    No model is involved. Returns (reply, history, session_patch), or None when this workflow
+    needs the assistant to do it (item lists, price reading, or a check that fails)."""
+    from app.services.draft_store import upsert_draft
+    from app.services.qa_verifier import VerificationError, verify_draft
+    from app.services.vocabulary import get_vocabulary
+
+    steps = _parse_jsonb(wf.get("steps"), []) or []
+    if any(
+        (json.loads(s) if isinstance(s, str) else s).get("op") == "ai_price_interpret"
+        for s in steps
+    ):
+        return None
+    schema = _parse_jsonb(wf.get("entity_schema"), {}) or {}
+    try:
+        verified = await verify_draft(
+            dict(wf), fields, user["org_id"], user["source_key"]
+        )
+    except VerificationError:
+        return None
+    lines = _build_confirm_summary_lines(schema, verified, display)
+    if not lines:
+        return None
+
+    await upsert_draft(
+        org_id=user["org_id"],
+        user_id=user["user_id"],
+        intent_key=wf["intent_key"],
+        fields=verified,
+        reset_fields=False,
+        stage="awaiting_confirmation",
+        source_key=user["source_key"],
+    )
+    text = "\n".join(
+        [
+            f"📝 *Here's what I'll save — {wf['name']}:*",
+            *lines,
+            "\nReply *yes* to save, *no* to cancel, or tell me what to change.",
+        ]
+    )
+    vocab = await get_vocabulary(user["org_id"], user["source_key"])
+    buttons = []
+    if "yes" in vocab["confirm_words"]:
+        buttons.append({"id": "yes", "title": "✅ Yes, save it"})
+    buttons.append({"id": "/cancel", "title": "❌ Cancel"})
+    patch = {
+        "pending_action": {
+            "intent_key": wf["intent_key"],
+            "fields": verified,
+            "display": display,
+            "stage": "awaiting_confirmation",
+            # a fresh confirmation window, counted from now
+            "created_at": _now_iso(),
+            "reprompt_count": 0,
+        },
+        "_buttons": buttons,
+    }
+    return text, _with_history(history, message, text, limit), patch
+
+
+async def _run_report_by_code(
+    user: dict,
+    wf: dict,
+    fields: dict,
+    *,
+    message: str,
+    history: list | None,
+    limit: int,
+):
+    """A stored report whose answers are all in: run it and word it, nothing to confirm."""
+    from app.services.draft_store import close_draft
+    from app.services.query_engine import execute_query
+
+    params_order = _parse_jsonb(wf.get("sql_params_order"), []) or []
+    glossary = _parse_jsonb(wf.get("business_glossary"), {}) or {}
+    raw = await execute_query(
+        sql=wf["sql_template"],
+        params=_resolve_sql_params(params_order, user, fields),
+        user=user,
+        response_format="generic",
+        business_glossary=glossary,
+    )
+    if (wf.get("response_format") or "") == "list":
+        text = format_list(wf["name"], raw)
+    else:
+        text = await _llm_format_report(wf, raw)
+    await close_draft(
+        user["org_id"], user["user_id"], "done", source_key=user["source_key"]
+    )
+    return text, _with_history(history, message, text, limit), {"pending_action": None}
+
+
+async def _advance_by_code(
+    user: dict,
+    wf: dict,
+    pending: dict,
+    fields: dict,
+    display: dict,
+    accepted: dict,
+    *,
+    message: str,
+    history: list | None,
+    limit: int,
+    intro: str = "",
+):
+    """Fields were just read by code: show the confirmation if nothing is missing, otherwise ask
+    the next question. Returns (reply, history, session_patch), or None to let the assistant take
+    over (the draft is already saved with what code understood)."""
+    from app.services.draft_store import upsert_draft
+
+    schema = _parse_jsonb(wf.get("entity_schema"), {}) or {}
+    if accepted:
+        await upsert_draft(
+            org_id=user["org_id"],
+            user_id=user["user_id"],
+            intent_key=wf["intent_key"],
+            fields=fields,
+            stage="collecting",
+            source_key=user["source_key"],
+            reset_fields=False,
+        )
+
+    nxt = field_reader.first_missing(schema, fields)
+    if nxt is None:
+        if wf.get("workflow_type") == "read" and wf.get("sql_template"):
+            return await _run_report_by_code(
+                user, wf, fields, message=message, history=history, limit=limit
+            )
+        return await _confirm_by_code(
+            user,
+            wf,
+            fields,
+            display,
+            message=message,
+            history=history,
+            limit=limit,
+        )
+
+    name, spec = nxt
+    ack = _acknowledge(schema, display, accepted)
+    reply = "\n".join(
+        part for part in (intro, ack, field_reader.question_for(name, spec)) if part
+    )
+    patch = {
+        "pending_action": {
+            "intent_key": wf["intent_key"],
+            "fields": fields,
+            "display": display,
+            "stage": "collecting",
+            "asking": name,
+            "created_at": pending.get("created_at") or _now_iso(),
+            "reprompt_count": 0,
+        },
+        "_buttons": field_reader.buttons_for(spec),
+    }
+    return reply, _with_history(history, message, reply, limit), patch
+
+
+async def _open_workflow_by_code(
+    wf: dict,
+    entity_schema: dict,
+    message: str,
+    command_args: str | None,
+    user: dict,
+    conversation_history: list | None,
+) -> dict:
+    """A workflow was tapped in the menu or typed as a command: open its draft and ask the first
+    question. Anything typed after the command ("/assign CS-26-10-1 Rajeswari") is read by code
+    where it can be.
+
+    Returns {"result": (reply, history, session_patch)} when code handled the turn, or
+    {"message": ..., "pending": ...} to let the assistant carry on from there."""
+    from app.services.draft_store import get_active_draft, upsert_draft
+
+    limit = user.get("context_message_limit") or 12
+    existing = await get_active_draft(
+        user["org_id"], user["user_id"], user["source_key"]
+    )
+    if existing and existing.get("intent_key") == wf["intent_key"]:
+        fields = existing.get("fields") or {}
+        if isinstance(fields, str):
+            try:
+                fields = json.loads(fields)
+            except (json.JSONDecodeError, TypeError):
+                fields = {}
+    else:
+        fields = {}
+        await upsert_draft(
+            org_id=user["org_id"],
+            user_id=user["user_id"],
+            intent_key=wf["intent_key"],
+            fields=fields,
+            stage="collecting",
+            source_key=user["source_key"],
+            reset_fields=True,  # D1: reset fields when switching workflows
+        )
+
+    pending = {
+        "intent_key": wf["intent_key"],
+        "fields": fields,
+        "stage": "collecting",
+        "created_at": _now_iso(),
+    }
+    carry_on = (
+        f"Continue the {wf['name']} workflow — required fields may already be "
+        "collected; review and confirm if ready."
+    )
+    display: dict = {}
+    accepted: dict = {}
+    if command_args:
+        pre = await field_reader.prefill_from_args(entity_schema, command_args, user)
+        if not pre:
+            # code cannot explain every word typed after the command: the assistant reads it
+            return {"message": f"{wf['name']}: {command_args}", "pending": pending}
+        accepted = pre["fields"]
+        fields = {**fields, **accepted}
+        display = pre["display"]
+        pending.update(fields=fields, display=display)
+        if pre.get("reply"):
+            # a name matched several people: ask which one
+            if accepted:
+                await upsert_draft(
+                    org_id=user["org_id"],
+                    user_id=user["user_id"],
+                    intent_key=wf["intent_key"],
+                    fields=fields,
+                    stage="collecting",
+                    source_key=user["source_key"],
+                    reset_fields=False,
+                )
+            ack = _acknowledge(entity_schema, display, accepted)
+            reply = "\n".join(p for p in (ack, pre["reply"]) if p)
+            pending.update(asking=pre["asking"], candidates=pre["candidates"])
+            return {
+                "result": (
+                    reply,
+                    [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": reply},
+                    ],
+                    {"pending_action": pending, "_buttons": pre["buttons"]},
+                )
+            }
+
+    intro = f"I'll help you with *{wf['name']}*."
+    advanced = await _advance_by_code(
+        user,
+        wf,
+        pending,
+        fields,
+        display,
+        accepted,
+        message=message,
+        history=[],
+        limit=limit,
+        intro=intro,
+    )
+    if advanced is None:
+        return {"message": carry_on, "pending": pending}
+    return {"result": advanced}
+
+
+async def _answer_by_code(
+    message: str,
+    user: dict,
+    pending_action: dict,
+    workflow_map: dict,
+    conversation_history: list | None,
+):
+    """The person is answering a question that code asked (pending_action['asking']).
+
+    Returns (reply, history, session_patch) when code handled the turn, or None to let the
+    assistant read it. When code understood some of it but cannot go on alone, pending_action
+    is updated in place with what was understood."""
+    wf = workflow_map.get(pending_action.get("intent_key"))
+    if not wf:
+        return None
+    schema = _parse_jsonb(wf.get("entity_schema"), {}) or {}
+    fields = pending_action.get("fields") or {}
+    if isinstance(fields, str):
+        try:
+            fields = json.loads(fields)
+        except (json.JSONDecodeError, TypeError):
+            fields = {}
+    pending_action["fields"] = fields
+
+    res = await field_reader.read_answer(message, user, pending_action, schema)
+    if res is None:
+        return None
+    limit = user.get("context_message_limit") or 12
+
+    if res.get("reply"):
+        # not found, or several matches: ask again, with numbers
+        patch_pending = {
+            **pending_action,
+            "candidates": res.get("candidates"),
+            "asking": res.get("asking") or pending_action.get("asking"),
+        }
+        return (
+            res["reply"],
+            _with_history(conversation_history, message, res["reply"], limit),
+            {"pending_action": patch_pending, "_buttons": res.get("buttons")},
+        )
+
+    fields = {**fields, **res["fields"]}
+    display = {**(pending_action.get("display") or {}), **res["display"]}
+    base = {
+        k: v for k, v in pending_action.items() if k not in ("asking", "candidates")
+    }
+    advanced = await _advance_by_code(
+        user,
+        wf,
+        base,
+        fields,
+        display,
+        res["fields"],
+        message=message,
+        history=conversation_history,
+        limit=limit,
+    )
+    if advanced is None:
+        # code could not finish the draft alone: the assistant carries on with what is known
+        pending_action.clear()
+        pending_action.update(
+            {**base, "fields": fields, "display": display, "reprompt_count": 0}
+        )
+    return advanced
+
+
 async def run_agent(
     message: str,
     user: dict,
@@ -2062,6 +2461,7 @@ async def run_agent(
     max_iterations: int = 6,
     conversation_history: list = None,
     pending_action: dict = None,
+    command_args: str | None = None,
 ) -> tuple[str, list, dict]:
     """
     Main entry point. Replaces classify_message + execute_intent entirely.
@@ -2175,68 +2575,56 @@ async def run_agent(
             # draft and ask for the first missing required field, driven by
             # entity_schema — no LLM call needed, so it can never come back empty.
             if entity_schema and not all_optional:
-                from app.services.draft_store import get_active_draft, upsert_draft
-
-                existing = await get_active_draft(
-                    user["org_id"], user["user_id"], user["source_key"]
-                )
-                if existing and existing.get("intent_key") == wf["intent_key"]:
-                    fields = existing.get("fields") or {}
-                    if isinstance(fields, str):
-                        try:
-                            fields = json.loads(fields)
-                        except (json.JSONDecodeError, TypeError):
-                            fields = {}
-                else:
-                    fields = {}
-                    await upsert_draft(
-                        org_id=user["org_id"],
-                        user_id=user["user_id"],
-                        intent_key=wf["intent_key"],
-                        fields=fields,
-                        stage="collecting",
-                        source_key=user["source_key"],
-                        reset_fields=True,  # D1: reset fields when switching workflows
+                try:
+                    opened = await _open_workflow_by_code(
+                        wf,
+                        entity_schema,
+                        message,
+                        command_args,
+                        user,
+                        conversation_history,
                     )
-
-                first_missing = None
-                for fname, fspec in entity_schema.items():
-                    if not isinstance(fspec, dict) or fspec.get("computed"):
-                        continue
-                    if fspec.get("required") and not fields.get(fname):
-                        first_missing = (fname, fspec)
-                        break
-
-                if first_missing:
-                    fname, fspec = first_missing
-                    question = (
-                        fspec.get("description")
-                        or f"What is the {fname.replace('_', ' ')}?"
+                except Exception as e:
+                    # code must never be the reason a conversation cannot start
+                    logger.error(
+                        f"Opening '{wf['intent_key']}' by code failed, the assistant takes over: {e}",
+                        exc_info=True,
                     )
-                    if fspec.get("enum"):
-                        question += f" ({' / '.join(fspec['enum'])})"
-                    reply_text = f"I'll help you with *{wf['name']}*. {question}"
-                    history_to_save = [
-                        {"role": "user", "content": message},
-                        {"role": "assistant", "content": reply_text},
-                    ]
-                    return (
-                        reply_text,
-                        history_to_save,
-                        {
-                            "pending_action": {
-                                "intent_key": wf["intent_key"],
-                                "fields": fields,
-                                "stage": "collecting",
-                                "created_at": __import__("datetime")
-                                .datetime.now()
-                                .isoformat(),
-                            }
-                        },
-                    )
-                message = f"Continue the {wf['name']} workflow — required fields may already be collected; review and confirm if ready."
+                    opened = {"message": f"Start the {wf['name']} workflow."}
+                if opened.get("result"):
+                    return opened["result"]
+                message = opened["message"]
+                if opened.get("pending"):
+                    pending_action = opened["pending"]
+                    session_patch["pending_action"] = pending_action
             else:
                 message = f"Execute the {wf['name']} workflow."
+
+    # ── Code-first: the answer to a question that code itself asked ─────────
+    # The opening above (and this hook) asks its questions straight from the workflow's
+    # entity_schema and remembers which field it asked about. When the reply is something code
+    # can read with an exact rule or an SQL lookup (a case number, a person, one of the allowed
+    # answers, a note), no language model is used. Anything else goes on to the assistant as before.
+    if (
+        pending_action
+        and pending_action.get("stage") == "collecting"
+        and pending_action.get("asking")
+        and msg_stripped not in workflow_map
+        and not _is_draft_stale(pending_action)
+    ):
+        try:
+            by_code = await _answer_by_code(
+                message, user, pending_action, workflow_map, conversation_history
+            )
+        except Exception as e:
+            logger.error(
+                f"Reading the answer by code failed, the assistant takes over: {e}",
+                exc_info=True,
+            )
+            by_code = None
+        if by_code is not None:
+            return by_code
+        session_patch["pending_action"] = pending_action
 
     # ── Fast-path: clarify selection handling ────────────────────────────────
     # If user sent a number and previous message was a clarify, extract the selection
@@ -3137,6 +3525,7 @@ async def run_agent(
                         "stage": result.get("stage")
                         or current_draft.get("stage", "collecting"),
                         "fields": merged_fields,
+                        "display": current_draft.get("display"),
                         "raw_text": result.get("raw_text", message),
                         "created_at": current_draft.get("created_at")
                         or __import__("datetime").datetime.now().isoformat(),
@@ -3298,7 +3687,9 @@ async def run_agent(
                     session_patch.get("pending_action") or pending_action or {}
                 )
                 summary_lines = _build_confirm_summary_lines(
-                    entity_schema_for_summary, confirm_draft.get("fields", {})
+                    entity_schema_for_summary,
+                    confirm_draft.get("fields", {}),
+                    confirm_draft.get("display"),
                 )
 
                 if summary_lines:

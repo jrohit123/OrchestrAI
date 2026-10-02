@@ -126,6 +126,15 @@ async def sync_telegram_commands(user: dict, chat_id: str) -> None:
         )
 
 
+async def exact_slash_command(org_id: str, user: dict, cmd: str) -> dict | None:
+    """The workflow whose slash command is exactly `cmd`, or None (no prefix guessing)."""
+    cmd = cmd.lstrip("/").lower().split()[0] if cmd.strip("/") else ""
+    if not cmd:
+        return None
+    allowed = await get_menu_workflows(org_id, user)
+    return next((w for w in allowed if w["slash_command"] == cmd), None)
+
+
 async def resolve_slash_command(org_id: str, user: dict, cmd: str) -> dict | None:
     """'/quo' → the quotation workflow. Exact match first, then unique prefix."""
     cmd = cmd.lstrip("/").lower().split()[0] if cmd.strip("/") else ""

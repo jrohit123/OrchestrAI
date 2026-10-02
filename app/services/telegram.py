@@ -68,9 +68,9 @@ async def send_text(to: str, message: str):
 async def send_buttons(to: str, body: str, buttons: list[dict]):
     """
     Send an inline keyboard message.
-    buttons = [{"id": "approve", "title": "✅ Approve"}, ...]  — max 3
+    buttons = [{"id": "approve", "title": "✅ Approve"}, ...]  — up to 8, one per row
     """
-    keyboard = [[{"text": b["title"], "callback_data": b["id"]}] for b in buttons[:3]]
+    keyboard = [[{"text": b["title"], "callback_data": b["id"]}] for b in buttons[:8]]
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{BASE_URL}/sendMessage",
@@ -94,6 +94,18 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
             _raise_if_rate_limited(resp)
         resp.raise_for_status()
     return resp.json()
+
+
+async def answer_callback(callback_id: str):
+    """Tell Telegram a button tap was received, so the button stops spinning. Best effort."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{BASE_URL}/answerCallbackQuery",
+                json={"callback_query_id": callback_id},
+            )
+    except Exception as e:
+        logger.warning(f"answerCallbackQuery failed: {e}")
 
 
 async def send_document(

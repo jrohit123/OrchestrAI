@@ -666,10 +666,15 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         await sync_telegram_commands(user, phone[3:])
 
     # ── Slash commands & menu ────────────────────────────────────────────
-    from app.services.menu import build_menu_sections, resolve_slash_command
-    from app.services.messaging import send_list
+    from app.services.menu import (
+        build_menu_sections,
+        exact_slash_command,
+        resolve_slash_command,
+    )
+    from app.services.messaging import send_buttons, send_list
 
     text_stripped = text.strip()
+    command_args = None  # what was typed after a slash command, e.g. "/assign CS-26-10-1 Rajeswari"
 
     if text_stripped.startswith("/"):
         if text_stripped.lower() == "/cancel":
@@ -695,7 +700,13 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
 
             await send_text(phone, await _build_help_response(user))
             return
-        if text_stripped.lower() in ("/status", "/mystatus", "/s"):
+        # /status, /mystatus and /s show the draft in progress, unless a workflow owns that exact
+        # command (the Check Status workflow's /mystatus)
+        if text_stripped.lower() in (
+            "/status",
+            "/mystatus",
+            "/s",
+        ) and not await exact_slash_command(user["org_id"], user, text_stripped):
             from app.services.draft_store import get_active_draft
 
             draft = await get_active_draft(
@@ -720,8 +731,11 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             return
         wf = await resolve_slash_command(user["org_id"], user, text_stripped)
         if wf:
-            # Pass intent_key directly to agent for execution
+            # Pass intent_key directly to agent for execution; the words typed after the
+            # command go along so the assistant does not have to ask for them again
             text = wf["intent_key"]
+            parts = text_stripped.split(None, 1)
+            command_args = parts[1].strip() if len(parts) > 1 else None
         else:
             sections = await build_menu_sections(user["org_id"], user)
             await send_list(
@@ -1274,7 +1288,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
             phone,
             conversation_history=conversation_history,
             pending_action=pending_action,
+            command_args=command_args,
         )
+        # tap-to-answer buttons for the reply (Telegram only); never saved in the session
+        buttons = session_patch.pop("_buttons", None)
 
         # Capture the menu flag BEFORE popping it
         sent_menu = bool(session_patch.get("_send_menu"))
@@ -1322,7 +1339,10 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
         # fail against the Telegram/WhatsApp API for nothing.
         if not sent_menu:
             if reply and reply.strip():
-                await send_text(phone, reply)
+                if buttons and phone.startswith("tg:"):
+                    await send_buttons(phone, reply, buttons)
+                else:
+                    await send_text(phone, reply)
 
             # Log to audit_log — response_text/session_id let the admin panel
             # show the actual reply and group turns into one conversation.

@@ -53,6 +53,9 @@ async def telegram_webhook(
         chat_id = str(callback["message"]["chat"]["id"])
         text = callback["data"]
         msg_type = "interactive"
+        from app.services.telegram import answer_callback
+
+        await answer_callback(callback["id"])
     elif message and message.get("text"):
         chat_id = str(message["chat"]["id"])
         text = message["text"]

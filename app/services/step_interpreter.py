@@ -614,7 +614,15 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
     else:
         # Validate table and column against allowlist (AP-10)
         await _load_schema_allowlist(ctx["source_key"])
-        _validate_table_and_columns(table, {match_col}, ctx["source_key"])
+        # optional extra conditions, e.g. {"is_active": true}: only people who can still take a case
+        where = params.get("where") or {}
+        _validate_table_and_columns(table, {match_col, *where}, ctx["source_key"])
+        where_sql, where_args = "", []
+        for i, (wcol, wval) in enumerate(where.items()):
+            where_args.append(
+                _resolve_path(ctx, wval) if isinstance(wval, str) else wval
+            )
+            where_sql += f" AND {wcol} = ${i + 3}"
 
         norm_mode = params.get("normalize")
         if norm_mode == "identifier":
@@ -627,18 +635,20 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
 
             # Tier 1: exact normalised match
             raw_rows = await fetch_all(
-                f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} = $2 LIMIT 5",
+                f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} = $2{where_sql} LIMIT 5",
                 ctx["org_id"],
                 needle,
+                *where_args,
                 source_key=ctx["source_key"],
             )
             # Tier 2: suffix match — handles "CS260817" vs a stored padded
             # value like "CS260800017".
             if not raw_rows and needle:
                 raw_rows = await fetch_all(
-                    f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE '%' || $2 LIMIT 5",
+                    f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE '%' || $2{where_sql} LIMIT 5",
                     ctx["org_id"],
                     needle,
+                    *where_args,
                     source_key=ctx["source_key"],
                 )
             # Tier 3: bare digits — "case 17" → "...17"
@@ -646,9 +656,10 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
                 digits = re.sub(r"\D", "", name_val)
                 if digits and len(digits) >= 2:
                     raw_rows = await fetch_all(
-                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} ~ ('0*' || $2 || '$') LIMIT 5",
+                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} ~ ('0*' || $2 || '$'){where_sql} LIMIT 5",
                         ctx["org_id"],
                         digits,
+                        *where_args,
                         source_key=ctx["source_key"],
                     )
             # Tier 4: prefix + integer-value match on the trailing digit run.
@@ -668,9 +679,10 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
                 if m:
                     needle_prefix, needle_digits = m.group(1), m.group(2)
                     candidates = await fetch_all(
-                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE $2 LIMIT 200",
+                        f"SELECT * FROM {table} WHERE org_id = $1 AND {norm_col} LIKE $2{where_sql} LIMIT 200",
                         ctx["org_id"],
                         f"{needle_prefix}%",
+                        *where_args,
                         source_key=ctx["source_key"],
                     )
                     matched = []
@@ -689,12 +701,23 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
             safe_name = (
                 name_val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             )
+            # An exact (case-insensitive) match wins over a partial one, so a person called
+            # "RJ" is found even though other names contain those letters.
             raw_rows = await fetch_all(
-                f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col}::text ILIKE $2 LIMIT 5",
+                f"SELECT * FROM {table} WHERE org_id = $1 AND lower(btrim({match_col}::text)) = lower(btrim($2)){where_sql} LIMIT 2",
                 ctx["org_id"],
-                f"%{safe_name}%",
+                name_val,
+                *where_args,
                 source_key=ctx["source_key"],
             )
+            if len(raw_rows) != 1:
+                raw_rows = await fetch_all(
+                    f"SELECT * FROM {table} WHERE org_id = $1 AND {match_col}::text ILIKE $2{where_sql} LIMIT 5",
+                    ctx["org_id"],
+                    f"%{safe_name}%",
+                    *where_args,
+                    source_key=ctx["source_key"],
+                )
             rows = [dict(r) for r in raw_rows]
 
     if len(rows) == 0:
