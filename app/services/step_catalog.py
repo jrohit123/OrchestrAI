@@ -327,6 +327,148 @@ STEP_TYPES: list[dict] = [
         "params": [],
     },
     {
+        "op": "case.categorize",
+        "label": "Work out the category",
+        "group": "Look up and check",
+        "help": "Picks the category from the words in the complaint, using the keywords each category lists. Keeps it as 'category' and fills in the category fields.",
+        "params": [
+            {
+                "key": "text_from",
+                "label": "Read the words from",
+                "kind": "list_text",
+                "help": "For example $fields.title and $fields.description.",
+            },
+            {"key": "into", "label": "Call it", "kind": "alias", "default": "category"},
+        ],
+        "makes": "alias",
+    },
+    {
+        "op": "case.route",
+        "label": "Find who handles it",
+        "group": "Look up and check",
+        "help": "Looks up, from the routing rules, who a case in this category goes to, who is level 2 and how long it may take.",
+        "params": [
+            {
+                "key": "category_from",
+                "label": "Category",
+                "kind": "value",
+                "default": "$fields.category_id",
+            },
+            {
+                "key": "priority_from",
+                "label": "Priority",
+                "kind": "value",
+                "default": "$fields.priority",
+            },
+            {"key": "into", "label": "Call it", "kind": "alias", "default": "route"},
+        ],
+        "makes": "alias",
+    },
+    {
+        "op": "case.authorize",
+        "label": "Check the person is on the case",
+        "group": "Look up and check",
+        "help": "Stops with a message unless the person may act on this case. People whose role covers every case always pass.",
+        "params": [
+            {"key": "case", "label": "The case", "kind": "value", "default": "$case"},
+            {
+                "key": "denied_message",
+                "label": "Message when not allowed",
+                "kind": "text",
+            },
+        ],
+    },
+    {
+        "op": "case.add_parties",
+        "label": "Add people to the case",
+        "group": "Save changes",
+        "help": "Puts people on a case as level 2, helper or watcher, so they are told about it and can act on it.",
+        "params": [
+            {"key": "case_id", "label": "The case", "kind": "value", "required": True},
+            {
+                "key": "users_from",
+                "label": "Who to add",
+                "kind": "value",
+                "required": True,
+            },
+            {
+                "key": "role",
+                "label": "As",
+                "kind": "choice",
+                "required": True,
+                "options": [
+                    ["level2", "Level 2"],
+                    ["helper", "Helper"],
+                    ["watcher", "Watcher"],
+                ],
+            },
+        ],
+    },
+    {
+        "op": "case.attach_photos",
+        "label": "Attach the photos",
+        "group": "Save changes",
+        "help": "Keeps the photos sent with the request on the case's timeline.",
+        "params": [
+            {"key": "case_id", "label": "The case", "kind": "value", "required": True},
+            {
+                "key": "photos_from",
+                "label": "The photos",
+                "kind": "value",
+                "advanced": True,
+                "default": "$fields._photos",
+            },
+        ],
+    },
+    {
+        "op": "notify.parties",
+        "label": "Tell everyone on the case",
+        "group": "Tell people",
+        "help": "Messages everyone on the case (not the person doing this), once each. Can give the new handler a different message and add buttons.",
+        "params": [
+            {"key": "case", "label": "The case", "kind": "value", "required": True},
+            {
+                "key": "message_template",
+                "label": "Message",
+                "kind": "longtext",
+                "required": True,
+                "help": "Use {case_case_number}, {case_title}, {actor_name} or any field name in braces.",
+            },
+            {
+                "key": "role_templates",
+                "label": "A different message for some people",
+                "kind": "map_text",
+                "advanced": True,
+                "help": "Role (assignee, level2, helper, requester) → message.",
+            },
+            {
+                "key": "buttons",
+                "label": "Buttons under the message",
+                "kind": "map_text",
+                "advanced": True,
+                "help": "Button text → command, for example /update {case_case_number}.",
+            },
+            {
+                "key": "roles",
+                "label": "Who to tell",
+                "kind": "list_text",
+                "advanced": True,
+            },
+            {
+                "key": "include_actor",
+                "label": "Also tell the person doing this",
+                "kind": "bool",
+                "advanced": True,
+            },
+            {
+                "key": "with_photos",
+                "label": "Send the photos too",
+                "kind": "bool",
+                "advanced": True,
+            },
+        ],
+    },
+    {
         "op": "run_workflow",
         "label": "Run a building block",
         "group": "Other",
@@ -351,6 +493,12 @@ STEP_TYPES: list[dict] = [
 ]
 
 STEP_BY_OP = {t["op"]: t for t in STEP_TYPES}
+# steps that keep a record under a name, besides "Find a record":
+# {op: (setting that holds the name, default name, fields the step also fills in)}
+ALIAS_MAKERS = {
+    "case.categorize": ("into", "category", ("category_id", "category_label")),
+    "case.route": ("into", "route", ("assigned_name", "route_minutes")),
+}
 # aliases the engine also accepts, shown but never offered when adding a step
 LEGACY_OPS = {"sheets.insert_row", "sheets.update_row", "sheets.delete_row"}
 
@@ -444,6 +592,9 @@ def aliases_made_by(steps) -> dict[str, str | None]:
             into = p.get("into") or (p.get("table") or "").rstrip("s")
             if into:
                 out[into] = p.get("table")
+        elif isinstance(s, dict) and s.get("op") in ALIAS_MAKERS:
+            key, default, _ = ALIAS_MAKERS[s["op"]]
+            out[(s.get("params") or {}).get(key) or default] = None
     return out
 
 
@@ -712,7 +863,10 @@ def validate_steps(
             if text.startswith("$"):
                 if text.startswith("$inserted."):
                     parts = text.split(".")
-                    if len(parts) > 1 and parts[1] not in inserted:
+                    if len(parts) > 1 and parts[1] not in inserted and ctx["is_block"]:
+                        # a block may use a record its caller saved just before
+                        ctx["expects"].add(f"a new record saved in '{parts[1]}'")
+                    elif len(parts) > 1 and parts[1] not in inserted:
                         errors.append(
                             f"{label} uses {text}, but no earlier step saves a new record in '{parts[1]}'."
                         )
@@ -733,6 +887,11 @@ def validate_steps(
                 ctx["fields"].add(alias)
         elif op == "derive_field" and params.get("field"):
             ctx["fields"].add(params["field"])
+        elif op in ALIAS_MAKERS:
+            key, default, extra = ALIAS_MAKERS[op]
+            ctx["aliases"][params.get(key) or default] = None
+            ctx["alias_when"][params.get(key) or default] = _atoms(step.get("when"))
+            ctx["fields"].update(extra)
         elif op == "db.insert_row" and isinstance(params.get("table"), str):
             inserted.add(params["table"])
         elif op in ("otp_gate", "approval_gate") and kind == "block":

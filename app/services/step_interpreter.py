@@ -34,6 +34,7 @@ import re
 
 from app.db import execute, fetch_all, fetch_one
 from app.logging_config import bind_context, get_context_logger
+from app.services.case_ops import CASE_PRIMITIVES
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.otp_service import generate_and_send_otp
 from app.services.qa_verifier import VerificationError, verify_draft
@@ -623,6 +624,18 @@ async def _op_resolve_entity(params: dict, ctx: dict) -> dict:
                 _resolve_path(ctx, wval) if isinstance(wval, str) else wval
             )
             where_sql += f" AND {wcol} = ${i + 3}"
+        if params.get("only_mine") and table == "cases":
+            # a person who may act only on cases they are on cannot even find the others;
+            # only_mine may list the roles that count (assignee, level2 ...)
+            where_args.append(ctx["user"]["user_id"])
+            where_sql += (
+                " AND id IN (SELECT case_id FROM case_parties "
+                f"WHERE user_id = ${len(where_args) + 2} AND ended_at IS NULL"
+            )
+            if isinstance(params["only_mine"], list):
+                where_args.append(params["only_mine"])
+                where_sql += f" AND party_role = ANY(${len(where_args) + 2})"
+            where_sql += ")"
 
         norm_mode = params.get("normalize")
         if norm_mode == "identifier":
@@ -1408,7 +1421,12 @@ async def _op_derive_field(params: dict, ctx: dict) -> dict:
     from app.services.calc_engine import compute_aggregate_rules
 
     field_name = params["field"]
-    result = compute_aggregate_rules({field_name: params["expr"]}, ctx["fields"], {})
+    # the formula can also use the case found earlier, as case_<column> (case_created_at ...)
+    known = {
+        **ctx["fields"],
+        **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
+    }
+    result = compute_aggregate_rules({field_name: params["expr"]}, known, {})
     ctx["fields"][field_name] = result[field_name]
     ctx.setdefault("computed", {})[field_name] = result[field_name]
     return ctx
@@ -1601,7 +1619,7 @@ async def _op_run_workflow(params: dict, ctx: dict) -> dict:
                 raise StepError(f"Unknown step op: '{op_name}' in '{key}'")
             logger.info(f"Block '{key}' step {i + 1}/{len(steps)}: {op_name}")
             try:
-                ctx = await op_fn(step.get("params", {}), ctx)
+                ctx = await _run_op(op_name, op_fn, step.get("params", {}), ctx)
             except (VerificationError, StepError):
                 raise
             except Exception as e:
@@ -1618,6 +1636,67 @@ async def _op_run_workflow(params: dict, ctx: dict) -> dict:
             else:
                 ctx["fields"][k] = v
     return ctx
+
+
+# ── Preview: what saying yes would do ─────────────────────────────────────────
+# A preview runs a workflow's steps for real, except the ones that change something or reach
+# outside (saving, messaging, PDFs, codes, approvals). The look-up steps run as normal, and the case
+# steps add a plain sentence about what they found, so the person sees real records before
+# they say yes. The case steps that write (add_parties, attach_photos, notify.parties) know
+# about the preview themselves.
+
+_SKIP_WHEN_PREVIEWING = {
+    "db.insert_row",
+    "db.update_row",
+    "db.upsert_row",
+    "db.delete_row",
+    "sheets.insert_row",
+    "sheets.update_row",
+    "sheets.delete_row",
+    "pdf.generate",
+    "notify.whatsapp",
+    "notify.user",
+    "ai_price_interpret",
+    "otp_gate",
+    "approval_gate",
+}
+
+
+def _skip_for_preview(op_name: str, params: dict, ctx: dict) -> dict:
+    if op_name in ("db.insert_row", "sheets.insert_row"):
+        table = params.get("table")
+        values = _resolve_values(params.get("values", {}), ctx)
+        placeholder = {**values, "id": "(new)"}
+        seq = params.get("sequence")
+        if seq:
+            placeholder[seq["field"]] = "(new)"
+            ctx.setdefault("generated", {})[seq["field"]] = "(new)"
+        ctx.setdefault("inserted", {})[table] = placeholder
+    return ctx
+
+
+async def _run_op(op_name: str, op_fn, params: dict, ctx: dict) -> dict:
+    if ctx.get("dry_run") and op_name in _SKIP_WHEN_PREVIEWING:
+        return _skip_for_preview(op_name, params, ctx)
+    return await op_fn(params, ctx)
+
+
+async def preview_workflow(
+    workflow: dict, fields: dict, user: dict, phone: str
+) -> list[str]:
+    """What saying yes would do, as plain sentences, or [] when that cannot be worked out.
+    A preview must never get in the way of a confirmation, so any problem gives nothing."""
+    steps = _parse_jsonb(workflow.get("steps"), []) or []
+    for step in steps:
+        step = json.loads(step) if isinstance(step, str) else step
+        if step.get("op") in ("ai_price_interpret", "otp_gate", "approval_gate"):
+            return []
+    try:
+        result = await run_workflow_steps(workflow, fields, user, phone, dry_run=True)
+    except Exception as e:
+        logger.warning(f"preview of '{workflow.get('intent_key')}' failed: {e}")
+        return []
+    return result.get("preview", []) if result.get("status") == "preview" else []
 
 
 # ── Op registry — adding a new op never requires changing action_executor.py ─
@@ -1643,6 +1722,7 @@ PRIMITIVES = {
     "derive_field": _op_derive_field,  # NEW
     "run_workflow": _op_run_workflow,  # run another workflow as one step
 }
+PRIMITIVES.update(CASE_PRIMITIVES)  # the steps that know about cases (case_ops.py)
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
@@ -1656,10 +1736,13 @@ async def run_workflow_steps(
     resume_step: int = 0,
     otp_verified: bool = False,
     approved: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """
     Execute a workflow's steps[] sequentially from resume_step.
     Returns a result dict with status: done | awaiting_otp | awaiting_approval | error | ambiguous.
+    With dry_run=True nothing is saved or sent (see preview_workflow) and the result is
+    status "preview" with the plain sentences the steps gave.
     """
     ctx = {
         "fields": dict(fields),
@@ -1670,6 +1753,8 @@ async def run_workflow_steps(
         "org_id": user["org_id"],
         "phone": phone,
         "workflow": workflow,
+        "top_workflow": workflow,  # the workflow the person started, even inside a building block
+        "dry_run": dry_run,
         "otp_verified": otp_verified,
         "approved": approved,
         "source_key": user["source_key"],
@@ -1726,9 +1811,9 @@ async def run_workflow_steps(
             ctx["_step_index"] = i
 
             try:
-                ctx = await op_fn(step.get("params", {}), ctx)
+                ctx = await _run_op(op_name, op_fn, step.get("params", {}), ctx)
                 # Persist unit_price to draft immediately after ai_price_interpret
-                if op_name == "ai_price_interpret":
+                if op_name == "ai_price_interpret" and not dry_run:
                     from app.services.draft_store import upsert_draft
 
                     await upsert_draft(
@@ -1801,6 +1886,15 @@ async def run_workflow_steps(
         if isinstance(e, UserFacingStepError):
             return {"status": "error", "message": msg, "user_facing": True}
         return {"status": "error", "message": msg}
+
+    if dry_run:
+        facts = list(ctx.get("preview", []))
+        due = ctx["fields"].get("due_date")
+        if due and hasattr(due, "astimezone"):
+            from app.services.report_format import _when
+
+            facts.append(f"Due by: {_when(due.isoformat())}")
+        return {"status": "preview", "preview": facts}
 
     # Build final success message from workflow's response_template
     template = workflow.get("response_template")

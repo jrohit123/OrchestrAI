@@ -94,6 +94,15 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     return await whatsapp.send_buttons(to, body, buttons)
 
 
+async def send_photo(to: str, file_id: str, caption: str = ""):
+    """A photo by Telegram file id. Only Telegram people can be sent one this way."""
+    if _is_telegram(to):
+        from app.services import telegram
+
+        return await telegram.send_photo(_tg_id(to), file_id, caption)
+    return None
+
+
 async def send_document(
     to: str,
     pdf_bytes: bytes,

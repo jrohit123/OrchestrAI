@@ -27,7 +27,7 @@ PEOPLE = [
 ]
 
 
-async def fake_lookup(cfg, text, user):
+async def fake_lookup(cfg, text, user, mine=None):
     if cfg["table"] == "cases":
         # "CS-26-10-1" finds CS-26-10-00001: the last group is compared by its number
         tail = "".join(ch for ch in text.split("-")[-1] if ch.isdigit())

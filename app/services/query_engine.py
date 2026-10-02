@@ -107,10 +107,14 @@ async def execute_query(
     user: dict,
     response_format: str = "generic",
     business_glossary: dict = None,
+    trusted: bool = False,
 ) -> str:
     """
     Execute a validated SELECT query and return formatted results.
     Used by read workflows with empty entity_schema.
+    trusted=True is for a stored report the person was given because they are on a case
+    (workflows.settings.who_can_use): the report itself limits what they see, so the role's
+    list of readable tables does not apply to it.
     """
     # NOTE: sql_template here is authored once by workflow_compiler and reused
     # unchanged, so it still uses the old $1=org_id / $2+=params convention
@@ -130,7 +134,7 @@ async def execute_query(
     readable_tables = set(user.get("readable_tables", []))
     referenced_tables = set(re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE))
     not_allowed = referenced_tables - readable_tables
-    if not_allowed:
+    if not_allowed and not trusted:
         return f"ERROR: not permitted to read tables: {', '.join(sorted(not_allowed))}"
 
     ok, reason = check_entity_records_access(sql, user.get("readable_entity_types"))

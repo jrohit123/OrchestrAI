@@ -46,6 +46,7 @@ async def telegram_webhook(
     bind_context(correlation_id_val=str(update_id or ""))
 
     # Parse message or callback_query
+    photos = None
     callback = update.get("callback_query")
     message = update.get("message") or update.get("edited_message")
 
@@ -60,6 +61,12 @@ async def telegram_webhook(
         chat_id = str(message["chat"]["id"])
         text = message["text"]
         msg_type = "text"
+    elif message and message.get("photo"):
+        # the largest size is last; the caption (if any) is handled as a normal message
+        chat_id = str(message["chat"]["id"])
+        text = message.get("caption") or ""
+        msg_type = "photo"
+        photos = [message["photo"][-1]["file_id"]]
     else:
         # Unsupported update type (sticker, photo, etc.)
         return {"status": "ok"}
@@ -70,7 +77,9 @@ async def telegram_webhook(
     try:
         from app.routers.webhook import handle_message
 
-        await handle_message(phone=phone, text=text, msg_type=msg_type)
+        await handle_message(
+            phone=phone, text=text, msg_type=msg_type, attachments=photos
+        )
     except Exception as e:
         from app.services.telegram import TelegramRateLimitedError
 

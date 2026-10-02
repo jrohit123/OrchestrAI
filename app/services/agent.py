@@ -67,7 +67,20 @@ def _build_confirm_summary_lines(
             continue
         label = spec.get("label") or name.replace("_", " ").title()
         lines.append(f"  • {label}: {_shown_value(name, val, display)}")
+    if lines and fields.get("_photos"):
+        lines.append(f"  • Photos: {len(fields['_photos'])} attached")
     return lines or None
+
+
+async def _what_happens_next(wf: dict, fields: dict, user: dict) -> list[str]:
+    """Plain lines saying what saying yes will do (who gets it, the due time...), found by running
+    the workflow's look-ups without saving or sending anything. Empty when there is nothing to say."""
+    from app.services.step_interpreter import preview_workflow
+
+    facts = await preview_workflow(dict(wf), fields, user, user.get("phone") or "")
+    if not facts:
+        return []
+    return ["", "*What happens next:*", *[f"  • {f}" for f in facts]]
 
 
 # ── IST timezone for greetings ────────────────────────────────────────────────
@@ -1210,6 +1223,17 @@ async def _validate_draft(
 # ── Tool execution ────────────────────────────────────────────────────────────
 
 
+async def _is_party_report(user: dict, intent_key: str) -> bool:
+    """True for a stored report meant for people on a case (workflows.settings.who_can_use): the
+    report itself limits what each person sees, so the role's table list does not apply to it."""
+    from app.services.party_access import party_workflows
+
+    try:
+        return intent_key in await party_workflows(user)
+    except Exception:
+        return False
+
+
 async def _llm_format_report(wf: dict, raw_result: str) -> str:
     """The older way: a language model words the rows of a report. Used for reports whose
     response_format is not 'list'."""
@@ -1427,6 +1451,7 @@ async def _execute_tool(
             user=user,
             response_format="generic",
             business_glossary=glossary,
+            trusted=await _is_party_report(user, intent_key),
         )
         if (wf.get("response_format") or "") == "list":
             # finished by code, so the model cannot drop a row or change a value
@@ -2148,6 +2173,7 @@ async def _confirm_by_code(
     lines = _build_confirm_summary_lines(schema, verified, display)
     if not lines:
         return None
+    lines += await _what_happens_next(wf, verified, user)
 
     await upsert_draft(
         org_id=user["org_id"],
@@ -2206,6 +2232,7 @@ async def _run_report_by_code(
         user=user,
         response_format="generic",
         business_glossary=glossary,
+        trusted=await _is_party_report(user, wf["intent_key"]),
     )
     if (wf.get("response_format") or "") == "list":
         text = format_list(wf["name"], raw)
@@ -2335,7 +2362,12 @@ async def _open_workflow_by_code(
     display: dict = {}
     accepted: dict = {}
     if command_args:
-        pre = await field_reader.prefill_from_args(entity_schema, command_args, user)
+        pre = await field_reader.prefill_from_args(
+            entity_schema,
+            command_args,
+            user,
+            restrict=(user.get("party_access") or {}).get(wf["intent_key"]),
+        )
         if not pre:
             # code cannot explain every word typed after the command: the assistant reads it
             return {"message": f"{wf['name']}: {command_args}", "pending": pending}
@@ -2411,7 +2443,13 @@ async def _answer_by_code(
             fields = {}
     pending_action["fields"] = fields
 
-    res = await field_reader.read_answer(message, user, pending_action, schema)
+    res = await field_reader.read_answer(
+        message,
+        user,
+        pending_action,
+        schema,
+        restrict=(user.get("party_access") or {}).get(wf["intent_key"]),
+    )
     if res is None:
         return None
     limit = user.get("context_message_limit") or 12
@@ -2541,6 +2579,7 @@ async def run_agent(
                 user=user,
                 response_format="generic",  # always JSON here — formatting happens below
                 business_glossary=wf.get("business_glossary", {}),
+                trusted=await _is_party_report(user, wf["intent_key"]),
             )
             history_to_save = [{"role": "user", "content": message}]
 
@@ -3692,6 +3731,10 @@ async def run_agent(
                     confirm_draft.get("display"),
                 )
 
+                if summary_lines and workflow_row:
+                    summary_lines += await _what_happens_next(
+                        dict(workflow_row), confirm_draft.get("fields", {}), user
+                    )
                 if summary_lines:
                     header = (
                         f"📝 *Here's what I'll save — {action_desc}:*"

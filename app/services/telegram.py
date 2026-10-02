@@ -96,6 +96,18 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     return resp.json()
 
 
+async def send_photo(to: str, file_id: str, caption: str = ""):
+    """Send a photo that is already on Telegram, by the file_id the bot received it with."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{BASE_URL}/sendPhoto",
+            json={"chat_id": to, "photo": file_id, "caption": caption[:1000]},
+        )
+        _raise_if_rate_limited(resp)
+        resp.raise_for_status()
+    return resp.json()
+
+
 async def answer_callback(callback_id: str):
     """Tell Telegram a button tap was received, so the button stops spinning. Best effort."""
     try:

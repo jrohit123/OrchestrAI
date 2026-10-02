@@ -237,7 +237,66 @@ async def _handle_email_submission(
 
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
-async def handle_message(phone: str, text: str, msg_type: str = "text"):
+_MAX_PHOTOS = 5
+
+
+async def _take_photos(user: dict, phone: str, file_ids: list[str]) -> None:
+    """Attach photos sent in chat to the request being filled in (when its workflow takes photos)."""
+    from app.services.draft_store import get_active_draft, upsert_draft
+
+    draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
+    accepts = False
+    if draft:
+        row = await fetch_one(
+            "SELECT to_jsonb(w) -> 'settings' ->> 'photos' AS photos FROM workflows w "
+            "WHERE org_id = $1 AND intent_key = $2",
+            user["org_id"],
+            draft["intent_key"],
+            source_key=user["source_key"],
+        )
+        accepts = bool(row and row["photos"] == "true")
+    if not draft or not accepts:
+        await send_text(
+            phone,
+            "📎 I can attach photos to a complaint or an update. "
+            "Start with /complaint or /update, then send the photo.",
+        )
+        return
+    fields = draft.get("fields") or {}
+    if isinstance(fields, str):
+        fields = json.loads(fields)
+    have = list(fields.get("_photos") or [])
+    for file_id in file_ids:
+        if file_id not in have:
+            have.append(file_id)
+    have = have[:_MAX_PHOTOS]
+    await upsert_draft(
+        org_id=user["org_id"],
+        user_id=user["user_id"],
+        intent_key=draft["intent_key"],
+        fields={"_photos": have},
+        stage=draft["stage"],
+        source_key=user["source_key"],
+        reset_fields=False,
+    )
+    session_id = f"{user['org_id']}:{phone}"
+    session = await get_session(session_id)
+    pending = session.get("pending_action")
+    if pending and pending.get("intent_key") == draft["intent_key"]:
+        pending.setdefault("fields", {})["_photos"] = have
+        await set_session(session_id, session, ttl=480 * 60)
+    note = f"📎 Photo added ({len(have)} attached)."
+    if draft["stage"] == "awaiting_confirmation":
+        note += " Reply *yes* to save."
+    await send_text(phone, note)
+
+
+async def handle_message(
+    phone: str,
+    text: str,
+    msg_type: str = "text",
+    attachments: list[str] | None = None,
+):
     # 1. Identity
     user = await resolve_identity(phone)
     if not user:
@@ -659,6 +718,16 @@ async def handle_message(phone: str, text: str, msg_type: str = "text"):
     if not user["is_active"] or not user["org_active"]:
         await send_text(phone, "❌ Your account is inactive. Contact admin.")
         return
+
+    # workflows this person may use because they are on a case, on top of their role's
+    from app.services.party_access import add_party_permissions
+
+    user = await add_party_permissions(user)
+
+    if attachments:
+        await _take_photos(user, phone, attachments)
+        if not text.strip():
+            return
 
     if phone.startswith("tg:"):
         from app.services.menu import sync_telegram_commands

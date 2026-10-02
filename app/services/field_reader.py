@@ -150,8 +150,9 @@ def _match_option(text: str, options: list[str], *, loose: bool = True) -> str |
     return None
 
 
-async def lookup_one(cfg: dict, text: str, user: dict):
-    """('one', row) | ('many', rows) | ('none', None). Uses the same lookup the workflow steps use."""
+async def lookup_one(cfg: dict, text: str, user: dict, mine=None):
+    """('one', row) | ('many', rows) | ('none', None). Uses the same lookup the workflow steps use.
+    With mine set (a list of roles), cases are found only among those the person is on in one of them."""
     from app.services.step_interpreter import (
         StepError,
         UserFacingStepError,
@@ -175,6 +176,8 @@ async def lookup_one(cfg: dict, text: str, user: dict):
         params["normalize"] = cfg["normalize"]
     if isinstance(cfg.get("where"), dict):
         params["where"] = cfg["where"]
+    if mine:
+        params["only_mine"] = mine
     try:
         out = await _op_resolve_entity(params, ctx)
         return "one", out["found"]
@@ -243,7 +246,9 @@ def _pick_candidate(text: str, candidates: list[dict]):
     return exact[0] if len(exact) == 1 else None
 
 
-async def read_answer(text: str, user: dict, pending: dict, entity_schema: dict):
+async def read_answer(
+    text: str, user: dict, pending: dict, entity_schema: dict, restrict=None
+):
     """Read the answer to the question the code just asked (pending['asking']).
 
     Returns None (leave it to the assistant) or a dict:
@@ -281,7 +286,7 @@ async def read_answer(text: str, user: dict, pending: dict, entity_schema: dict)
     query = _strip_filler(text)
     if not query:
         return None
-    kind, found = await lookup_one(cfg, query, user)
+    kind, found = await lookup_one(cfg, query, user, restrict)
     col = cfg["match_column"]
     if kind == "one":
         return _accepted(asking, str(found[col]), _label(cfg, found))
@@ -329,7 +334,7 @@ def _spans(left: list[str], identifier: bool) -> list[list[str]]:
     return spans
 
 
-async def prefill_from_args(entity_schema: dict, args: str, user: dict):
+async def prefill_from_args(entity_schema: dict, args: str, user: dict, restrict=None):
     """Fill fields from the words typed after a command ("/assign CS-26-10-1 Rajeswari").
 
     Returns None when anything is left that code cannot explain (the assistant then reads the
@@ -357,7 +362,7 @@ async def prefill_from_args(entity_schema: dict, args: str, user: dict):
         many = None
         for span in _spans(left, cfg.get("normalize") == "identifier"):
             text = " ".join(span)
-            kind, row = await lookup_one(cfg, text, user)
+            kind, row = await lookup_one(cfg, text, user, restrict)
             if kind == "one":
                 found = (row, span)
                 break

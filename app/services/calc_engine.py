@@ -27,11 +27,15 @@ from simpleeval import DEFAULT_FUNCTIONS, EvalWithCompoundTypes, InvalidExpressi
 DEFAULT_FUNCTIONS["Decimal"] = Decimal
 
 
-def _due_from_tat(value, unit):
+def _due_from_tat(value, unit, start=None):
     # whole numbers reach formulas as Decimal (see _normalize_numbers) and
-    # timedelta refuses Decimal, so hand it a float
+    # timedelta refuses Decimal, so hand it a float. `start` counts the time from
+    # then (for example when the case was raised) instead of from now.
     span = unit if unit in ("minutes", "hours") else "days"
-    return _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(**{span: float(value)})
+    base = (
+        start if isinstance(start, _dt.datetime) else _dt.datetime.now(_dt.timezone.utc)
+    )
+    return base + _dt.timedelta(**{span: float(value)})
 
 
 _ALLOWED_FUNCTIONS = {
