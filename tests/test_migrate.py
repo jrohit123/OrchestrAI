@@ -336,9 +336,13 @@ class World:
         sql = "SELECT to_regclass($1) IS NOT NULL AS found"
         return self.rows(which, sql, f"public.{name}")[0]["found"]
 
-    def run(self, root, *args):
-        code = migrate.main(["--dir", str(root), *args])
+    def call(self, main, *argv):
+        """Run a tool's main() with these arguments; returns (exit code, printed text)."""
+        code = main(list(argv))
         return code, self.capsys.readouterr().out
+
+    def run(self, root, *args):
+        return self.call(migrate.main, "--dir", str(root), *args)
 
 
 @pytest.fixture

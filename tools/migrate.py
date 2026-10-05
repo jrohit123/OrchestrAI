@@ -770,8 +770,11 @@ def refuse_unless_allowed(targets: list[Target], opts: Options) -> None:
         )
 
 
-async def run(opts: Options) -> int:
-    catalog = load_catalog(opts.root)
+async def discover_targets(
+    opts: Options, *, include_control: bool = True
+) -> list[Target]:
+    """The databases a run will look at, after every safety check. The only thing
+    touched is one read of the client list from the control database."""
     routing = os.environ.get(ROUTING_ENV, "").strip()
     if not routing:
         raise MigrationError(
@@ -809,7 +812,12 @@ async def run(opts: Options) -> int:
             )
         targets = [t for t in targets if t.label in opts.tenants]
     refuse_unless_allowed(targets, opts)
+    return [t for t in targets if include_control or t.kind != "control"]
 
+
+async def run(opts: Options) -> int:
+    catalog = load_catalog(opts.root)
+    targets = await discover_targets(opts)
     all_versions = catalog.all_versions()
     reports: list[Report] = []
     for target in targets:

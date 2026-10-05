@@ -27,6 +27,9 @@ The loose files in this folder (`godrej_00x_*.sql`, `baanganga.sql`, ...) are ol
 | `core-0005_fix_draft_index` | makes Baanganga's one-open-draft rule the same as Godrej's | replaces one index |
 | `core-0006_audit_log_session_index` | index for opening one chat on the dashboard (`CONCURRENTLY`) | additions only |
 | `core-0007_audit_log_intent_index` | index for the Workflows screen's "Last used" column (`CONCURRENTLY`) | additions only |
+| `core-0008_cancel_orphan_drafts` | cancels open drafts whose workflow was removed, and marks builder drafts that lost their workflow as abandoned; nothing is deleted. It matched no row on the practice copies | changes data, only such drafts |
+
+Read-only report (names and counts only, changes nothing): `python -m tools.orphans` lists drafts that point at removed workflows and permission labels that no workflow, workflow step or built-in rule uses.
 
 No partial indexes for the every-minute jobs on purpose: measured on a practice copy, the due-reports query runs in under 1 ms and the case-reminder query in under 0.1 ms (it already uses `idx_cases_org_status`), with 2 to 3 schedules and 29 cases. Revisit if `cases` passes about 50,000 rows.
 
