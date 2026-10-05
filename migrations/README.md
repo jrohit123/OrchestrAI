@@ -25,6 +25,10 @@ The loose files in this folder (`godrej_00x_*.sql`, `baanganga.sql`, ...) are ol
 | `core-0002_align_indexes` | adds missing indexes (`CONCURRENTLY`, no blocking) | additions only |
 | `core-0003_baseline_check` | changes nothing; stops with a list if 0001 or 0002 left anything missing. Its row is the baseline | none |
 | `core-0005_fix_draft_index` | makes Baanganga's one-open-draft rule the same as Godrej's | replaces one index |
+| `core-0006_audit_log_session_index` | index for opening one chat on the dashboard (`CONCURRENTLY`) | additions only |
+| `core-0007_audit_log_intent_index` | index for the Workflows screen's "Last used" column (`CONCURRENTLY`) | additions only |
+
+No partial indexes for the every-minute jobs on purpose: measured on a practice copy, the due-reports query runs in under 1 ms and the case-reminder query in under 0.1 ms (it already uses `idx_cases_org_status`), with 2 to 3 schedules and 29 cases. Revisit if `cases` passes about 50,000 rows.
 
 There is no `core-0004`: it was a file with two uniqueness rules, dropped on purpose before anything was applied. Numbers are never reused.
 
