@@ -11,6 +11,7 @@ tests that need no database run.
 
 import asyncio
 import os
+import time
 import uuid
 from urllib.parse import urlsplit
 
@@ -225,6 +226,9 @@ def test_the_real_migrations_folder_is_valid():
     assert not any(m.allow_destructive for m in catalog.core)
     for name, (tenants, _) in catalog.features.items():
         assert tenants, f"feature {name} lists no client"
+    # the Godrej-only label clean-up reaches Godrej and nobody else
+    assert "housing-0001" in [m.version for m in catalog.for_tenant("godrej")]
+    assert "housing-0001" not in [m.version for m in catalog.for_tenant("baanganga")]
 
 
 def test_missing_routing_address_stops_before_anything(tmp_path, monkeypatch, capsys):
@@ -568,3 +572,72 @@ def test_an_unreachable_database_is_reported_without_secrets(world, tmp_path):
     assert "could not connect" in out
     assert "supersecret" not in out
     assert "waiting" in out  # the other databases were still looked at
+
+
+@needs_pg
+def test_a_change_that_cannot_get_its_table_lock_gives_up_and_changes_nothing(
+    world, tmp_path, capsys
+):
+    for which in ("alpha", "beta"):
+        world.execute(which, "CREATE TABLE t1 (id int)")
+    write(
+        tmp_path,
+        "core/core-0001_extra.sql",
+        "ALTER TABLE t1 ADD COLUMN IF NOT EXISTS extra int;\n",
+    )
+
+    async def scenario():
+        reader = await asyncpg.connect(world.dsn["alpha"])
+        try:
+            tx = reader.transaction()
+            await tx.start()
+            # an ordinary reader: it blocks any ALTER TABLE until it finishes
+            await reader.execute("LOCK TABLE t1 IN ACCESS SHARE MODE")
+            started = time.monotonic()
+            code = await asyncio.to_thread(
+                migrate.main,
+                ["--dir", str(tmp_path), "--apply", "--lock-timeout", "1"],
+            )
+            return code, time.monotonic() - started
+        finally:
+            await reader.close()
+
+    code, seconds = asyncio.run(scenario())
+    out = capsys.readouterr().out
+    assert code == 2
+    assert seconds < 20  # it gave up after about a second instead of waiting
+    assert "lock timeout" in out
+    assert world.versions("alpha") == []  # nothing was recorded there
+    columns = world.rows(
+        "alpha",
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 't1'",
+    )
+    assert [r["column_name"] for r in columns] == ["id"]  # and nothing was added
+    assert world.versions("beta") == [
+        "core-0001"
+    ]  # beta had no reader, so it went through
+
+
+@needs_pg
+def test_who_applied_a_file_can_be_set_from_the_environment(
+    world, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MIGRATE_APPLIED_BY", "release-day")
+    write(tmp_path, "core/core-0001_t1.sql", CORE_1)
+    assert world.run(tmp_path, "--apply")[0] == 0
+    rows = world.rows("alpha", "SELECT applied_by FROM schema_migrations")
+    assert rows[0]["applied_by"] == "release-day"
+
+
+@needs_pg
+def test_a_version_with_no_file_is_a_note_not_a_failure(world, tmp_path):
+    write(tmp_path, "core/core-0001_t1.sql", CORE_1)
+    assert world.run(tmp_path, "--apply")[0] == 0
+    world.execute(
+        "alpha",
+        "INSERT INTO schema_migrations (version, checksum, applied_by) "
+        "VALUES ('core-9999', 'x', 'someone')",
+    )
+    code, out = world.run(tmp_path, "--status")
+    assert code == 0
+    assert "core-9999 is recorded as applied but has no file here" in out

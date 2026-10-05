@@ -228,6 +228,45 @@ def test_the_report_session_is_read_only(world, monkeypatch):  # noqa: F811
 
 
 @needs_pg
+def test_housing_0001_removes_only_the_two_unused_labels_and_is_safe_to_repeat(world):  # noqa: F811
+    world.execute("alpha", SCHEMA)
+    world.execute(
+        "alpha",
+        "INSERT INTO roles (org_id, name, permissions) VALUES "
+        "($1, 'owner', $2), ($1, 'admin', $3), ($1, 'quiet', $4)",
+        ORG,
+        [
+            "general_read",
+            "get_resident_cases_status",
+            "view_my_cases",
+            "file_a_complaint",
+        ],
+        ["view_my_cases", "general_read", "other_label"],
+        ["general_read"],
+    )
+    sql = (
+        migrate.MIGRATIONS_DIR
+        / "features"
+        / "housing"
+        / "housing-0001_remove_unused_labels.sql"
+    ).read_text(encoding="utf-8")
+
+    def roles():
+        rows = world.rows("alpha", "SELECT name, permissions FROM roles")
+        return {r["name"]: list(r["permissions"]) for r in rows}
+
+    world.execute("alpha", sql)
+    expected = {
+        "owner": ["general_read", "file_a_complaint"],  # order of the others is kept
+        "admin": ["general_read", "other_label"],
+        "quiet": ["general_read"],  # nothing to remove: untouched, general_read stays
+    }
+    assert roles() == expected
+    world.execute("alpha", sql)
+    assert roles() == expected
+
+
+@needs_pg
 def test_core_0008_cancels_only_open_orphan_drafts_and_is_safe_to_repeat(world):  # noqa: F811
     seed(world)
     sql = (

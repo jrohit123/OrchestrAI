@@ -28,6 +28,7 @@ The loose files in this folder (`godrej_00x_*.sql`, `baanganga.sql`, ...) are ol
 | `core-0006_audit_log_session_index` | index for opening one chat on the dashboard (`CONCURRENTLY`) | additions only |
 | `core-0007_audit_log_intent_index` | index for the Workflows screen's "Last used" column (`CONCURRENTLY`) | additions only |
 | `core-0008_cancel_orphan_drafts` | cancels open drafts whose workflow was removed, and marks builder drafts that lost their workflow as abandoned; nothing is deleted. It matched no row on the practice copies | changes data, only such drafts |
+| `housing-0001_remove_unused_labels` | Godrej only: removes two permission labels that nothing uses (`get_resident_cases_status`, `view_my_cases`) so the AI is no longer told about them; `general_read` stays | changes role data |
 
 Read-only report (names and counts only, changes nothing): `python -m tools.orphans` lists drafts that point at removed workflows and permission labels that no workflow, workflow step or built-in rule uses.
 
@@ -35,6 +36,6 @@ No partial indexes for the every-minute jobs on purpose: measured on a practice 
 
 There is no `core-0004`: it was a file with two uniqueness rules, dropped on purpose before anything was applied. Numbers are never reused.
 
-`features/housing` and `features/jewellery` hold no SQL yet. Their `feature.json` lists the tables only that client has, and is where future client-only changes go. Two Godrej-only platform tables, `access_grants` and `entity_records`, belong to neither group for now (the dashboard checks whether they exist).
+`features/housing` holds one file and `features/jewellery` none yet. Each `feature.json` lists the client it applies to and the tables only that client has; it is where client-only changes go. Two Godrej-only platform tables, `access_grants` and `entity_records`, belong to neither group for now (the dashboard checks whether they exist).
 
 Left different on purpose: two uniqueness rules (`users (org_id, email)` exists only in Godrej, `workflows (org_id, slash_command)` only in Baanganga), the default of every `id` column (`uuid_generate_v4()`, `gen_random_uuid()` or `uuid_generate_v7()`: all give valid UUIDs, and changing a default is not an addition), `orgs.default_making_charge_pct` and `orgs.gst_rate` (jewellery defaults), `users.channel` (telegram vs whatsapp). In new files use `gen_random_uuid()`: it works in both.
