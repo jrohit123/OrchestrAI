@@ -1,0 +1,16 @@
+{
+  "tenants": ["godrej"],
+  "tables": [
+    "cases",
+    "case_activity",
+    "case_categories",
+    "case_parties",
+    "committee_members",
+    "committee_positions",
+    "priority_tat_rules",
+    "residents",
+    "routing_rules",
+    "staff",
+    "staff_attendance"
+  ]
+}

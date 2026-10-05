@@ -144,6 +144,15 @@ def test_two_files_may_not_share_a_number(tmp_path):
         ("ALTER TABLE x RENAME COLUMN a TO b;", "refuses"),
         ("TRUNCATE x;", "refuses"),
         ("DROP SCHEMA public CASCADE;", "refuses"),
+        ("DO $$ BEGIN DROP TABLE x; END $$;", "refuses"),
+        (
+            "DO $$ BEGIN IF true THEN ALTER TABLE x DROP COLUMN y; END IF; END $$;",
+            "refuses",
+        ),
+        (
+            "DO $a$ BEGIN EXECUTE 'x'; DO $$ BEGIN TRUNCATE t; END $$; END $a$;",
+            "refuses",
+        ),
     ],
 )
 def test_dangerous_files_are_refused(tmp_path, sql, message):
@@ -162,6 +171,8 @@ def test_dangerous_files_are_refused(tmp_path, sql, message):
         "SELECT 'DROP TABLE x';",
         "-- DROP TABLE x\nSELECT 1;",
         'CREATE TABLE x ("rename" int);',
+        "DO $$ BEGIN ALTER TABLE x ADD COLUMN y int; DROP INDEX IF EXISTS i; END $$;",
+        "SELECT $$it's fine$$;",
     ],
 )
 def test_ordinary_files_are_not_refused(tmp_path, sql):
@@ -201,6 +212,19 @@ def test_a_feature_may_not_be_called_core(tmp_path):
     write(tmp_path, "features/core/feature.json", '{"tenants": []}')
     with pytest.raises(migrate.MigrationError, match="not 'core'"):
         migrate.load_catalog(tmp_path)
+
+
+def test_the_real_migrations_folder_is_valid():
+    catalog = migrate.load_catalog(migrate.MIGRATIONS_DIR)
+    versions = [m.version for m in catalog.core]
+    assert versions == sorted(versions)
+    assert "core-0001" in versions
+    by_name = {m.name: m for m in catalog.core}
+    assert by_name["align_indexes"].no_transaction
+    assert not by_name["align"].no_transaction
+    assert not any(m.allow_destructive for m in catalog.core)
+    for name, (tenants, _) in catalog.features.items():
+        assert tenants, f"feature {name} lists no client"
 
 
 def test_missing_routing_address_stops_before_anything(tmp_path, monkeypatch, capsys):

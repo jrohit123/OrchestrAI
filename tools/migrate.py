@@ -22,7 +22,9 @@ Rules the tool enforces by itself:
     still in order.
   * A file that was applied must never change (checksum). Add a new numbered file.
   * DROP TABLE / DROP COLUMN / RENAME / TRUNCATE are refused unless the file's first
-    comment lines include "-- allow-destructive".
+    comment lines include "-- allow-destructive". This looks inside DO blocks too. It is
+    a guard against mistakes, not a security boundary: SQL built inside a string
+    (EXECUTE '...') is not inspected.
 
 Where the files live (older loose files in migrations/ are not read):
   migrations/core/                 every client database       core-0001_short_name.sql
@@ -77,7 +79,7 @@ DESTRUCTIVE = [
     (
         "ALTER TABLE ... DROP <column>",
         re.compile(
-            r"\bALTER TABLE\b.*\bDROP "
+            r"\bALTER TABLE\b[^;]*\bDROP "
             r"(?!CONSTRAINT\b|DEFAULT\b|NOT NULL\b|IDENTITY\b|EXPRESSION\b)"
         ),
     ),
@@ -208,6 +210,16 @@ def _ident_char(c: str) -> bool:
 _DOLLAR = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
+def _inner_code(body: str) -> str:
+    """The words inside a $$ body (a DO block, a function) with comments and quoted
+    text blanked, so a DROP hidden in a DO block is still seen by the safety check.
+    A $$ text that is not SQL at all is simply ignored."""
+    try:
+        return "; ".join(code for _, code in split_statements(body))
+    except MigrationError:
+        return " "
+
+
 def split_statements(sql: str) -> list[tuple[str, str]]:
     """Split SQL text into statements.
 
@@ -292,7 +304,7 @@ def split_statements(sql: str) -> list[tuple[str, str]]:
                 if end == -1:
                     raise MigrationError("a $$ quoted text is never closed")
                 j = end + len(tag)
-                take(j, tag + " " * (j - i - 2 * len(tag)) + tag)
+                take(j, f"{tag} {_inner_code(sql[match.end() : end])} {tag}")
         elif ch == ";":
             flush()
             i += 1

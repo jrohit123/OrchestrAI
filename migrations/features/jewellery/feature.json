@@ -1,0 +1,4 @@
+{
+  "tenants": ["baanganga"],
+  "tables": ["credentials", "customers", "inventory", "invoices", "orders", "quotations"]
+}
