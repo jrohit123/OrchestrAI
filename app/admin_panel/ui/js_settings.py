@@ -16,7 +16,7 @@ function setCard(id, title, ...kids) { return h('div', { class: 'card', id: 'set
 function setRow(label, help, ...controls) { return h('div', { class: 'srow' }, h('div', null, h('b', null, label), help ? h('div', { class: 'muted small' }, help) : null), h('div', { class: 'sctl' }, ...controls)); }
 
 async function settingsOrgCard(info) {
-  const lg = await classic.get('/settings/logo').catch(() => ({}));
+  const lg = await api.get('/logo').catch(() => ({}));
   const file = h('input', { type: 'file', accept: 'image/*' });
   const mark = h('span', { class: 'logo lg' }, lg.logo_url ? h('img', { src: lg.logo_url, alt: '' }) : (S.boot.org.name || '?')[0]);
   return setCard('org', 'Organisation',
@@ -24,7 +24,7 @@ async function settingsOrgCard(info) {
     setRow('Logo', 'Also appears on those PDFs. Up to 2 MB.', mark, file, h('button', { class: 'btn sm primary', onclick: async () => {
       if (!file.files[0]) { toast('Choose an image first.', 'bad'); return; }
       const fd = new FormData(); fd.append('logo_file', file.files[0]);
-      try { await classic.post('/settings/logo', fd); toast('Logo saved', 'ok'); location.reload(); } catch (e) { toast(e.message, 'bad'); } } }, 'Upload')));
+      try { await api.post('/logo', fd); toast('Logo saved', 'ok'); location.reload(); } catch (e) { toast(e.message, 'bad'); } } }, 'Upload')));
 }
 function settingsTimeCard(info) {
   return setCard('time', 'Time & language',
@@ -100,7 +100,7 @@ async function settingsSupportCard() {
       h('div', { class: 'muted small' }, 'Cases count as finished when their status is: ' + d.closed_values.join(', ') + '. ' + plural(d.counts.users, 'person', 'people') + ', ' + plural(d.counts.workflows, 'workflow') + '.'))) : null,
     setRow('End every ongoing conversation', 'People can simply start again.', h('button', { class: 'btn danger', onclick: async () => {
       if (!await confirmBox('End every ongoing conversation with the assistant? People can simply start again.', { ok: 'End them all', danger: true })) return;
-      try { await classic.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
+      try { await api.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
 }
 
 SECTIONS.settings = {

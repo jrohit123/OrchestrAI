@@ -11,14 +11,15 @@ screen can always offer to go back to it. Saving is checked against the smallest
 allowed number, written to the change log, and applies at once.
 """
 
+import base64
 import copy
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from app.admin_panel.common import CtxDep, PanelRoute, dump, jb, log_event, tx
-from app.db import fetch_one
+from app.db import execute, fetch_one
 from app.services import config_store
 
 router = APIRouter(
@@ -317,3 +318,68 @@ async def put_org_settings(ctx: CtxDep, body: SettingsBody):
         ctx.source_key
     )  # the assistant sees it at once on this copy
     return {"ok": True}
+
+
+# ── the logo, and ending every ongoing conversation ──────────────────────────
+
+LOGO_MAX_BYTES = 2 * 1024 * 1024
+
+
+@router.get("/logo")
+async def get_logo(ctx: CtxDep):
+    org = await fetch_one(
+        "SELECT logo_url FROM orgs WHERE id = $1",
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    return {"logo_url": org["logo_url"] if org else None}
+
+
+@router.post("/logo")
+async def upload_logo(ctx: CtxDep, request: Request):
+    """The organisation's logo, kept in orgs.logo_url as a small inline picture (there is no file
+    storage in this app). The PDFs the flows make show it with a plain <img src="...">, which takes
+    this kind of address exactly like a hosted one."""
+    form = await request.form()
+    upload = form.get("logo_file")
+    if not upload:
+        raise HTTPException(status_code=400, detail="logo_file is required")
+    content_type = getattr(upload, "content_type", "") or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Logo must be an image file")
+    image = await upload.read()
+    if len(image) > LOGO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Logo image is too large (max 2MB)")
+    data_uri = f"data:{content_type};base64,{base64.b64encode(image).decode()}"
+    await execute(
+        "UPDATE orgs SET logo_url = $1 WHERE id = $2",
+        data_uri,
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    await log_event(
+        ctx,
+        "settings",
+        "logo",
+        "Changed the logo",
+        target_type="orgs",
+        target_id=ctx.org_id,
+    )
+    return {"logo_url": data_uri}
+
+
+@router.post("/sessions/clear")
+async def clear_sessions(ctx: CtxDep):
+    """Ends every ongoing conversation: the next message from anyone starts a new one."""
+    from app.redis_client import clear_all_sessions
+
+    await clear_all_sessions(ctx.org_id)
+    await log_event(
+        ctx,
+        "settings",
+        "sessions",
+        "Ended every ongoing conversation",
+        target_type="orgs",
+        target_id=ctx.org_id,
+    )
+    return {"cleared": True}

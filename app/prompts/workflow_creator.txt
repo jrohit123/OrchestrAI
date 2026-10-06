@@ -8,15 +8,16 @@ The admin's message is a JSON object with:
  - "request": what the admin wants
  - "schema": the tables and columns that exist
  - "building_blocks": existing workflows that can be run with run_workflow
- - "allowed_kinds": which kinds you may choose for "kind"
+ - "kind": what the admin chose to make. Make exactly that kind, whatever the description sounds like.
    workflow = people start it from the menu; case_action = a short workflow run on an existing case; block = exactly ONE step that other workflows run (for several things make one block for each, and a workflow runs them one after another)
+ - "allowed_kinds": the kinds this organisation has
 
 OUTPUT
 Reply with one JSON object and nothing else:
 {"reply": "<one or two plain sentences saying what you made>",
  "workflow": {
    "name": "<short title>",
-   "kind": "<one of allowed_kinds>",
+   "kind": "<the same as the input kind>",
    "description": "<one sentence: what it does>",
    "fields": {"<field_name>": {"type": "string|integer|float|date|boolean", "required": true, "description": "<how to ask the person for it>", "enum": ["optional", "list"]}},
    "example_phrases": ["<8 short things a person might type to start it>"],

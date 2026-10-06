@@ -43,8 +43,8 @@ SECTIONS.overview = {
   async render(root) {
     const caps = S.boot.caps, soft = p => p.catch(() => null);
     const since = new Date(Date.now() - 24 * 3600 * 1000);
-    const [d, legacy, cats, targets, chats] = await Promise.all([
-      api.get('/overview'), soft(classic.get('/data')),
+    const [d, cats, targets, chats] = await Promise.all([
+      api.get('/overview'),
       caps.case_model ? soft(api.get('/categories')) : null,
       caps.targets ? soft(api.get('/targets')) : null,
       caps.audit ? soft(api.get('/chats', { date_from: isoDay(since), page_size: 50 })) : null,
@@ -73,9 +73,9 @@ SECTIONS.overview = {
         top ? kpiTile(pretty(top) + ' and open', k.top_priority_open, k.top_priority_open ? 'bad' : '', href('cases', '', { status: 'open', priority: top })) : null,
         kpiTile('New in 7 days', k.created_7d, '', href('cases'), { delta: deltaLine(last('created'), before('created'), null), spark: sparkline(t.slice(-7).map(p => p.created), '--brand') }),
         kpiTile('Closed in 7 days', k.closed_7d, 'ok', href('cases', '', { status: (c.closed_values || []).join(',') }), { delta: deltaLine(last('closed'), before('closed'), true), spark: sparkline(t.slice(-7).map(p => p.closed), '--ok') })));
-    } else if (legacy && legacy.stats && legacy.stats.length) {
-      // stat cards some organisations set up for themselves (kept from the classic dashboard)
-      root.append(h('div', { class: 'kpis' }, legacy.stats.map(s => h('div', { class: 'kpi', style: { cursor: 'default', borderLeft: '4px solid ' + (s.color || 'var(--line-2)') } }, h('span', { class: 'l' }, s.label), h('span', { class: 'n' }, s.format === 'currency_inr' ? money(s.value) : num(s.value))))));
+    } else if (d.stats && d.stats.length) {
+      // stat cards some organisations set up for themselves (orgs.settings.dashboard_stats)
+      root.append(h('div', { class: 'kpis' }, d.stats.map(s => h('div', { class: 'kpi', style: { cursor: 'default', borderLeft: '4px solid ' + (s.color || 'var(--line-2)') } }, h('span', { class: 'l' }, s.label), h('span', { class: 'n' }, s.format === 'currency_inr' ? money(s.value) : num(s.value))))));
     }
 
     // 3. the two columns
@@ -88,10 +88,10 @@ SECTIONS.overview = {
         caps.case_category ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Open cases by kind'), h('div', { class: 'card-b' }, bars(byKind, i => go('cases', '', { status: 'open', category: i.id || 'none' })))) : null,
         h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Past their target time', h('a', { class: 'small', href: href('cases', '', { status: 'open', overdue: '1' }) }, 'See all')), h('div', { class: 'card-b flush' }, c.overdue.length ? c.overdue.map(caseLine) : empty('Nothing is late', '')))));
       left.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Not assigned yet', h('a', { class: 'small', href: href('cases', '', { status: 'open', unassigned: '1' }) }, 'See all')), h('div', { class: 'card-b flush' }, c.unassigned.length ? c.unassigned.map(caseLine) : empty('All open cases have someone', ''))));
-    } else if (legacy && legacy.low_stock && legacy.low_stock.rows.length) {
-      const ls = legacy.low_stock;
+    } else if (d.low_stock && d.low_stock.rows.length) {
+      const ls = d.low_stock;
       left.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, ls.title), table(ls.columns.map(col => ({ label: col.label, render: r => String(r[col.key] ?? '') })), ls.rows)));
-    } else if (!legacy || !legacy.stats) left.append(notice('This organisation does not track cases, so there is no case summary. Use the menu on the left.'));
+    } else if (!d.stats) left.append(notice('This organisation does not track cases, so there is no case summary. Use the menu on the left.'));
 
     if (chats) {
       const ok = rows24.filter(r => chatKind(r) === 'ok').length, wait = rows24.filter(r => chatKind(r) === 'wait').length, never = rows24.filter(r => chatKind(r) === 'never').length, fail = rows24.filter(r => chatKind(r) === 'fail').length;

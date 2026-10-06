@@ -120,19 +120,22 @@ function openCmd() {
 }
 document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && S.boot) { e.preventDefault(); if (!document.querySelector('.cmdk')) openCmd(); } });
 
-// ----- the "New" menu -----
+// ----- the "New workflow / building block" menu -----
+async function startNew(kind) {
+  try { await ensureStudio(); newWorkflowModal(!!S.boot.caps.workflow_kind, kind); } catch (e) { toast(e.message, 'bad'); }
+}
 function newMenu(anchor) {
-  const caps = S.boot.caps, row = (ic, t, sub, fn) => h('button', { class: 'mi', type: 'button', onclick: () => { closePop(); fn(); } }, icon(ic), h('span', null, t, h('small', null, sub)));
+  if (!S.boot.caps.workflow_kind) { startNew('workflow'); return; }   // an older database has no building blocks: only workflows
+  const row = (ic, t, sub, kind) => h('button', { class: 'mi', type: 'button', onclick: () => { closePop(); startNew(kind); } }, icon(ic), h('span', null, t, h('small', null, sub)));
   openPop(anchor, [h('div', { class: 'ml' }, 'Create'),
-    row('flow', 'New flow', 'Describe it, start blank or copy one', async () => { try { await ensureStudio(); newWorkflowModal(!!caps.workflow_kind); } catch (e) { toast(e.message, 'bad'); } }),
-    caps.case_model ? row('route', 'New kind of complaint', 'And who it goes to', () => go('cases', 'categories')) : null,
-    caps.seats ? row('tag', 'New seat', 'A named job held by one person', () => go('people', 'seats')) : null], { align: 'right', width: 290 });
+    row('flow', 'New workflow', 'Something people start from the menu, a button or a command', 'workflow'),
+    row('layers', 'New building block', 'One small step other workflows run, such as Find a case', 'block')], { align: 'right', width: 340 });
 }
 
 function buildShell(app) {
   const o = S.boot.org, have = new Map(S.boot.sections.map(s => [s.key, s]));
   const logo = h('span', { class: 'logo' }, o.name[0]);
-  if (o.has_logo) classic.get('/settings/logo').then(d => { if (d.logo_url) fill(logo, h('img', { src: d.logo_url, alt: '' })); }).catch(() => {});
+  if (o.has_logo) api.get('/logo').then(d => { if (d.logo_url) fill(logo, h('img', { src: d.logo_url, alt: '' })); }).catch(() => {});
   const link = sec => h('a', { href: href(sec.key), 'data-key': sec.key }, icon(NAV_ICON[sec.key] || 'list'), h('span', { class: 'tx' }, sec.label));
   const soon = k => h('div', { class: 'soon', 'data-tip': NAV_SOON[k][1] }, icon(NAV_ICON[k]), h('span', { class: 'tx' }, NAV_SOON[k][0]), h('span', { class: 'navtag' }, 'Soon'));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sections' });
@@ -148,13 +151,12 @@ function buildShell(app) {
     h('button', { class: 'jump', type: 'button', 'aria-label': 'Search or jump to', onclick: openCmd }, icon('search', 'sm'), h('span', null, 'Search or jump to…'), h('span', { class: 'kbd' }, 'Ctrl K')),
     nav, h('div', { class: 'grow' }),
     h('div', { class: 'sidefoot' },
-      h('a', { href: '/admin/' + encodeURIComponent(ORG) + '/legacy' }, icon('ext'), h('span', { class: 'tx' }, 'Classic dashboard')),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
     h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }),
-    h('button', { class: 'btn primary', type: 'button', 'data-popkeep': '1', onclick: e => newMenu(e.currentTarget) }, icon('plus', 'sm'), 'New', icon('chevd', 'xs')));
+    h('button', { class: 'btn primary', type: 'button', 'data-popkeep': '1', onclick: e => newMenu(e.currentTarget) }, icon('plus', 'sm'), h('span', { class: 'tx' }, S.boot.caps.workflow_kind ? 'New workflow / building block' : 'New workflow'), icon('chevd', 'xs')));
   fill(app, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' }))));
   window.addEventListener('resize', applyRail);
 }

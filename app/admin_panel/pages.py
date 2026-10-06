@@ -2,9 +2,11 @@
 
 import html
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
 
 from app.admin_panel.ui import APP_CSS, APP_JS, VERSION
+from app.db import get_all_source_keys
 
 router = APIRouter()
 
@@ -28,6 +30,19 @@ _SHELL = """<!doctype html>
 
 def render_page(org_slug: str) -> str:
     return _SHELL.format(version=VERSION, org=html.escape(org_slug, quote=True))
+
+
+@router.get("/admin/{org_slug}", response_class=HTMLResponse)
+async def admin_page(org_slug: str):
+    """The dashboard. The address segment is the organisation's key in the routing database, so a
+    new organisation needs no change here."""
+    if org_slug not in await get_all_source_keys():
+        raise HTTPException(status_code=404, detail=f"Unknown org '{org_slug}'")
+    return HTMLResponse(
+        content=render_page(org_slug),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 def _asset(request: Request, body: str, media_type: str) -> Response:

@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.admin_panel.cases import get_enums, query_cases
 from app.admin_panel.common import CtxDep, PanelRoute, rows
+from app.admin_panel.dashboard_stats import home_extras
 from app.db import fetch_all, fetch_one
 
 router = APIRouter(
@@ -16,6 +17,8 @@ _CFG = "WITH cfg AS (SELECT $2::text[] AS closed, $3::text[] AS prios) "
 @router.get("/overview")
 async def overview(ctx: CtxDep):
     out: dict = {"cases": None, "people": None, "workflows": None, "events": []}
+    # stats and low_stock: only for organisations that set them up
+    out.update(await home_extras(ctx))
     enums = await get_enums(ctx)
     args = (ctx.org_id, ctx.closed_values, enums["priorities"])
 

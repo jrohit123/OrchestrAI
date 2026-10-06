@@ -1,5 +1,5 @@
-"""Redesigned admin panel: the page, its assets and the JSON endpoints under
-/admin/{org}/api/v2. The classic dashboard stays available at /admin/{org}/legacy."""
+"""The admin panel: the page at /admin/{org}, its assets, and the JSON endpoints under
+/admin/{org}/api/v2."""
 
 from fastapi import APIRouter
 

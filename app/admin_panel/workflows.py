@@ -136,7 +136,7 @@ class ActiveBody(BaseModel):
 @router.post("/workflows/{workflow_id}/active")
 async def set_active(workflow_id: UUID, body: ActiveBody, ctx: CtxDep):
     """Switch a workflow on or off (off = hidden from the menu and the assistant). Uses the
-    same function as the classic dashboard, so role grants are kept in step."""
+    same function as publishing, so role grants are kept in step."""
     from app.services.workflow_publisher import set_workflow_active
 
     row = await fetch_one(
@@ -179,8 +179,8 @@ class RolesBody(BaseModel):
 
 @router.put("/workflows/{workflow_id}/roles")
 async def set_roles(workflow_id: UUID, body: RolesBody, ctx: CtxDep):
-    """Set exactly which roles may use a workflow (same function the classic dashboard
-    uses, so the tables it reads are granted too)."""
+    """Set exactly which roles may use a workflow (same function publishing uses, so the
+    tables it reads are granted too)."""
     from app.services.workflow_publisher import sync_role_grants
 
     w = await fetch_one(
@@ -278,7 +278,7 @@ async def delete_workflow(workflow_id: UUID, ctx: CtxDep):
     # keep a copy first: the history table has no link to workflows, so it outlives the delete
     async with tx(ctx) as conn:
         await _snapshot(conn, ctx, w, old=True)
-    # revoke from every role first, the same way the classic dashboard does
+    # revoke from every role first, the same way switching a workflow off does
     await sync_role_grants(
         w["intent_key"], ctx.org_id, [], ctx.source_key, steps=w["steps"]
     )

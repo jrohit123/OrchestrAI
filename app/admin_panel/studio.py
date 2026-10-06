@@ -443,7 +443,7 @@ async def _save(
             raise HTTPException(
                 status_code=400,
                 detail="This workflow answers with a saved report query, so it has no steps "
-                "to edit here. Change it in the classic builder.",
+                "to edit here.",
             )
 
         problems: list[str] = []
@@ -726,7 +726,7 @@ async def create_workflow(body: NewWorkflow, ctx: CtxDep):
         if src["workflow_type"] == "read":
             raise HTTPException(
                 status_code=400,
-                detail="Reports are built in the classic builder, so they cannot be copied here.",
+                detail="Reports cannot be copied here.",
             )
         steps = normalize_steps(jb(src["steps"], []))
         entity_schema = jb(src["entity_schema"], {})
@@ -1025,12 +1025,17 @@ async def studio_chat(body: ChatBody, ctx: CtxDep):
             "problems": problems,
         }
 
-    # a new workflow
+    # a new workflow. The admin chose what they are making (workflow, building block, case
+    # action) before describing it: the assistant is told, and the draft is always that kind,
+    # whatever the description sounds like.
+    allowed = _kinds(ctx) or ["workflow"]
+    kind = body.kind if body.kind in allowed else "workflow"
     payload = {
         "request": body.message,
         "schema": tables,
         "building_blocks": blocks,
-        "allowed_kinds": _kinds(ctx) or ["workflow"],
+        "allowed_kinds": allowed,
+        "kind": kind,
     }
     system = _prompt("workflow_creator.txt")
     extra = None
@@ -1049,11 +1054,6 @@ async def studio_chat(body: ChatBody, ctx: CtxDep):
             reply_text = ""
             continue
         reply_text = str(out.get("reply") or "").strip()
-        kind = (
-            spec.get("kind")
-            if spec.get("kind") in (_kinds(ctx) or ["workflow"])
-            else "workflow"
-        )
         fields = spec.get("fields") if isinstance(spec.get("fields"), dict) else {}
         steps = normalize_steps(spec.get("steps") or [])
         check = validate_steps(

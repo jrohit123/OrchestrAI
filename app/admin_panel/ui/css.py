@@ -628,6 +628,7 @@ _CANVAS = r"""
 .cvwrap{container-type:inline-size}
 @container (max-width:1120px){.zoomb .tx{display:none}}
 @container (max-width:860px){.dock.min{right:auto;left:14px;bottom:66px}}
+@media (max-width:760px){.topbar .btn.primary .tx{display:none}}
 .toast .tact{margin-left:14px;border:0;background:rgba(255,255,255,.2);color:#fff;font-weight:700;padding:3px 11px;border-radius:7px;cursor:pointer}
 .toast .tact:hover{background:rgba(255,255,255,.34)}
 

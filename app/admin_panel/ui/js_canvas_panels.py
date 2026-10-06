@@ -36,8 +36,8 @@ function paletteNode(compact) {
   secs.push(palSec('block', 'Building blocks', 'block', 'layers', blocks.length, blocks.length
     ? blocks.map(b => palItem({ op: 'run_workflow', block: b.intent_key, k: 'block', icon: 'layers', label: b.name, help: (b.description || 'A shared building block.') + ((b.needs || []).length ? ' It needs: ' + b.needs.join(', ') + ' found first.' : '') }))
     : h('div', { class: 'pmine' }, 'No other building blocks yet.')));
-  secs.push(palSec('mine', 'My nodes', 'trigger', 'star', 0, [h('div', { class: 'pmine' }, 'Soon: pick several boxes on the canvas and save them as one node of your own, with a name and a colour.'),
-    h('button', { class: 'mnew', type: 'button', 'data-newnode': '1', 'data-popkeep': '1' }, icon('plus', 'sm'), 'Make your own node')]));
+  secs.push(palSec('mine', 'My nodes', 'trigger', 'star', 0, [h('div', { class: 'pmine' }, 'Your own node is a building block: one small step with a name that any workflow can run. Describe what it should do and the assistant drafts it for you to check. A new kind of step (for example one that calls another website) needs new code, so ask for that separately.'),
+    h('button', { class: 'mnew', type: 'button', 'data-newnode': '1' }, icon('plus', 'sm'), 'Make your own node')]));
   return h('div', null, secs);
 }
 function filterPal(root, q) {
@@ -72,19 +72,16 @@ function cvOpenAdd(at, anchor, pos) {
     closePop(); usePalItem(palData(b), at, pos);
   });
 }
-function newNodeHelp(anchor) {
-  const row = (ic, t, badgeEl, text, dim) => h('div', { class: 'mi', style: { cursor: 'default', opacity: dim ? '.65' : '' } }, icon(ic), h('span', null, h('b', null, t), ' ', badgeEl, h('small', null, text)));
-  openPop(anchor, [h('div', { class: 'ml' }, 'Make your own node'),
-    row('layers', '1 · From boxes on the canvas', badge('next', 'info'), 'Select boxes, press Save as my node. Made only of steps that exist, so it is safe.'),
-    row('db', '2 · In code, added for you', badge('later'), 'A new kind of box with its own fields. Needs a deploy.', true),
-    row('plug', '3 · Open node', badge('later'), 'Call a web address or run your own code. Waits for Connections and the security work.', true)], { width: 340, up: true });
+// "Make your own node" opens the same dialog as New building block, with the assistant's draft first
+async function makeNode() {
+  try { await ensureStudio(); newWorkflowModal(!!S.boot.caps.workflow_kind, 'block'); } catch (e) { toast(e.message, 'bad'); }
 }
 function paletteAside() {
   const list = h('div', { class: 'pl' }, paletteNode(false));
   const search = h('input', { class: 'input', placeholder: 'Search steps…', oninput: e => filterPal(list, e.target.value) });
   list.addEventListener('toggle', e => { const d = e.target; if (d.dataset && d.dataset.ps && !search.value) { d.open ? CV.palOpen.add(d.dataset.ps) : CV.palOpen.delete(d.dataset.ps); } }, true);
   list.addEventListener('click', e => {
-    const n = e.target.closest('[data-newnode]'); if (n) { newNodeHelp(n); return; }
+    if (e.target.closest('[data-newnode]')) { makeNode(); return; }
     const b = e.target.closest('.pi');
     if (!b || b.classList.contains('later') || e.target.closest('.hq')) return;
     usePalItem(palData(b));
@@ -157,7 +154,7 @@ function reportPanel() {
     h('div', { class: 'ib' },
       h('div', { class: 'stack s8' }, h('div', { class: 'techlabel' }, h('span', null, 'The SQL it runs'), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(d.sql_template || '') }, 'Copy')), h('pre', { class: 'code' }, d.sql_template || '')),
       field('How the answer is worded', worded, 'The query always finds the rows. This only chooses who words the reply: code never drops a row or changes a number; the assistant may.'),
-      h('a', { class: 'btn sm', href: classicUrl(), target: '_blank', rel: 'noopener' }, 'Change the report in the classic builder ↗'))];
+      h('div', { class: 'muted small' }, 'The report itself (the query above) cannot be changed from the dashboard yet.'))];
 }
 function stepPanel(i) {
   const s = EW.work.steps[i], spec = catalogSpec(s.op), key = cvKey(s), blk = s.op === 'run_workflow', n = EW.work.steps.length;
@@ -308,7 +305,7 @@ function drawEditor() {
   const head = h('div', { class: 'cvbar' },
     h('div', { class: 'titlechip' },
       h('a', { class: 'btn sm ghost icon', href: '#/workflows', 'aria-label': 'Back to all flows' }, icon('chevl', 'sm')), ui.name,
-      badge(pretty(EW.work.kind || 'workflow'), EW.work.kind === 'block' ? 'teal' : 'violet'), badge('v' + d.version), ui.dirty,
+      badge(KIND_LABEL[EW.work.kind] || pretty(EW.work.kind || 'workflow'), EW.work.kind === 'block' ? 'teal' : 'violet'), badge('v' + d.version), ui.dirty,
       h('label', { class: 'row small flat', style: { gap: '6px' } }, switchEl(d.is_active, async v => { await api.post('/workflows/' + d.id + '/active', { is_active: v }); d.is_active = v; power.textContent = v ? 'On' : 'Off'; }), power)),
     h('div', { class: 'actbar' }, ui.undo,
       h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),

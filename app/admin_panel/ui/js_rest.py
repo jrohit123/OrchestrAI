@@ -2,7 +2,7 @@ JS = r"""
 // ───────────────────────── Activity & chats ─────────────────────────
 async function transcriptModal(sessionId, fallback) {
   let rows = [];
-  if (sessionId) rows = (await classic.get('/activity/session', { session_id: sessionId })).rows;
+  if (sessionId) rows = (await api.get('/activity/session', { session_id: sessionId })).rows;
   else if (fallback) rows = [fallback];
   const thread = h('div', { class: 'thread' });
   rows.forEach(r => {
@@ -67,7 +67,7 @@ async function renderAll(root, route) {
   const bar = h('div', { class: 'filters' }), out = h('div', { class: 'card' });
   root.append(bar, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
-  const first = await classic.get('/activity', { page_size: 1 });
+  const first = await api.get('/activity', { page_size: 1 });
   const who = sel([['', 'Everyone'], ...(first.users || []).map(u => [u.id, u.name])], q.user || '', { onchange: e => update({ user: e.target.value }) });
   const text = h('input', { type: 'search', placeholder: 'Search…', value: q.q || '' });
   text.addEventListener('input', debounce(() => update({ q: text.value }), 300));
@@ -77,7 +77,7 @@ async function renderAll(root, route) {
     setQuery(q);
     fill(out, h('div', { class: 'empty' }, 'Loading…'));
     try {
-      const d = await classic.get('/activity', { user_id: q.user, search: q.q, page: q.page, page_size: 20 });
+      const d = await api.get('/activity', { user_id: q.user, search: q.q, page: q.page, page_size: 20 });
       fill(out, table([
         { label: 'When', render: r => h('span', { class: 'small' }, fmtDT(r.created_at)) },
         { label: 'Person', render: r => r.user_name || '—' },

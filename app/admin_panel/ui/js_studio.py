@@ -1,12 +1,12 @@
 JS = r"""
 // ───────────────────────── Workflows: shared helpers ─────────────────────────
+const KIND_LABEL = { workflow: 'Workflow', block: 'Building block', case_action: 'Case button' };
 const PARTY_PLAIN = { requester: 'who raised it', assignee: 'who has it', level2: 'level 2', helper: 'helpers', watcher: 'watchers' };
 async function ensureStudio() {
   const [cat, fl] = await Promise.all([api.get('/studio/catalog'), api.get('/workflows')]);
   ST.catalog = cat; ST.flows = fl.rows; ST.roles = fl.roles;
   ST.byKey = Object.fromEntries(fl.rows.map(w => [w.intent_key, w]));
 }
-const classicUrl = () => '/admin/' + encodeURIComponent(ORG) + '/legacy';
 function openWorkflow(id) { go('workflows', '', { w: id }); }
 
 // ───────────────────────── Workflows: the editor ─────────────────────────

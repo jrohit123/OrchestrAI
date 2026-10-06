@@ -2,7 +2,6 @@ JS = r"""
 // ───────────────────────── core helpers ─────────────────────────
 const ORG = document.body.dataset.org;
 const BASE = '/admin/' + encodeURIComponent(ORG) + '/api/v2';
-const CLASSIC = '/admin/' + encodeURIComponent(ORG) + '/api';
 const S = { boot: null, lookups: null };
 const SECTIONS = {};
 
@@ -109,10 +108,6 @@ const api = {
   put: (p, b) => request(BASE + p, { method: 'PUT', body: b }),
   patch: (p, b) => request(BASE + p, { method: 'PATCH', body: b }),
   del: p => request(BASE + p, { method: 'DELETE' }),
-};
-const classic = {
-  get: (p, q) => request(CLASSIC + p + qs(q)),
-  post: (p, b) => request(CLASSIC + p, { method: 'POST', body: b === undefined ? {} : b }),
 };
 const getLookups = (force) => (!S.lookups || force) ? (S.lookups = api.get('/lookups')) : S.lookups;
 
