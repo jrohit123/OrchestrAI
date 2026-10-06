@@ -68,7 +68,7 @@ function describeStep(s) {
   const p = s.params || {}, t = tlabel(p.table);
   const flow = ST.byKey[p.workflow];
   const by = {
-    resolve_entity: () => p.match_columns ? 'Find the ' + single(p.table) + ' where ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' is ') : 'Find the ' + single(p.table) + ' whose ' + pretty(p.match_column || 'name').toLowerCase() + ' is ' + vlabel(p.name_from),
+    resolve_entity: () => !isBlank(p.match_columns) ? 'Find the ' + single(p.table) + ' where ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' is ') : 'Find the ' + single(p.table) + ' whose ' + pretty(p.match_column || 'name').toLowerCase() + ' is ' + vlabel(p.name_from),
     conflict_check: () => 'Stop if a ' + single(p.table) + ' already has ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' = '),
     require_permission: () => 'Check the person is allowed' + ((p.any_of || []).length ? ' (' + p.any_of.join(' or ') + ')' : p.map ? ' (by ' + vlabel(p.from) + ')' : ''),
     derive_field: () => 'Work out ' + pretty(p.field || 'a value').toLowerCase(),
@@ -116,6 +116,9 @@ function envBefore(index) {
 }
 const colsOf = t => (ST.catalog.tables[t] || []);
 
+// the field that last took focus: a click on a value in the step window goes into it
+let FOCUSED_VALUE = null;
+const takesValue = (el, take) => el.addEventListener('focus', () => { FOCUSED_VALUE = { el, take }; });
 // ----- a "value" control: pick what the person typed, a record found earlier, who they are… or type text -----
 function valueOptions(env) {
   const groups = [];
@@ -160,8 +163,18 @@ function valuePicker(env, value, onChange) {
   text.addEventListener('input', () => { sel_.value = text.value === '' ? '' : '__text'; onChange(coerce(text.value), false); });
   text.addEventListener('change', () => onChange(coerce(text.value), true));
   json.addEventListener('change', () => { try { onChange(JSON.parse(json.value), true); json.style.borderColor = ''; } catch (e) { json.style.borderColor = 'var(--bad)'; } });
+  const take = path => { if (![...sel_.options].some(o => o.value === path)) sel_.append(h('option', { value: path }, 'Custom: ' + path)); sel_.value = path; show(''); onChange(path, true); };
+  takesValue(sel_, take); takesValue(text, take);
   wrap.append(sel_, text, json);
   return wrap;
+}
+// a choice whose options each have a line of explanation: the name, and under it what it means
+function choiceDropdown(options, value, onPick) {
+  const cur = options.find(o => String(o[0]) === String(value || '')) || options[0];
+  const btn = h('button', { class: 'cdd', type: 'button', 'aria-haspopup': 'listbox' }, h('span', null, cur[1]), icon('chevd', 'xs'));
+  btn.addEventListener('click', () => openPop(btn, options.map(o => h('button', { class: 'mi cdd-o' + (o === cur ? ' on' : ''), type: 'button', role: 'option', onclick: () => { closePop(); onPick(o[0]); } },
+    h('span', { class: 'grow' }, h('b', null, o[1]), o[2] ? h('small', null, o[2]) : null), o === cur ? icon('check', 'sm') : null)), { width: Math.max(btn.offsetWidth, 280) }));
+  return btn;
 }
 const coerce = t => (t.trim() !== '' && !isNaN(t) && !/^0\d/.test(t.trim())) ? Number(t) : (t === 'true' ? true : t === 'false' ? false : t);
 
@@ -264,13 +277,19 @@ function paramControl(p, step, index, commit, rerender) {
     case 'longtext': {
       const ta = h('textarea', { rows: 4, oninput: e => set(e.target.value, false), onchange: e => set(e.target.value, true) });
       ta.value = params[p.key] || '';
+      takesValue(ta, path => {                                   // only what the person typed and the case can go into a message
+        const m = /^\$fields\.(\w+)$/.exec(path) || /^\$case\.(\w+)$/.exec(path);
+        if (!m) { toast('This text can only use what the person typed, or the case.'); return; }
+        const ph = '{' + (path.startsWith('$case.') ? 'case_' : '') + m[1] + '}', a = ta.selectionStart == null ? ta.value.length : ta.selectionStart, b = ta.selectionEnd == null ? a : ta.selectionEnd;
+        ta.value = ta.value.slice(0, a) + ph + ta.value.slice(b); set(ta.value, true);
+      });
       const names = [...env.fields, ...(env.aliases.case ? colsOf(env.aliases.case).map(c => 'case_' + c) : [])];
       const ins = sel([['', 'Insert a value…'], ...names.map(n => ['{' + n + '}', pretty(n)])], '', { onchange: e => { if (!e.target.value) return; const a = ta.selectionStart || ta.value.length; ta.value = ta.value.slice(0, a) + e.target.value + ta.value.slice(a); set(ta.value, true); e.target.value = ''; } });
       ctl = h('div', { class: 'stack' }, ta, ins); break;
     }
     case 'number': ctl = h('input', { type: 'number', value: params[p.key] ?? '', onchange: e => set(e.target.value === '' ? '' : Number(e.target.value), true) }); break;
     case 'bool': ctl = h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!params[p.key], onchange: e => set(e.target.checked ? true : '', true) }), 'Yes'); break;
-    case 'choice': ctl = sel(p.options, params[p.key] || '', { onchange: e => set(e.target.value, true) }); break;
+    case 'choice': ctl = (p.options || []).some(o => o[2]) ? choiceDropdown(p.options, params[p.key] || '', v => set(v, true)) : sel(p.options, params[p.key] || '', { onchange: e => set(e.target.value, true) }); break;
     case 'list_text': {
       const list = Array.isArray(params[p.key]) ? params[p.key] : [];
       ctl = h('div', null, tagsEditor(list, ST.catalog.permissions, l => set(l, false)), h('datalist', { id: 'permlist' }, ST.catalog.permissions.map(x => h('option', { value: x })))); break;
@@ -313,7 +332,7 @@ function stepForm(step, index, commit, rerender) {
     const main = spec.params.filter(p => !p.advanced), adv = spec.params.filter(p => p.advanced);
     main.forEach(p => box.append(paramControl(p, step, index, commit, rerender)));
     if (adv.length) {
-      const open = adv.some(p => step.params && step.params[p.key] !== undefined);
+      const open = adv.some(p => step.params && !isBlank(step.params[p.key]));
       box.append(h('details', open ? { open: true } : null, h('summary', { class: 'muted small' }, 'More options'), adv.map(p => paramControl(p, step, index, commit, rerender))));
     }
     if (!spec.params.length) box.append(h('div', { class: 'muted small' }, 'Nothing to set for this step.'));

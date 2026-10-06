@@ -100,8 +100,9 @@ function paletteAside() {
 }
 
 // ----- the panel on the right: settings of what you clicked -----
-const insHead = (k, ic, kicker, title, sub) => h('div', { class: 'ih k-' + k }, h('span', { class: 'gi' }, icon(ic)),
+const insHead = (k, ic, kicker, title, sub, extra) => h('div', { class: 'ih k-' + k }, h('span', { class: 'gi' }, icon(ic)),
   h('div', { class: 'grow' }, h('div', { class: 'kicker' }, kicker), h('h3', null, title), sub ? h('div', { class: 'muted small' }, sub) : null),
+  extra || null,
   h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Close', onclick: closeInspector }, icon('x', 'sm')));
 function closeInspector() { CV.sel = new Set(); CV.panel = 'insp'; clearRun(); renderNodes(); renderInspector(); }
 const insTabs = (list, cur, set) => h('div', { class: 'itabs' }, list.map(([k, l]) => h('button', { class: 'tab', type: 'button', 'aria-selected': String(cur === k), onclick: () => { set(k); renderInspector(); } }, l)));
@@ -162,18 +163,20 @@ function stepPanel(i) {
   CV.probEl = h('div', { class: 'stack s8' });
   const body = CV.itab === 'if' ? onlyIfTab(s, i) : CV.itab === 'tech' ? techTab(s, i) : settingsTab(s, i);
   const act = (a, ic, label, extra) => h('button', { class: 'btn sm' + (extra || ''), type: 'button', disabled: (a === 'up' && i === 0) || (a === 'down' && i === n - 1), onclick: () => stepAct(a) }, icon(ic, 'sm'), label);
-  return [insHead(key, cvIcon(s.op), (blk ? 'Building block' : (spec ? spec.group : 'Step')) + ' · step ' + (i + 1), describeStep(s), spec ? spec.help : ''),
+  const bigger = h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Open in a bigger window', 'data-tip': 'Open in a bigger window (Enter)', onclick: () => swOpen(idAt(i)) }, icon('ext', 'sm'));
+  return [insHead(key, cvIcon(s.op), (blk ? 'Building block' : (spec ? spec.group : 'Step')) + ' · step ' + (i + 1), s.name || describeStep(s), s.name ? describeStep(s) : (spec ? spec.help : ''), bigger),
     insTabs(tabs, CV.itab, k => { CV.itab = k; }), h('div', { class: 'ib' }, CV.probEl, body),
     h('div', { class: 'if' }, act('up', 'up', 'Move up'), act('down', 'down', 'Move down'), act('dup', 'copy', 'Duplicate'), EW.work.kind === 'block' ? null : act('park', 'unlink', 'Park'), act('del', 'trash', 'Delete', ' danger'))];
 }
-function settingsTab(s, i) {
+function settingsTab(s, i, again) {
+  again = again || renderInspector;                    // what to redraw when a setting changes the form itself (the step window passes its own)
   const spec = catalogSpec(s.op), box = h('div', { class: 'stack' });
   if (!spec) { box.append(notice('This step type (' + s.op + ') is not one the editor knows. Edit it as JSON under “Technical”.', 'warn')); return box; }
   const main = spec.params.filter(p => !p.advanced), adv = spec.params.filter(p => p.advanced);
-  main.forEach(p => box.append(paramControl(p, s, i, commit, renderInspector)));
+  main.forEach(p => box.append(paramControl(p, s, i, commit, again)));
   if (adv.length) {
-    const open = adv.some(p => s.params && s.params[p.key] !== undefined);
-    box.append(h('details', open ? { open: true } : null, h('summary', { class: 'muted small' }, 'More options'), h('div', { class: 'stack', style: { marginTop: '10px' } }, adv.map(p => paramControl(p, s, i, commit, renderInspector)))));
+    const open = adv.some(p => s.params && !isBlank(s.params[p.key]));
+    box.append(h('details', open ? { open: true } : null, h('summary', { class: 'muted small' }, 'More options'), h('div', { class: 'stack', style: { marginTop: '10px' } }, adv.map(p => paramControl(p, s, i, commit, again)))));
   }
   if (!spec.params.length) box.append(h('div', { class: 'muted small' }, 'Nothing to set for this step.'));
   const flow = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null;
@@ -258,7 +261,7 @@ function refreshTitles() { renderNodes(); }
 function drawProblems() {
   if (!CV || !EW) return;
   const all = EW.serverProblems ? EW.serverProblems : EW.check.errors;
-  if (CV.banner) fill(CV.banner, all.length ? notice([h('div', null, h('b', null, EW.serverProblems ? 'These need fixing before it can be saved:' : plural(all.length, 'problem') + ' to fix before it can be saved:'), h('ul', { style: { margin: '4px 0 0', paddingLeft: '18px' } }, all.slice(0, 6).map(m => h('li', null, m))))], 'bad') : null);
+  if (CV.banner) fill(CV.banner, all.length ? notice([h('div', null, h('b', null, EW.serverProblems ? 'These need fixing before it can be saved:' : plural(all.length, 'problem') + ' to fix before it can be saved:'), h('ul', { style: { margin: '4px 0 0', paddingLeft: '18px' } }, all.slice(0, 6).map(m => { const n = /^Step (\d+)\b/.exec(m); return h('li', n ? { class: 'jump', title: 'Show this step', onclick: () => { const id = EW.ids[+n[1] - 1]; if (id !== undefined) cvOpen(String(id)); } } : null, m); })))], 'bad') : null);
   const i = CV.sel.size === 1 ? idxOf(primary()) : -1;
   if (CV.probEl) fill(CV.probEl, i >= 0 ? problemsFor(i + 1).map(([t, m]) => h('div', { class: 'prob ' + t }, m.replace(/^Step \d+( \([^)]*\))?:? ?/, ''))) : null);
   const sig = JSON.stringify(EW.check);
@@ -340,6 +343,6 @@ function drawPane() {
   if (!CV || !CV.nodesEl) return;
   const ok = new Set([...chain(), ...EW.pids.map(String)]);
   CV.sel = new Set([...CV.sel].filter(id => ok.has(id)));
-  renderNodes(); renderInspector(); prefetchBlocks();
+  renderNodes(); renderInspector(); prefetchBlocks(); swRefresh();
 }
 """

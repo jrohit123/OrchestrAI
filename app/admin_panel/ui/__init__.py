@@ -18,6 +18,7 @@ from app.admin_panel.ui import (
     js_rest,
     js_routing,
     js_settings,
+    js_stepwin,
     js_studio,
     js_studio_form,
 )
@@ -39,6 +40,7 @@ APP_JS = (
             js_studio,
             js_canvas,
             js_canvas_panels,
+            js_stepwin,
             js_flows,
             js_home,
             js_rest,

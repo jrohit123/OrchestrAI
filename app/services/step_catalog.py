@@ -18,6 +18,7 @@ import re
 #   table, column (needs table_key), alias, value, text, longtext, number, bool, choice,
 #   list_text, list_column, map_value (column -> value), map_column (field -> column),
 #   map_text (free key -> text), sequence, workflow
+# a choice lists its options as [value, label] or [value, label, one line that explains it]
 
 STEP_TYPES: list[dict] = [
     {
@@ -57,10 +58,15 @@ STEP_TYPES: list[dict] = [
                 "label": "The text is",
                 "kind": "choice",
                 "options": [
-                    ["", "A name or word"],
+                    [
+                        "",
+                        "A name or word",
+                        "Matches the words you type, such as a person's name.",
+                    ],
                     [
                         "identifier",
-                        "A reference number (ignores spaces, dashes and capitals)",
+                        "A reference number",
+                        "Ignores spaces, dashes and capitals, so cs 26 10 0042 finds CS-26-10-0042.",
                     ],
                 ],
             },
@@ -397,9 +403,21 @@ STEP_TYPES: list[dict] = [
                 "kind": "choice",
                 "required": True,
                 "options": [
-                    ["level2", "Level 2"],
-                    ["helper", "Helper"],
-                    ["watcher", "Watcher"],
+                    [
+                        "level2",
+                        "Level 2",
+                        "Steps in when the first person cannot sort it out.",
+                    ],
+                    [
+                        "helper",
+                        "Helper",
+                        "Helps with the case, such as someone it was passed on to.",
+                    ],
+                    [
+                        "watcher",
+                        "Watcher",
+                        "Is kept informed but does not act on the case.",
+                    ],
                 ],
             },
         ],

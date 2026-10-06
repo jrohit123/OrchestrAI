@@ -261,6 +261,7 @@ def _resolve_path(ctx: dict, path):
     '$customer.id'          → ctx['customer']['id']
     '$org_id'               → ctx['org_id']
     '$user.user_id'         → ctx['user']['user_id']
+    '$user.name'            → the person's name (their record calls it user_name)
     Non-$ values are returned as-is (literal).
     """
     if not isinstance(path, str) or not path.startswith("$"):
@@ -272,6 +273,8 @@ def _resolve_path(ctx: dict, path):
             val = val.get(p)
         else:
             return None
+    if val is None and parts == ["user", "name"]:
+        return (ctx.get("user") or {}).get("user_name")
     return val
 
 
@@ -1439,6 +1442,21 @@ async def _op_derive_field(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+def _notify_message(params: dict, ctx: dict) -> str:
+    """The text notify.user sends: its message_template with the {field} placeholders filled
+    in from fields, computed values, generated numbers and the case found earlier."""
+    all_vals = {
+        **ctx.get("fields", {}),
+        **ctx.get("computed", {}),
+        **ctx.get("generated", {}),
+        **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
+    }
+    try:
+        return _fix_stray_escapes(params["message_template"]).format(**all_vals)
+    except (KeyError, IndexError):
+        return _fix_stray_escapes(params["message_template"])
+
+
 async def _op_notify_user(params: dict, ctx: dict) -> dict:
     """
     Send a text to an arbitrary resolved user (not the current caller).
@@ -1452,18 +1470,7 @@ async def _op_notify_user(params: dict, ctx: dict) -> dict:
     if not to_phone:
         return ctx  # no phone on file — skip silently, don't fail the workflow
 
-    all_vals = {
-        **ctx.get("fields", {}),
-        **ctx.get("computed", {}),
-        **ctx.get("generated", {}),
-        **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
-    }
-    try:
-        message = _fix_stray_escapes(params["message_template"]).format(**all_vals)
-    except (KeyError, IndexError):
-        message = _fix_stray_escapes(params["message_template"])
-
-    await send_text(to_phone, message)
+    await send_text(to_phone, _notify_message(params, ctx))
     return ctx
 
 
@@ -1726,22 +1733,105 @@ def _record_text(row) -> str:
     return _pairs_text(picked, 3)
 
 
-def _trace(ctx: dict, step: dict, status: str, detail: str | None = None) -> None:
+# What a rehearsal tells the step window about each step. Phone numbers, emails and anything
+# secret are never shown, the same care the assistant's own database queries take.
+_HIDDEN_KEYS = {"config", "otp_hash"}
+_HIDDEN_WORDS = ("phone", "mobile", "email", "password", "secret", "token")
+
+
+def _trace_value(v):
+    """One value of a rehearsal result: short, plain and safe to put in JSON."""
+    if v is None or isinstance(v, (bool, int, float)):
+        return v
+    if isinstance(v, (dict, list, tuple)):
+        text = json.dumps(v, default=str, ensure_ascii=False)
+    else:
+        text = _nice(v)
+    return text if len(text) <= 300 else text[:300] + "…"
+
+
+def _tidy_data(values) -> dict | None:
+    """The data of one step in a rehearsal, as plain values (at most 40) with the private ones hidden."""
+    if not isinstance(values, dict):
+        return None
+    out: dict = {}
+    for key, v in values.items():
+        name = str(key)
+        low = name.lower()
+        if low == "org_id":
+            continue
+        hidden = low in _HIDDEN_KEYS or any(w in low for w in _HIDDEN_WORDS)
+        out[name] = "(hidden)" if hidden else _trace_value(v)
+        if len(out) >= 40:
+            break
+    return out or None
+
+
+def _would_data(op_name: str, params: dict, ctx: dict) -> dict | None:
+    """What a step that saves or sends would put out: the values it would write, or the message.
+    Showing it must never get in the way of the rehearsal, so any problem gives nothing."""
+    try:
+        if op_name in ("db.insert_row", "sheets.insert_row", "db.upsert_row"):
+            return _tidy_data(_resolve_values(params.get("values", {}), ctx))
+        if op_name in ("db.update_row", "sheets.update_row"):
+            return _tidy_data(_resolve_values(params.get("set", {}), ctx))
+        if op_name == "notify.user":
+            to = _resolve_path(ctx, params.get("to"))
+            return _tidy_data(
+                {
+                    "to": f"••••{str(to)[-4:]}" if to else "no phone number on file",
+                    "message": _notify_message(params, ctx),
+                }
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _ran_data(op_name: str, params: dict, ctx: dict) -> dict | None:
+    """What a step that ran for real gave to the steps after it (the record it found, a value it
+    worked out). Any problem gives nothing."""
+    try:
+        if op_name == "resolve_entity":
+            into = params.get("into") or str(params.get("table", "")).rstrip("s")
+            return _tidy_data(ctx.get(into))
+        if op_name == "derive_field":
+            field = params.get("field")
+            return _tidy_data({field: ctx["fields"].get(field)}) if field else None
+        if op_name == "compute":
+            return _tidy_data(ctx.get("computed"))
+        if op_name in ("case.categorize", "case.route"):
+            default = "category" if op_name == "case.categorize" else "route"
+            return _tidy_data(ctx.get(params.get("into") or default))
+    except Exception:
+        return None
+    return None
+
+
+def _trace(
+    ctx: dict,
+    step: dict,
+    status: str,
+    detail: str | None = None,
+    data: dict | None = None,
+) -> None:
     """One line of what a preview ("Try it") did with a step. ran = looked something up,
-    would = would save or send when it really runs, skipped = its condition was not met."""
+    would = would save or send when it really runs, skipped = its condition was not met.
+    data = what the step gave or would give, for the step window."""
     if ctx.get("trace") is None:
         return
     from app.services.step_sql import describe_step
 
-    ctx["trace"].append(
-        {
-            "depth": max(len(ctx.get("_call_stack") or []) - 1, 0),
-            "op": step.get("op"),
-            "text": describe_step(step, ctx.get("_block_names")),
-            "status": status,
-            "detail": detail,
-        }
-    )
+    line = {
+        "depth": max(len(ctx.get("_call_stack") or []) - 1, 0),
+        "op": step.get("op"),
+        "text": describe_step(step, ctx.get("_block_names")),
+        "status": status,
+        "detail": detail,
+    }
+    if data:
+        line["data"] = data
+    ctx["trace"].append(line)
 
 
 def _would_text(op_name: str, params: dict, ctx: dict) -> str:
@@ -1778,7 +1868,13 @@ async def _run_op(op_name: str, op_fn, step: dict, ctx: dict) -> dict:
     before = len(ctx.get("preview", []))
     if op_name in _SKIP_WHEN_PREVIEWING:
         ctx = _skip_for_preview(op_name, params, ctx)
-        _trace(ctx, step, "would", _would_text(op_name, params, ctx))
+        _trace(
+            ctx,
+            step,
+            "would",
+            _would_text(op_name, params, ctx),
+            _would_data(op_name, params, ctx),
+        )
         return ctx
     try:
         ctx = await op_fn(params, ctx)
@@ -1800,7 +1896,7 @@ async def _run_op(op_name: str, op_fn, step: dict, ctx: dict) -> dict:
         detail = f"{params.get('field')} = {value}"
     elif ctx.get("preview", [])[before:]:
         detail = "; ".join(ctx["preview"][before:])
-    _trace(ctx, step, "ran", detail)
+    _trace(ctx, step, "ran", detail, _ran_data(op_name, params, ctx))
     return ctx
 
 

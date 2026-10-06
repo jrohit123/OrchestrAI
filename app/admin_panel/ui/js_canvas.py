@@ -30,7 +30,7 @@ const pidAt = k => String(EW.pids[k]);                 // parked steps have thei
 const pidxOf = id => EW.pids.findIndex(x => String(x) === id);
 const isParked = id => pidxOf(id) >= 0;
 // a short name for a step in the messages: the building block's own name, or what kind of step it is
-const stepName = s => { const f = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null; return f ? f.name : ((catalogSpec(s.op) || {}).label || describeStep(s)); };
+const stepName = s => { const f = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null; return s.name || (f ? f.name : ((catalogSpec(s.op) || {}).label || describeStep(s))); };
 const isRead = () => EW.d.workflow_type === 'read';
 const chain = () => isRead() ? ['trigger', 'report'] : ['trigger', ...EW.ids.map(String)];
 const wireIds = () => [...chain(), 'end'];
@@ -73,7 +73,7 @@ function nodeBar(id, parked) {
   const b = (ic, label, fn, cls) => h('button', { class: 'nd-bb' + (cls ? ' ' + cls : ''), type: 'button', 'aria-label': label, title: label, onclick: e => { e.stopPropagation(); fn(); } }, icon(ic, 'sm'));
   return h('div', { class: 'nd-bar' }, parked
     ? [b('undo', 'Put back in the flow', () => cvUnpark(id)), b('trash', 'Delete', () => cvDel(id), 'del')]
-    : [b('edit', 'Open', () => cvOpen(id)), b('copy', 'Duplicate', () => cvDup(id)), b('trash', 'Delete', () => cvDel(id), 'del')]);
+    : [b('edit', 'Open', () => swOpen(id)), b('play', 'Test this step', () => swOpen(id, { test: true })), b('copy', 'Duplicate', () => cvDup(id)), b('trash', 'Delete', () => cvDel(id), 'del')]);
 }
 function cvTriggerNode() { return CV.compact ? cvTriggerTile() : cvTriggerCard(); }
 function cvTriggerTile() {
@@ -113,12 +113,33 @@ function stepFacts(s, id) {
   return { spec: catalogSpec(s.op), key: cvKey(s), blk, flow, wait: CV_WAITS[s.op], st: CV.run && CV.run.states[id],
     stops: [cvStopText(s), ...((flow && CV.peek[flow.id]) || []).map(cvStopText)].filter(Boolean) };
 }
+// the one line under a tile's name: the setting that matters most, short
+function stepSub(s, f) {
+  const p = s.params || {};
+  if (f.blk) return 'Building block';
+  const last = v => {                                          // who a message goes to: the record it comes from, or the column without "phone"
+    if (typeof v !== 'string' || !v.startsWith('$')) return '';
+    const parts = v.slice(1).split('.'), tail = parts[parts.length - 1], who = tail.replace(/_?phone$/, '');
+    return pretty(who || parts[0]).toLowerCase();
+  };
+  const table = p.table ? tlabel(p.table) : '';
+  switch (s.op) {
+    case 'resolve_entity': return table + (p.match_column ? ' · by ' + pretty(p.match_column).toLowerCase() : p.match_columns ? ' · several columns' : '');
+    case 'db.update_row': { const keys = Object.keys(p.set || {}); return table + (keys.length ? ' · ' + keys.slice(0, 2).map(k => pretty(k).toLowerCase()).join(', ') : ''); }
+    case 'notify.user': return p.to ? 'to ' + (last(p.to) || '…') : '';
+    case 'derive_field': return p.field ? pretty(p.field).toLowerCase() : '';
+    case 'require_permission': return (p.any_of || []).join(' or ');
+    default: return table;
+  }
+}
 function cvStepTile(s, i, k) {
   const parked = k != null, id = parked ? pidAt(k) : idAt(i), f = stepFacts(s, id), p = s.params || {};
   const problems = parked ? 0 : problemsFor(i + 1).filter(x => x[0] === 'bad').length;
-  const name = f.blk ? (f.flow ? f.flow.name : 'Building block (missing)') : (f.spec ? f.spec.label : s.op);
-  const sub = parked ? 'Parked: does not run' : f.blk ? 'Building block' : p.table ? tlabel(p.table) : '';
+  const base = f.blk ? (f.flow ? f.flow.name : 'Building block (missing)') : (f.spec ? f.spec.label : s.op);
+  const name = s.name || base;                                  // a name the person gave it, with what kind of step it is underneath
+  const sub = parked ? 'Parked: does not run' : s.name ? base : stepSub(s, f);
   const bdg = [
+    s.note ? h('span', { class: 'nc-b nc-b-note', title: s.note }, icon('file', 'xs')) : null,
     f.stops.length ? h('span', { class: 'nc-b nc-b-stop', title: 'Can stop the flow: ' + f.stops.slice(0, 3).join(' / ') }, icon('stop', 'xs')) : null,
     s.when ? h('span', { class: 'nc-b nc-b-if', title: 'Only if ' + condText(s.when) }, icon('branch', 'xs')) : null,
     f.wait ? h('span', { class: 'nc-b nc-b-wait', title: f.wait }, icon('pause', 'xs')) : null,
@@ -137,19 +158,20 @@ function cvStepCard(s, i, k) {
   const problems = parked ? 0 : problemsFor(i + 1).filter(p => p[0] === 'bad').length;
   const stops = f.stops;
   const tag = blk ? h('span', { class: 'tag blk' }, 'Block') : isAiStep(s) ? h('span', { class: 'tag ai' }, '✦ AI') : h('span', { class: 'tag tcode' }, 'Code');
-  const sub = blk ? ((flow && flow.description) || 'Runs the steps of another workflow') : (spec ? spec.label : s.op);
+  const sub = s.name ? describeStep(s) : blk ? ((flow && flow.description) || 'Runs the steps of another workflow') : (spec ? spec.label : s.op);
   return h('div', { class: 'nd k-' + key + (blk ? ' blk' : '') + (parked ? ' parked' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': (parked ? 'Parked, does not run: ' : '') + describeStep(s) },
     parked ? null : h('span', { class: 'nd-ord' }, i + 1), parked ? null : h('span', { class: 'nd-port in' }), parked ? null : h('span', { class: 'nd-port out' }), h('span', { class: 'nd-stb' }, st ? CV_ST[st] || '' : ''),
     problems ? h('span', { class: 'nd-bad', title: 'This step has a problem to fix' }, '!') : null,
     nodeBar(id, parked),
     h('div', { class: 'nd-h' },
       h('span', { class: 'nd-gi' }, icon(cvIcon(s.op))),
-      h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, blk ? 'Building block' : (spec ? spec.group : 'Step')), h('div', { class: 'nd-t' }, describeStep(s)), CV.tech ? null : h('div', { class: 'nd-s' }, sub)),
+      h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, blk ? 'Building block' : (spec ? spec.group : 'Step')), h('div', { class: 'nd-t' }, s.name || describeStep(s)), CV.tech ? null : h('div', { class: 'nd-s' }, sub)),
       h('div', { class: 'nd-tags' }, tag)),
     parked ? h('div', { class: 'nd-parkn' }, icon('unlink', 'sm'), 'Parked: it stays here but does not run') : null,
     CV.tech ? h('pre', { class: 'nd-tech' }, JSON.stringify({ op: s.op, params: s.params || {}, ...(s.when ? { when: s.when } : {}) }, null, 1).replace(/\n\s*/g, ' ')) : null,
     s.when ? h('div', { class: 'nd-cond' }, icon('branch', 'sm'), 'only if ' + condText(s.when)) : null,
     wait ? h('div', { class: 'nd-wait' }, icon('pause', 'sm'), wait) : null,
+    s.note ? h('div', { class: 'nd-note' }, icon('file', 'sm'), s.note) : null,
     flow ? h('div', { class: 'nd-foot' },
       n ? h('button', { class: 'nd-exp', type: 'button', onclick: e => { e.stopPropagation(); cvToggle(flow); } }, icon(open ? 'chevd' : 'chevr', 'xs'), 'Inside · ' + plural(n, 'step')) : h('span', null, 'No steps yet'),
       h('span', null, '·'), h('a', { href: '#/workflows?w=' + flow.id, onclick: e => e.stopPropagation(), 'data-tip': 'Open the building block to change it' }, 'Open this block')) : null,
@@ -606,6 +628,8 @@ function wireCanvas(cv) {
         if (g.multi) { CV.sel.has(g.id) ? CV.sel.delete(g.id) : CV.sel.add(g.id); } else CV.sel = new Set([g.id]);
         if (CV.panel !== 'try') { CV.panel = 'insp'; CV.itab = 'set'; }
         renderNodes(); renderInspector(); revealAbove(g.id);
+        const now = Date.now(), tap = CV.tap;                     // two quick clicks on a step open its window
+        if (!g.multi && idxOf(g.id) >= 0 && tap && tap.id === g.id && now - tap.at < 500) { CV.tap = null; swOpen(g.id); } else CV.tap = { id: g.id, at: now };
       } else { EW.autoArr = false; commitLayout(); }
       return;
     }
@@ -626,8 +650,10 @@ function wireCanvas(cv) {
   cv.addEventListener('keydown', e => {
     const n = e.target.closest && e.target.closest('.nd');
     if (!n || e.key !== 'Enter' || n.dataset.id === 'end') return;
+    if (idxOf(n.dataset.id) >= 0) { swOpen(n.dataset.id); return; }
     CV.sel = new Set([n.dataset.id]); CV.panel = 'insp'; CV.itab = 'set'; renderNodes(); renderInspector();
   });
+  cv.addEventListener('contextmenu', cvMenu);
 }
 function startWire(e, node) {
   const p = svgEl('path', { class: 'wire tmpw' });
@@ -759,7 +785,9 @@ document.addEventListener('keydown', e => {
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   else if ((e.key === 'Delete' || e.key === 'Backspace') && CV.sel.size) { e.preventDefault(); removeSelected(); }
   else if ((e.key === 'n' || e.key === 'N') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cvNext(); }
-  else if (e.key === 'Escape' && CV.sel.size) { CV.sel = new Set(); renderNodes(); renderInspector(); }
+  else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'd' && primary() && idxOf(primary()) >= 0) { e.preventDefault(); cvDup(primary()); }
+  else if ((e.key === 'F2' || e.key === ' ' || e.key === 'Enter') && !e.ctrlKey && !e.metaKey && !e.altKey && primary() && idxOf(primary()) >= 0 && (!t || t === document.body || (t.closest && t.closest('.cv')))) { e.preventDefault(); if (e.key === 'Enter') swOpen(primary()); else cvRename(primary()); }
+  else if (e.key === 'Escape' && CV.sel.size && Date.now() - swClosedAt > 150) { CV.sel = new Set(); renderNodes(); renderInspector(); }
 });
 window.addEventListener('resize', () => { if (CV && CV.el && CV.el.isConnected) applyZoom(); });
 """
