@@ -19,25 +19,18 @@ function paletteNode(compact) {
   const groups = GROUP_ORDER.filter(g => g !== 'Other').map(g => [g, steps.filter(s => s.group === g && !isAiStep(s) && s.op !== 'run_workflow')]).filter(g => g[1].length);
   const ai = steps.filter(isAiStep);
   const secs = [];
-  if (!compact) secs.push(palSec('trig', 'Triggers', 'trigger', 'bolt', 5, [
+  if (!compact) secs.push(palSec('trig', 'Triggers', 'trigger', 'bolt', 3, [
     palItem({ trig: 'say', k: 'trigger', icon: 'chat', label: 'Someone says something', help: 'Starts the flow when a person writes something like the phrases you list.' }),
     palItem({ trig: 'cmd', k: 'trigger', icon: 'msg', label: 'Someone types a command', help: 'Starts it when a person types a /command.' }),
-    palItem({ trig: 'btn', k: 'trigger', icon: 'cases', label: 'A button on a case', help: 'Starts it from a button on a case (the kind “case action”).' }),
-    palItem({ later: true, k: 'trigger', icon: 'cal', label: 'On a schedule', help: 'Starts it at a set time, every day or every week. Later: schedules come with the next engine step.' }),
-    palItem({ later: true, k: 'trigger', icon: 'bolt', label: 'When something happens', help: 'For example when a case is created. Later: the engine does not listen for events yet.' })]));
+    palItem({ trig: 'btn', k: 'trigger', icon: 'cases', label: 'A button on a case', help: 'Starts it from a button on a case (a case button).' })]));
   secs.push(palSec('act', 'Actions', 'save', 'layers', groups.reduce((n, g) => n + g[1].length, 0),
     groups.map(([g, items]) => palSec('act:' + g, g, CV_KIND[g] || 'other', '', items.length, items.map(stepItem), { sub: true, dot: true }))));
-  if (!compact) secs.push(palSec('logic', 'Logic', 'other', 'branch', 3, [
-    palItem({ logic: 'if', k: 'other', icon: 'branch', label: 'Only run if…', help: 'Skips a step unless something is true. Click a step first, then choose this.' }),
-    palItem({ later: true, k: 'other', icon: 'flow', label: 'If / else branch', help: 'Two paths from one step. Later: the engine runs one chain today.' }),
-    palItem({ later: true, k: 'other', icon: 'refresh', label: 'Repeat for each…', help: 'Do the same steps for every item in a list. Later: needs engine work.' })]));
-  secs.push(palSec('ai', 'AI', 'ai', 'spark', ai.length + 1, [...ai.map(stepItem),
-    palItem({ later: true, k: 'ai', icon: 'spark', label: 'Decide with the assistant', help: 'Let the assistant choose between paths. An idea only: AI is used where it is needed and nowhere else.' })]));
-  secs.push(palSec('block', 'Building blocks', 'block', 'layers', blocks.length, blocks.length
-    ? blocks.map(b => palItem({ op: 'run_workflow', block: b.intent_key, k: 'block', icon: 'layers', label: b.name, help: (b.description || 'A shared building block.') + ((b.needs || []).length ? ' It needs: ' + b.needs.join(', ') + ' found first.' : '') }))
-    : h('div', { class: 'pmine' }, 'No other building blocks yet.')));
-  secs.push(palSec('mine', 'My nodes', 'trigger', 'star', 0, [h('div', { class: 'pmine' }, 'Your own node is a building block: one small step with a name that any workflow can run. Describe what it should do and the assistant drafts it for you to check. A new kind of step (for example one that calls another website) needs new code, so ask for that separately.'),
-    h('button', { class: 'mnew', type: 'button', 'data-newnode': '1' }, icon('plus', 'sm'), 'Make your own node')]));
+  if (!compact) secs.push(palSec('logic', 'Logic', 'other', 'branch', 1, [
+    palItem({ logic: 'if', k: 'other', icon: 'branch', label: 'Only run if…', help: 'Skips a step unless something is true. Click a step first, then choose this.' })]));
+  if (ai.length) secs.push(palSec('ai', 'AI', 'ai', 'spark', ai.length, ai.map(stepItem)));
+  secs.push(palSec('block', 'Building blocks', 'block', 'layers', blocks.length, [...blocks.map(b => palItem({ op: 'run_workflow', block: b.intent_key, k: 'block', icon: 'layers', label: b.name, help: (b.description || 'A small ready-made step other flows use.') + ((b.needs || []).length ? ' It needs: ' + b.needs.join(', ') + ' found first.' : '') })),
+    blocks.length ? null : h('div', { class: 'pmine' }, 'No other building blocks yet. A building block is one small step, with a name, that any flow can use.'),
+    h('button', { class: 'mnew', type: 'button', 'data-newnode': '1' }, icon('plus', 'sm'), 'Make a new building block')]));
   return h('div', null, secs);
 }
 function filterPal(root, q) {
@@ -58,7 +51,7 @@ function usePalItem(d, at, pos) {
     CV.itab = 'if'; CV.panel = 'insp'; renderInspector(); return;
   }
   if (!d.op) return;
-  if (isRead()) { toast('This workflow answers with a saved report, so it has no steps to add.'); return; }
+  if (isRead()) { toast('This flow answers with a saved report, so it has no steps to add.'); return; }
   if (at == null && !pos) { const id = primary(); if (id && idxOf(id) >= 0) at = idxOf(id) + 1; }   // with a step selected, a click adds right after it
   cvAddStep(d.op, at, d.block ? { workflow: d.block } : null, pos);
 }
@@ -72,7 +65,7 @@ function cvOpenAdd(at, anchor, pos) {
     closePop(); usePalItem(palData(b), at, pos);
   });
 }
-// "Make your own node" opens the same dialog as New building block, with the assistant's draft first
+// "Make a new building block" opens the same dialog as New building block, with the assistant's draft first
 async function makeNode() {
   try { await ensureStudio(); newWorkflowModal(!!S.boot.caps.workflow_kind, 'block'); } catch (e) { toast(e.message, 'bad'); }
 }
@@ -138,8 +131,7 @@ function parkedPanel(k) {
 function multiPanel() {
   const steps = EW.work.steps.filter((_, i) => CV.sel.has(idAt(i)));
   return [insHead('block', 'layers', 'Several boxes', CV.sel.size + ' boxes selected', 'Drag any of them to move them all together.'),
-    h('div', { class: 'ib' }, h('div', { class: 'stack s8' }, steps.map(s => h('div', { class: 'row flat k-' + cvKey(s), style: { padding: '7px 10px', border: '1px solid var(--line)', borderRadius: '9px' } }, h('i', { style: { width: '9px', height: '9px', borderRadius: '3px', background: 'var(--kc)', flex: 'none' } }), h('span', { class: 'grow' }, describeStep(s))))),
-      h('div', { class: 'notice' }, icon('star'), h('div', { class: 'small' }, h('b', null, 'Make your own node.'), ' Soon you can save these as one node with a name and a colour, and use it in any flow.'))),
+    h('div', { class: 'ib' }, h('div', { class: 'stack s8' }, steps.map(s => h('div', { class: 'row flat k-' + cvKey(s), style: { padding: '7px 10px', border: '1px solid var(--line)', borderRadius: '9px' } }, h('i', { style: { width: '9px', height: '9px', borderRadius: '3px', background: 'var(--kc)', flex: 'none' } }), h('span', { class: 'grow' }, describeStep(s)))))),
     h('div', { class: 'if' }, h('button', { class: 'btn sm danger', type: 'button', onclick: () => stepAct('del') }, icon('trash', 'sm'), 'Delete'))];
 }
 function triggerPanel() {
@@ -151,7 +143,7 @@ function triggerPanel() {
 function reportPanel() {
   const d = EW.d;
   const worded = sel([['list', 'By code: every row is shown exactly as stored'], ['generic', 'By the assistant (AI): it may shorten or reword']], EW.work.response_format, { onchange: e => { EW.work.response_format = e.target.value; commit(true); } });
-  return [insHead('look', 'table', 'A saved report', 'This workflow answers with a report', 'It looks things up with a saved query instead of steps.'),
+  return [insHead('look', 'table', 'A saved report', 'This flow answers with a report', 'It looks things up with a saved query instead of steps.'),
     h('div', { class: 'ib' },
       h('div', { class: 'stack s8' }, h('div', { class: 'techlabel' }, h('span', null, 'The SQL it runs'), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(d.sql_template || '') }, 'Copy')), h('pre', { class: 'code' }, d.sql_template || '')),
       field('How the answer is worded', worded, 'The query always finds the rows. This only chooses who words the reply: code never drops a row or changes a number; the assistant may.'),
@@ -180,7 +172,7 @@ function settingsTab(s, i, again) {
   }
   if (!spec.params.length) box.append(h('div', { class: 'muted small' }, 'Nothing to set for this step.'));
   const flow = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null;
-  if (flow) box.append(h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, h('b', null, 'A building block.'), ' Change it by opening it. It then changes in every workflow that runs it. ', h('a', { href: '#/workflows?w=' + flow.id }, 'Open this block'))));
+  if (flow) box.append(h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, h('b', null, 'A building block.'), ' Change it by opening it. It then changes in every flow that uses it. ', h('a', { href: '#/workflows?w=' + flow.id }, 'Open this block'))));
   return box;
 }
 function onlyIfTab(s, i) {
@@ -195,7 +187,7 @@ function techTab(s, i) {
   api.post('/studio/technical', { steps: tidySteps([s]) }).then(r => {
     if (mine !== CV || !sqlBox.isConnected) return;
     const sqls = r.steps[0] ? r.steps[0].sql : [];
-    fill(sqlBox, !sqls.length ? h('div', { class: 'muted small' }, s.op === 'run_workflow' ? 'This step runs the steps of another workflow. Open it to see its SQL.' : 'This step runs no SQL.')
+    fill(sqlBox, !sqls.length ? h('div', { class: 'muted small' }, s.op === 'run_workflow' ? 'This step runs the steps of another flow. Open it to see its SQL.' : 'This step runs no SQL.')
       : sqls.map(q => h('div', { style: { marginBottom: '10px' } }, h('div', { class: 'techlabel' }, h('span', null, q.title), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(q.sql) }, 'Copy')), h('pre', { class: 'code' }, q.sql),
         q.values.length ? h('ul', { class: 'vals' }, q.values.map(v => h('li', null, v))) : null, q.note ? h('div', { class: 'muted small' }, q.note) : null)));
   }).catch(() => { if (sqlBox.isConnected) fill(sqlBox, h('div', { class: 'muted small' }, 'The SQL could not be worked out right now.')); });
@@ -245,7 +237,7 @@ function tryPanel() {
     } catch (e) { fill(out, notice(e.message, 'bad')); run.disabled = false; }
   });
   return [insHead('look', 'play', 'Rehearsal', 'Try “' + EW.work.name + '”', 'Looking things up runs for real. Saving and sending are only described: nothing is saved and nobody is messaged.'),
-    h('div', { class: 'ib' }, asBox, asked.length ? fieldsBox : h('div', { class: 'muted small' }, 'This workflow asks for nothing.'),
+    h('div', { class: 'ib' }, asBox, asked.length ? fieldsBox : h('div', { class: 'muted small' }, 'This flow asks for nothing.'),
       h('div', { class: 'row' }, run, h('button', { class: 'btn ghost', type: 'button', onclick: () => { clearRun(); renderNodes(); renderInspector(); } }, 'Clear')), out)];
 }
 
@@ -267,6 +259,10 @@ function drawProblems() {
   const sig = JSON.stringify(EW.check);
   if (sig !== CV.checkSig) { CV.checkSig = sig; renderNodes(); }     // the little "!" on a box
 }
+function moreMenu(anchor) {
+  const row = (ic, label, fn) => h('button', { class: 'mi', type: 'button', onclick: () => { closePop(); fn(); } }, icon(ic, 'sm'), h('span', { class: 'grow' }, label));
+  openPop(anchor, [row('table', CV.view === 'tech' ? 'Hide the technical details' : 'Show the technical details', () => setView(CV.view === 'tech' ? 'detail' : 'tech')), row('help', 'What the colours and bars mean', () => legendPop(anchor))], { width: 290, up: true });
+}
 function legendPop(anchor) {
   const row = (c, t) => h('div', { class: 'lgrow' }, h('i', { style: { background: 'var(' + c + ')' } }), t);
   openPop(anchor, [h('div', { class: 'ml' }, 'Colour = what a step does'), row('--k-trigger', 'When… (what starts it)'), row('--k-look', 'Look up and check'), row('--k-save', 'Save changes'), row('--k-tell', 'Tell people'), row('--k-approve', 'Approvals (code or approver)'), row('--k-other', 'Other'), row('--k-block', 'Building block (stacked card)'), row('--k-ai', 'AI is only used where marked'),
@@ -277,7 +273,7 @@ function drawEditor() {
   const root = ui.root, d = EW.d, read = isRead();
   if (!CV || CV.for !== EW) CV = newCanvas();
   CV.pal = null;
-  ui.name = h('input', { class: 'nm', type: 'text', value: EW.work.name, 'aria-label': 'Workflow name', oninput: e => { EW.work.name = e.target.value; const cn = document.getElementById('crumbname'); if (cn) cn.textContent = e.target.value; commit(false); } });
+  ui.name = h('input', { class: 'nm', type: 'text', value: EW.work.name, 'aria-label': 'Flow name', oninput: e => { EW.work.name = e.target.value; const cn = document.getElementById('crumbname'); if (cn) cn.textContent = e.target.value; commit(false); } });
   ui.save = h('button', { class: 'btn sm primary', type: 'button', onclick: save }, 'Saved');
   ui.discard = h('button', { class: 'btn sm', type: 'button', onclick: discard }, 'Discard');
   ui.undo = h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Undo the last change', 'data-tip': 'Undo the last change (Ctrl+Z)', onclick: undo }, icon('undo', 'sm'));
@@ -298,33 +294,37 @@ function drawEditor() {
   wireCanvas(cv);
   const zb = (label, ic, fn) => h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': label, 'data-tip': label, onclick: fn }, icon(ic, 'sm'));
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How the steps are drawn' },
-    [['compact', 'Compact', 'Little tiles, so more of the flow fits on the screen'], ['detail', 'Detailed', 'Full cards in plain words'], ['tech', 'Technical', 'Full cards with the technical settings']].map(([v, label, tip]) =>
-      h('button', { type: 'button', class: CV.view === v ? 'on' : '', 'data-view': v, 'data-tip': tip, onclick: () => setView(v) }, label)));
+    [['compact', 'Simple', 'Little tiles, so more of the flow fits on the screen'], ['detail', 'Detailed', 'Full cards in plain words'], ['tech', 'Technical', 'Full cards with the technical settings']].map(([v, label, tip]) =>
+      h('button', { type: 'button', class: CV.view === v ? 'on' : '', hidden: v === 'tech' && CV.view !== 'tech', 'data-view': v, 'data-tip': tip, onclick: () => setView(v) }, label)));
   CV.seg = seg;
   const dock = h('div', { class: 'dock min' },
     h('button', { class: 'dhd', type: 'button', onclick: () => dock.classList.toggle('min') }, icon('spark'), h('span', null, 'Ask the assistant to change this flow'), icon('chevd', 'sm')),
     chatDock(read));
   const lbl = text => h('span', { class: 'tx' }, text);
+  // said once, then out of the way
+  const hint = read || store.get('panel.cvhint') === 'off' ? null : h('div', { class: 'cvhint' }, icon('info', 'sm'),
+    h('span', null, h('b', null, 'Double-click'), ' a step to open it · ', h('b', null, 'Right-click'), ' or use ', h('b', null, '⋯'), ' for more · ', h('b', null, 'Drag'), ' from a dot to connect · press ', h('b', null, 'N'), ' to add a step'),
+    h('button', { class: 'btn ghost sm', type: 'button', onclick: e => { store.set('panel.cvhint', 'off'); e.currentTarget.closest('.cvhint').remove(); } }, 'Got it'));
   const head = h('div', { class: 'cvbar' },
     h('div', { class: 'titlechip' },
       h('a', { class: 'btn sm ghost icon', href: '#/workflows', 'aria-label': 'Back to all flows' }, icon('chevl', 'sm')), ui.name,
-      badge(KIND_LABEL[EW.work.kind] || pretty(EW.work.kind || 'workflow'), EW.work.kind === 'block' ? 'teal' : 'violet'), badge('v' + d.version), ui.dirty,
+      badge(KIND_LABEL[EW.work.kind] || pretty(EW.work.kind || 'workflow'), EW.work.kind === 'block' ? 'teal' : 'violet'), ui.dirty,
       h('label', { class: 'row small flat', style: { gap: '6px' } }, switchEl(d.is_active, async v => { await api.post('/workflows/' + d.id + '/active', { is_active: v }); d.is_active = v; power.textContent = v ? 'On' : 'Off'; }), power)),
     h('div', { class: 'actbar' }, ui.undo,
-      h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),
+      h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore (this is version ' + d.version + ')', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { CV.panel = 'try'; renderInspector(); } }, icon('play', 'sm'), lbl('Try it')),
       ui.discard, ui.save));
   fill(root, h('div', { class: 'wsp' }, head,
     h('div', { class: 'wsprow' },
       paletteAside(),
       h('div', { class: 'cvwrap' },
-        CV.banner, cv,
+        CV.banner, hint, cv,
         h('div', { class: 'zoomb' }, zb('Zoom out', 'minus', () => setZoom(CV.zoom - 0.1)), zval, zb('Zoom in', 'plus', () => setZoom(CV.zoom + 0.1)), zb('Fit everything on screen', 'fit', () => fitView(true)),
           h('span', { class: 'vdiv' }),
           h('button', { class: 'btn sm ghost tidy', type: 'button', 'data-popkeep': '1', 'data-tip': 'Arrange the boxes: rows, by stage or a column (Shift+Alt+T)', onclick: e => tidyMenu(e.currentTarget) }, icon('tidy', 'sm'), lbl('Tidy up'), icon('chevd', 'xs')),
           h('span', { class: 'vdiv opt' }), seg, h('span', { class: 'vdiv' }),
-          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Steps you can add', 'data-tip': 'The list of steps you can add', onclick: () => { CV.pal.classList.toggle('closed'); applyZoom(); } }, icon('panel', 'sm'), lbl('Steps')),
-          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Legend', 'data-tip': 'What the colours, dots and bars mean', 'data-popkeep': '1', onclick: e => legendPop(e.currentTarget) }, icon('help', 'sm'), lbl('Legend'))),
+          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Steps you can add', 'data-tip': 'The list of steps you can add', onclick: () => { CV.pal.classList.toggle('closed'); applyZoom(); } }, icon('plus', 'sm'), lbl('Add a step')),
+          h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'More', 'data-tip': 'More: technical details, what the colours mean', 'data-popkeep': '1', onclick: e => moreMenu(e.currentTarget) }, icon('dots', 'sm'))),
         dock),
       insp)));
   const cn = document.getElementById('crumbname'); if (cn) cn.textContent = EW.work.name;

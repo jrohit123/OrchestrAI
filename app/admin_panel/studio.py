@@ -487,9 +487,7 @@ async def _save(
                 cmd,
                 workflow_id,
             ):
-                problems.append(
-                    f"The command /{cmd} is already used by another workflow."
-                )
+                problems.append(f"The command /{cmd} is already used by another flow.")
             changes["slash_command"] = cmd or None
         if kind == "block" and await _granted_roles(ctx, row["intent_key"]):
             problems.append(

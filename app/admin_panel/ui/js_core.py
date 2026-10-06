@@ -131,7 +131,7 @@ function avatar(name) {
 function person(id, name, opts) {
   if (!name) return h('span', { class: 'muted' }, (opts && opts.none) || '—');
   const inner = [avatar(name), h('span', { class: 'nm' }, name)];
-  return id ? h('a', { class: 'person', href: href('people', 'people', { person: id }), onclick: e => e.stopPropagation() }, inner)
+  return id ? h('a', { class: 'person', href: href('people', '', { person: id }), onclick: e => e.stopPropagation() }, inner)
             : h('span', { class: 'person' }, inner);
 }
 function empty(title, text) { return h('div', { class: 'empty' }, h('b', null, title), text || ''); }
@@ -222,7 +222,7 @@ function modal(o) {
   document.body.append(scrim, box);
   const first = box.querySelector('input,select,textarea');
   if (first) first.focus();
-  return { close, setError: m => { err.textContent = m; } };
+  return { close, setError: m => { err.textContent = m; }, setTitle: t => { const el = box.querySelector('.mh'); if (el && el.firstChild) el.firstChild.textContent = t; } };
 }
 function confirmBox(message, o) {
   o = o || {};

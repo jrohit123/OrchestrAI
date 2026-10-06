@@ -56,7 +56,8 @@ def test_the_screens_have_no_link_to_the_classic_dashboard():
     assert "classic" not in text
 
 
-def test_the_new_button_says_what_it_makes():
-    assert "New workflow / building block" in APP_JS
+def test_the_buttons_say_what_they_make():
+    # each screen has its own main button now (Flows: New flow, or New building block on that tab)
+    assert "New flow" in APP_JS
     assert "New building block" in APP_JS
-    assert "New flow" not in APP_JS
+    assert "New workflow" not in APP_JS

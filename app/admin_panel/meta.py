@@ -11,10 +11,14 @@ from app.admin_panel.common import (
     PanelRoute,
     check_values,
     log_event,
+    people_channel,
     rows,
     tx,
 )
 from app.db import fetch_all, fetch_one
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -23,49 +27,48 @@ router = APIRouter(
 
 def _sections(caps: dict[str, bool]) -> list[dict]:
     """Which screens this org gets. Driven by what its database can do, not by org name.
-    Where complaints go and the response times are tabs of Cases; chats are Conversations."""
-    people_tabs = [{"key": "people", "label": "People"}]
-    if caps.get("seats"):
-        people_tabs.append({"key": "seats", "label": "Seats"})
-    if caps.get("grants"):
-        people_tabs.append(
-            {"key": "access", "label": "Special access (not active yet)"}
-        )
-    people_tabs.append({"key": "roles", "label": "Roles"})
-    activity_tabs = []
-    if caps.get("audit"):
-        activity_tabs.append({"key": "all", "label": "All activity"})
-    if caps.get("events"):
-        activity_tabs.append({"key": "changes", "label": "Dashboard changes"})
+    The page puts Home, Cases, Conversations and People under "Every day" and the rest under
+    "Set up": how cases are sent and timed, roles and seats, what the assistant says, settings."""
     sections: list[dict] = [{"key": "overview", "label": "Home"}]
     if caps.get("cases"):
-        case_tabs = [{"key": "list", "label": "Cases"}]
-        if caps.get("case_model"):
-            case_tabs += [
-                {"key": "rules", "label": "Who gets them"},
-                {"key": "categories", "label": "Kinds of complaint"},
-            ]
-        if caps.get("targets"):
-            case_tabs.append({"key": "times", "label": "Response times"})
-        sections.append({"key": "cases", "label": "Cases", "tabs": case_tabs})
+        sections.append({"key": "cases", "label": "Cases"})
     if caps.get("audit"):
         sections.append({"key": "conversations", "label": "Conversations"})
-    sections.append({"key": "people", "label": "People", "tabs": people_tabs})
+    sections.append({"key": "people", "label": "People"})
     sections.append({"key": "workflows", "label": "Flows"})
     assistant_tabs = []
     if caps.get("texts"):
-        assistant_tabs.append({"key": "messages", "label": "Messages"})
+        assistant_tabs.append({"key": "messages", "label": "What it says"})
     if caps.get("prompts"):
-        assistant_tabs.append({"key": "instructions", "label": "AI instructions"})
+        assistant_tabs.append({"key": "instructions", "label": "How it answers"})
     if assistant_tabs:
         sections.append(
             {"key": "assistant", "label": "Assistant", "tabs": assistant_tabs}
         )
-    if activity_tabs:
-        sections.append(
-            {"key": "activity", "label": "Activity log", "tabs": activity_tabs}
-        )
-    sections.append({"key": "settings", "label": "Settings"})
+    if caps.get("cases"):
+        rule_tabs = []
+        if caps.get("case_model"):
+            rule_tabs += [
+                {"key": "rules", "label": "Who gets them"},
+                {"key": "categories", "label": "Kinds of complaint"},
+            ]
+        if caps.get("targets"):
+            rule_tabs.append({"key": "times", "label": "Response times"})
+        if rule_tabs:
+            sections.append({"key": "rules", "label": "Case rules", "tabs": rule_tabs})
+    access_tabs = [{"key": "roles", "label": "Roles"}]
+    if caps.get("seats"):
+        access_tabs.append({"key": "seats", "label": "Seats"})
+    if caps.get("grants"):
+        access_tabs.append({"key": "special", "label": "Special access"})
+    sections.append({"key": "access", "label": "Roles & access", "tabs": access_tabs})
+    settings: dict = {"key": "settings", "label": "Settings"}
+    if caps.get("events") or caps.get("audit"):
+        settings["tabs"] = [
+            {"key": "general", "label": "Settings"},
+            {"key": "history", "label": "History of changes"},
+        ]
+    sections.append(settings)
     return sections
 
 
@@ -84,11 +87,40 @@ async def bootstrap(ctx: CtxDep):
             "industry": org["industry"],
             "slug": ctx.source_key,
             "has_logo": org["has_logo"],
+            "channel": await people_channel(ctx.source_key),
         },
         "caps": ctx.caps,
         "enums": {**enums, "closed": ctx.closed_values},
         "sections": _sections(ctx.caps),
     }
+
+
+@router.get("/nav-hints")
+async def nav_hints(ctx: CtxDep):
+    """Two small numbers for the menu: open cases nobody has yet, and kinds of complaint no rule
+    sends anyone. They are a courtesy, so a problem gives nothing here and never an error."""
+    out: dict = {"unassigned": None, "rule_gaps": None}
+    try:
+        if ctx.caps.get("cases"):
+            found = await fetch_one(
+                "SELECT count(*) AS n FROM cases WHERE org_id = $1 AND assigned_to_id IS NULL "
+                "AND NOT (status = ANY($2::text[]))",
+                ctx.org_id,
+                ctx.closed_values,
+                source_key=ctx.source_key,
+            )
+            out["unassigned"] = found["n"]
+        if ctx.caps.get("case_model"):
+            found = await fetch_one(
+                "SELECT count(*) AS n FROM case_categories k WHERE k.org_id = $1 AND k.is_active "
+                "AND NOT EXISTS (SELECT 1 FROM route_case(k.org_id, k.id, '{}'::jsonb))",
+                ctx.org_id,
+                source_key=ctx.source_key,
+            )
+            out["rule_gaps"] = found["n"]
+    except Exception as e:
+        logger.warning(f"menu numbers failed: {e!r}")
+    return out
 
 
 @router.get("/lookups")

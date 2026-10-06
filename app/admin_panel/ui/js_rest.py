@@ -81,7 +81,7 @@ async function renderAll(root, route) {
       fill(out, table([
         { label: 'When', render: r => h('span', { class: 'small' }, fmtDT(r.created_at)) },
         { label: 'Person', render: r => r.user_name || '—' },
-        { label: 'Workflow', render: r => badge(r.workflow, r.workflow === 'Chat' ? '' : 'brand') },
+        { label: 'Flow', render: r => badge(r.workflow, r.workflow === 'Chat' ? '' : 'brand') },
         { label: 'They said', render: r => clip(r.input_text, 120) },
         { label: 'Reply', render: r => h('span', { class: 'muted' }, clip(r.response_text, 120)) },
         { label: 'Outcome', render: r => r.outcome ? badge(r.outcome, /fail|error|denied|block/i.test(r.outcome) ? 'bad' : 'ok') : '' },
@@ -121,13 +121,16 @@ SECTIONS.conversations = {
   title: 'Conversations', sub: 'What people asked the assistant, and how it answered',
   async render(root, route) { return renderChats(root, route); },
 };
-SECTIONS.activity = {
-  title: 'Activity log', sub: 'Everything the assistant did, and what was changed from this dashboard',
-  async render(root, route) {
-    if (route.tab === 'changes') return renderChanges(root, route);
-    return renderAll(root, route);
-  },
-};
+// History of changes (a tab of Settings): what was changed from this dashboard, and everything the assistant did
+async function renderHistory(root, route) {
+  const caps = S.boot.caps;
+  const kinds = [caps.events ? ['changes', 'Changes made here'] : null, caps.audit ? ['assistant', 'Everything the assistant did'] : null].filter(Boolean);
+  const show = kinds.some(k => k[0] === route.q.show) ? route.q.show : kinds[0][0];
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'What to show' }, kinds.map(([k, l]) => h('button', { type: 'button', 'aria-pressed': String(show === k), onclick: () => go('settings', 'history', { show: k }) }, l)));
+  const body = h('div');
+  root.append(h('div', { style: { marginBottom: '14px' } }, kinds.length > 1 ? seg : null), body);
+  return show === 'changes' ? renderChanges(body, { ...route, q: { ...route.q, show } }) : renderAll(body, { ...route, q: { ...route.q, show } });
+}
 
 // ───────────────────────── Settings ─────────────────────────
 async function targetsCard() {
@@ -149,7 +152,7 @@ async function targetsCard() {
   inputs.forEach(i => i.tat.addEventListener('input', checkTimes));
   checkTimes();
   return h('div', { class: 'card', style: { gridColumn: '1 / -1' } }, h('div', { class: 'card-h' }, 'Response times'), h('div', { class: 'card-b stack' },
-    h('div', { class: 'muted small' }, 'How long each priority gets, and when the reminder goes to whoever has the case. Changes apply to open cases too. A category with its own response time (under “Where complaints go”) uses that instead.'),
+    h('div', { class: 'muted small' }, 'How long each priority gets, and when the reminder goes to whoever has the case. Changes apply to open cases too. A kind of complaint with its own response time (under Kinds of complaint) uses that instead.'),
     oddTimes,
     h('div', { class: 'tablewrap' }, h('table', { class: 't' }, h('thead', null, h('tr', null, h('th', null, 'Priority'), h('th', null, 'Target (minutes)'), h('th', null, 'Remind after (minutes)'))),
       h('tbody', null, inputs.map(i => h('tr', null, h('td', null, prioBadge(i.r.priority)), h('td', null, i.tatCell), h('td', null, i.remCell)))))),
@@ -159,11 +162,5 @@ async function targetsCard() {
 }
 
 
-// ───────────────────────── Cases: the list, with routing and response times as tabs ─────────────────────────
-const casesList = SECTIONS.cases.render;
-SECTIONS.cases.render = async function (root, route) {
-  if (route.tab === 'rules' || route.tab === 'categories') return SECTIONS.routing.render(root, route);
-  if (route.tab === 'times') { root.append(h('div', { class: 'grid' }, await targetsCard())); return; }
-  return casesList(root, route);
-};
+
 """

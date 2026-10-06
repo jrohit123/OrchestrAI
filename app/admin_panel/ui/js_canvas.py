@@ -78,7 +78,7 @@ function nodeBar(id, parked) {
 function cvTriggerNode() { return CV.compact ? cvTriggerTile() : cvTriggerCard(); }
 function cvTriggerTile() {
   const w = EW.work, block = w.kind === 'block', action = w.kind === 'case_action', phrases = w.training_phrases || [];
-  const name = block ? 'Run by other workflows' : action ? 'A button on a case' : 'Starts when…';
+  const name = block ? 'Run by other flows' : action ? 'A button on a case' : 'Starts when…';
   const sub = block ? '' : phrases.length ? '“' + phrases[0] + '”' : w.slash_command ? '/' + w.slash_command : '';
   return h('div', { class: 'nd nc trig k-trigger' + (CV.sel.has('trigger') ? ' sel' : ''), 'data-id': 'trigger', style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': 'What starts this flow' },
     h('span', { class: 'nd-ord trg' }, icon('bolt', 'xs')), h('span', { class: 'nd-port out' }),
@@ -90,7 +90,7 @@ function cvTriggerCard() {
   const phrases = w.training_phrases || [];
   const who = d.granted_roles || [], party = ((w.settings && w.settings.who_can_use) || []).map(r => PARTY_PLAIN[r] || r);
   const asks = Object.entries(w.entity_schema || {}).filter(([, f]) => f && typeof f === 'object' && !f.computed);
-  const title = block ? 'Run by other workflows' : action ? 'A button on a case' : 'Someone says something like';
+  const title = block ? 'Run by other flows' : action ? 'A button on a case' : 'Someone says something like';
   const body = [];
   if (block) body.push(h('div', { class: 'nd-tsec muted small' }, d.used_in.length ? 'Used by: ' + d.used_in.map(u => u.name).join(', ') + '. Change it and they all change.' : 'Nothing runs it yet.'));
   else {
@@ -149,6 +149,7 @@ function cvStepTile(s, i, k) {
     h('span', { class: 'nd-stb' }, f.st ? CV_ST[f.st] || '' : ''),
     problems ? h('span', { class: 'nd-bad', title: 'This step has a problem to fix' }, '!') : null,
     nodeBar(id, parked),
+    h('button', { class: 'nd-more', type: 'button', 'aria-label': 'More for this step', 'data-tip': 'More: open, test, rename, duplicate, delete', onclick: e => { e.stopPropagation(); cvMenu(e); } }, icon('dots', 'xs')),
     h('div', { class: 'nc-sq', title: describeStep(s) }, icon(cvIcon(s.op)), bdg.some(Boolean) ? h('div', { class: 'nc-bdg' }, bdg) : null),
     h('div', { class: 'nc-nm' }, name), sub ? h('div', { class: 'nc-sub' }, sub) : null);
 }
@@ -158,7 +159,7 @@ function cvStepCard(s, i, k) {
   const problems = parked ? 0 : problemsFor(i + 1).filter(p => p[0] === 'bad').length;
   const stops = f.stops;
   const tag = blk ? h('span', { class: 'tag blk' }, 'Block') : isAiStep(s) ? h('span', { class: 'tag ai' }, '✦ AI') : h('span', { class: 'tag tcode' }, 'Code');
-  const sub = s.name ? describeStep(s) : blk ? ((flow && flow.description) || 'Runs the steps of another workflow') : (spec ? spec.label : s.op);
+  const sub = s.name ? describeStep(s) : blk ? ((flow && flow.description) || 'Runs the steps of another flow') : (spec ? spec.label : s.op);
   return h('div', { class: 'nd k-' + key + (blk ? ' blk' : '') + (parked ? ' parked' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': (parked ? 'Parked, does not run: ' : '') + describeStep(s) },
     parked ? null : h('span', { class: 'nd-ord' }, i + 1), parked ? null : h('span', { class: 'nd-port in' }), parked ? null : h('span', { class: 'nd-port out' }), h('span', { class: 'nd-stb' }, st ? CV_ST[st] || '' : ''),
     problems ? h('span', { class: 'nd-bad', title: 'This step has a problem to fix' }, '!') : null,
@@ -197,12 +198,12 @@ function cvEndNode() {
   const block = EW.work.kind === 'block';
   if (CV.compact && !isRead() && !oneStepOnly()) {           // a dashed square at the end of the flow: click it to add a step
     const add = el => cvOpenAdd(EW.work.steps.length, el);
-    return h('div', { class: 'nd nc nc-end', role: 'button', tabindex: 0, 'data-id': 'end', 'data-popkeep': '1', style: { visibility: 'hidden' }, 'aria-label': 'Add a step at the end', title: (block ? 'Done: carries on with the workflow that ran it' : 'Done: tells the person') + '. Click to add a step here.',
+    return h('div', { class: 'nd nc nc-end', role: 'button', tabindex: 0, 'data-id': 'end', 'data-popkeep': '1', style: { visibility: 'hidden' }, 'aria-label': 'Add a step at the end', title: (block ? 'Done: carries on with the flow that ran it' : 'Done: tells the person') + '. Click to add a step here.',
       onclick: e => { e.stopPropagation(); add(e.currentTarget); }, onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); add(e.currentTarget); } } },
       h('span', { class: 'nd-port in' }), h('div', { class: 'nc-sq' }, icon('plus')), h('div', { class: 'nc-nm' }, 'Add a step'), h('div', { class: 'nc-sub' }, block ? 'Then it carries on' : 'Then it tells the person'));
   }
   return h('div', { class: 'nd end', 'data-id': 'end', style: { visibility: 'hidden' } }, h('span', { class: 'nd-port in' }), icon('check', 'sm'),
-    block ? 'Done: carries on with the workflow that ran it' : 'Done: tells the person');
+    block ? 'Done: carries on with the flow that ran it' : 'Done: tells the person');
 }
 // opening a block shows the steps inside it (fetched once)
 async function cvToggle(flow) {
@@ -562,7 +563,7 @@ function setView(v) {
 }
 function syncSeg() {
   const seg = CV && CV.seg;
-  if (seg) [...seg.children].forEach(b => b.classList.toggle('on', b.dataset.view === CV.view));
+  if (seg) [...seg.children].forEach(b => { b.classList.toggle('on', b.dataset.view === CV.view); if (b.dataset.view === 'tech') b.hidden = CV.view !== 'tech'; });   // the technical view is only offered in ⋯ More, until someone is in it
 }
 
 // ----- moving boxes, moving the canvas, drawing wires -----
@@ -768,7 +769,7 @@ function stepAct(act) {
 }
 // N: "What happens next?" for a new step, right after the box that is chosen (or at the end of the flow)
 function cvNext() {
-  if (isRead()) { toast('This workflow answers with a saved report, so it has no steps to add.'); return; }
+  if (isRead()) { toast('This flow answers with a saved report, so it has no steps to add.'); return; }
   if (oneStepOnly()) { toast(ONE_STEP, 'bad'); return; }
   const id = primary(), i = id ? idxOf(id) : -1, at = i >= 0 ? i + 1 : EW.work.steps.length;
   const el = (i >= 0 && CV.nodesEl.querySelector('[data-id="' + id + '"]')) || CV.nodesEl.querySelector('[data-id="end"]') || CV.el;

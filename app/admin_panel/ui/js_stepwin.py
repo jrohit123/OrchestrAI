@@ -15,7 +15,7 @@ const swSig = i => JSON.stringify([tidySteps(EW.work.steps.slice(0, i + 1)).map(
 
 function swOpen(id, o) {
   o = o || {};
-  if (isRead()) { toast('This workflow answers with a saved report, so it has no steps to open.'); return; }
+  if (isRead()) { toast('This flow answers with a saved report, so it has no steps to open.'); return; }
   if (idxOf(id) < 0) { toast('Only a step that is in the flow has a window.'); return; }
   if (SW) swClose(true);
   CV.sel = new Set([id]); renderNodes(); renderInspector();

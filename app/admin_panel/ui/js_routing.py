@@ -29,7 +29,7 @@ async function ruleModal(lk, rule, contextKeys, done, preset) {
   const name = h('input', { type: 'text', value: base.name || '', placeholder: 'e.g. Lift issues' });
   const cat = sel(catOptions(lk, 'Any category'), base.category_id || '');
   const conds = kvEditor(base.match || {}, contextKeys);
-  const flow = sel([['', 'Any workflow'], ...lk.workflows.filter(w => w.kind !== 'block').map(w => [w.intent_key, w.name])], base.intent_key || '');
+  const flow = sel([['', 'Any flow'], ...lk.workflows.filter(w => w.kind !== 'block').map(w => [w.intent_key, w.name])], base.intent_key || '');
   const assign = targetEditor(lk, rule ? { type: rule.assign_type, id: rule.assign_id, name: rule.assign_name } : null, false);
   const backup = targetEditor(lk, rule && rule.backup_type ? { type: rule.backup_type, id: rule.backup_id, name: rule.backup_name } : null, true);
   const target = h('input', { type: 'number', min: 1, placeholder: 'minutes (optional)', value: rule && rule.target_minutes ? rule.target_minutes : '' });
@@ -37,7 +37,7 @@ async function ruleModal(lk, rule, contextKeys, done, preset) {
   modal({
     title: rule ? 'Edit rule' : 'New rule', wide: true,
     body: h('div', null, field('Name', name, 'Only for you to recognise it.'),
-      h('div', { class: 'two' }, field('When the case is about', cat, 'Sub-categories are included. The most specific rule wins.'), field('Coming from workflow', flow)),
+      h('div', { class: 'two' }, field('When the case is about', cat, 'Sub-categories are included. The most specific rule wins.'), field('Coming from flow', flow)),
       field('Only if (optional)', conds.el, 'Extra conditions on the case’s own answers, for example tower = B. A rule with more conditions wins over a plainer one.'),
       field('Gets handled by', assign.el), field('If they are unavailable, then', backup.el, 'Also becomes the “level 2” person who is kept in the loop.'),
       field('Response target (optional)', target, 'Overrides the category’s and the priority’s response time for cases this rule picks up.'),
@@ -68,7 +68,8 @@ async function renderRulesTab(root) {
       h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Add conditions'), tCond.el), result)));
   const gaps = cats.rows.filter(c => c.is_active && !c.covered && !c.children);
   if (gaps.length) root.append(notice(plural(gaps.length, 'kind of complaint', 'kinds of complaint') + ' has nobody to go to yet (' + gaps.slice(0, 6).map(c => c.label).join(', ') + (gaps.length > 6 ? ', …' : '') + '). Those stay unassigned until someone assigns them. One rule on a main kind, such as Plumbing, covers every kind under it.', 'warn'));
-  root.append(h('div', { class: 'row between', style: { marginBottom: '12px' } }, h('div', { class: 'muted' }, 'Rules are checked from the most specific to the most general. The first one that fits decides.'), h('button', { class: 'btn primary', onclick: () => ruleModal(lk, null, r.context_keys, again) }, '+ New rule')));
+  setTopAction({ label: 'New rule', run: () => ruleModal(lk, null, r.context_keys, again) });
+  root.append(h('div', { class: 'muted', style: { marginBottom: '12px' } }, 'Rules are checked from the most specific to the most general. The first one that fits decides.'));
   if (!r.rows.length) root.append(h('div', { class: 'card' }, empty('No rules yet', 'Without a rule, new cases stay unassigned until someone assigns them.')));
   root.append(h('div', { class: 'stack' }, r.rows.map(x => h('div', { class: 'card rule' + (x.is_active ? '' : ' off') },
     h('div', { class: 'row between' }, h('b', null, x.name), h('span', { class: 'row' }, h('span', { class: 'muted small' }, 'Specificity ' + x.score), h('label', { class: 'row small' }, 'On', switchEl(x.is_active, async v => { await api.post('/rules/' + x.id + '/active', { is_active: v }); x.is_active = v; again(); })))),
@@ -118,7 +119,7 @@ function categoryModal(lk, prios, cat, parentId, done) {
   const target = h('input', { type: 'number', min: 1, placeholder: 'minutes (optional)', value: cat && cat.target_minutes ? cat.target_minutes : '' });
   const words = h('input', { type: 'text', placeholder: 'lift, elevator, stuck…', value: cat ? (cat.keywords || []).join(', ') : '' });
   const extra = extraEditor(cat ? cat.extra_fields : []);
-  modal({ title: cat ? 'Edit category' : 'New category', wide: true,
+  modal({ title: cat ? 'Edit kind of complaint' : 'New kind of complaint', wide: true,
     body: h('div', null, field('Name', label), h('div', { class: 'two' }, field('Sits under', parent), field('Default priority', prio, 'Used when the person does not say how urgent it is.')),
       h('div', { class: 'two' }, field('Response target', target, 'How long this kind of case should take. Optional; the priority’s time is used otherwise.'), field('Words that point to it', words, 'Helps the assistant recognise this category.')),
       field('Extra questions to ask', extra.el, 'Asked on top of the usual ones when someone reports this kind of case.')),
@@ -131,8 +132,8 @@ function categoryModal(lk, prios, cat, parentId, done) {
 async function renderCategoriesTab(root) {
   const [d, lk] = await Promise.all([api.get('/categories'), getLookups(true)]);
   const again = () => { clear(root); renderCategoriesTab(root); };
-  root.append(h('div', { class: 'row between', style: { marginBottom: '12px' } }, h('div', { class: 'muted' }, 'What a case can be about. Each category can have a default priority, a response time and its own extra questions.'),
-    h('button', { class: 'btn primary', onclick: () => categoryModal(lk, d.priorities, null, null, again) }, '+ New category')));
+  setTopAction({ label: 'New kind of complaint', run: () => categoryModal(lk, d.priorities, null, null, again) });
+  root.append(h('div', { class: 'muted', style: { marginBottom: '12px' } }, 'What a case can be about. Each kind can have a default priority, a response time and its own extra questions. Click a row to change it.'));
   const unc = d.uncategorised || {};
   root.append(h('div', { class: 'card' }, table([
     { label: 'Category', render: c => h('div', { style: { paddingLeft: (c.depth * 22) + 'px' } }, c.depth ? h('span', { class: 'muted' }, '› ') : null, h('b', null, c.label), c.is_active ? null : [' ', badge('hidden')], h('div', { class: 'muted small' }, c.key)) },
@@ -141,20 +142,22 @@ async function renderCategoriesTab(root) {
     { label: 'Words', render: c => c.keywords.length ? h('div', { class: 'chips' }, c.keywords.slice(0, 4).map(k => h('span', { class: 'chip' }, k)), c.keywords.length > 4 ? h('span', { class: 'muted small' }, '+' + (c.keywords.length - 4)) : null) : h('span', { class: 'muted' }, '—') },
     { label: 'Cases', render: c => c.cases_total ? h('a', { href: href('cases', '', { category: c.id }) }, c.cases_open + ' open / ' + c.cases_total) : h('span', { class: 'muted' }, '0') },
     { label: 'Handled by rule', render: c => c.covered ? badge('Yes', 'ok') : (c.is_active ? badge('No rule', 'warn') : '—') },
-    { label: '', render: c => h('div', { class: 'row' },
-      h('button', { class: 'btn sm', title: 'Add a sub-category', onclick: () => categoryModal(lk, d.priorities, null, c.id, again) }, '+ Sub'),
-      h('button', { class: 'btn sm', onclick: () => categoryModal(lk, d.priorities, c, null, again) }, 'Edit'),
-      h('button', { class: 'btn sm', onclick: async () => { try { await api.patch('/categories/' + c.id, { is_active: !c.is_active }); again(); } catch (e) { toast(e.message, 'bad'); } } }, c.is_active ? 'Hide' : 'Show'),
-      h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmBox('Delete “' + c.label + '”? This only works if nothing uses it. Otherwise hide it.', { ok: 'Delete', danger: true })) return; try { await api.del('/categories/' + c.id); toast('Deleted', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Delete')) },
-  ], d.rows, { emptyTitle: 'No categories yet', emptyText: 'Add the first one.' }),
+    { label: '', render: c => h('div', { class: 'row flat', onclick: e => e.stopPropagation() },
+      h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'More for ' + c.label, 'data-popkeep': '1', onclick: e => openPop(e.currentTarget, [
+        h('button', { class: 'mi', type: 'button', onclick: () => { closePop(); categoryModal(lk, d.priorities, null, c.id, again); } }, icon('plus'), 'Add a kind under it'),
+        h('button', { class: 'mi', type: 'button', onclick: async () => { closePop(); try { await api.patch('/categories/' + c.id, { is_active: !c.is_active }); again(); } catch (x) { toast(x.message, 'bad'); } } }, icon('eye'), c.is_active ? 'Hide it' : 'Show it again'),
+        h('button', { class: 'mi', type: 'button', style: { color: 'var(--bad)' }, onclick: async () => { closePop(); if (!await confirmBox('Delete “' + c.label + '”? This only works if nothing uses it. Otherwise hide it.', { ok: 'Delete', danger: true })) return; try { await api.del('/categories/' + c.id); toast('Deleted', 'ok'); again(); } catch (x) { toast(x.message, 'bad'); } } }, icon('trash'), 'Delete')], { align: 'right', width: 220 }) }, icon('dots', 'sm'))) },
+  ], d.rows, { onRow: c => categoryModal(lk, d.priorities, c, null, again), emptyTitle: 'No kinds of complaint yet', emptyText: 'Add the first one.' }),
     unc.total ? h('div', { class: 'card-b muted small' }, h('a', { href: href('cases', '', { category: 'none' }) }, plural(unc.total, 'case') + ' have no category'), ' (' + unc.open + ' open).') : null));
 }
 
-SECTIONS.routing = {
-  title: 'Where complaints go', sub: 'The kinds of complaint, and who gets each kind',
+SECTIONS.rules = {
+  title: 'Case rules', sub: 'How new cases are sorted, who gets them, and how fast they must be answered.',
   async render(root, route) {
     if (route.tab === 'categories') return renderCategoriesTab(root);
+    if (route.tab === 'times') { root.append(h('div', { class: 'grid' }, await targetsCard())); return; }
     return renderRulesTab(root);
   },
 };
+
 """

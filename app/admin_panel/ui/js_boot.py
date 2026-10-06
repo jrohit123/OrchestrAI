@@ -1,23 +1,36 @@
 JS = r"""
 // ───────────────────────── page shell and start-up ─────────────────────────
-// The menu is grouped by what you are doing. The server decides which sections exist for this
-// organisation; this only says where each one goes and what it looks like.
+// The menu has two groups: what people do every day, and what is set up once and changed now and then.
+// The server decides which screens exist for this organisation; this only says where each one goes.
 const NAV = [
-  ['Run the day', ['overview', 'cases', 'conversations', 'people']],
-  ['Shape the assistant', ['workflows', 'assistant', 'connections']],
-  ['Admin', ['activity', 'settings']],
+  ['Every day', ['overview', 'cases', 'conversations', 'people']],
+  ['Set up', ['workflows', 'assistant', 'rules', 'access', 'settings']],
 ];
-const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', assistant: 'spark', connections: 'plug', activity: 'hist', settings: 'sliders' };
-// parts that are planned but not built yet: shown greyed so the shape of the dashboard is visible
-const NAV_SOON = {
-  assistant: ['Assistant', 'The words the assistant says. This database needs one update first (migration core-0009).'],
-  connections: ['Connections', 'Connect other systems. Comes after the security work.'],
-};
+const SETUP = new Set(NAV[1][1]);
+const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
+// the few words a newcomer meets, said once and the same everywhere
+const GLOSSARY = [
+  ['Flow', 'One thing the assistant can do for people, like filing a complaint.'],
+  ['Trigger', 'What starts a flow: a phrase someone says or a button they tap.'],
+  ['Step', 'One box in a flow: look something up, save it, ask for approval, send a message.'],
+  ['Building block', 'A small ready-made step that many flows use. Change it once and they all change.'],
+  ['Role', 'A group of people who may do the same things, like Admin or Tenant.'],
+  ['Seat', 'A job someone holds, like Secretary. Holding it can change their role.'],
+];
+function openWords(anchor, up) {
+  openPop(anchor, h('div', { class: 'words' }, h('b', null, 'Words used here'), h('dl', null, GLOSSARY.map(([w, m]) => h('div', null, h('dt', null, w), h('dd', null, m))))), { width: 360, up: !!up });
+}
 
 // links and bookmarks from older versions of the dashboard keep working
 function remapRoute(r) {
-  if (r.section === 'routing') return { section: 'cases', tab: r.tab === 'categories' ? 'categories' : 'rules', q: r.q };
-  if (r.section === 'activity' && r.tab === 'chats') return { section: 'conversations', tab: '', q: r.q };
+  const t = r.tab, q = r.q;
+  if (r.section === 'routing') return { section: 'rules', tab: t === 'categories' ? 'categories' : '', q };
+  if (r.section === 'cases' && ['rules', 'categories', 'times'].includes(t)) return { section: 'rules', tab: t === 'rules' ? '' : t, q };
+  if (r.section === 'people' && t === 'seats') return { section: 'access', tab: 'seats', q };
+  if (r.section === 'people' && t === 'access') return { section: 'access', tab: 'special', q };
+  if (r.section === 'people' && t === 'roles') return { section: 'access', tab: '', q };
+  if (r.section === 'people' && t === 'people') return { section: 'people', tab: '', q };
+  if (r.section === 'activity') return t === 'chats' ? { section: 'conversations', tab: '', q } : { section: 'settings', tab: 'history', q: { ...q, show: t === 'changes' ? 'changes' : 'assistant' } };
   return null;
 }
 
@@ -31,6 +44,11 @@ function setCrumbs(parts) {
 }
 function applyRail() { document.body.classList.toggle('rail', !!S.userRail || !!S.editing || (innerWidth <= 1000 && innerWidth > 700)); }
 
+// the one main button of a screen, in the top bar: { label, run, icon? }, or nothing
+function setTopAction(a) {
+  const slot = document.getElementById('topact');
+  if (slot) fill(slot, a ? h('button', { class: 'btn primary', type: 'button', onclick: a.run }, icon(a.icon || 'plus', 'sm'), h('span', { class: 'tx' }, a.label)) : null);
+}
 async function renderSection(sec, r) {
   const mine = ++S.renderId;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.key === sec.key));
@@ -40,12 +58,14 @@ async function renderSection(sec, r) {
   r.tab = tab ? tab.key : '';
   const editing = sec.key === 'workflows' && !!r.q.w;
   S.editing = editing; applyRail();
-  closePop();
-  setCrumbs(editing ? [h('a', { href: href('workflows') }, 'Flows'), h('span', { id: 'crumbname' }, '…')]
-    : tab && tab !== sec.tabs[0] ? [h('a', { href: href(sec.key) }, sec.label), h('span', null, tab.label)] : [h('span', null, sec.label)]);
+  closePop(); setTopAction(null);
+  S.leaveGuard = null; window.onbeforeunload = null;
+  const group = SETUP.has(sec.key) ? [h('span', { class: 'muted' }, 'Set up')] : [];
+  setCrumbs(editing ? [...group, h('a', { href: href('workflows') }, 'Flows'), h('span', { id: 'crumbname' }, '…')]
+    : tab && tab !== sec.tabs[0] ? [...group, h('a', { href: href(sec.key) }, sec.label), h('span', null, tab.label)] : [...group, h('span', null, sec.label)]);
   const heading = impl.heading ? impl.heading(sec) : { title: sec.label, sub: impl.sub };
   const head = editing ? null : h('div', { class: 'ph' }, h('div', null, h('h1', null, heading.title), heading.sub ? h('div', { class: 'sub' }, heading.sub) : null), impl.actions ? impl.actions(r) : null);
-  const tabs = tab && !editing ? h('div', { class: 'tabs' }, sec.tabs.map(t => h('a', { class: 'tab' + (t.key === tab.key ? ' active' : ''), href: href(sec.key, t.key === sec.tabs[0].key ? '' : t.key) }, t.label))) : null;
+  const tabs = tab && !editing && sec.tabs.length > 1 ? h('div', { class: 'tabs' }, sec.tabs.map(t => h('a', { class: 'tab' + (t.key === tab.key ? ' active' : ''), href: href(sec.key, t.key === sec.tabs[0].key ? '' : t.key) }, t.label))) : null;
   const loading = h('div', { class: 'empty' }, 'Loading…'), content = h('div');
   fill(document.getElementById('main'), h('div', { class: 'screen' + (editing ? ' bleed' : '') }, head, tabs, loading, content));
   document.title = (editing ? 'Flow' : sec.label) + ' · ' + S.boot.org.name;
@@ -53,6 +73,21 @@ async function renderSection(sec, r) {
   catch (e) { if (mine === S.renderId) fill(content, errorBox(e, () => { lastSig = ''; onRoute(); })); }
   loading.remove();
   if (mine === S.renderId && !editing) window.scrollTo(0, 0);
+}
+
+// two little numbers on the menu: open cases nobody has yet, and kinds of complaint nobody is sent to
+let hintsAt = 0;
+function paintHints() {
+  const hn = S.hints || {}, un = hn.unassigned, gaps = hn.rule_gaps;
+  const ct = document.querySelector('.nav a[data-key="cases"] .ct');
+  if (ct) { ct.hidden = !un; ct.textContent = un > 99 ? '99+' : String(un || ''); ct.title = un ? plural(un, 'open case') + ' with no one handling ' + (un === 1 ? 'it' : 'them') : ''; }
+  const dot = document.querySelector('.nav a[data-key="rules"] .navdot');
+  if (dot) { dot.hidden = !gaps; dot.title = gaps ? plural(gaps, 'kind of complaint') + ' with nobody to go to' : ''; }
+}
+async function refreshHints(force) {
+  if (!force && Date.now() - hintsAt < 20000) return;
+  hintsAt = Date.now();
+  try { S.hints = await api.get('/nav-hints'); paintHints(); } catch (e) { /* the numbers are a courtesy */ }
 }
 function syncDrawer(r) {
   const key = r.q.case ? 'case:' + r.q.case : r.q.person ? 'person:' + r.q.person : '';
@@ -72,6 +107,7 @@ async function onRoute() {
   if (sig !== lastSig) {
     if (S.leaveGuard && !S.leaveGuard()) { history.replaceState(null, '', lastHash); return; }
     lastSig = sig; lastHash = location.hash;
+    refreshHints();
     await renderSection(sec, r);
   }
   syncDrawer(r);
@@ -109,7 +145,7 @@ function openCmd() {
     if (low.length < 2) return;
     const more = [];
     await Promise.all([
-      api.get('/people', { q, page_size: 5 }).then(d => d.rows.forEach(p => more.push({ g: 'People', t: p.name, s: p.role || '', run: () => go('people', 'people', { person: p.id }) }))).catch(() => {}),
+      api.get('/people', { q, page_size: 5 }).then(d => d.rows.forEach(p => more.push({ g: 'People', t: p.name, s: p.role || '', run: () => go('people', '', { person: p.id }) }))).catch(() => {}),
       S.boot.caps.cases ? api.get('/cases', { q, page_size: 5 }).then(d => d.rows.forEach(c => more.push({ g: 'Cases', t: c.case_number + '  ' + c.title, s: pretty(c.status), run: () => go('cases', '', { case: c.id }) }))).catch(() => {}) : null,
     ]);
     if (mine !== seq) return;
@@ -120,28 +156,16 @@ function openCmd() {
 }
 document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && S.boot) { e.preventDefault(); if (!document.querySelector('.cmdk')) openCmd(); } });
 
-// ----- the "New workflow / building block" menu -----
-async function startNew(kind) {
-  try { await ensureStudio(); newWorkflowModal(!!S.boot.caps.workflow_kind, kind); } catch (e) { toast(e.message, 'bad'); }
-}
-function newMenu(anchor) {
-  if (!S.boot.caps.workflow_kind) { startNew('workflow'); return; }   // an older database has no building blocks: only workflows
-  const row = (ic, t, sub, kind) => h('button', { class: 'mi', type: 'button', onclick: () => { closePop(); startNew(kind); } }, icon(ic), h('span', null, t, h('small', null, sub)));
-  openPop(anchor, [h('div', { class: 'ml' }, 'Create'),
-    row('flow', 'New workflow', 'Something people start from the menu, a button or a command', 'workflow'),
-    row('layers', 'New building block', 'One small step other workflows run, such as Find a case', 'block')], { align: 'right', width: 340 });
-}
-
 function buildShell(app) {
   const o = S.boot.org, have = new Map(S.boot.sections.map(s => [s.key, s]));
   const logo = h('span', { class: 'logo' }, o.name[0]);
   if (o.has_logo) api.get('/logo').then(d => { if (d.logo_url) fill(logo, h('img', { src: d.logo_url, alt: '' })); }).catch(() => {});
-  const link = sec => h('a', { href: href(sec.key), 'data-key': sec.key }, icon(NAV_ICON[sec.key] || 'list'), h('span', { class: 'tx' }, sec.label));
-  const soon = k => h('div', { class: 'soon', 'data-tip': NAV_SOON[k][1] }, icon(NAV_ICON[k]), h('span', { class: 'tx' }, NAV_SOON[k][0]), h('span', { class: 'navtag' }, 'Soon'));
+  const link = sec => h('a', { href: href(sec.key), 'data-key': sec.key }, icon(NAV_ICON[sec.key] || 'list'), h('span', { class: 'tx' }, sec.label),
+    sec.key === 'cases' ? h('span', { class: 'ct', hidden: true }) : null, sec.key === 'rules' ? h('i', { class: 'navdot', hidden: true }) : null);
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sections' });
   const placed = new Set();
   NAV.forEach(([label, keys]) => {
-    const items = keys.map(k => { placed.add(k); return have.has(k) ? link(have.get(k)) : NAV_SOON[k] ? soon(k) : null; }).filter(Boolean);
+    const items = keys.map(k => { placed.add(k); return have.has(k) ? link(have.get(k)) : null; }).filter(Boolean);
     if (items.length) nav.append(h('div', { class: 'navlabel' }, label), ...items);
   });
   const extra = S.boot.sections.filter(s => !placed.has(s.key));
@@ -151,12 +175,12 @@ function buildShell(app) {
     h('button', { class: 'jump', type: 'button', 'aria-label': 'Search or jump to', onclick: openCmd }, icon('search', 'sm'), h('span', null, 'Search or jump to…'), h('span', { class: 'kbd' }, 'Ctrl K')),
     nav, h('div', { class: 'grow' }),
     h('div', { class: 'sidefoot' },
+      h('button', { type: 'button', 'data-popkeep': '1', onclick: e => openWords(e.currentTarget, true) }, icon('help'), h('span', { class: 'tx' }, 'Help & words')),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
-    h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }),
-    h('button', { class: 'btn primary', type: 'button', 'data-popkeep': '1', onclick: e => newMenu(e.currentTarget) }, icon('plus', 'sm'), h('span', { class: 'tx' }, S.boot.caps.workflow_kind ? 'New workflow / building block' : 'New workflow'), icon('chevd', 'xs')));
+    h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }), h('span', { id: 'topact' }));
   fill(app, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' }))));
   window.addEventListener('resize', applyRail);
 }
@@ -167,6 +191,7 @@ async function boot() {
   catch (e) { fill(app, h('div', { class: 'boot' }, 'The dashboard could not start: ' + e.message)); return; }
   buildShell(app);
   window.addEventListener('hashchange', onRoute);
+  refreshHints(true);
   await onRoute();
 }
 boot();

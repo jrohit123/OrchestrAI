@@ -21,7 +21,7 @@ async function renderFlows(root, route) {
   if (mine !== S.renderId) return;
   const kinds = !!S.boot.caps.workflow_kind;
   if (!kinds) FV.kind = 'flow';
-  const body = h('div'), chips = h('div', { class: 'seg', role: 'group', 'aria-label': 'Kind of flow' });
+  const body = h('div'), chips = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Flows or building blocks' });
   const again = async () => { await ensureStudio(); draw(); };
   const isBlock = w => w.kind === 'block';
   const deleteBtn = w => w.is_active ? null : h('button', { class: 'btn sm danger', type: 'button', onclick: async e => {
@@ -35,20 +35,23 @@ async function renderFlows(root, route) {
     return sw;
   };
   function card(w) {
-    const roles = w.granted_roles || [], party = ((w.settings && w.settings.who_can_use) || []).map(r => PARTY_PLAIN[r] || r);
+    const roles = (w.granted_roles || []).map(roleLabel), party = ((w.settings && w.settings.who_can_use) || []).length;
     const used = w.used_in || [];
+    const who = roles.length || party
+      ? h('div', { class: 'row small flat' }, icon('users', 'xs'), h('span', null, roles.slice(0, 3).join(', ') + (roles.length > 3 ? ' +' + (roles.length - 3) : '') + (party ? (roles.length ? ' + ' : '') + 'people on the case' : '')))
+      : h('div', { class: 'row small' }, badge('Nobody can use it yet', 'warn'));
     const meta = isBlock(w)
       ? (used.length ? h('div', { class: 'chips' }, used.slice(0, 4).map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id, onclick: e => e.stopPropagation() }, u.name)), used.length > 4 ? h('span', { class: 'chip sunk' }, '+' + (used.length - 4)) : null)
         : h('div', { class: 'row small' }, badge('Not used yet', 'warn'), h('span', { class: 'muted' }, 'Safe to switch off and delete.')))
-      : (roles.length || party.length ? h('div', { class: 'chips' }, roles.map(r => badge(r, 'brand')), party.map(r => h('span', { class: 'chip' }, r))) : h('span', { class: 'muted small' }, 'Nobody can use it yet'));
+      : who;
     const go_ = () => openWorkflow(w.id);
     return h('article', { class: 'card fcard' + (w.is_active ? '' : ' off'), tabindex: 0, role: 'link', 'aria-label': 'Open ' + w.name, onclick: go_, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) go_(); } },
       h('div', { class: 'row between flat', style: { alignItems: 'flex-start' } },
-        h('div', { class: 'grow' }, h('div', { class: 'bold' }, w.name), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || w.intent_key)),
+        h('div', { class: 'grow' }, h('div', { class: 'bold' }, w.name), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
         h('label', { class: 'row small flat', style: { gap: '6px' } }, w.is_active ? 'On' : 'Off', power(w))),
-      flowThumb(w), meta,
+      meta,
       h('div', { class: 'row small muted between' },
-        h('span', null, w.workflow_type === 'read' ? 'Report' : plural(w.step_count, 'step'), w.slash_command ? ' · /' + w.slash_command : '', ' · ' + (w.last_used ? 'used ' + ago(w.last_used) : 'not used yet')),
+        h('span', null, (w.workflow_type === 'read' ? 'Looks things up' : plural(w.step_count, 'step')) + (w.slash_command ? ' · /' + w.slash_command : '') + ' · ' + (w.last_used ? 'used ' + ago(w.last_used) : 'not used yet')),
         deleteBtn(w)));
   }
   // the whole system as one drawing: how people start things, the flows, and the building blocks they share
@@ -88,65 +91,79 @@ async function renderFlows(root, route) {
   }
   function drawChips() {
     const n = k => ST.flows.filter(w => k === 'block' ? isBlock(w) && (w.is_active || FV.showOff) : !isBlock(w)).length;   // switched-off blocks are only counted while they are shown
-    const b = (k, label) => h('button', { type: 'button', class: FV.kind === k ? 'on' : '', onclick: () => { FV.kind = k; draw(); } }, label + ' (' + n(k) + ')');
-    fill(chips, b('flow', 'Flows'), b('block', 'Building blocks'));
+    const t = (k, label) => h('button', { type: 'button', class: 'tab' + (FV.kind === k ? ' active' : ''), onclick: () => { FV.kind = k; draw(); } }, label, h('span', { class: 'badge' }, n(k)));
+    fill(chips, t('flow', 'Flows'), kinds ? t('block', 'Building blocks') : null);
   }
   function draw() {
     const match = w => !FV.text || (w.name + ' ' + (w.description || '') + ' ' + w.intent_key).toLowerCase().includes(FV.text);
     drawChips(); chips.style.display = kinds && FV.view === 'cards' ? '' : 'none';
-    newLabel.textContent = kinds && FV.kind === 'block' ? 'New building block' : 'New workflow';
+    setTopAction({ label: kinds && FV.kind === 'block' ? 'New building block' : 'New flow', run: () => newWorkflowModal(kinds, kinds && FV.kind === 'block' ? 'block' : 'workflow') });
     if (FV.view === 'map') { fill(body, flowMap()); return; }
     const ofKind = ST.flows.filter(w => !kinds || (FV.kind === 'block' ? isBlock(w) : !isBlock(w)));
     const parked = FV.kind === 'block' ? ofKind.filter(w => !w.is_active) : [];   // replaced or switched-off blocks: kept, but out of the way
     const list = ofKind.filter(match).filter(w => FV.showOff || !parked.includes(w));
-    const hint = FV.kind === 'block' ? 'Small parts other flows are made from, such as Find a case. Change one and every flow that runs it changes.' : 'What people start from the menu, a button, or by typing a command.';
+    const hint = FV.kind === 'block' ? 'Small ready-made steps that flows use, such as Find a case. Change one and every flow that uses it changes. Most people never need to open these.' : '';
     const offToggle = parked.length ? h('label', { class: 'row small flat', style: { gap: '6px', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: !!FV.showOff, onchange: e => { FV.showOff = e.target.checked; draw(); } }), 'Show the ' + plural(parked.length, 'switched-off block') + ' too') : null;
-    fill(body, list.length || parked.length ? h('div', { class: 'stack' }, h('div', { class: 'row between' }, h('div', { class: 'muted small' }, hint), offToggle), list.length ? h('div', { class: 'fcards' }, list.map(card)) : h('div', { class: 'card' }, empty('None match', '')))
-      : h('div', { class: 'card' }, empty(FV.text ? 'None match' : 'None yet', FV.kind === 'block' ? 'Create one with “New building block”, or describe it to the assistant.' : 'Create one with “New workflow”.')));
+    fill(body, list.length || parked.length ? h('div', { class: 'stack' }, hint || offToggle ? h('div', { class: 'row between' }, h('div', { class: 'muted small' }, hint), offToggle) : null, list.length ? h('div', { class: 'fcards' }, list.map(card)) : h('div', { class: 'card' }, empty('None match', '')))
+      : h('div', { class: 'card' }, empty(FV.text ? 'None match' : 'None yet', FV.kind === 'block' ? 'Make one with “New building block”, or describe it to the assistant.' : 'Make one with “New flow”.')));
   }
   const view = h('div', { class: 'seg', role: 'group', 'aria-label': 'How to show flows' },
     h('button', { type: 'button', class: FV.view === 'cards' ? 'on' : '', onclick: () => { FV.view = 'cards'; setView(); } }, icon('board', 'sm'), 'Cards'),
     h('button', { type: 'button', class: FV.view === 'map' ? 'on' : '', onclick: () => { FV.view = 'map'; setView(); } }, icon('map', 'sm'), 'Map'));
   const setView = () => { [...view.children].forEach((b, i) => b.classList.toggle('on', (i === 0) === (FV.view === 'cards'))); draw(); };
-  const soon = (label, tip) => h('button', { class: 'tab', type: 'button', disabled: true, 'data-tip': tip }, label, h('span', { class: 'badge' }, 'later'));
-  const newLabel = h('span', null, 'New workflow');
-  const newBtn = h('button', { class: 'btn primary', type: 'button', onclick: () => newWorkflowModal(kinds, kinds && FV.kind === 'block' ? 'block' : 'workflow') }, icon('plus', 'sm'), newLabel);
-  fill(root,
-    h('div', { class: 'tabs' }, h('a', { class: 'tab active', href: '#/workflows' }, 'Flows'), soon('Schedules', 'Start a flow at a set time. Comes with the next engine step.'), soon('Runs', 'Every time a flow ran, with its steps. Needs the engine to record each step.'), soon('Templates', 'Ready-made flows to start from.')),
+  // what a flow is, shown until someone hides it (and one click brings it back)
+  const strip = h('div');
+  const helpOn = () => store.get('panel.flowhelp') !== 'off';
+  function drawStrip() {
+    if (!helpOn()) { fill(strip, h('div', { style: { marginBottom: '12px' } }, h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { store.set('panel.flowhelp', 'on'); drawStrip(); } }, icon('help', 'sm'), 'How a flow works'))); return; }
+    const st = (k, ic, title, text) => h('div', { class: 'hw-st k-' + k }, h('span', { class: 'gi' }, icon(ic)), h('div', null, h('b', { class: 't' }, title), h('span', { class: 's' }, text)));
+    fill(strip, h('div', { class: 'card hw' },
+      h('div', { class: 'hw-h' }, h('span', { class: 'grow' }, 'How a flow works'), h('button', { class: 'btn ghost sm', type: 'button', 'data-popkeep': '1', onclick: e => openWords(e.currentTarget) }, 'Learn the words'), h('button', { class: 'x', type: 'button', 'aria-label': 'Hide this', onclick: () => { store.set('panel.flowhelp', 'off'); drawStrip(); } }, '×')),
+      h('div', { class: 'hw-steps' },
+        st('trigger', 'bolt', '1 · Starts when…', ['Someone says a phrase or taps a button. This is the ', h('b', null, 'trigger'), '.']),
+        st('look', 'list', '2 · Does these steps', ['Look something up, save it, check who is allowed. Each one is a ', h('b', null, 'step'), '.']),
+        st('tell', 'mail', '3 · Tells the person', 'The assistant replies, and can message other people too.'))));
+  }
+  fill(root, strip, chips,
     h('div', { class: 'filters', style: { justifyContent: 'space-between' } },
-      h('div', { class: 'row' }, chips, h('div', { class: 'srch', style: { minWidth: '240px' } }, icon('search', 'sm'), search_())),
-      h('div', { class: 'row' }, view, newBtn)),
+      h('div', { class: 'srch', style: { minWidth: '260px' } }, icon('search', 'sm'), search_()),
+      h('div', { class: 'row' }, view)),
     body);
   function search_() { return h('input', { class: 'input', type: 'search', placeholder: 'Search flows…', value: FV.text, oninput: debounce(e => { FV.text = e.target.value.trim().toLowerCase(); draw(); }, 200) }); }
-  draw();
+  drawStrip(); draw();
 }
 
-// ----- create: say what you are making, then describe it in chat, start blank, or copy one -----
+// ----- create: three ways to start (describe it, copy one, start blank); building blocks and case buttons are one link away -----
 const KIND_HELP = {
   workflow: 'People start it from the menu, a button or by typing a command.',
-  block: 'One small step that other workflows run, such as Find a case. It does exactly one thing.',
-  case_action: 'A short workflow that runs from a button on an existing case.',
+  block: 'One small step that other flows run, such as Find a case. It does exactly one thing.',
+  case_action: 'A short flow that runs from a button on an existing case.',
 };
 const KIND_EXAMPLE = {
   workflow: 'For example: When someone says “close my complaint”, ask for the case number and a note, close the case and tell them.',
   block: 'For example: Add a note to a case. It needs the case number and the note text.',
   case_action: 'For example: A button that passes the case to another person and tells them.',
 };
+const KIND_TITLE = { workflow: 'New flow', block: 'New building block', case_action: 'New case button' };
 function newWorkflowModal(kinds, startKind) {
   const offered = kinds ? ['workflow', 'block', ...(S.boot.caps.cases ? ['case_action'] : [])] : ['workflow'];
   let kind = offered.includes(startKind) ? startKind : 'workflow', mode = 'chat', proposal = null, history = [], typed = '', typedName = '';
-  const body = h('div', { class: 'stack' }), kindRow = h('div', { class: 'stack s8' }), seg = h('div', { class: 'row' });
-  const m = modal({ title: kinds ? 'New workflow or building block' : 'New workflow', wide: true, body: h('div', null, kindRow, h('div', { style: { height: '14px' } }), seg, h('div', { style: { height: '12px' } }), body), actions: null });
-  const modeBtn = (k, label) => h('button', { class: 'btn sm' + (mode === k ? ' primary' : ''), type: 'button', onclick: () => { mode = k; proposal = null; draw(); } }, label);
+  const body = h('div', { class: 'stack' }), kindRow = h('div', { class: 'stack s8' }), seg = h('div', { class: 'nf-start' }), foot = h('div', { class: 'muted small' });
+  const m = modal({ title: KIND_TITLE[kind], wide: true, body: h('div', null, kindRow, seg, h('div', { style: { height: '12px' } }), body, h('div', { style: { height: '14px' } }), foot), actions: null });
+  const what = { workflow: 'flow', block: 'building block', case_action: 'case button' };
+  const start = (k, ic, title, sub, rec) => h('button', { type: 'button', class: 'nf-card' + (mode === k ? ' on' : ''), onclick: () => { mode = k; proposal = null; draw(); } },
+    h('span', { class: 'gi' }, icon(ic)), h('b', { class: 't' }, title, rec ? [' ', badge('Easiest', 'brand')] : null), h('span', { class: 's' }, sub));
   async function created(r, made) {
     FV.kind = made === 'block' ? 'block' : 'flow';             // the Flows list opens on the right tab when you go back to it
     toast(made === 'block' ? 'Building block created.' : 'Created. It is switched off until you turn it on, and nobody can use it yet.', 'ok');
     m.close(); await ensureStudio(); openWorkflow(r.id);
   }
   function draw() {
-    fill(kindRow, kinds ? [h('div', { class: 'seg', role: 'group', 'aria-label': 'What are you making?' }, offered.map(k => h('button', { type: 'button', class: kind === k ? 'on' : '', onclick: () => { if (kind === k) return; kind = k; proposal = null; history = []; draw(); } }, KIND_LABEL[k]))),
-      h('div', { class: 'muted small' }, KIND_HELP[kind])] : null);
-    fill(seg, modeBtn('chat', 'Describe it in chat'), modeBtn('blank', 'Start blank'), modeBtn('copy', 'Copy an existing one'));
+    m.setTitle(KIND_TITLE[kind]);
+    fill(kindRow, kind === 'workflow' ? h('div', { class: 'muted' }, 'How do you want to start?') : h('div', { class: 'notice' }, icon('info'), h('div', null, h('b', null, KIND_LABEL[kind] + '. '), KIND_HELP[kind])));
+    fill(seg, start('chat', 'spark', 'Describe it', 'Say what it should do. The assistant drafts it and you check it.', true), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
+    fill(foot, kind === 'workflow' ? (offered.length > 1 ? ['Making something else? ', offered.filter(k => k !== 'workflow').map((k, i) => [i ? ' · ' : null, h('a', { href: '#', onclick: e => { e.preventDefault(); kind = k; proposal = null; history = []; draw(); } }, 'A ' + what[k])])] : null)
+      : h('a', { href: '#', onclick: e => { e.preventDefault(); kind = 'workflow'; proposal = null; history = []; draw(); } }, '← Make a flow instead'));
     const err = h('div', { class: 'small', style: { color: 'var(--bad)' } });
     if (mode === 'chat') {
       const text = h('textarea', { rows: 4, placeholder: KIND_EXAMPLE[kind] });
@@ -179,7 +196,7 @@ function newWorkflowModal(kinds, startKind) {
       const name = h('input', { type: 'text', placeholder: 'Name of the copy' });
       src.addEventListener('change', () => { const w = ST.flows.find(x => x.id === src.value); if (w && !name.value) name.value = w.name + ' (copy)'; });
       fill(body, field('Copy which one?', src), field('Name of the copy', name), h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: async () => { if (!src.value) { err.textContent = 'Choose one to copy.'; return; } try { await created(await api.post('/workflows', { name: name.value.trim() || 'Copy', copy_from: src.value, kind }), kind); } catch (x) { err.textContent = x.message; } } }, 'Copy it'), err),
-        h('div', { class: 'muted small' }, 'Reports and PDF documents cannot be copied here. ' + (kind === 'block' ? 'The copy is a new building block, switched on. Nothing runs it until you add it to a workflow.' : 'The copy is switched off and nobody can use it until you turn it on.')));
+        h('div', { class: 'muted small' }, 'Reports and PDF documents cannot be copied here. ' + (kind === 'block' ? 'The copy is a new building block, switched on. Nothing runs it until you add it to a flow.' : 'The copy is switched off and nobody can use it until you turn it on.')));
     }
   }
   draw();

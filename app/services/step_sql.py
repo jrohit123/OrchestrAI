@@ -340,7 +340,7 @@ def tag_for(step: dict) -> dict:
     if op == "run_workflow":
         return {
             "by": "code",
-            "why": "Runs the steps of another workflow, which are code too unless they say otherwise.",
+            "why": "Runs the steps of another flow, which are code too unless they say otherwise.",
         }
     return {"by": "code", "why": "Exact rules and SQL. No AI."}
 

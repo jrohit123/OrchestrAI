@@ -3,6 +3,7 @@
 Everything here edits configuration rows (a person's role, a seat's holder, an access
 grant, a resident's status). What those rows then mean to the bot is decided elsewhere."""
 
+import re
 from datetime import date
 from typing import Annotated, Literal
 from uuid import UUID
@@ -21,6 +22,7 @@ from app.admin_panel.common import (
     jb,
     log_event,
     mask_phone,
+    people_channel,
     rows,
     tx,
 )
@@ -285,6 +287,93 @@ async def update_person(ctx: CtxDep, user_id: UUID, body: PersonPatch):
             conn=conn,
         )
     return {"ok": True}
+
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def clean_phone(raw: str | None) -> str:
+    """A number written the way people write it, kept the way the bot knows it: + and digits."""
+    text = re.sub(r"[\s().-]", "", raw or "")
+    if text.startswith("00"):
+        text = "+" + text[2:]
+    if not re.fullmatch(r"\+\d{8,15}", text):
+        raise HTTPException(
+            status_code=400,
+            detail="Write the number with its country code, like +91 98765 43210.",
+        )
+    return text
+
+
+class PersonNew(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    email: str = Field(..., max_length=160)
+    role_id: UUID
+    phone: str | None = Field(None, max_length=40)
+
+
+@router.post("/people")
+async def add_person(ctx: CtxDep, body: PersonNew):
+    """Add someone before they have ever written to the assistant. Where people are reached on
+    Telegram their chat is linked by their email the first time they write, so that is enough.
+    Where they are reached by number (WhatsApp) the number is what the assistant knows them by,
+    so it is asked for. Which of the two this organisation does is read from its database."""
+    name = " ".join(body.name.split())
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Write the person's name.")
+    email = body.email.strip().lower()
+    if not _EMAIL.match(email):
+        raise HTTPException(
+            status_code=400, detail="That does not look like an email address."
+        )
+    phone = (
+        None
+        if await people_channel(ctx.source_key) == "telegram"
+        else clean_phone(body.phone)
+    )
+    role = await fetch_one(
+        "SELECT id, name FROM roles WHERE id = $1 AND org_id = $2",
+        body.role_id,
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    clash = await fetch_one(
+        "SELECT name FROM users WHERE org_id = $1 AND (lower(email) = $2 "
+        "OR ($3::text IS NOT NULL AND phone = $3))",
+        ctx.org_id,
+        email,
+        phone,
+        source_key=ctx.source_key,
+    )
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{clash['name']} is already here with that email"
+            + (" or number." if phone else "."),
+        )
+    async with tx(ctx) as conn:
+        new_id = await conn.fetchval(
+            "INSERT INTO users (org_id, role_id, name, email, phone) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            ctx.org_id,
+            role["id"],
+            name,
+            email,
+            phone,
+        )
+        await log_event(
+            ctx,
+            "people",
+            "create",
+            f"Added {name} as {role['name']}",
+            target_type="user",
+            target_id=new_id,
+            after={"name": name, "role_id": role["id"], "has_number": bool(phone)},
+            conn=conn,
+        )
+    return {"ok": True, "id": new_id}
 
 
 class HomePatch(BaseModel):

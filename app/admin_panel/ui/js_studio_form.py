@@ -89,7 +89,7 @@ function describeStep(s) {
     'case.add_parties': () => 'Put ' + vlabel(p.users_from) + ' on the case as ' + ({ level2: 'level 2', helper: 'a helper', watcher: 'a watcher' }[p.role] || 'a helper'),
     'case.attach_photos': () => 'Attach the photos to the case',
     'notify.parties': () => 'Tell everyone on the case',
-    run_workflow: () => 'Run ' + (flow ? '“' + flow.name + '”' : p.workflow ? '“' + p.workflow + '” (missing)' : 'a building block'),
+    run_workflow: () => 'Use ' + (flow ? '“' + flow.name + '”' : p.workflow ? '“' + p.workflow + '” (missing)' : 'a building block'),
   };
   const base = by[s.op] ? by[s.op]() : pretty(s.op);
   return base;

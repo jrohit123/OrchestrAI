@@ -92,12 +92,12 @@ function settingsBrowserCard() {
 }
 async function settingsSupportCard() {
   const d = await api.get('/status').catch(() => null);
-  const LABELS = { cases: 'Cases', categories: 'Categories', routing: 'Routing rules', parties: 'People on a case', grants: 'Special access', events: 'Change log', seats: 'Seats', residents: 'Residents', audit: 'Chat log', targets: 'Response times', workflow_kind: 'Workflow kinds' };
+  const LABELS = { cases: 'Cases', categories: 'Categories', routing: 'Case rules', parties: 'People on a case', grants: 'Special access', events: 'Change log', seats: 'Seats', residents: 'Residents', audit: 'Chat log', targets: 'Response times', workflow_kind: 'Building blocks' };
   return setCard('support', 'For support',
     d ? h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'What this database supports'), h('div', { class: 'stack', style: { marginTop: '10px' } },
       d.caps.cases && !d.case_model_installed ? notice('The case model (categories, routing, seats, special access) is not fully installed in this database, so those screens are hidden. Missing: ' + d.case_model_missing.map(pretty).join(', ') + '.', 'warn') : null,
       h('div', { class: 'chips' }, Object.entries(LABELS).map(([k, l]) => h('span', { class: 'badge ' + (d.caps[k] ? 'ok' : '') }, (d.caps[k] ? '✓ ' : '✗ ') + l))),
-      h('div', { class: 'muted small' }, 'Cases count as finished when their status is: ' + d.closed_values.join(', ') + '. ' + plural(d.counts.users, 'person', 'people') + ', ' + plural(d.counts.workflows, 'workflow') + '.'))) : null,
+      h('div', { class: 'muted small' }, 'Cases count as finished when their status is: ' + d.closed_values.join(', ') + '. ' + plural(d.counts.users, 'person', 'people') + ', ' + plural(d.counts.workflows, 'flow') + '.'))) : null,
     setRow('End every ongoing conversation', 'People can simply start again.', h('button', { class: 'btn danger', onclick: async () => {
       if (!await confirmBox('End every ongoing conversation with the assistant? People can simply start again.', { ok: 'End them all', danger: true })) return;
       try { await api.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
@@ -105,7 +105,8 @@ async function settingsSupportCard() {
 
 SECTIONS.settings = {
   title: 'Settings', sub: 'Your organisation and how the assistant behaves, each setting in one place.',
-  async render(root) {
+  async render(root, route) {
+    if (route && route.tab === 'history') return renderHistory(root, route);
     const info = await api.get('/org-settings');
     const cards = {};
     const onSaved = async key => {

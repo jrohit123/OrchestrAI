@@ -1,6 +1,6 @@
 JS = r"""
 // ───────────────────────── Workflows: shared helpers ─────────────────────────
-const KIND_LABEL = { workflow: 'Workflow', block: 'Building block', case_action: 'Case button' };
+const KIND_LABEL = { workflow: 'Flow', block: 'Building block', case_action: 'Case button' };
 const PARTY_PLAIN = { requester: 'who raised it', assignee: 'who has it', level2: 'level 2', helper: 'helpers', watcher: 'watchers' };
 async function ensureStudio() {
   const [cat, fl] = await Promise.all([api.get('/studio/catalog'), api.get('/workflows')]);
@@ -159,7 +159,7 @@ async function renderEditor(root, id) {
   const [d] = await Promise.all([api.get('/workflows/' + id), ensureStudio()]);
   if (mine !== S.renderId) return;
   EW = editorState(d, null);
-  S.leaveGuard = () => !EW || !isDirty() || window.confirm('You have unsaved changes to this workflow. Leave without saving?');
+  S.leaveGuard = () => !EW || !isDirty() || window.confirm('You have unsaved changes to this flow. Leave without saving?');
   window.onbeforeunload = () => (EW && isDirty()) ? 'Unsaved changes' : undefined;
   ui = { root };
   drawEditor();
@@ -193,7 +193,7 @@ function detailsPane() {
   const boxes = roles.map(r => ({ r, cb: h('input', { type: 'checkbox', checked: checked.has(r.name) }) }));
   const accessMsg = h('span', { class: 'small muted' });
   const access = d.kind === 'block'
-    ? h('div', { class: 'muted' }, 'A building block is only run by other workflows, so it is not given to roles. Give the workflow that runs it instead.')
+    ? h('div', { class: 'muted' }, 'A building block is only used by other flows, so it is not given to roles. Give the flow that uses it instead.')
     : h('div', { class: 'stack' }, h('div', { class: 'row' }, boxes.map(b => h('label', { class: 'row' }, b.cb, b.r.name))),
         h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: async () => { try { await api.put('/workflows/' + d.id + '/roles', { roles: boxes.filter(b => b.cb.checked).map(b => b.r.name) }); d.granted_roles = boxes.filter(b => b.cb.checked).map(b => b.r.name); accessMsg.textContent = 'Saved'; toast('Access saved', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Save who can use it'), accessMsg));
   const desc = h('textarea', { rows: 3, oninput: e => { w.description = e.target.value; commit(false); } }); desc.value = w.description;
@@ -201,7 +201,7 @@ function detailsPane() {
   return h('div', { class: 'stack' },
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'About it'), h('div', { class: 'card-b stack' },
       field('What it does', desc, 'One sentence. The assistant reads this to understand when to use it.'),
-      kinds ? field('What kind is it?', sel([['workflow', 'A workflow people start'], ['case_action', 'A case action (button on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only run by other workflows. A case action is a button on a case.') : null,
+      kinds ? field('What kind is it?', sel([['workflow', 'A flow people start'], ['case_action', 'A case button (on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only used by other flows. A case button is a button on a case.') : null,
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access)),
@@ -260,7 +260,7 @@ function asksPane() {
     h('input', { type: 'text', placeholder: 'New field name, e.g. comment_text', id: 'newfield', onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); addField(); } } }),
     h('button', { class: 'btn', type: 'button', onclick: addField }, '+ Add a field'));
   wrap.append(h('div', { class: 'muted' }, 'What the assistant collects from the person before it runs the steps. Steps read these as the person’s answers.'), ...rows, add);
-  if (!keys.length) wrap.prepend(h('div', { class: 'card' }, empty('Nothing is asked', 'This workflow does not collect anything from the person.')));
+  if (!keys.length) wrap.prepend(h('div', { class: 'card' }, empty('Nothing is asked', 'This flow does not collect anything from the person.')));
   return wrap;
 }
 
@@ -306,7 +306,7 @@ const gateText = g => g.type === 'permission' ? 'Only these roles: ' + (g.role_a
 function safePane() {
   const gates = EW.work.gates || [];
   const text = gateText;
-  return h('div', { class: 'stack' }, h('div', { class: 'muted' }, 'Rules that stop or slow a workflow down: who may run it, one-time codes, approvals.'),
+  return h('div', { class: 'stack' }, h('div', { class: 'muted' }, 'Rules that stop or slow a flow down: who may run it, one-time codes, approvals.'),
     gates.length ? h('div', { class: 'card' }, gates.map(g => h('div', { class: 'row between', style: { padding: '10px 16px', borderBottom: '1px solid var(--line)' } }, h('span', null, text(g)), badge(g.type)))) : h('div', { class: 'card' }, empty('No safeguards', 'Anyone allowed to use the workflow can run it all the way.')),
     h('div', { class: 'muted small' }, 'To change safeguards, edit them as JSON under “Advanced”.'));
 }
@@ -357,7 +357,7 @@ function proposalIds(p) {
 }
 function chatDock(read) {
   const log = h('div', { class: 'chatlog' });
-  const input = h('textarea', { rows: 2, placeholder: read ? 'Chat edits steps, and this workflow has none.' : 'Tell the assistant what to change…', disabled: read });
+  const input = h('textarea', { rows: 2, placeholder: read ? 'Chat edits steps, and this flow has none.' : 'Tell the assistant what to change…', disabled: read });
   const send = h('button', { class: 'btn primary', disabled: read }, 'Send');
   function proposalView(msg) {
     const p = msg.proposal;
@@ -395,7 +395,7 @@ function chatDock(read) {
 }
 
 SECTIONS.workflows = {
-  title: 'Flows', sub: 'What people can ask the assistant to do, and how each one works',
+  title: 'Flows', sub: 'A flow is one thing the assistant can do for people, like filing a complaint or closing a case.',
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
     if (route.q.w) return renderEditor(root, route.q.w);

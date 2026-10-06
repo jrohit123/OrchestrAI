@@ -78,14 +78,14 @@ async function showCase(id) {
     if (S.boot.caps.case_model) {
       const r = d.routing;
       let inner;
-      if (!c.category_id) inner = h('span', { class: 'muted' }, 'This case has no category yet, so no routing rule can apply.');
-      else if (!r) inner = h('span', null, 'No routing rule matches this category yet. ', h('a', { href: href('routing', 'rules') }, 'Add one'));
+      if (!c.category_id) inner = h('span', { class: 'muted' }, 'This case has no kind of complaint yet, so no case rule can apply.');
+      else if (!r) inner = h('span', null, 'No case rule matches this kind of complaint yet. ', h('a', { href: href('rules') }, 'Add one'));
       else inner = h('div', { class: 'stack' },
         h('div', null, 'Rule ', h('b', null, '“' + r.rule_name + '”'), ' would send it to ', r.assignee_name ? h('b', null, r.assignee_name) : h('b', { style: { color: 'var(--bad)' } }, 'nobody (no one it points to can be messaged)'),
           r.via === 'backup' ? ' (the backup, because the first choice is unavailable)' : '', r.level2.length ? ', with ' + r.level2.map(x => x.name).join(', ') + ' as level 2' : '', '.'),
         r.target_minutes ? h('div', { class: 'muted small' }, 'Response target from the rule: ' + minutes(r.target_minutes)) : null,
         r.assignee_id && r.assignee_id !== c.assigned_to_id ? h('div', { class: 'muted small' }, 'That is different from who has it now.') : null);
-      body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the routing rules say'), h('div', { class: 'card-b' }, inner)));
+      body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the case rules say'), h('div', { class: 'card-b' }, inner)));
     }
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on this case'),
       d.parties.length ? h('div', { class: 'card-b stack' }, onePerPerson(d.parties).map(p => h('div', { class: 'row between' },
@@ -93,57 +93,83 @@ async function showCase(id) {
     if (c.description) body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What was reported'), h('div', { class: 'card-b' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, c.description))));
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Timeline'),
       h('div', { class: 'card-b' }, d.timeline.length ? h('div', { class: 'timeline' }, d.timeline.map(timelineItem)) : h('span', { class: 'muted' }, 'Nothing has happened on this case yet.'))));
-    body.push(h('div', { class: 'muted small' }, 'To assign, update or close a case, use its workflow in Telegram. The dashboard only shows cases.'));
+    body.push(h('div', { class: 'muted small' }, 'To assign, update or close a case, use its flow in ' + chatWord() + '. The dashboard only shows cases.'));
     clear(dr.bodyEl); add(dr.bodyEl, body);
   } catch (e) { if (drawer === dr) { clear(dr.bodyEl); dr.bodyEl.append(notice(e.message, 'bad')); dr.titleEl.textContent = 'Case'; } }
 }
+// Cases: only the daily work. Search, Open / Closed and one Filters button; how cases are sent and timed is set up under Case rules.
 SECTIONS.cases = {
-  title: 'Cases', sub: 'Everything that has been reported, and where it stands',
+  title: 'Cases', sub: 'Everything people have reported, and where it stands',
+  actions: () => S.boot.caps.case_model ? h('a', { class: 'btn ghost', href: href('rules') }, 'How cases are handled', icon('arrowr', 'sm')) : null,
   async render(root, route) {
     const mine = S.renderId;
     const lk = S.boot.caps.case_category ? await getLookups() : { categories: [] };
+    const closedList = S.boot.enums.closed || [], closedVal = closedList.join(',');
     const q = { sort: 'newest', ...route.q }; delete q.case; delete q.person;
     q.page = Number(q.page || 1);
-    const chips = h('div', { class: 'chips', style: { marginBottom: '10px' } });
-    const bar = h('div', { class: 'filters' });
-    const out = h('div', { class: 'card' });
-    root.append(chips, bar, out);
-    let assigneePick;
-    const update = (patch) => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
-    const search = h('input', { type: 'search', placeholder: 'Search number, title, place or person…', value: q.q || '', style: { minWidth: '260px' } });
+    const bar = h('div', { class: 'filters' }), chips = h('div', { class: 'chips', style: { marginBottom: '12px' } }), out = h('div', { class: 'card' });
+    root.append(bar, chips, out);
+    const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
+    const search = h('input', { type: 'search', placeholder: 'Search number, title, place or person', value: q.q || '', style: { flex: 1, minWidth: '240px', maxWidth: '400px' }, 'aria-label': 'Search cases' });
     search.addEventListener('input', debounce(() => update({ q: search.value }), 300));
-    const cat = S.boot.caps.case_category ? sel(catOptions(lk, 'Any category', true), q.category || '', { onchange: e => update({ category: e.target.value }) }) : null;
-    const prio = sel([['', 'Any priority'], ...(S.boot.enums.priorities || []).map(p => [p, pretty(p)])], q.priority || '', { onchange: e => update({ priority: e.target.value }) });
-    const sort = sel([['newest', 'Newest first'], ['oldest', 'Oldest first'], ['due', 'Due soonest'], ['priority', 'Most urgent first']], q.sort, { onchange: e => update({ sort: e.target.value }) });
-    assigneePick = personPicker({ placeholder: 'Handled by…', anyStatus: true, initial: q.assignee && q.assignee !== 'none' ? { id: q.assignee, name: q.assignee_name || 'Selected person' } : null,
-      onChange: p => update({ assignee: p ? p.id : '', assignee_name: p ? p.name : '' }) });
-    const flag = (key, label) => { const cb = h('input', { type: 'checkbox', checked: !!q[key] }); cb.addEventListener('change', () => update({ [key]: cb.checked ? '1' : '' })); return h('label', { class: 'row small' }, cb, label); };
-    const clearBtn = h('button', { class: 'btn sm ghost', onclick: () => { for (const k of ['status', 'priority', 'category', 'assignee', 'assignee_name', 'q', 'overdue', 'unassigned']) delete q[k]; q.page = 1; route.q = {}; setQuery({}); SECTIONS.cases.render(clear(root), { ...route, q: {} }); } }, 'Clear filters');
-    add(bar, [search, cat, prio, assigneePick.el, flag('unassigned', 'Not assigned'), flag('overdue', 'Past target time'), sort, clearBtn]);
+    const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Which cases' });
+    const filtersBtn = h('button', { class: 'btn', type: 'button', 'data-popkeep': '1', onclick: e => openFilters(e.currentTarget) });
+    const sort = sel([['newest', 'Newest first'], ['oldest', 'Oldest first'], ['due', 'Due soonest'], ['priority', 'Most urgent first']], q.sort, { class: 'select sm', style: { width: 'auto' }, 'aria-label': 'Sort', onchange: e => update({ sort: e.target.value }) });
+    add(bar, [search, seg, filtersBtn, h('span', { class: 'sp' }), sort]);
+
+    // everything beyond search and Open / Closed lives behind one button
+    const extra = () => ['priority', 'category', 'unassigned', 'overdue'].filter(k => q[k]).length + (q.assignee && q.assignee !== 'none' ? 1 : 0) + (q.status && q.status !== 'open' && q.status !== closedVal ? 1 : 0);
+    function openFilters(anchor) {
+      const statuses = S.boot.enums.statuses || [];
+      const who = personPicker({ placeholder: 'Start typing a name', anyStatus: true, initial: q.assignee && q.assignee !== 'none' ? { id: q.assignee, name: q.assignee_name || 'Selected person' } : null,
+        onChange: p => update({ assignee: p ? p.id : '', assignee_name: p ? p.name : '' }) });
+      const flag = (key, label) => { const cb = h('input', { type: 'checkbox', checked: !!q[key] }); cb.addEventListener('change', () => update({ [key]: cb.checked ? '1' : '' })); return h('label', { class: 'row small flat' }, cb, label); };
+      openPop(anchor, h('div', { class: 'stack s8', style: { padding: '10px' } },
+        statuses.length ? field('Status', sel([['', 'Any'], ['open', 'Open (not finished)'], ...statuses.map(s => [s, pretty(s)])], q.status || '', { onchange: e => update({ status: e.target.value }) })) : null,
+        field('Priority', sel([['', 'Any'], ...(S.boot.enums.priorities || []).map(p => [p, pretty(p)])], q.priority || '', { onchange: e => update({ priority: e.target.value }) })),
+        S.boot.caps.case_category ? field('Kind of complaint', sel(catOptions(lk, 'Any', true), q.category || '', { onchange: e => update({ category: e.target.value }) })) : null,
+        field('Who has it', who.el),
+        h('div', { class: 'stack s8' }, flag('unassigned', 'Not assigned'), flag('overdue', 'Past target time'))), { width: 320 });
+    }
+    function drawChips() {
+      const list = [];
+      const chip = (label, patch) => list.push(h('span', { class: 'chip' }, label, h('button', { class: 'x', type: 'button', 'aria-label': 'Remove ' + label, style: { fontSize: '16px', padding: '0 2px' }, onclick: () => update(patch) }, '×')));
+      if (q.status && q.status !== 'open' && q.status !== closedVal) chip('Status: ' + pretty(q.status), { status: '' });
+      if (q.priority) chip('Priority: ' + pretty(q.priority), { priority: '' });
+      if (q.category) chip('Kind: ' + (q.category === 'none' ? 'none yet' : ((lk.categories.find(c => c.id === q.category) || {}).label || 'chosen')), { category: '' });
+      if (q.assignee && q.assignee !== 'none') chip('Who has it: ' + (q.assignee_name || 'chosen person'), { assignee: '', assignee_name: '' });
+      if (q.unassigned) chip('Not assigned', { unassigned: '' });
+      if (q.overdue) chip('Past target time', { overdue: '' });
+      fill(chips, list, list.length ? h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { closePop(); search.value = ''; update({ status: '', priority: '', category: '', assignee: '', assignee_name: '', q: '', overdue: '', unassigned: '' }); } }, 'Clear all') : null);
+      chips.style.display = list.length ? '' : 'none';
+      fill(filtersBtn, icon('filter', 'sm'), extra() ? 'Filters · ' + extra() : 'Filters');
+    }
     async function load() {
       if (mine !== S.renderId) return;
       setQuery({ ...q, sort: q.sort === 'newest' ? '' : q.sort });
+      drawChips();
       fill(out, h('div', { class: 'empty' }, 'Loading…'));
       try {
         const d = await api.get('/cases', { status: q.status, priority: q.priority, category: q.category, assignee: q.assignee, q: q.q, overdue: q.overdue ? true : '', unassigned: q.unassigned ? true : '', sort: q.sort, page: q.page, page_size: 25 });
         const total = Object.values(d.status_counts).reduce((a, b) => a + b, 0);
-        const closed = S.boot.enums.closed || [];
+        const closed = closedList;
         const openN = Object.entries(d.status_counts).filter(([s]) => !closed.includes(s)).reduce((a, [, n]) => a + n, 0);
-        const chip = (label, n, val) => h('button', { class: 'btn sm' + ((q.status || '') === val ? ' primary' : ''), onclick: () => update({ status: val }) }, label + ' ', h('span', { style: { opacity: .75 } }, n));
-        fill(chips, chip('All', total, ''), chip('Open', openN, 'open'), (S.boot.enums.statuses || Object.keys(d.status_counts)).map(s => chip(pretty(s), d.status_counts[s] || 0, s)));
-        fill(out, 
+        const part = (label, n, val) => h('button', { type: 'button', 'aria-pressed': String((q.status || '') === val), onclick: () => update({ status: val }) }, label + ' ', h('span', { style: { opacity: .7 } }, n));
+        fill(seg, part('All', total, ''), part('Open', openN, 'open'), closed.length ? part('Closed', total - openN, closedVal) : null);
+        const dot = p => h('span', { class: 'pd ' + prioTone(p) });
+        fill(out,
           table([
-            { label: 'Case', cls: 'wide', render: c => h('div', null, h('b', null, c.case_number), h('div', null, c.title), h('div', { class: 'muted small' }, [c.location, c.complainant_name ? 'raised by ' + c.complainant_name : null].filter(Boolean).join(' · '))) },
+            { label: 'Case', cls: 'wide', render: c => h('div', { class: 'cs' }, h('b', null, c.case_number), ' ', c.title,
+              h('div', { class: 'muted small' }, [c.priority ? [dot(c.priority), pretty(c.priority)] : null, c.category_label ? (c.category_parent_label ? c.category_parent_label + ' › ' : '') + c.category_label : null, c.location, c.complainant_name ? 'raised by ' + c.complainant_name : null].filter(Boolean).flatMap((x, i) => [i ? ' · ' : null, x]))) },
             { label: 'Status', render: c => statusBadge(c.status) },
-            { label: 'Priority', render: c => prioBadge(c.priority) },
-            S.boot.caps.case_category ? { label: 'Category', render: c => c.category_label ? h('span', null, c.category_parent_label ? h('span', { class: 'muted' }, c.category_parent_label + ' › ') : null, c.category_label) : h('span', { class: 'muted' }, '—') } : null,
-            { label: 'Handled by', render: c => c.assignee_name ? person(null, c.assignee_name) : badge('Not assigned', 'warn') },
+            { label: 'Who has it', render: c => c.assignee_name ? person(null, c.assignee_name) : badge('Not assigned', 'warn') },
             { label: 'Due', render: c => closed.includes(c.status) ? h('span', { class: 'muted' }, 'closed ' + fmtD(c.closed_at)) : h('span', { style: c.is_overdue ? { color: 'var(--bad)', fontWeight: 600 } : null }, relDue(c.due_at)) },
-          ].filter(Boolean), d.rows, { onRow: c => go('cases', '', { ...q, case: c.id }), emptyTitle: 'No cases match', emptyText: 'Try clearing a filter.' }),
+          ], d.rows, { onRow: c => go('cases', '', { ...q, case: c.id }), emptyTitle: 'No cases match', emptyText: 'Try removing a filter.' }),
           pager(d.total, d.page, d.page_size, p => update({ page: p })));
       } catch (e) { fill(out, notice(e.message, 'bad')); }
     }
     await load();
   },
 };
+
 """

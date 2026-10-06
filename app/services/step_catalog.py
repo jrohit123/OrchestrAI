@@ -172,7 +172,7 @@ STEP_TYPES: list[dict] = [
         "op": "compute",
         "label": "Calculate totals",
         "group": "Look up and check",
-        "help": "Runs the workflow's calculation rules (invoices, quotes).",
+        "help": "Runs the flow's calculation rules (invoices, quotes).",
         "params": [],
     },
     {
@@ -304,7 +304,7 @@ STEP_TYPES: list[dict] = [
         "op": "pdf.generate",
         "label": "Make a PDF",
         "group": "Tell people",
-        "help": "Builds the workflow's PDF document.",
+        "help": "Builds the flow's PDF document.",
         "params": [{"key": "subtitle", "label": "Subtitle", "kind": "text"}],
     },
     {
@@ -490,9 +490,9 @@ STEP_TYPES: list[dict] = [
     },
     {
         "op": "run_workflow",
-        "label": "Run a building block",
+        "label": "Use a building block",
         "group": "Other",
-        "help": "Runs another workflow as one step. Change that workflow once and everything that runs it changes.",
+        "help": "Runs another flow as one step. Change that flow once and everything that uses it changes.",
         "params": [
             {
                 "key": "workflow",
@@ -506,7 +506,7 @@ STEP_TYPES: list[dict] = [
                 "kind": "map_value",
                 "keys": "free",
                 "advanced": True,
-                "help": "Only needed to rename or add values. It already sees everything this workflow has.",
+                "help": "Only needed to rename or add values. It already sees everything this flow has.",
             },
         ],
     },

@@ -61,7 +61,12 @@ SELECT
              AND column_name = 'kind')                        AS seat_kind,
   EXISTS (SELECT 1 FROM information_schema.columns
            WHERE table_schema = 'public' AND table_name = 'workflows'
-             AND column_name = 'kind')                        AS workflow_kind
+             AND column_name = 'kind')                        AS workflow_kind,
+  (SELECT count(*) = 5 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'roles'
+      AND column_name IN ('permissions', 'readable_tables', 'readable_entity_types',
+                          'is_approver', 'approval_max_amount'))  AS role_editor,
+  to_regclass('public.entity_records') IS NOT NULL            AS entity_records
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -98,6 +103,7 @@ _CAP_MESSAGES = {
         "This organisation's database does not have the AI instruction tables yet. "
         "Run migration core-0009 first."
     ),
+    "role_editor": "This organisation's database cannot keep everything a role needs yet.",
 }
 
 
@@ -160,6 +166,27 @@ async def get_ctx(org_slug: str, request: Request) -> Ctx:
 
 
 CtxDep = Annotated[Ctx, Depends(get_ctx)]
+
+
+_channel_cache: dict[str, tuple[float, str]] = {}
+
+
+async def people_channel(source_key: str) -> str:
+    """How this organisation reaches people ('telegram', 'whatsapp'): the default of the people
+    table's channel column, which is set once per database, instead of a list kept here."""
+    now = time.monotonic()
+    hit = _channel_cache.get(source_key)
+    if hit and now - hit[0] < 300:
+        return hit[1]
+    row = await fetch_one(
+        "SELECT column_default FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = 'users' AND column_name = 'channel'",
+        source_key=source_key,
+    )
+    found = re.match(r"'([^']*)'", (row["column_default"] if row else "") or "")
+    channel = found.group(1) if found else "telegram"
+    _channel_cache[source_key] = (now, channel)
+    return channel
 
 
 # ── allowed values, read from the database's own rules ───────────────────────
