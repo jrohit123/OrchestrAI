@@ -5,11 +5,19 @@ import hashlib
 
 from app.admin_panel.ui import (
     css,
+    js_assistant,
+    js_boot,
+    js_canvas,
+    js_canvas_panels,
     js_core,
+    js_flows,
+    js_home,
+    js_icons,
     js_overview_cases,
     js_people,
     js_rest,
     js_routing,
+    js_settings,
     js_studio,
     js_studio_form,
 )
@@ -23,12 +31,20 @@ APP_JS = (
         part.JS
         for part in (
             js_core,
+            js_icons,
             js_overview_cases,
             js_people,
             js_routing,
             js_studio_form,
             js_studio,
+            js_canvas,
+            js_canvas_panels,
+            js_flows,
+            js_home,
             js_rest,
+            js_settings,
+            js_assistant,
+            js_boot,
         )
     )
     + "\n})();\n"

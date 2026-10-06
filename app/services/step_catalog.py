@@ -758,6 +758,11 @@ def validate_steps(
     steps = normalize_steps(steps)
     if not isinstance(steps, list):
         return {"errors": ["The steps must be a list."], "warnings": []}
+    if kind == "block" and len(steps) > 1:
+        errors.append(
+            f"A building block is one step, and this one has {len(steps)}. To do several things, "
+            "make a building block for each one and run them one after another in a workflow."
+        )
 
     ctx = {
         "schema": schema,

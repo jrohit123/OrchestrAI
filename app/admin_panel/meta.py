@@ -22,7 +22,8 @@ router = APIRouter(
 
 
 def _sections(caps: dict[str, bool]) -> list[dict]:
-    """Which screens this org gets. Driven by what its database can do, not by org name."""
+    """Which screens this org gets. Driven by what its database can do, not by org name.
+    Where complaints go and the response times are tabs of Cases; chats are Conversations."""
     people_tabs = [{"key": "people", "label": "People"}]
     if caps.get("seats"):
         people_tabs.append({"key": "seats", "label": "Seats"})
@@ -33,31 +34,36 @@ def _sections(caps: dict[str, bool]) -> list[dict]:
     people_tabs.append({"key": "roles", "label": "Roles"})
     activity_tabs = []
     if caps.get("audit"):
-        activity_tabs += [
-            {"key": "chats", "label": "Chats"},
-            {"key": "all", "label": "All activity"},
-        ]
+        activity_tabs.append({"key": "all", "label": "All activity"})
     if caps.get("events"):
         activity_tabs.append({"key": "changes", "label": "Dashboard changes"})
-    sections: list[dict] = [{"key": "overview", "label": "Overview"}]
+    sections: list[dict] = [{"key": "overview", "label": "Home"}]
     if caps.get("cases"):
-        sections.append({"key": "cases", "label": "Cases"})
-    sections.append({"key": "people", "label": "People & access", "tabs": people_tabs})
-    if caps.get("case_model"):
+        case_tabs = [{"key": "list", "label": "Cases"}]
+        if caps.get("case_model"):
+            case_tabs += [
+                {"key": "rules", "label": "Who gets them"},
+                {"key": "categories", "label": "Kinds of complaint"},
+            ]
+        if caps.get("targets"):
+            case_tabs.append({"key": "times", "label": "Response times"})
+        sections.append({"key": "cases", "label": "Cases", "tabs": case_tabs})
+    if caps.get("audit"):
+        sections.append({"key": "conversations", "label": "Conversations"})
+    sections.append({"key": "people", "label": "People", "tabs": people_tabs})
+    sections.append({"key": "workflows", "label": "Flows"})
+    assistant_tabs = []
+    if caps.get("texts"):
+        assistant_tabs.append({"key": "messages", "label": "Messages"})
+    if caps.get("prompts"):
+        assistant_tabs.append({"key": "instructions", "label": "AI instructions"})
+    if assistant_tabs:
         sections.append(
-            {
-                "key": "routing",
-                "label": "Where complaints go",
-                "tabs": [
-                    {"key": "rules", "label": "Who gets them"},
-                    {"key": "categories", "label": "Kinds of complaint"},
-                ],
-            }
+            {"key": "assistant", "label": "Assistant", "tabs": assistant_tabs}
         )
-    sections.append({"key": "workflows", "label": "Workflows"})
     if activity_tabs:
         sections.append(
-            {"key": "activity", "label": "Activity & chats", "tabs": activity_tabs}
+            {"key": "activity", "label": "Activity log", "tabs": activity_tabs}
         )
     sections.append({"key": "settings", "label": "Settings"})
     return sections

@@ -241,7 +241,8 @@ function confirmBox(message, o) {
 }
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (modalStack.length) modalStack[modalStack.length - 1]();
+  if (popEl) closePop();
+  else if (modalStack.length) modalStack[modalStack.length - 1]();
   else if (drawer) leaveDrawer();
 });
 let drawer = null;
@@ -293,6 +294,46 @@ function personPicker(o) {
   paint();
   return { el: wrap, get value() { return current ? current.id : null; }, get person() { return current; }, set(p) { current = p; paint(); } };
 }
+
+// ───────────────────────── popovers, tooltips, theme ─────────────────────────
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } },
+};
+let popEl = null;
+function closePop() { if (popEl) { popEl.remove(); popEl = null; } }
+// a small floating panel next to a button; content is a DOM node or a list of them
+function openPop(anchor, content, opts) {
+  opts = opts || {};
+  closePop();
+  const p = h('div', { class: 'pop' }, content);
+  if (opts.width) p.style.width = opts.width + 'px';
+  document.body.append(p); popEl = p;
+  const r = anchor.getBoundingClientRect(), w = p.offsetWidth, ht = p.offsetHeight;
+  let x = opts.align === 'right' ? r.right - w : r.left;
+  x = Math.max(8, Math.min(innerWidth - w - 8, x));
+  let y = opts.up ? r.top - ht - 6 : r.bottom + 6;
+  if (y + ht > innerHeight - 8) y = Math.max(8, r.top - ht - 6);
+  p.style.left = x + 'px'; p.style.top = y + 'px';
+  return p;
+}
+document.addEventListener('mousedown', e => { if (popEl && !popEl.contains(e.target) && !e.target.closest('[data-popkeep]')) closePop(); });
+const tipEl = h('div', { id: 'tip' });
+document.body.append(tipEl);
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest && e.target.closest('[data-tip]');
+  if (!t) { tipEl.style.display = 'none'; return; }
+  tipEl.textContent = t.dataset.tip; tipEl.style.display = 'block';
+  const r = t.getBoundingClientRect(), w = tipEl.offsetWidth, ht = tipEl.offsetHeight;
+  let x = r.right + 8; if (x + w > innerWidth - 8) x = Math.max(8, r.left - w - 8);
+  const y = Math.max(8, Math.min(innerHeight - ht - 8, r.top + r.height / 2 - ht / 2));
+  tipEl.style.left = x + 'px'; tipEl.style.top = y + 'px';
+});
+document.addEventListener('scroll', () => { tipEl.style.display = 'none'; }, true);
+// light or dark follows the computer until someone picks one with the button; only that choice is remembered
+function applyTheme(t) { document.documentElement.dataset.theme = t; store.set('panel.theme', t); }
+const currentTheme = () => document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+{ const saved = store.get('panel.theme'), asked = new URLSearchParams(location.search).get('theme'); const t = asked || saved; if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; }   // ?theme=dark or ?theme=light for one visit
 
 // ───────────────────────── routing (the address bar) ─────────────────────────
 let drawerKey = '', lastSig = '', lastHash = '#/overview';

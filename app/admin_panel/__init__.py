@@ -5,8 +5,11 @@ from fastapi import APIRouter
 
 from app.admin_panel import (
     activity,
+    ai_instructions,
     cases,
+    message_texts,
     meta,
+    org_settings,
     overview,
     pages,
     people,
@@ -26,5 +29,8 @@ for _module in (
     workflows,
     studio,
     activity,
+    org_settings,
+    message_texts,
+    ai_instructions,
 ):
     router.include_router(_module.router)

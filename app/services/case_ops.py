@@ -22,12 +22,12 @@ import asyncpg
 
 from app.db import execute, fetch_all, fetch_one
 from app.logging_config import get_context_logger
+from app.services import config_store
 
 logger = get_context_logger(__name__)
 
 # who is told first when one person holds several roles on a case
 _ROLE_ORDER = ["assignee", "level2", "helper", "requester", "watcher"]
-_MAX_PHOTOS = 5
 _CATEGORY_CACHE_SECONDS = 60
 _category_cache: dict[str, tuple[float, list[dict]]] = {}
 
@@ -343,7 +343,8 @@ async def _op_attach_photos(params: dict, ctx: dict) -> dict:
         return ctx
     import json
 
-    for file_id in photos[:_MAX_PHOTOS]:
+    conf = await config_store.org_settings(ctx["source_key"], ctx["org_id"])
+    for file_id in photos[: config_store.limit_of(conf, "photo_max")]:
         await execute(
             "INSERT INTO case_activity (org_id, case_id, activity_type, actor_user_id, payload) "
             "VALUES ($1, $2, 'evidence', $3, $4::jsonb)",
@@ -430,11 +431,12 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
         {"title": title, "command": command}
         for title, command in (params.get("buttons") or {}).items()
     ]
-    photos = (
-        _as_ids(ctx["fields"].get("_photos"))[:_MAX_PHOTOS]
-        if params.get("with_photos")
-        else []
-    )
+    photos = []
+    if params.get("with_photos"):
+        conf = await config_store.org_settings(ctx["source_key"], ctx["org_id"])
+        photos = _as_ids(ctx["fields"].get("_photos"))[
+            : config_store.limit_of(conf, "photo_max")
+        ]
 
     from app.services import messaging
 

@@ -9,7 +9,7 @@ import re
 
 import asyncpg
 
-from tests.test_migrate import needs_pg, world  # noqa: F401  (world is a fixture)
+from tests.test_migrate import needs_pg
 from tools import migrate, orphans
 
 ORG = "00000000-0000-0000-0000-000000000001"
@@ -170,7 +170,7 @@ def test_a_remote_database_is_refused_and_no_secret_is_printed(monkeypatch, caps
 
 
 @needs_pg
-def test_the_report_finds_orphans_and_unused_labels_and_changes_nothing(world):  # noqa: F811
+def test_the_report_finds_orphans_and_unused_labels_and_changes_nothing(world):
     seed(world)
     before = snapshot(world)
     code, out = world.call(orphans.main, "--tenant", "alpha")
@@ -192,14 +192,14 @@ def test_the_report_finds_orphans_and_unused_labels_and_changes_nothing(world): 
 
 
 @needs_pg
-def test_a_database_without_the_tables_is_skipped_not_a_failure(world):  # noqa: F811
+def test_a_database_without_the_tables_is_skipped_not_a_failure(world):
     code, out = world.call(orphans.main, "--tenant", "beta")
     assert code == 0, out
     assert out.count("skipped:") == 3
 
 
 @needs_pg
-def test_without_a_name_every_client_is_reported_but_not_the_control_database(world):  # noqa: F811
+def test_without_a_name_every_client_is_reported_but_not_the_control_database(world):
     code, out = world.call(orphans.main)
     assert code == 0, out
     assert "== alpha" in out
@@ -211,7 +211,7 @@ def test_without_a_name_every_client_is_reported_but_not_the_control_database(wo
 
 
 @needs_pg
-def test_the_report_session_is_read_only(world, monkeypatch):  # noqa: F811
+def test_the_report_session_is_read_only(world, monkeypatch):
     seen = {}
 
     async def sneaky(conn, findings):
@@ -228,7 +228,7 @@ def test_the_report_session_is_read_only(world, monkeypatch):  # noqa: F811
 
 
 @needs_pg
-def test_housing_0001_removes_only_the_two_unused_labels_and_is_safe_to_repeat(world):  # noqa: F811
+def test_housing_0001_removes_only_the_two_unused_labels_and_is_safe_to_repeat(world):
     world.execute("alpha", SCHEMA)
     world.execute(
         "alpha",
@@ -267,7 +267,7 @@ def test_housing_0001_removes_only_the_two_unused_labels_and_is_safe_to_repeat(w
 
 
 @needs_pg
-def test_core_0008_cancels_only_open_orphan_drafts_and_is_safe_to_repeat(world):  # noqa: F811
+def test_core_0008_cancels_only_open_orphan_drafts_and_is_safe_to_repeat(world):
     seed(world)
     sql = (
         migrate.MIGRATIONS_DIR / "core" / "core-0008_cancel_orphan_drafts.sql"

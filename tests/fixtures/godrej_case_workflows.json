@@ -1,0 +1,1210 @@
+[
+ {
+  "kind": "workflow",
+  "name": "Add an update to a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_find"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_comment"
+    }
+   },
+   {
+    "op": "case.attach_photos",
+    "params": {
+     "case_id": "$case.id"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "inputs": {
+      "tell_buttons": "yes",
+      "tell_message": "📝 Case {case_case_number} ({case_title}): update from {actor_name}\n{comment_text}"
+     },
+     "workflow": "case_tell_parties"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {
+   "photos": true,
+   "who_can_use": [
+    "requester",
+    "assignee",
+    "level2",
+    "helper"
+   ]
+  },
+  "is_active": true,
+  "intent_key": "case_add_update",
+  "description": "Adds a note to a case, with photos if you send them, and tells everyone on the case.",
+  "menu_section": "other",
+  "entity_schema": {
+   "case_number": {
+    "type": "string",
+    "label": "Case",
+    "read_by": {
+     "lookup": {
+      "show": [
+       "case_number",
+       "title"
+      ],
+      "table": "cases",
+      "normalize": "identifier",
+      "match_column": "case_number"
+     }
+    },
+    "question": "Which case? Send the case number, for example CS-26-08-00017.",
+    "required": true,
+    "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+   },
+   "comment_text": {
+    "type": "string",
+    "label": "Update",
+    "read_by": "typed",
+    "question": "What is the update? Type the note.",
+    "required": true,
+    "description": "The note to add."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "workflow",
+  "name": "Close a case with a note",
+  "gates": [],
+  "steps": [
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_find"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "inputs": {
+      "note": "$fields.comment_text"
+     },
+     "workflow": "case_close"
+    }
+   },
+   {
+    "op": "case.attach_photos",
+    "params": {
+     "case_id": "$case.id"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "inputs": {
+      "tell_message": "✅ Case {case_case_number} ({case_title}) was closed by {actor_name}.\nClosing note: {comment_text}"
+     },
+     "workflow": "case_tell_parties"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {
+   "layout": {
+    "n": 4,
+    "v": 1,
+    "steps": [
+     [
+      184.0,
+      502.0
+     ],
+     [
+      184.0,
+      722.0
+     ],
+     [
+      184.0,
+      942.0
+     ],
+     [
+      184.0,
+      1109.0
+     ]
+    ],
+    "trigger": [
+     184.0,
+     48.0
+    ]
+   },
+   "photos": true,
+   "who_can_use": [
+    "assignee",
+    "level2"
+   ]
+  },
+  "is_active": true,
+  "intent_key": "case_close_with_note",
+  "description": "Closes a case. The closing note is compulsory. Tells everyone on the case.",
+  "menu_section": "other",
+  "entity_schema": {
+   "case_number": {
+    "type": "string",
+    "label": "Case",
+    "read_by": {
+     "lookup": {
+      "show": [
+       "case_number",
+       "title"
+      ],
+      "table": "cases",
+      "normalize": "identifier",
+      "match_column": "case_number"
+     }
+    },
+    "question": "Which case? Send the case number, for example CS-26-08-00017.",
+    "required": true,
+    "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+   },
+   "comment_text": {
+    "type": "string",
+    "label": "Closing note",
+    "read_by": "typed",
+    "question": "What was done? Type the closing note. It is compulsory.",
+    "required": true,
+    "description": "The closing note, so everyone knows what was done. Compulsory."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "workflow",
+  "name": "Assign a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_find"
+    }
+   },
+   {
+    "op": "case.add_parties",
+    "when": {
+     "field": "$case.assigned_to_id",
+     "exists": true
+    },
+    "params": {
+     "role": "helper",
+     "case_id": "$case.id",
+     "users_from": "$case.assigned_to_id"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_assign"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "when": {
+     "field": "$fields.comment_text",
+     "exists": true
+    },
+    "params": {
+     "workflow": "case_comment"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "inputs": {
+      "tell_buttons": "yes",
+      "tell_message": "ℹ️ Case {case_case_number} ({case_title}) is now with {assignee_name}.",
+      "tell_message_assignee": "📋 Case {case_case_number} is now with you\n\n{case_title}\nWhere: {case_location}\nPassed on by {actor_name}."
+     },
+     "workflow": "case_tell_parties"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {
+   "layout": {
+    "n": 5,
+    "v": 1,
+    "steps": [
+     [
+      184.0,
+      540.0
+     ],
+     [
+      184.0,
+      760.0
+     ],
+     [
+      184.0,
+      975.0
+     ],
+     [
+      184.0,
+      1195.0
+     ],
+     [
+      184.0,
+      1445.0
+     ]
+    ],
+    "trigger": [
+     184.0,
+     48.0
+    ]
+   },
+   "who_can_use": [
+    "assignee",
+    "level2"
+   ]
+  },
+  "is_active": true,
+  "intent_key": "case_pass_on",
+  "description": "Gives a case to one person, keeps an optional note, and tells everyone on the case.",
+  "menu_section": "other",
+  "entity_schema": {
+   "case_number": {
+    "type": "string",
+    "label": "Case",
+    "read_by": {
+     "lookup": {
+      "show": [
+       "case_number",
+       "title"
+      ],
+      "table": "cases",
+      "normalize": "identifier",
+      "match_column": "case_number"
+     }
+    },
+    "question": "Which case? Send the case number, for example CS-26-08-00017.",
+    "required": true,
+    "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+   },
+   "comment_text": {
+    "type": "string",
+    "label": "Note",
+    "read_by": "typed",
+    "question": "Any note for them?",
+    "required": false,
+    "description": "An optional note for them."
+   },
+   "assignee_name": {
+    "type": "string",
+    "label": "Give it to",
+    "read_by": {
+     "lookup": {
+      "show": [
+       "name"
+      ],
+      "table": "users",
+      "where": {
+       "is_active": true
+      },
+      "match_column": "name"
+     }
+    },
+    "question": "Who should the case go to? Send their name, or say me.",
+    "required": true,
+    "description": "Who the case goes to. If the person says me or myself, use the person's own name."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "workflow",
+  "name": "File a complaint",
+  "gates": [],
+  "steps": [
+   {
+    "op": "case.categorize",
+    "params": {
+     "text_from": [
+      "$fields.title",
+      "$fields.description"
+     ]
+    }
+   },
+   {
+    "op": "case.route",
+    "params": {}
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_create"
+    }
+   },
+   {
+    "op": "run_workflow",
+    "params": {
+     "workflow": "case_apply_route"
+    }
+   },
+   {
+    "op": "case.attach_photos",
+    "params": {
+     "case_id": "$inserted.cases.id"
+    }
+   },
+   {
+    "op": "notify.parties",
+    "params": {
+     "case": "$inserted.cases",
+     "buttons": {
+      "✅ Close": "/close {case_case_number}",
+      "👤 Pass on": "/assign {case_case_number}",
+      "📝 Add update": "/update {case_case_number}"
+     },
+     "with_photos": true,
+     "role_templates": {
+      "assignee": "🆕 A new case is with you: {case_case_number} — {case_title}\nWhere: {case_location} · Priority: {case_priority}\nRaised by {actor_name}."
+     },
+     "message_template": "🆕 New case {case_case_number}: {case_title}\nWhere: {case_location} · Priority: {case_priority}\nCategory: {category_label}\nRaised by {actor_name}."
+    }
+   },
+   {
+    "op": "notify.whatsapp",
+    "params": {
+     "attach_pdf": false
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {
+   "photos": true
+  },
+  "is_active": true,
+  "intent_key": "file_a_complaint",
+  "description": "Files a new complaint. It is put in a category, sent to whoever the routing rules name, and everyone on the case is told.",
+  "menu_section": "create",
+  "entity_schema": {
+   "title": {
+    "type": "string",
+    "label": "Problem",
+    "read_by": "typed",
+    "question": "What is the problem? Send a short title, for example “Lift stuck on 5th floor”.",
+    "required": true,
+    "description": "Short summary of the complaint, e.g. \"Water leakage in Wing 2 basement\""
+   },
+   "location": {
+    "type": "string",
+    "label": "Where",
+    "read_by": "typed",
+    "question": "Where is it? Wing, flat or common area.",
+    "required": true,
+    "description": "Wing / flat / common area where the issue is"
+   },
+   "priority": {
+    "enum": [
+     "urgent",
+     "high",
+     "medium",
+     "low"
+    ],
+    "type": "string",
+    "label": "Priority",
+    "question": "How urgent is it?",
+    "required": true,
+    "description": "One of urgent, high, medium, low. ONLY set this if the user explicitly states an urgency level or uses clearly urgent language (for example emergency, immediately dangerous, fire). Never infer priority from the topic of the complaint alone. If not stated, leave it unset and ask the user, or default to medium only after telling them you are defaulting it."
+   },
+   "description": {
+    "type": "string",
+    "label": "Details",
+    "required": false,
+    "description": "Optional longer explanation of the issue"
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Send the case to whoever handles it",
+  "gates": [],
+  "steps": [
+   {
+    "op": "db.update_row",
+    "when": {
+     "field": "$route.assignee_id",
+     "exists": true
+    },
+    "params": {
+     "set": {
+      "assigned_to_id": "$route.assignee_id"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$inserted.cases.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "when": {
+     "field": "$route.assignee_id",
+     "exists": true
+    },
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$inserted.cases.id",
+      "payload": {
+       "by": "routing rule",
+       "to_name": "$route.assignee_name",
+       "to_user_id": "$route.assignee_id"
+      },
+      "activity_type": "assignment",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   },
+   {
+    "op": "case.add_parties",
+    "when": {
+     "field": "$route.level2_ids",
+     "exists": true
+    },
+    "params": {
+     "role": "level2",
+     "case_id": "$inserted.cases.id",
+     "users_from": "$route.level2_ids"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_apply_route",
+  "description": "Gives a new case to the person the routing rules name, records it, and adds level 2 to the case. Needs Find who handles it first.",
+  "menu_section": "other",
+  "entity_schema": {},
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Give the case to someone",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "params": {
+     "into": "assignee",
+     "table": "users",
+     "where": {
+      "is_active": true
+     },
+     "name_from": "$fields.assignee_name",
+     "match_column": "name"
+    }
+   },
+   {
+    "op": "db.update_row",
+    "params": {
+     "set": {
+      "assigned_to_id": "$assignee.id"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$case.id",
+      "payload": {
+       "to_name": "$assignee.name",
+       "to_user_id": "$assignee.id"
+      },
+      "activity_type": "assignment",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_assign",
+  "description": "Hands the case to one person and records it on the timeline. Needs the case found first.",
+  "menu_section": "other",
+  "entity_schema": {
+   "assignee_name": {
+    "type": "string",
+    "required": true,
+    "description": "Who the case goes to. If the person says me or myself, use their own name."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Close a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "db.update_row",
+    "params": {
+     "set": {
+      "status": "closed",
+      "closed_at": "NOW()"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$case.id",
+      "payload": {
+       "to": "closed",
+       "closing_note": "$fields.note"
+      },
+      "activity_type": "status_change",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_close",
+  "description": "Closes the case with a closing note and records it. Needs the case found first.",
+  "menu_section": "other",
+  "entity_schema": {
+   "note": {
+    "type": "string",
+    "required": true,
+    "description": "The closing note. Compulsory, so everyone knows what was done."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Add a note to a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$case.id",
+      "payload": {
+       "text": "$fields.comment_text"
+      },
+      "activity_type": "comment",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_comment",
+  "description": "Puts a note on the case's timeline. Needs the case found first.",
+  "menu_section": "other",
+  "entity_schema": {
+   "comment_text": {
+    "type": "string",
+    "required": true,
+    "description": "The note to record."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Create a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "params": {
+     "into": "tat",
+     "table": "priority_tat_rules",
+     "expose": {
+      "tat_minutes": "tat_minutes"
+     },
+     "name_from": "$fields.priority",
+     "match_column": "priority"
+    }
+   },
+   {
+    "op": "derive_field",
+    "params": {
+     "expr": "due_from_tat(tat_minutes, \"minutes\")",
+     "field": "due_date"
+    }
+   },
+   {
+    "op": "derive_field",
+    "when": {
+     "field": "$fields.route_minutes",
+     "exists": true
+    },
+    "params": {
+     "expr": "due_from_tat(route_minutes, \"minutes\")",
+     "field": "due_date"
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "cases",
+     "values": {
+      "title": "$fields.title",
+      "status": "reported",
+      "due_date": "$fields.due_date",
+      "location": "$fields.location",
+      "priority": "$fields.priority",
+      "description": "$fields.description",
+      "complainant_id": "$user.user_id"
+     },
+     "sequence": {
+      "pad": 5,
+      "field": "case_number",
+      "start": 1,
+      "prefix": "CS-{YY}-{MM}-"
+     }
+    }
+   },
+   {
+    "op": "db.update_row",
+    "when": {
+     "field": "$fields.category_id",
+     "exists": true
+    },
+    "params": {
+     "set": {
+      "category_id": "$fields.category_id"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$inserted.cases.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$inserted.cases.id",
+      "payload": {
+       "to": "reported"
+      },
+      "activity_type": "status_change",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_create",
+  "description": "Saves a new case with its number, category and due time (the time the category allows, else from the priority).",
+  "menu_section": "other",
+  "entity_schema": {
+   "title": {
+    "type": "string",
+    "required": true,
+    "description": "A short title for the problem."
+   },
+   "location": {
+    "type": "string",
+    "required": false,
+    "description": "Where it is."
+   },
+   "priority": {
+    "enum": [
+     "urgent",
+     "high",
+     "medium",
+     "low"
+    ],
+    "type": "string",
+    "required": true,
+    "description": "How urgent it is."
+   },
+   "category_id": {
+    "type": "string",
+    "required": false,
+    "description": "The category's id, if one was chosen."
+   },
+   "description": {
+    "type": "string",
+    "required": false,
+    "description": "What happened, in the person's words."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Find a case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "params": {
+     "into": "case",
+     "table": "cases",
+     "expose": {
+      "resolved_case_number": "case_number"
+     },
+     "name_from": "$fields.case_number",
+     "normalize": "identifier",
+     "match_column": "case_number"
+    }
+   },
+   {
+    "op": "case.authorize",
+    "params": {
+     "case": "$case"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_find",
+  "description": "Finds the case from its number (any format) and stops unless the person may act on it.",
+  "menu_section": "other",
+  "entity_schema": {
+   "case_number": {
+    "type": "string",
+    "required": true,
+    "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Change a case's priority",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "params": {
+     "into": "tat",
+     "table": "priority_tat_rules",
+     "expose": {
+      "tat_minutes": "tat_minutes"
+     },
+     "name_from": "$fields.priority",
+     "match_column": "priority"
+    }
+   },
+   {
+    "op": "derive_field",
+    "params": {
+     "expr": "due_from_tat(tat_minutes, \"minutes\", case_created_at)",
+     "field": "due_date"
+    }
+   },
+   {
+    "op": "db.update_row",
+    "params": {
+     "set": {
+      "due_date": "$fields.due_date",
+      "priority": "$fields.priority"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$case.id",
+      "payload": {
+       "to": "$fields.priority"
+      },
+      "activity_type": "priority_change",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_set_priority",
+  "description": "Changes the priority and works out the due time again from when the case was raised.",
+  "menu_section": "other",
+  "entity_schema": {
+   "priority": {
+    "enum": [
+     "urgent",
+     "high",
+     "medium",
+     "low"
+    ],
+    "type": "string",
+    "required": true,
+    "description": "The new priority."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Change a case's status",
+  "gates": [],
+  "steps": [
+   {
+    "op": "db.update_row",
+    "params": {
+     "set": {
+      "status": "$fields.status"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.update_row",
+    "when": {
+     "field": "$fields.status",
+     "equals": "closed"
+    },
+    "params": {
+     "set": {
+      "closed_at": "NOW()"
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.update_row",
+    "when": {
+     "field": "$fields.status",
+     "not_equals": "closed"
+    },
+    "params": {
+     "set": {
+      "closed_at": null
+     },
+     "table": "cases",
+     "where": {
+      "id": "$case.id"
+     }
+    }
+   },
+   {
+    "op": "db.insert_row",
+    "params": {
+     "table": "case_activity",
+     "values": {
+      "case_id": "$case.id",
+      "payload": {
+       "to": "$fields.status",
+       "note": "$fields.note"
+      },
+      "activity_type": "status_change",
+      "actor_user_id": "$user.user_id"
+     }
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_set_status",
+  "description": "Moves the case to another status and records it. Needs the case found first.",
+  "menu_section": "other",
+  "entity_schema": {
+   "note": {
+    "type": "string",
+    "required": false,
+    "description": "An optional note."
+   },
+   "status": {
+    "enum": [
+     "reported",
+     "under_review",
+     "action_taken",
+     "closed"
+    ],
+    "type": "string",
+    "required": true,
+    "description": "The new status."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Tell the person who now has the case (old, unused)",
+  "gates": [],
+  "steps": [
+   {
+    "op": "notify.user",
+    "params": {
+     "to": "$assignee.phone",
+     "message_template": "📋 Case {case_case_number} is now with you\n\n{case_title}\n\nReply to check status or add updates."
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_tell_assignee",
+  "description": "Sends the new handler a message about the case. Needs the case found and the person chosen first.",
+  "menu_section": "other",
+  "entity_schema": {},
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Tell the person who has the case (old, unused)",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "when": {
+     "field": "$case.assigned_to_id",
+     "exists": true
+    },
+    "params": {
+     "into": "handler",
+     "table": "users",
+     "name_from": "$case.assigned_to_id",
+     "match_column": "id"
+    }
+   },
+   {
+    "op": "notify.user",
+    "when": {
+     "and": [
+      {
+       "field": "$handler.phone",
+       "exists": true
+      },
+      {
+       "field": "$handler.phone",
+       "not_equals": "$user.phone"
+      },
+      {
+       "field": "$handler.phone",
+       "not_equals": "$requester.phone"
+      }
+     ]
+    },
+    "params": {
+     "to": "$handler.phone",
+     "message_template": "ℹ️ Case {case_case_number} ({case_title}) {tell_prefix} {tell_text}"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_tell_handler",
+  "description": "Sends the person the case is with now a message, unless they are the one acting. Give it tell_prefix and tell_text.",
+  "menu_section": "other",
+  "entity_schema": {
+   "tell_text": {
+    "type": "string",
+    "required": true,
+    "description": "The rest of the message, for example a closing note."
+   },
+   "tell_prefix": {
+    "type": "string",
+    "required": true,
+    "description": "The words after the case number and title, for example 'was closed.'"
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Tell everyone on the case",
+  "gates": [],
+  "steps": [
+   {
+    "op": "notify.parties",
+    "when": {
+     "field": "$fields.tell_buttons",
+     "equals": "yes"
+    },
+    "params": {
+     "case": "$case",
+     "buttons": {
+      "✅ Close": "/close {case_case_number}",
+      "👤 Pass on": "/assign {case_case_number}",
+      "📝 Add update": "/update {case_case_number}"
+     },
+     "with_photos": true,
+     "role_templates": {
+      "assignee": "$fields.tell_message_assignee"
+     },
+     "message_template": "$fields.tell_message"
+    }
+   },
+   {
+    "op": "notify.parties",
+    "when": {
+     "field": "$fields.tell_buttons",
+     "not_equals": "yes"
+    },
+    "params": {
+     "case": "$case",
+     "with_photos": true,
+     "role_templates": {
+      "assignee": "$fields.tell_message_assignee"
+     },
+     "message_template": "$fields.tell_message"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_tell_parties",
+  "description": "Messages everyone on the case except the person doing this, once each. The caller gives the wording.",
+  "menu_section": "other",
+  "entity_schema": {
+   "tell_buttons": {
+    "type": "string",
+    "required": false,
+    "description": "Say yes to put Add update, Pass on and Close buttons under the message."
+   },
+   "tell_message": {
+    "type": "string",
+    "required": true,
+    "description": "The message. Use {case_case_number}, {case_title}, {actor_name} or a field name in braces."
+   },
+   "tell_message_assignee": {
+    "type": "string",
+    "required": false,
+    "description": "A different message for the person who now has the case. Leave out to send everyone the same."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ },
+ {
+  "kind": "block",
+  "name": "Tell the person who raised the case (old, unused)",
+  "gates": [],
+  "steps": [
+   {
+    "op": "resolve_entity",
+    "when": {
+     "field": "$case.complainant_id",
+     "exists": true
+    },
+    "params": {
+     "into": "requester",
+     "table": "users",
+     "name_from": "$case.complainant_id",
+     "match_column": "id"
+    }
+   },
+   {
+    "op": "notify.user",
+    "when": {
+     "and": [
+      {
+       "field": "$requester.phone",
+       "exists": true
+      },
+      {
+       "field": "$requester.phone",
+       "not_equals": "$user.phone"
+      }
+     ]
+    },
+    "params": {
+     "to": "$requester.phone",
+     "message_template": "ℹ️ Case {case_case_number} ({case_title}) {tell_prefix} {tell_text}"
+    }
+   }
+  ],
+  "version": 1,
+  "settings": {},
+  "is_active": true,
+  "intent_key": "case_tell_requester",
+  "description": "Sends the person who raised the case a message, unless they are the one acting. Give it tell_prefix and tell_text, for example 'is now with' and a name.",
+  "menu_section": "other",
+  "entity_schema": {
+   "tell_text": {
+    "type": "string",
+    "required": true,
+    "description": "The rest of the message, for example a person's name or a closing note."
+   },
+   "tell_prefix": {
+    "type": "string",
+    "required": true,
+    "description": "The words after the case number and title, for example 'is now with'."
+   }
+  },
+  "workflow_type": "action",
+  "response_format": "generic",
+  "training_phrases": []
+ }
+]

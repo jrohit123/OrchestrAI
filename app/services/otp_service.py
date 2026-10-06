@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from app.config import required
 from app.db import execute, fetch_one
 from app.logging_config import get_context_logger
+from app.services.messages import say
 
 load_dotenv()
 
@@ -142,10 +143,7 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
     )
 
     if not row:
-        return {
-            "valid": False,
-            "reason": "No active OTP found. Reply 'retry' to get a new code.",
-        }
+        return {"valid": False, "reason": await say(source_key, "otp.none_active")}
 
     max_attempts = (await _get_otp_config(str(row["org_id"]), source_key))[
         "max_attempts"
@@ -158,17 +156,11 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
             row["id"],
             source_key=source_key,
         )
-        return {
-            "valid": False,
-            "reason": "Too many attempts. Reply 'retry' to get a new code.",
-        }
+        return {"valid": False, "reason": await say(source_key, "otp.too_many")}
 
     # Check expiry
     if row["expires_at"] < now:
-        return {
-            "valid": False,
-            "reason": "Code has expired. Reply 'retry' to get a new code.",
-        }
+        return {"valid": False, "reason": await say(source_key, "otp.expired")}
 
     # Check hash
     if row["attempts"] is not None:
@@ -191,10 +183,10 @@ async def verify_otp(user_id: str, entered_otp: str, source_key: str) -> dict:
 
     if not valid_row:
         remaining = max_attempts - (row["attempts"] + 1)
-        reason = (
-            f"Incorrect code. {remaining} attempt(s) remaining."
-            if remaining > 0
-            else "Incorrect code. 0 attempts remaining. Reply 'retry' to get a new code."
+        reason = await say(
+            source_key,
+            "otp.wrong" if remaining > 0 else "otp.wrong_last",
+            remaining=remaining,
         )
         return {"valid": False, "reason": reason}
 

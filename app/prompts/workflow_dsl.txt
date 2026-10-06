@@ -29,4 +29,5 @@ RULES
 - Values of status columns are lowercase.
 - To reuse a building block (a workflow listed under BUILDING BLOCKS) write {"op": "run_workflow", "params": {"workflow": "<its key>"}} instead of copying its steps. A block already sees all the fields and records the workflow has.
 - Never put otp_gate or approval_gate inside a building block.
+- A building block has exactly ONE step. For several things, write one building block for each and let the workflow run them one after another with run_workflow.
 - Use only the step types listed above.

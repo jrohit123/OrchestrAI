@@ -10,10 +10,11 @@ import json
 import re
 import time
 from pathlib import Path
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.admin_panel.common import (
     Ctx,
@@ -582,6 +583,62 @@ async def save_definition(workflow_id: UUID, body: DefinitionBody, ctx: CtxDep):
         if key in changes and changes[key] is None:
             raise HTTPException(status_code=400, detail=f"'{key}' cannot be empty.")
     return await _save(ctx, workflow_id, base, changes, "edit")
+
+
+# ── where the boxes sit on the canvas ────────────────────────────────────────
+
+Point = Annotated[list[float], Field(min_length=2, max_length=2)]
+
+
+class Layout(BaseModel):
+    """Positions only: a few numbers per box and nothing else, so it can never change what a
+    workflow does. v is the format; n is how many steps it was made for (a layout for a different
+    number of steps is ignored when the editor opens)."""
+
+    model_config = ConfigDict(extra="forbid")
+    v: Literal[1]
+    n: int = Field(ge=0, le=500)
+    steps: list[Point] = Field(max_length=500)
+    trigger: Point | None = None
+    report: Point | None = None
+
+    @field_validator("steps", "trigger", "report")
+    @classmethod
+    def _sane(cls, value):
+        points = (
+            [] if value is None else (value if isinstance(value[0], list) else [value])
+        )
+        for x, y in points:
+            if not (abs(x) <= 100000 and abs(y) <= 100000):
+                raise ValueError("a box is placed outside the canvas")
+        return value
+
+
+class LayoutBody(BaseModel):
+    layout: Layout
+
+
+@router.put("/workflows/{workflow_id}/layout")
+async def save_layout(workflow_id: UUID, body: LayoutBody, ctx: CtxDep):
+    """Remember where the boxes sit. This is not a change to what the workflow does, so it makes
+    no new version and no history line; it is kept in the workflow's settings under 'layout'."""
+    if not ctx.caps.get("workflow_kind"):
+        raise HTTPException(
+            status_code=409,
+            detail="This organisation's database has no workflow settings yet, so the layout "
+            "is kept in the browser instead.",
+        )
+    found = await fetch_one(
+        "UPDATE workflows SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), "
+        "'{layout}', $3::jsonb, true) WHERE id = $1 AND org_id = $2 RETURNING id",
+        workflow_id,
+        ctx.org_id,
+        dump(body.layout.model_dump(exclude_none=True)),
+        source_key=ctx.source_key,
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return {"ok": True}
 
 
 @router.get("/workflows/{workflow_id}/versions/{version}")

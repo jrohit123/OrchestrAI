@@ -9,7 +9,7 @@ The admin's message is a JSON object with:
  - "schema": the tables and columns that exist
  - "building_blocks": existing workflows that can be run with run_workflow
  - "allowed_kinds": which kinds you may choose for "kind"
-   workflow = people start it from the menu; case_action = a short workflow run on an existing case; block = one small step other workflows run
+   workflow = people start it from the menu; case_action = a short workflow run on an existing case; block = exactly ONE step that other workflows run (for several things make one block for each, and a workflow runs them one after another)
 
 OUTPUT
 Reply with one JSON object and nothing else:
@@ -22,5 +22,5 @@ Reply with one JSON object and nothing else:
    "example_phrases": ["<8 short things a person might type to start it>"],
    "steps": [ <the steps> ]
  }}
-Field names are lowercase with underscores. A building block asks for few fields: it normally reads fields the workflow that runs it already has.
+Field names are lowercase with underscores. A building block has exactly one step and asks for few fields: it normally reads fields the workflow that runs it already has.
 Keep it small: use the fewest steps that do the job, and reuse building blocks where they fit.

@@ -89,6 +89,12 @@ async def list_workflows(ctx: CtxDep):
     for w in found:
         steps = normalize_steps(jb(w.pop("steps"), []))
         w["step_count"] = len(steps)
+        # the shape of the flow, for the little picture on its card: what each step is and whether it has an "only if"
+        w["shape"] = [
+            {"op": st.get("op"), "if": bool(st.get("when"))}
+            for st in steps
+            if isinstance(st, dict)
+        ]
         w["settings"] = jb(w["settings"], {})
         w["makes"] = aliases_made_by(steps)
         w["needs"] = aliases_needed_by(steps)

@@ -1,5 +1,5 @@
 JS = r"""
-// ───────────────────────── Overview ─────────────────────────
+// ───────────────────────── Overview helpers (the Home screen is in js_home.py) ─────────────────────────
 function caseLine(c) {
   return h('div', { class: 'row between', style: { padding: '10px 16px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }, onclick: () => go('cases', '', { case: c.id }) },
     h('div', { style: { minWidth: 0 } },
@@ -19,63 +19,6 @@ function trendChart(points) {
   });
   return svg;
 }
-SECTIONS.overview = {
-  title: 'Overview', sub: 'What needs attention right now',
-  async render(root) {
-    const [d, legacy] = await Promise.all([api.get('/overview'), classic.get('/data').catch(() => null)]);
-    clear(root);
-    const c = d.cases;
-    if (c) {
-      const k = c.kpis, top = c.top_priority;
-      const kpi = (n, label, tone, to) => h('div', { class: 'card kpi ' + tone, onclick: () => go('cases', '', to) }, h('div', { class: 'n' }, num(n)), h('div', { class: 'l' }, label));
-      root.append(h('div', { class: 'grid kpis' },
-        kpi(k.open, 'Open cases', 'info', { status: 'open' }),
-        kpi(k.unassigned, 'Not assigned yet', k.unassigned ? 'warn' : 'ok', { status: 'open', unassigned: '1' }),
-        kpi(k.overdue, 'Past their target time', k.overdue ? 'bad' : 'ok', { status: 'open', overdue: '1' }),
-        top ? kpi(k.top_priority_open, pretty(top) + ' and open', k.top_priority_open ? 'bad' : 'ok', { status: 'open', priority: top }) : null,
-        kpi(k.created_7d, 'New in the last 7 days', '', {}),
-        kpi(k.closed_7d, 'Closed in the last 7 days', 'ok', { status: (c.closed_values || []).join(',') })));
-      root.append(h('div', { class: 'grid g2', style: { marginBottom: '14px' } },
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Not assigned yet', h('a', { class: 'small', href: href('cases', '', { status: 'open', unassigned: '1' }) }, 'See all')),
-          c.unassigned.length ? c.unassigned.map(caseLine) : empty('All open cases have someone', '')),
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Past their target time', h('a', { class: 'small', href: href('cases', '', { status: 'open', overdue: '1' }) }, 'See all')),
-          c.overdue.length ? c.overdue.map(caseLine) : empty('Nothing is late', ''))));
-      const byStatus = (c.statuses.length ? c.statuses : c.by_status.map(x => x.status)).map(s => ({ label: pretty(s), n: (c.by_status.find(x => x.status === s) || { n: 0 }).n, key: s }));
-      const byPrio = (c.priorities.length ? c.priorities : c.by_priority.map(x => x.priority)).map(p => ({ label: pretty(p), n: (c.by_priority.find(x => x.priority === p) || { n: 0 }).n, key: p }));
-      root.append(h('div', { class: 'grid g2', style: { marginBottom: '14px' } },
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'All cases by status'),
-          h('div', { class: 'card-b' }, bars(byStatus, i => go('cases', '', { status: i.key })))),
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Open cases by priority'),
-          h('div', { class: 'card-b' }, bars(byPrio, i => go('cases', '', { status: 'open', priority: i.key }))))));
-      root.append(h('div', { class: 'grid g2', style: { marginBottom: '14px' } },
-        S.boot.caps.case_category ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Open cases by category'),
-          h('div', { class: 'card-b' }, bars(c.by_category.map(x => ({ label: x.label, n: x.n, id: x.id })), i => go('cases', '', { status: 'open', category: i.id || 'none' })))) : null,
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Last 14 days', h('span', { class: 'row small muted' }, h('span', null, '■ new'), h('span', { style: { color: 'var(--ok)' } }, '■ closed'))),
-          h('div', { class: 'card-b' }, trendChart(c.trend), h('div', { class: 'row between muted small' }, h('span', null, fmtD(c.trend[0].day)), h('span', null, 'Today'))))));
-    } else if (!legacy || !legacy.stats) {
-      root.append(notice('This organisation does not track cases, so there is no case summary. Use the other sections on the left.'));
-    }
-    // stat cards some organisations configure for themselves (kept from the classic dashboard)
-    if (legacy && legacy.stats && legacy.stats.length) {
-      root.append(h('div', { class: 'grid kpis' }, legacy.stats.map(s => h('div', { class: 'card kpi', style: { cursor: 'default', borderLeftColor: s.color || 'var(--line2)' } },
-        h('div', { class: 'n' }, s.format === 'currency_inr' ? money(s.value) : num(s.value)), h('div', { class: 'l' }, s.label)))));
-    }
-    if (legacy && legacy.low_stock && legacy.low_stock.rows.length) {
-      const ls = legacy.low_stock;
-      root.append(h('div', { class: 'card', style: { marginBottom: '14px' } }, h('div', { class: 'card-h' }, ls.title),
-        table(ls.columns.map(col => ({ label: col.label, render: r => String(r[col.key] ?? '') })), ls.rows)));
-    }
-    root.append(h('div', { class: 'grid g2' },
-      S.boot.caps.events ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Recently changed in the dashboard', h('a', { class: 'small', href: href('activity', 'changes') }, 'See all')),
-        d.events.length ? d.events.map(e => h('div', { style: { padding: '9px 16px', borderBottom: '1px solid var(--line)' } }, e.summary, h('div', { class: 'muted small' }, ago(e.created_at) + ' · ' + e.actor_label))) : empty('No changes yet', 'Changes made here are listed with who made them.')) : null,
-      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'At a glance'),
-        h('div', { class: 'card-b stack' },
-          h('div', { class: 'row between' }, h('span', null, 'People'), h('span', null, h('b', null, num(d.people.active)), ' active · ', h('b', null, num(d.people.reachable)), ' can be messaged')),
-          h('div', { class: 'row between' }, h('span', null, 'Workflows'), h('span', null, h('b', null, num(d.workflows.active)), ' on · ', h('b', null, num(d.workflows.total - d.workflows.active)), ' off')),
-          h('div', { class: 'row' }, h('a', { class: 'btn sm', href: href('people', 'people') }, 'People'), h('a', { class: 'btn sm', href: href('workflows') }, 'Workflows'))))));
-  },
-};
-
 // ───────────────────────── Cases ─────────────────────────
 // the same person can hold several roles on a case (Level 2, then Handling it): show them once
 function onePerPerson(parties) {

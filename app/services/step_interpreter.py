@@ -936,20 +936,27 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     approval_id = approval_row[0]["id"]
 
     if approver:
+        from app.services.messages import say
         from app.services.messaging import send_buttons as _send_buttons
 
-        level_note = (
-            f" — level {first['level']} of {len(queue)}" if len(queue) > 1 else ""
-        )
+        asking = {
+            "requester": f"{user.get('user_name', 'Staff')} ({user.get('role', '')})",
+            "intent": ctx["workflow"].get("name", ctx["workflow"]["intent_key"]),
+            "amount": f"{amount:,.0f}",
+        }
+        if len(queue) > 1:
+            body = await say(
+                ctx["source_key"],
+                "approval.request_level",
+                level=first["level"],
+                total=len(queue),
+                **asking,
+            )
+        else:
+            body = await say(ctx["source_key"], "approval.request", **asking)
         await _send_buttons(
             to=approver["phone"],
-            body=(
-                f"📋 *Approval Request*{level_note}\n\n"
-                f"From: {user.get('user_name', 'Staff')} ({user.get('role', '')})\n"
-                f"Action: {ctx['workflow'].get('name', ctx['workflow']['intent_key'])}\n"
-                f"Amount: Rs.{amount:,.0f}\n\n"
-                f"Please approve or reject:"
-            ),
+            body=body,
             buttons=[
                 {"id": f"action:approve:{approval_id}", "title": "✅ Approve"},
                 {"id": f"action:reject:{approval_id}", "title": "❌ Reject"},

@@ -13,8 +13,10 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.db import execute, fetch_all, fetch_one
+from app.db import execute, fetch_all, fetch_one, routing_pool
 from app.logging_config import get_context_logger
+from app.scheduler.locks import run_if_free
+from app.services.cleanup import run_cleanup
 from app.services.messaging import send_text
 
 logger = get_context_logger(__name__)
@@ -547,23 +549,51 @@ async def delete_scheduled_report(
 # ── Scheduler startup/shutdown ────────────────────────────────────────────────
 
 
+async def _tick(name: str, job):
+    """One run of a scheduled job. Only one copy of the app may run it at a time (see locks.py):
+    a copy that finds another one already running it skips this run."""
+    if not await run_if_free(routing_pool(), name, job):
+        logger.debug(f"{name}: another copy of the app is running it, skipping")
+
+
+async def _tick_scheduled_reports():
+    await _tick("scheduled_reports", run_scheduled_reports)
+
+
+async def _tick_case_reminders():
+    await _tick("case_reminders", run_case_reminders)
+
+
+async def _tick_cleanup():
+    await _tick("cleanup", run_cleanup)
+
+
 def start_scheduler():
     scheduler.add_job(
-        run_scheduled_reports,
+        _tick_scheduled_reports,
         trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
         id="universal_scheduled_reports",
         replace_existing=True,
         max_instances=1,
     )
     scheduler.add_job(
-        run_case_reminders,
+        _tick_case_reminders,
         trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
         id="case_reminders",
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        _tick_cleanup,
+        trigger=CronTrigger(hour=3, minute=30, timezone="Asia/Kolkata"),
+        id="cleanup",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
-    logger.info("Started — universal runner + case reminders every minute")
+    logger.info(
+        "Started — universal runner + case reminders every minute, cleanup daily at 03:30"
+    )
 
 
 def stop_scheduler():

@@ -50,6 +50,8 @@ SELECT
   to_regclass('public.residents') IS NOT NULL                 AS residents,
   to_regclass('public.audit_log') IS NOT NULL                 AS audit,
   to_regclass('public.priority_tat_rules') IS NOT NULL        AS targets,
+  to_regclass('public.system_messages') IS NOT NULL           AS texts,
+  to_regclass('public.prompts') IS NOT NULL                   AS prompts,
   to_regproc('public.route_case') IS NOT NULL                 AS route_fn,
   EXISTS (SELECT 1 FROM information_schema.columns
            WHERE table_schema = 'public' AND table_name = 'cases'
@@ -88,6 +90,14 @@ _CAP_MESSAGES = {
     "residents": "This organisation does not keep a resident list.",
     "audit": "This organisation has no chat log.",
     "targets": "This organisation has no response-time table.",
+    "texts": (
+        "This organisation's database does not have the message tables yet. "
+        "Run migration core-0009 first."
+    ),
+    "prompts": (
+        "This organisation's database does not have the AI instruction tables yet. "
+        "Run migration core-0009 first."
+    ),
 }
 
 

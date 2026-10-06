@@ -19,9 +19,11 @@ from app.redis_client import (
     set_auth_token,
     set_session,
 )
+from app.services import config_store
 from app.services.action_executor import execute_pending_action
 from app.services.agent import run_agent
 from app.services.identity import resolve_identity
+from app.services.messages import say
 from app.services.messaging import send_text
 from app.services.onboarding_parsing import extract_email, extract_otp_candidates
 from app.services.otp_service import generate_and_send_otp, verify_otp
@@ -157,7 +159,7 @@ async def receive_message(request: Request):
         except Exception as e:
             logger.error(f"handle_message error: {e}", exc_info=True)
             try:
-                await send_text(phone, "❌ Something went wrong. Please try again.")
+                await send_text(phone, await say(None, "error.generic"))
             except Exception as fallback_err:
                 logger.warning(
                     f"Fallback error message to {phone} also failed: {fallback_err}"
@@ -167,6 +169,21 @@ async def receive_message(request: Request):
         logger.warning(f"Parse error: {e}")
 
     return {"status": "ok"}
+
+
+async def _channel_source_key(phone: str) -> str | None:
+    """The client that owns the messaging channel this chat came in on, for the texts someone
+    sees before they are linked to an account. None when it cannot be told (no such client, or
+    more than one): the built-in wording is used then. Never raises."""
+    from app.db import get_source_key_for_channel
+
+    try:
+        return await get_source_key_for_channel(
+            "telegram" if phone.startswith("tg:") else "whatsapp"
+        )
+    except Exception as e:
+        logger.debug(f"no client found for the channel of {phone}: {e}")
+        return None
 
 
 async def _handle_email_submission(
@@ -206,18 +223,25 @@ async def _handle_email_submission(
             )
             await send_text(
                 phone,
-                f"🔐 A verification code has been sent to *{candidate['email']}*.\n"
-                f"Reply with the code to link your Telegram account.\n\n"
-                f"_Code expires in {result['expiry_minutes']} minutes. Reply 'retry' to cancel and restart._",
+                await say(
+                    candidate["source_key"],
+                    "onboarding.code_sent",
+                    email=candidate["email"],
+                    expiry_minutes=result["expiry_minutes"],
+                ),
             )
         elif result["reason"] == "cooldown":
             await send_text(
                 phone,
-                f"⏳ Please wait {result['wait_seconds']}s before requesting another code.",
+                await say(
+                    candidate["source_key"],
+                    "otp.cooldown",
+                    wait_seconds=result["wait_seconds"],
+                ),
             )
         else:
             await send_text(
-                phone, "❌ Could not send verification email. Contact admin."
+                phone, await say(candidate["source_key"], "otp.email_failed")
             )
     else:
         await set_session(
@@ -230,15 +254,11 @@ async def _handle_email_submission(
         )
         await send_text(
             phone,
-            "No existing account found for that email.\n\n"
-            "Want to register as a new member? Reply with your *full name* to "
-            "get started — or contact your admin if you already have an "
-            "account under a different email.",
+            await say(await _channel_source_key(phone), "onboarding.no_account"),
         )
 
 
 # ── CORE MESSAGE HANDLER ──────────────────────────────
-_MAX_PHOTOS = 5
 
 
 async def _audit_turn(
@@ -272,13 +292,6 @@ async def _audit_turn(
         logger.warning(f"activity log not written: {e}")
 
 
-_HOLD_MINUTES = 15
-_HELD_NOTE = (
-    "📎 Got the photo. Now tell me what it is for, for example start /complaint, "
-    f"/update or /close. I keep it for {_HOLD_MINUTES} minutes."
-)
-
-
 async def _photo_draft(user: dict) -> dict | None:
     """The request being filled in, if its workflow takes photos."""
     from app.services.draft_store import get_active_draft
@@ -307,7 +320,8 @@ async def _add_photos(user: dict, phone: str, draft: dict, file_ids: list[str]) 
     for file_id in file_ids:
         if file_id not in have:
             have.append(file_id)
-    have = have[:_MAX_PHOTOS]
+    conf = await config_store.org_settings(user["source_key"], user["org_id"])
+    have = have[: config_store.limit_of(conf, "photo_max")]
     await upsert_draft(
         org_id=user["org_id"],
         user_id=user["user_id"],
@@ -330,6 +344,16 @@ def _held_key(user: dict, phone: str) -> str:
     return f"photos_held:{user['org_id']}:{phone}"
 
 
+async def _photo_added_note(user: dict, draft: dict, count: int) -> str:
+    """What to tell someone after a photo went onto their request."""
+    key = (
+        "photo.added_confirm"
+        if draft["stage"] == "awaiting_confirmation"
+        else "photo.added"
+    )
+    return await say(user["source_key"], key, count=count)
+
+
 async def _take_photos(
     user: dict, phone: str, file_ids: list[str], quiet: bool = False
 ) -> None:
@@ -343,19 +367,22 @@ async def _take_photos(
         for file_id in file_ids:
             if file_id not in ids:
                 ids.append(file_id)
+        conf = await config_store.org_settings(user["source_key"], user["org_id"])
+        hold = config_store.limit_of(conf, "photo_hold_minutes")
         await set_session(
-            _held_key(user, phone), {"ids": ids[:_MAX_PHOTOS]}, ttl=_HOLD_MINUTES * 60
+            _held_key(user, phone),
+            {"ids": ids[: config_store.limit_of(conf, "photo_max")]},
+            ttl=hold * 60,
         )
         if (
             not quiet
         ):  # with a caption the text is handled next, then the photo is attached
-            await send_text(phone, _HELD_NOTE)
+            await send_text(
+                phone, await say(user["source_key"], "photo.held", minutes=hold)
+            )
         return
     count = await _add_photos(user, phone, draft, file_ids)
-    note = f"📎 Photo added ({count} attached)."
-    if draft["stage"] == "awaiting_confirmation":
-        note += " Reply *yes* to save."
-    await send_text(phone, note)
+    await send_text(phone, await _photo_added_note(user, draft, count))
 
 
 async def _attach_held_photos(user: dict, phone: str, hint: bool = False) -> None:
@@ -370,14 +397,21 @@ async def _attach_held_photos(user: dict, phone: str, hint: bool = False) -> Non
         draft = await _photo_draft(user)
         if not draft:
             if hint:
-                await send_text(phone, _HELD_NOTE)
+                conf = await config_store.org_settings(
+                    user["source_key"], user["org_id"]
+                )
+                await send_text(
+                    phone,
+                    await say(
+                        user["source_key"],
+                        "photo.held",
+                        minutes=config_store.limit_of(conf, "photo_hold_minutes"),
+                    ),
+                )
             return
         count = await _add_photos(user, phone, draft, ids)
         await delete_session(_held_key(user, phone))
-        note = f"📎 Photo added ({count} attached)."
-        if draft["stage"] == "awaiting_confirmation":
-            note += " Reply *yes* to save."
-        await send_text(phone, note)
+        await send_text(phone, await _photo_added_note(user, draft, count))
     except Exception as e:
         logger.warning(f"held photo not attached: {e}")
 
@@ -436,7 +470,7 @@ async def _handle_message(
                 logger.error(f"Cannot resolve org for Telegram self-registration: {e}")
                 await send_text(
                     phone,
-                    "❌ Registration isn't available right now. Please contact your admin.",
+                    await say(None, "onboarding.unavailable"),
                 )
                 return
 
@@ -451,7 +485,7 @@ async def _handle_message(
                 if not (2 <= len(name) <= 80) or "@" in name or name.startswith("/"):
                     await send_text(
                         phone,
-                        "That doesn't look like a name — please reply with your full name.",
+                        await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.not_a_name"),
                     )
                     return
                 roles = await fetch_all(
@@ -462,7 +496,7 @@ async def _handle_message(
                 if not roles:
                     await send_text(
                         phone,
-                        "❌ Registration isn't available right now. Please contact your admin.",
+                        await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.unavailable"),
                     )
                     await delete_session(link_session_id)
                     return
@@ -483,7 +517,12 @@ async def _handle_message(
                 )
                 await send_text(
                     phone,
-                    f"Thanks, {name}! Which role are you?\n\n{role_list}\n\nReply with the number.",
+                    await say(
+                        NEW_USER_ORG_SOURCE_KEY,
+                        "onboarding.pick_role",
+                        name=name,
+                        role_list=role_list,
+                    ),
                 )
                 return
 
@@ -506,7 +545,11 @@ async def _handle_message(
                     )
                     await send_text(
                         phone,
-                        f"Didn't recognise that — please reply with the number:\n\n{role_list}",
+                        await say(
+                            NEW_USER_ORG_SOURCE_KEY,
+                            "onboarding.pick_role_again",
+                            role_list=role_list,
+                        ),
                     )
                     return
                 await set_session(
@@ -521,12 +564,13 @@ async def _handle_message(
                 )
                 await send_text(
                     phone,
-                    f"📝 Confirm your details:\n"
-                    f"  • Name: {pending_link.get('name')}\n"
-                    f"  • Email: {pending_link.get('new_user_email')}\n"
-                    f"  • Role: {picked['name'].title()}\n\n"
-                    f"Reply *yes* to create your account, *no* to cancel, or tell me what "
-                    f'to change (e.g. "change role to tenant").',
+                    await say(
+                        NEW_USER_ORG_SOURCE_KEY,
+                        "onboarding.confirm_details",
+                        name=pending_link.get("name"),
+                        email=pending_link.get("new_user_email"),
+                        role=picked["name"].title(),
+                    ),
                 )
                 return
 
@@ -562,17 +606,16 @@ async def _handle_message(
                     else {"confirm_words": frozenset(), "cancel_words": frozenset()}
                 )
 
-                def _confirm_card(prefix: str) -> str:
+                async def _confirm_card(key: str) -> str:
                     # Reads pending_link fresh (not the `role_name` local
                     # above) so it reflects whichever field was just edited.
                     current_role = pending_link.get("role_name", "")
-                    return (
-                        f"{prefix}\n"
-                        f"  • Name: {pending_link.get('name')}\n"
-                        f"  • Email: {pending_link.get('new_user_email')}\n"
-                        f"  • Role: {current_role.title() if current_role else '—'}\n\n"
-                        f"Reply *yes* to create your account, *no* to cancel, or tell me "
-                        f'what to change (e.g. "change role to tenant").'
+                    return await say(
+                        NEW_USER_ORG_SOURCE_KEY,
+                        key,
+                        name=pending_link.get("name"),
+                        email=pending_link.get("new_user_email"),
+                        role=current_role.title() if current_role else "—",
                     )
 
                 confirmed = (
@@ -585,7 +628,10 @@ async def _handle_message(
 
                 if cancelled:
                     await delete_session(link_session_id)
-                    await send_text(phone, "❌ Registration cancelled.")
+                    await send_text(
+                        phone,
+                        await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.cancelled"),
+                    )
                     return
 
                 if not confirmed:
@@ -616,13 +662,16 @@ async def _handle_message(
                         confirmed = True
                     elif action == "cancel":
                         await delete_session(link_session_id)
-                        await send_text(phone, "❌ Registration cancelled.")
+                        await send_text(
+                            phone,
+                            await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.cancelled"),
+                        )
                         return
                     elif action == "edit" and field == "name":
                         pending_link = {**pending_link, "name": clean_name(value)}
                         await set_session(link_session_id, pending_link, ttl=300)
                         await send_text(
-                            phone, _confirm_card("📝 Updated. Confirm your details:")
+                            phone, await _confirm_card("onboarding.details_updated")
                         )
                         return
                     elif action == "edit" and field == "role":
@@ -636,7 +685,11 @@ async def _handle_message(
                             )
                             await send_text(
                                 phone,
-                                f"Didn't catch which role you meant — please reply with the number:\n\n{role_list}",
+                                await say(
+                                    NEW_USER_ORG_SOURCE_KEY,
+                                    "onboarding.pick_role_again_edit",
+                                    role_list=role_list,
+                                ),
                             )
                             return
                         pending_link = {
@@ -646,7 +699,7 @@ async def _handle_message(
                         }
                         await set_session(link_session_id, pending_link, ttl=300)
                         await send_text(
-                            phone, _confirm_card("📝 Updated. Confirm your details:")
+                            phone, await _confirm_card("onboarding.details_updated")
                         )
                         return
                     elif action == "edit" and field == "email":
@@ -658,8 +711,9 @@ async def _handle_message(
                     else:
                         await send_text(
                             phone,
-                            "I didn't quite catch that — reply *yes* to confirm, *no* to cancel, "
-                            'or tell me what to change (e.g. "change role to tenant").',
+                            await say(
+                                NEW_USER_ORG_SOURCE_KEY, "onboarding.unclear_confirm"
+                            ),
                         )
                         return
 
@@ -678,7 +732,7 @@ async def _handle_message(
                 if not new_row:
                     await send_text(
                         phone,
-                        "❌ Something went wrong creating your account. Please try again.",
+                        await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.create_failed"),
                     )
                     await delete_session(link_session_id)
                     return
@@ -711,14 +765,19 @@ async def _handle_message(
                     )
                     await send_text(
                         phone,
-                        f"✅ Account created! A verification code has been sent to *{new_email}*.\n"
-                        f"Reply with the code to activate your account.\n\n"
-                        f"_Code expires in {result['expiry_minutes']} minutes._",
+                        await say(
+                            NEW_USER_ORG_SOURCE_KEY,
+                            "onboarding.account_created",
+                            email=new_email,
+                            expiry_minutes=result["expiry_minutes"],
+                        ),
                     )
                 else:
                     await send_text(
                         phone,
-                        "❌ Could not send verification email. Please contact your admin.",
+                        await say(
+                            NEW_USER_ORG_SOURCE_KEY, "onboarding.email_failed_register"
+                        ),
                     )
                     await delete_session(link_session_id)
                 return
@@ -737,7 +796,9 @@ async def _handle_message(
                     await delete_session(link_session_id)
                     await send_text(
                         phone,
-                        "🔄 Cancelled. Please send your email again to restart linking.",
+                        await say(
+                            pending_link.get("source_key"), "onboarding.link_restart"
+                        ),
                     )
                     return
 
@@ -748,13 +809,13 @@ async def _handle_message(
                 if not candidates:
                     await send_text(
                         phone,
-                        "That doesn't look like a code — please check your email and reply with just the digits.",
+                        await say(pending_link.get("source_key"), "otp.not_a_code"),
                     )
                     return
                 if len(candidates) > 1:
                     await send_text(
                         phone,
-                        "I found more than one number in that message — please reply with just the code from your email.",
+                        await say(pending_link.get("source_key"), "otp.many_numbers"),
                     )
                     return
 
@@ -791,17 +852,28 @@ async def _handle_message(
                         )
                         await send_text(
                             phone,
-                            f"✅ *Linked!* Welcome, {linked_user['user_name']}.\n"
-                            f"Your Telegram account is now connected to OrchestrAI.\n"
-                            f"Send /help to see available commands.",
+                            await say(
+                                pending_link["source_key"],
+                                "onboarding.linked",
+                                name=linked_user["user_name"],
+                            ),
                         )
                     else:
                         await send_text(
                             phone,
-                            "❌ Something went wrong linking your account. Please try again.",
+                            await say(
+                                pending_link["source_key"], "onboarding.link_failed"
+                            ),
                         )
                 else:
-                    await send_text(phone, f"❌ {result['reason']}")
+                    await send_text(
+                        phone,
+                        await say(
+                            pending_link["source_key"],
+                            "otp.rejected",
+                            reason=result["reason"],
+                        ),
+                    )
                 return
 
             # Step 1: user just sent an email — extracted from anywhere in
@@ -814,22 +886,17 @@ async def _handle_message(
 
             await send_text(
                 phone,
-                "👋 Welcome to OrchestrAI!\n\n"
-                "Your Telegram account isn't linked yet.\n"
-                "Reply with your *email address* — if you already have an account, "
-                "we'll link it; if not, we'll help you register as a new member.\n\n"
-                "_Example: john@example.com_",
+                await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.welcome"),
             )
             return
         await send_text(
             phone,
-            "👋 Your number isn't registered with OrchestrAI.\n"
-            "Contact your admin to get access.",
+            await say(await _channel_source_key(phone), "onboarding.not_registered"),
         )
         return
 
     if not user["is_active"] or not user["org_active"]:
-        await send_text(phone, "❌ Your account is inactive. Contact admin.")
+        await send_text(phone, await say(user["source_key"], "onboarding.inactive"))
         return
 
     # workflows this person may use because they are on a case, on top of their role's
@@ -876,7 +943,9 @@ async def _handle_message(
             # "Welcome to X, I'm your assistant" paragraph here would be
             # redundant with what they just saw seconds earlier.
             sections = await build_menu_sections(user["org_id"], user)
-            await send_list(phone, "📋 Here's what I can help with:", "Menu", sections)
+            await send_list(
+                phone, await say(user["source_key"], "menu.intro"), "Menu", sections
+            )
             return
         if text_stripped.lower() in ("/help", "/h"):
             from app.services.agent import _build_help_response
@@ -901,16 +970,16 @@ async def _handle_message(
                 fields = draft.get("fields", {})
                 await send_text(
                     phone,
-                    f"📋 *Draft Status*\n"
-                    f"Workflow: {intent}\n"
-                    f"Stage: {stage}\n"
-                    f"Fields collected: {len(fields)}\n\n"
-                    f"Tap /cancel to clear this draft.",
+                    await say(
+                        user["source_key"],
+                        "draft.status",
+                        intent=intent,
+                        stage=stage,
+                        count=len(fields),
+                    ),
                 )
             else:
-                await send_text(
-                    phone, "✅ No active draft. You're ready to start fresh."
-                )
+                await send_text(phone, await say(user["source_key"], "draft.none"))
             return
         wf = await resolve_slash_command(user["org_id"], user, text_stripped)
         if wf:
@@ -923,7 +992,7 @@ async def _handle_message(
             sections = await build_menu_sections(user["org_id"], user)
             await send_list(
                 phone,
-                "Didn't recognise that command — here's what's available:",
+                await say(user["source_key"], "menu.unknown_command"),
                 "📋 Menu",
                 sections,
             )
@@ -972,17 +1041,22 @@ async def _handle_message(
                     )
                     await send_text(
                         phone,
-                        f"🔐 A new verification code has been sent to *{user['email']}*.\n"
-                        f"Reply with the code to continue.",
+                        await say(
+                            user["source_key"], "security.new_code", email=user["email"]
+                        ),
                     )
                 elif result["reason"] == "cooldown":
                     await send_text(
                         phone,
-                        f"⏳ Please wait {result['wait_seconds']}s before requesting another code.",
+                        await say(
+                            user["source_key"],
+                            "otp.cooldown",
+                            wait_seconds=result["wait_seconds"],
+                        ),
                     )
                 else:
                     await send_text(
-                        phone, "❌ Could not send verification email. Contact admin."
+                        phone, await say(user["source_key"], "otp.email_failed")
                     )
                 return
 
@@ -994,13 +1068,13 @@ async def _handle_message(
             if not candidates:
                 await send_text(
                     phone,
-                    "That doesn't look like a code — please check your email and reply with just the digits.",
+                    await say(user["source_key"], "otp.not_a_code"),
                 )
                 return
             if len(candidates) > 1:
                 await send_text(
                     phone,
-                    "I found more than one number in that message — please reply with just the code from your email.",
+                    await say(user["source_key"], "otp.many_numbers"),
                 )
                 return
 
@@ -1018,15 +1092,19 @@ async def _handle_message(
                     ttl_str = f"{ttl_minutes} mins"
                 await send_text(
                     phone,
-                    f"✅ Identity verified!\n"
-                    f"_Session active for {ttl_str}. Processing your request..._",
+                    await say(user["source_key"], "security.verified", ttl=ttl_str),
                 )
                 if pending_text:
                     await handle_message(
                         phone=phone, text=pending_text, msg_type="text"
                     )
             else:
-                await send_text(phone, f"❌ {result['reason']}")
+                await send_text(
+                    phone,
+                    await say(
+                        user["source_key"], "otp.rejected", reason=result["reason"]
+                    ),
+                )
             return
 
         # Session expired — send security OTP
@@ -1052,21 +1130,24 @@ async def _handle_message(
                 ttl_str = f"{ttl_minutes} minutes"
             await send_text(
                 phone,
-                f"🔐 *Security Verification Required*\n\n"
-                f"Your session has expired.\n"
-                f"A verification code has been sent to *{user['email']}*.\n"
-                f"Reply with the code to continue.\n\n"
-                f"_Required every {ttl_str} for security._",
+                await say(
+                    user["source_key"],
+                    "security.required",
+                    email=user["email"],
+                    ttl=ttl_str,
+                ),
             )
         elif result["reason"] == "cooldown":
             await send_text(
                 phone,
-                f"⏳ Please wait {result['wait_seconds']}s before requesting another code.",
+                await say(
+                    user["source_key"],
+                    "otp.cooldown",
+                    wait_seconds=result["wait_seconds"],
+                ),
             )
         else:
-            await send_text(
-                phone, "❌ Could not send verification email. Contact admin."
-            )
+            await send_text(phone, await say(user["source_key"], "otp.email_failed"))
         return
 
     # 4. Normal session
@@ -1099,9 +1180,10 @@ async def _handle_message(
         await set_session(session_id, session, ttl=ttl_minutes * 60)
         await send_text(
             phone,
-            "🔄 Cleared. What would you like to do?\n\n_Type *menu* to see your options._"
-            if had_draft
-            else "✅ Nothing in progress. Type *menu* to see your options.",
+            await say(
+                user["source_key"],
+                "draft.cleared" if had_draft else "draft.nothing_in_progress",
+            ),
         )
         return
 
@@ -1176,7 +1258,11 @@ async def _handle_message(
             # Send greeting to user about the unfinished draft
             await send_text(
                 phone,
-                f"You have an unfinished *{db_draft['intent_key']}* — continue, or tap /cancel.",
+                await say(
+                    user["source_key"],
+                    "draft.unfinished",
+                    intent=db_draft["intent_key"],
+                ),
             )
 
     # 5. Approval button responses
@@ -1226,14 +1312,22 @@ async def _handle_message(
         if pending_action.get("stage") == "awaiting_confirmation":
             await send_text(
                 phone,
-                f"You already have a *{pending_action['intent_key']}* draft waiting for confirmation:\n"
-                f"{details}\n\nReply *yes* to confirm, *no* to cancel, or tell me what to change.",
+                await say(
+                    user["source_key"],
+                    "draft.waiting_confirm",
+                    intent=pending_action["intent_key"],
+                    details=details,
+                ),
             )
         else:
             await send_text(
                 phone,
-                f"You're already filling out *{pending_action['intent_key']}*. So far:\n"
-                f"{details}\n\nPlease continue with the remaining details, or /cancel to start over.",
+                await say(
+                    user["source_key"],
+                    "draft.filling",
+                    intent=pending_action["intent_key"],
+                    details=details,
+                ),
             )
         return
 
@@ -1265,9 +1359,7 @@ async def _handle_message(
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
                 logger.error(f"execute_pending_action error: {e}", exc_info=True)
-                oops = (
-                    "❌ Something went wrong creating the document. Please try again."
-                )
+                oops = await say(user["source_key"], "error.document")
                 await send_text(phone, oops)
                 await _audit_turn(
                     user, session_id, intent, text, f"{oops} ({e})"[:2000], "error"
@@ -1282,14 +1374,15 @@ async def _handle_message(
                     {"role": "user", "content": text},
                     {
                         "role": "assistant",
-                        "content": result.get(
-                            "message", "Action completed successfully"
-                        ),
+                        "content": result.get("message")
+                        or await say(user["source_key"], "action.completed"),
                     },
                 ]
                 session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session, ttl=session_ttl)
-                done = result.get("message", "Action completed successfully")
+                done = result.get("message") or await say(
+                    user["source_key"], "action.completed"
+                )
                 await send_text(phone, done)
                 await _audit_turn(user, session_id, intent, text, done)
                 await _send_action_pdf(result)
@@ -1329,15 +1422,20 @@ async def _handle_message(
             await _clear_stuck_draft(
                 user, session, session_id, session_ttl, reason="cancelled"
             )
-            await send_text(phone, "❌ Action cancelled.")
-            await _audit_turn(user, session_id, intent, text, "❌ Action cancelled.")
+            cancel_note = await say(user["source_key"], "draft.action_cancelled")
+            await send_text(phone, cancel_note)
+            await _audit_turn(user, session_id, intent, text, cancel_note)
             return
 
         # Unrecognised reply while awaiting confirm — check staleness first, then treat as correction
         if pending_action:
-            from app.services.agent import _MAX_REPROMPT_COUNT, _is_draft_stale
+            from app.services.agent import _is_draft_stale
 
-            if _is_draft_stale(pending_action):
+            org_conf = await config_store.org_settings(
+                user["source_key"], user["org_id"]
+            )
+            reprompt_cap = config_store.limit_of(org_conf, "reprompt_max")
+            if _is_draft_stale(pending_action, org_conf):
                 # Confirmation window (10 min) has expired — drop the draft entirely
                 # and let the message fall through as a brand-new request.
                 logger.info("Stale awaiting_confirmation draft detected — clearing")
@@ -1347,8 +1445,7 @@ async def _handle_message(
                 pending_action = None
                 await send_text(
                     phone,
-                    "_⏱️ Your previous confirmation timed out and was cleared. "
-                    "Let me help with your new request._",
+                    await say(user["source_key"], "draft.confirm_timed_out"),
                 )
                 # fall through to agent with pending_action=None
             else:
@@ -1359,19 +1456,17 @@ async def _handle_message(
                 # here too, or corrections get double-counted and hit the
                 # cap in half the intended number of turns.
                 current_reprompt_count = pending_action.get("reprompt_count", 0)
-                if current_reprompt_count >= _MAX_REPROMPT_COUNT:
+                if current_reprompt_count >= reprompt_cap:
                     # Cap hit — the user and the bot are going in circles. Force a clean restart.
                     logger.warning(
-                        f"Reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft"
+                        f"Reprompt cap ({reprompt_cap}) reached — clearing draft"
                     )
                     await _clear_stuck_draft(
                         user, session, session_id, session_ttl, reason="cancelled"
                     )
                     await send_text(
                         phone,
-                        "🤔 I'm having trouble understanding the details for this request. "
-                        "Let's start fresh — please send your request again with all the details "
-                        "in one message.",
+                        await say(user["source_key"], "draft.reprompt_restart"),
                     )
                     return
                 pending_action["stage"] = "collecting"
@@ -1391,7 +1486,7 @@ async def _handle_message(
             session.pop("state", None)
             await set_session(session_id, session, ttl=session_ttl)
             await send_text(
-                phone, "🔄 Session cleared. Please resend your original request."
+                phone, await say(user["source_key"], "draft.session_cleared")
             )
             return
 
@@ -1408,7 +1503,7 @@ async def _handle_message(
                 )
                 await send_text(
                     phone,
-                    "❌ Something went wrong after verification. Please try again.",
+                    await say(user["source_key"], "error.after_verification"),
                 )
                 return
 
@@ -1420,15 +1515,16 @@ async def _handle_message(
                     {"role": "user", "content": text},
                     {
                         "role": "assistant",
-                        "content": exec_result.get(
-                            "message", "Action completed successfully"
-                        ),
+                        "content": exec_result.get("message")
+                        or await say(user["source_key"], "action.completed"),
                     },
                 ]
                 session["conversation_history"] = session["conversation_history"][-15:]
                 await set_session(session_id, session, ttl=session_ttl)
                 await send_text(
-                    phone, exec_result.get("message", "Action completed successfully")
+                    phone,
+                    exec_result.get("message")
+                    or await say(user["source_key"], "action.completed"),
                 )
                 await _send_action_pdf(exec_result)
             elif exec_result.get("stage") == "awaiting_approval":
@@ -1445,7 +1541,12 @@ async def _handle_message(
                 await set_session(session_id, session, ttl=session_ttl)
                 await send_text(phone, exec_result.get("message", "Action failed"))
         else:
-            await send_text(phone, f"❌ {otp_result['reason']}")
+            await send_text(
+                phone,
+                await say(
+                    user["source_key"], "otp.rejected", reason=otp_result["reason"]
+                ),
+            )
         return
 
     # 10. Run the agent — refresh session in case it was updated above
@@ -1455,21 +1556,19 @@ async def _handle_message(
 
     # Reprompt cap check for collecting stage (same cap, different entry point than confirm stage)
     if pending_action and pending_action.get("stage") == "collecting":
-        from app.services.agent import _MAX_REPROMPT_COUNT
-
+        org_conf = await config_store.org_settings(user["source_key"], user["org_id"])
+        reprompt_cap = config_store.limit_of(org_conf, "reprompt_max")
         reprompt_count = pending_action.get("reprompt_count", 0)
-        if reprompt_count >= _MAX_REPROMPT_COUNT:
+        if reprompt_count >= reprompt_cap:
             logger.warning(
-                f"Collecting-stage reprompt cap ({_MAX_REPROMPT_COUNT}) reached — clearing draft"
+                f"Collecting-stage reprompt cap ({reprompt_cap}) reached — clearing draft"
             )
             await _clear_stuck_draft(
                 user, session, session_id, session_ttl, reason="cancelled"
             )
             await send_text(
                 phone,
-                "🤔 I'm having trouble understanding the details for this request. "
-                "Let's start fresh — please send your request again with all the details "
-                "in one message.",
+                await say(user["source_key"], "draft.reprompt_restart"),
             )
             return
         # Increment reprompt_count each turn we stay in collecting mode
@@ -1600,7 +1699,11 @@ async def _handle_message(
         try:
             await send_text(
                 phone,
-                f"❌ Something went wrong. Error ID: {correlation_id}. Please try again or contact support.",
+                await say(
+                    (_turn_user.get() or {}).get("source_key"),
+                    "error.with_id",
+                    correlation_id=correlation_id,
+                ),
             )
         except TelegramRateLimitedError:
             logger.warning(
@@ -1657,12 +1760,16 @@ async def handle_system_row(text: str, user: dict, phone: str):
             )
             await send_text(
                 phone,
-                f"📝 In progress: *{intent}* (started {age_min} min ago)\n"
-                f"{field_lines}\n\n"
-                f"Reply *cancel* to discard it, or continue where you left off.",
+                await say(
+                    user["source_key"],
+                    "draft.in_progress",
+                    intent=intent,
+                    age_min=age_min,
+                    field_lines=field_lines,
+                ),
             )
         else:
-            await send_text(phone, "✅ No active draft. You're ready to start fresh.")
+            await send_text(phone, await say(user["source_key"], "draft.none"))
 
     elif text == "sys:cancel":
         await cancel_user_draft(user, phone, confirm=True)
@@ -1683,7 +1790,7 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
 
     draft = await get_active_draft(user["org_id"], user["user_id"], user["source_key"])
     if not draft:
-        await send_text(phone, "✅ No active draft to cancel.")
+        await send_text(phone, await say(user["source_key"], "draft.none_to_cancel"))
         return
 
     field_count = len(draft.get("fields", {}))
@@ -1694,10 +1801,15 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
     if confirm and field_count >= 2:
         await send_text(
             phone,
-            f"🔄 Draft for *{draft['intent_key']}* cancelled ({field_count} field(s) discarded).",
+            await say(
+                user["source_key"],
+                "draft.cancelled_count",
+                intent=draft["intent_key"],
+                count=field_count,
+            ),
         )
     else:
-        await send_text(phone, "🔄 Draft cancelled.")
+        await send_text(phone, await say(user["source_key"], "draft.cancelled"))
 
 
 # ── OTP REPLY HANDLER (invoice high value) ────────────
@@ -1707,9 +1819,7 @@ async def _handle_otp_reply(phone, text, user, session, session_id):
     vocab = await get_vocabulary(user["org_id"], user["source_key"])
     if matches_vocab(text, vocab["retry_words"]):
         await set_session(session_id, {})
-        await send_text(
-            phone, "🔄 Session cleared. Please resend your original request."
-        )
+        await send_text(phone, await say(user["source_key"], "draft.session_cleared"))
         return
 
     result = await verify_otp(user["user_id"], text.strip(), user["source_key"])
@@ -1729,4 +1839,7 @@ async def _handle_otp_reply(phone, text, user, session, session_id):
         reply = await resume_after_otp(user, session_id, session)
         await send_text(phone, reply)
     else:
-        await send_text(phone, f"❌ {result['reason']}")
+        await send_text(
+            phone,
+            await say(user["source_key"], "otp.rejected", reason=result["reason"]),
+        )

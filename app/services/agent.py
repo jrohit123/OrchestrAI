@@ -15,10 +15,10 @@ from openai import AsyncOpenAI
 from app.config import required
 from app.db import execute, fetch_all, fetch_all_readonly, fetch_one
 from app.logging_config import get_context_logger
-from app.services import field_reader, sql_guard
+from app.services import config_store, field_reader, sql_guard
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
-from app.services.prompt_loader import PROMPTS_DIR, _read, load_prompt
+from app.services.prompt_loader import PROMPTS_DIR, _read, load_domain_prompt
 from app.services.query_engine import SENSITIVE_COLS, check_entity_records_access
 from app.services.report_format import format_list
 
@@ -1050,8 +1050,10 @@ async def _build_system_prompt(user: dict) -> str:
             "=== END NOT ALLOWED ===\n"
         )
 
-    # Load layered domain prompt from files
-    domain_prompt = load_prompt(dict(org_row) if org_row else {})
+    # Load the layered domain prompt: what the dashboard saved for this org, else the files
+    domain_prompt = await load_domain_prompt(
+        dict(org_row) if org_row else {}, user.get("source_key")
+    )
 
     # Build critical-tables block dynamically from the org's real schema
     if schema and schema.strip():
@@ -1150,20 +1152,17 @@ def _params_resolvable_without_message(params_order: list, entity_schema: dict) 
 
 # ── Draft validation helper ────────────────────────────────────────────────────
 
-# Stale draft thresholds in minutes
-_DRAFT_STALE_MINUTES = 30  # collecting stage — abandon after 30 min of inactivity
-_CONFIRM_STALE_MINUTES = (
-    10  # awaiting_confirmation — shorter: stale unconfirmed writes are riskier
-)
-
-# Max reprompt attempts before forcing a clean restart
-_MAX_REPROMPT_COUNT = 3
+# How long a draft may sit untouched (30 minutes while collecting, 10 while waiting for a yes:
+# stale unconfirmed writes are riskier) and how often the assistant re-asks (3 times) are numbers
+# each organisation can change on the Settings screen. The built-in ones are config_store.LIMITS.
 
 
-def _is_draft_stale(pending_action: dict | None) -> bool:
+def _is_draft_stale(pending_action: dict | None, settings: dict | None = None) -> bool:
     """
     Return True if this draft is too old to still be relevant.
-    Covers both 'collecting' (30 min) and 'awaiting_confirmation' (10 min) stages.
+    Covers both 'collecting' and 'awaiting_confirmation' stages. `settings` is the
+    organisation's orgs.settings (config_store.org_settings); without it the built-in
+    numbers are used.
     """
     if not pending_action:
         return False
@@ -1171,10 +1170,11 @@ def _is_draft_stale(pending_action: dict | None) -> bool:
     if stage not in ("collecting", "awaiting_confirmation"):
         return False
     # Use a shorter threshold for confirmation-stage drafts
-    threshold = (
-        _CONFIRM_STALE_MINUTES
+    threshold = config_store.limit_of(
+        settings,
+        "confirm_stale_minutes"
         if stage == "awaiting_confirmation"
-        else _DRAFT_STALE_MINUTES
+        else "draft_stale_minutes",
     )
     created = pending_action.get("created_at")
     if not created:
@@ -2511,6 +2511,7 @@ async def run_agent(
     logger.info(f"Starting agent for: {message[:100]}")
 
     session_patch = {}
+    org_conf = await config_store.org_settings(user["source_key"], user["org_id"])
 
     # Greetings and help requests are no longer a keyword fast-path here —
     # the main agent loop below decides, via genuine understanding of the
@@ -2649,7 +2650,7 @@ async def run_agent(
         and pending_action.get("stage") == "collecting"
         and pending_action.get("asking")
         and msg_stripped not in workflow_map
-        and not _is_draft_stale(pending_action)
+        and not _is_draft_stale(pending_action, org_conf)
     ):
         try:
             by_code = await _answer_by_code(
@@ -2800,7 +2801,7 @@ async def run_agent(
     # clearing back to webhook.py via session_patch — otherwise the DB row
     # stays active and webhook.py's rehydration logic silently brings the
     # exact same stale draft back on the very next message.
-    if _is_draft_stale(pending_action):
+    if _is_draft_stale(pending_action, org_conf):
         logger.info(
             f"Stale draft detected (intent={pending_action.get('intent_key')}) — abandoning"
         )
@@ -2818,7 +2819,7 @@ async def run_agent(
     # the rotation (observed with gemini-2.5-flash-lite) straight into the
     # user-visible reply. System content is never shown to the user and is
     # read as an instruction, not as reply style to imitate.
-    if pending_action and not _is_draft_stale(pending_action):
+    if pending_action and not _is_draft_stale(pending_action, org_conf):
         system_prompt += "\n\n" + _format_pending_action_context(pending_action)
 
     messages = [{"role": "system", "content": system_prompt}]

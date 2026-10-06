@@ -18,6 +18,7 @@ import json
 from app.db import execute, fetch_one
 from app.logging_config import get_context_logger
 from app.redis_client import set_session
+from app.services.messages import say
 from app.services.messaging import send_buttons, send_text
 
 logger = get_context_logger(__name__)
@@ -34,12 +35,10 @@ async def resume_after_otp(user: dict, session_id: str, session: dict) -> str:
 
     if pending and pending.get("type") == "security_auth":
         await set_session(session_id, {"otp_verified": True})
-        return (
-            "✅ Identity verified! Session active for 4h. Please resend your request."
-        )
+        return await say(user["source_key"], "security.verified_resend")
 
     # Fallback for any other legacy pending_intent shapes
-    return "✅ Verified! Please resend your original request."
+    return await say(user["source_key"], "security.verified_resend_short")
 
 
 async def handle_approval_response(
@@ -71,12 +70,14 @@ async def handle_approval_response(
     )
 
     if not approval:
-        await send_text(phone, "No pending approval found or already handled.")
+        await send_text(phone, await say(user["source_key"], "approval.not_found"))
         return
 
     # Check if already decided (stale case)
     if approval["status"] != "pending":
-        await send_text(phone, "This request was already handled.")
+        await send_text(
+            phone, await say(user["source_key"], "approval.already_handled")
+        )
         return
 
     # Check approver role and permissions.
@@ -90,12 +91,12 @@ async def handle_approval_response(
     user_permissions = user.get("permissions", [])
 
     if user_role_name != approver_role and "approve" not in user_permissions:
-        await send_text(phone, "You are not authorised to approve this request.")
+        await send_text(phone, await say(user["source_key"], "approval.not_allowed"))
         return
 
     # Block self-approval
     if str(approval["requester_id"]) == user["user_id"]:
-        await send_text(phone, "You cannot approve your own request.")
+        await send_text(phone, await say(user["source_key"], "approval.own_request"))
         # Log rejection
         await execute(
             """
@@ -158,11 +159,15 @@ async def handle_approval_response(
     requester_name = ctx.get("requester_name", "Your colleague")
 
     if action == "action:reject":
-        await send_text(phone, "❌ Action rejected.")
+        await send_text(phone, await say(user["source_key"], "approval.rejected_ack"))
         if requester_phone:
             await send_text(
                 requester_phone,
-                f"❌ Your request was *rejected* by {user['user_name']}.",
+                await say(
+                    user["source_key"],
+                    "approval.rejected_notice",
+                    approver=user["user_name"],
+                ),
             )
         return
 
@@ -195,19 +200,18 @@ async def handle_approval_response(
         )
         next_approval_id = next_row[0]["id"]
 
-        await send_text(
-            phone, "✅ Your approval is recorded. Escalating to the next approver."
-        )
+        await send_text(phone, await say(user["source_key"], "approval.escalated"))
         if next_approver:
-            level_note = f" — level {nxt.get('level')} of {len(required_queue)}"
             await send_buttons(
                 to=next_approver["phone"],
-                body=(
-                    f"📋 *Approval Request*{level_note}\n\n"
-                    f"From: {requester_name}\n"
-                    f"Action: {approval['intent_key']}\n"
-                    f"Amount: Rs.{amount:,.0f}\n\n"
-                    f"Please approve or reject:"
+                body=await say(
+                    user["source_key"],
+                    "approval.request_level",
+                    level=nxt.get("level"),
+                    total=len(required_queue),
+                    requester=requester_name,
+                    intent=approval["intent_key"],
+                    amount=f"{amount:,.0f}",
                 ),
                 buttons=[
                     {"id": f"action:approve:{next_approval_id}", "title": "✅ Approve"},
@@ -224,7 +228,9 @@ async def handle_approval_response(
     # ── Last (or only) level cleared — resume the actual workflow ───────────
     pending_action = ctx.get("pending_action")
     if not pending_action:
-        await send_text(phone, "✅ Approved, but no pending action found to execute.")
+        await send_text(
+            phone, await say(user["source_key"], "approval.approved_nothing_to_run")
+        )
         return
 
     # BUGFIX: this used to hand-build a user dict with permissions=[], which
@@ -263,15 +269,30 @@ async def handle_approval_response(
     )
 
     if result.get("success"):
-        await send_text(phone, f"✅ Approved.\n\n{result['message']}")
+        await send_text(
+            phone,
+            await say(
+                user["source_key"], "approval.approved_ack", message=result["message"]
+            ),
+        )
         if requester_phone:
             await send_text(
                 requester_phone,
-                f"✅ Your request was *approved* by {user['user_name']}.\n\n{result['message']}",
+                await say(
+                    user["source_key"],
+                    "approval.approved_notice",
+                    approver=user["user_name"],
+                    message=result["message"],
+                ),
             )
     else:
         await send_text(
-            phone, f"✅ Approved but execution failed: {result.get('message', '?')}"
+            phone,
+            await say(
+                user["source_key"],
+                "approval.approved_failed",
+                message=result.get("message", "?"),
+            ),
         )
 
 

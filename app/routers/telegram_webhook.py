@@ -14,6 +14,7 @@ from fastapi import APIRouter, Header, Request, Response
 
 from app.logging_config import bind_context, get_context_logger
 from app.redis_client import get_redis
+from app.services.messages import say
 
 logger = get_context_logger(__name__)
 router = APIRouter()
@@ -94,7 +95,7 @@ async def telegram_webhook(
             try:
                 from app.services.telegram import send_text
 
-                await send_text(chat_id, "❌ Something went wrong. Please try again.")
+                await send_text(chat_id, await say(None, "error.generic"))
             except Exception as fallback_err:
                 logger.warning(
                     f"Fallback error message to {chat_id} also failed: {fallback_err}"

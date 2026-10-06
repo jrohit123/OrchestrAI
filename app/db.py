@@ -75,6 +75,13 @@ async def get_pool(source_key: str) -> "asyncpg.Pool":
     return pool
 
 
+def routing_pool() -> "asyncpg.Pool":
+    """The routing database's pool: the one database every copy of the app shares."""
+    if _routing_pool is None:
+        raise RuntimeError("The routing database is not connected")
+    return _routing_pool
+
+
 async def get_all_source_keys() -> list[str]:
     rows = await _routing_pool.fetch("SELECT source_key FROM data_sources")
     return [r["source_key"] for r in rows]
