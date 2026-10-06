@@ -3,8 +3,11 @@ JS = r"""
 // Every step is a box you can drag anywhere. The wires and the numbers say what runs when, so where a
 // box sits never changes the flow. What is shown comes from the workflow being edited (EW) and the
 // step catalogue (ST); nothing about what a step means is written here.
+// A step is drawn as a little tile (a coloured square with its name under it) or as a full card.
+// A step can also be "parked": taken out of the flow (so it does not run) but kept on the canvas.
 const CV_GAP = 84, CV_TOP = 48, CV_CX = 380;
-const CV_GX = 64, CV_GY = 80, CV_X_ROWS = 60, CV_X_STAGE = 200, CV_PORT_Y = 28;   // rows: space between boxes, between rows, the left edge, and where a side wire meets a box
+const CV_GX = 64, CV_GY = 80, CV_X_ROWS = 60, CV_X_STAGE = 200, CV_PORT_Y = 28;   // full cards in rows: space between boxes, between rows, the left edge, and where a side wire meets a card
+const CV_SQ = 68, CV_CW = 116;                           // little tiles: the square, and the whole tile (the name sits under the square)
 const CV_STAGE = { trigger: 'Start', look: 'Look up and check', block: 'Building blocks', save: 'Save changes', tell: 'Tell people', approve: 'Approvals', other: 'Other steps' };
 let CV = null;                                          // the view of the flow that is open (zoom, selection, what is expanded)
 const CV_KIND = { 'Look up and check': 'look', 'Save changes': 'save', 'Tell people': 'tell', 'Approvals': 'approve', 'Other': 'other' };
@@ -23,33 +26,66 @@ const cvStopText = s => { const k = CV_STOPS[s.op]; return k ? ((s.params || {})
 const nodeW = () => parseInt(getComputedStyle(document.documentElement).getPropertyValue('--nw'), 10) || 392;
 const idAt = i => String(EW.ids[i]);
 const idxOf = id => EW.ids.findIndex(x => String(x) === id);
+const pidAt = k => String(EW.pids[k]);                 // parked steps have their own list, with ids of the same kind
+const pidxOf = id => EW.pids.findIndex(x => String(x) === id);
+const isParked = id => pidxOf(id) >= 0;
+// a short name for a step in the messages: the building block's own name, or what kind of step it is
+const stepName = s => { const f = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null; return f ? f.name : ((catalogSpec(s.op) || {}).label || describeStep(s)); };
 const isRead = () => EW.d.workflow_type === 'read';
 const chain = () => isRead() ? ['trigger', 'report'] : ['trigger', ...EW.ids.map(String)];
 const wireIds = () => [...chain(), 'end'];
 const primary = () => CV.sel.size === 1 ? [...CV.sel][0] : null;
+// how steps are drawn: 'compact' (little tiles), 'detail' (full cards) or 'tech' (full cards with the technical settings); each browser remembers its choice
+const cvPref = () => { const v = store.get('panel.cview'); return v === 'detail' || v === 'tech' ? v : 'compact'; };
+const cvSize = () => cvPref() === 'compact' ? 'compact' : 'detailed';
 function newCanvas() {
-  return { for: EW, zoom: 1, auto: true, hm: {}, wm: {}, ex: {}, vh: {}, pm: { in: {}, out: {} }, reflow: false, sel: new Set(), panel: 'insp', itab: 'set', ttab: 'start', open: new Set(), peek: {}, loading: new Set(),
-    palOpen: new Set(['act', 'act:Look up and check']), tech: false, run: null, justAdded: null, G: null, frame: false, plusPts: [], inspKey: '' };
+  const view = cvPref();
+  return { for: EW, view, compact: view === 'compact', tech: view === 'tech', zoom: 1, auto: true, hm: {}, wm: {}, ex: {}, vh: {}, pm: { in: {}, out: {} }, reflow: false, sel: new Set(), panel: 'insp', itab: 'set', ttab: 'start', open: new Set(), peek: {}, loading: new Set(),
+    palOpen: new Set(['act', 'act:Look up and check']), run: null, justAdded: null, G: null, frame: false, plusPts: [], inspKey: '', wbar: null, wbarT: 0 };
 }
+// room around the boxes: little tiles sit closer together than full cards
+const colW = () => CV.compact ? CV_CW : nodeW();
+const gapX = () => CV.compact ? 40 : CV_GX, gapY = () => CV.compact ? 72 : CV_GY, gapV = () => CV.compact ? 64 : CV_GAP;
 
 // ----- where things sit -----
 function posOf(id) {
   if (id === 'end') {
     const ids = chain(), last = ids[ids.length - 1], p = EW.pos[last];
     if (!p) return null;
-    return { x: p.x + (CV.wm[last] || nodeW()) / 2 - (CV.wm.end || 190) / 2, y: p.y + (CV.hm[last] || 100) + CV_GAP * 0.75 };
+    return { x: p.x + (CV.wm[last] || colW()) / 2 - (CV.wm.end || 190) / 2, y: p.y + (CV.hm[last] || 100) + gapV() * 0.75 };
   }
   return EW.pos[id] || null;
 }
-const wOf = id => CV.wm[id] || nodeW(), hOf = id => CV.hm[id] || 100, exOf = id => CV.ex[id] || 0, vOf = id => CV.vh[id] || hOf(id);
+const wOf = id => CV.wm[id] || colW(), hOf = id => CV.hm[id] || 100, exOf = id => CV.ex[id] || 0, vOf = id => CV.vh[id] || hOf(id);
 // where a wire leaves a box and enters the next: under and over them, or at the sides when boxes sit in a row
-const outPt = id => { const p = posOf(id); return (CV.pm.out[id] === 'right') ? { x: p.x + wOf(id), y: p.y + CV_PORT_Y } : { x: p.x + wOf(id) / 2, y: p.y + hOf(id) }; };
-const inPt = id => { const p = posOf(id); return (CV.pm.in[id] === 'left') ? { x: p.x, y: p.y + CV_PORT_Y } : { x: p.x + wOf(id) / 2, y: p.y }; };
+// (a little tile has its side dots on the square, a full card on its own edge)
+const tiled = id => CV.compact && id !== 'end';
+const sqOff = id => tiled(id) ? (wOf(id) - CV_SQ) / 2 : 0;
+const portY = id => tiled(id) ? CV_SQ / 2 : CV_PORT_Y;
+const outPt = id => { const p = posOf(id); return (CV.pm.out[id] === 'right') ? { x: p.x + wOf(id) - sqOff(id), y: p.y + portY(id) } : { x: p.x + wOf(id) / 2, y: p.y + hOf(id) + (tiled(id) ? 10 : 0) }; };   // a tile's bottom dot sits just under its name
+const inPt = id => { const p = posOf(id); return (CV.pm.in[id] === 'left') ? { x: p.x + sqOff(id), y: p.y + portY(id) } : { x: p.x + wOf(id) / 2, y: p.y }; };
 const toStage = (cx, cy) => { const r = CV.sizer.getBoundingClientRect(); return { x: (cx - r.left) / CV.zoom, y: (cy - r.top) / CV.zoom }; };
 
 // ----- the boxes -----
 const cvSec = (title, body) => h('div', { class: 'nd-tsec' }, h('div', { class: 'nd-tl' }, title), body);
-function cvTriggerNode() {
+// the little bar that shows above a box when the pointer is on it
+function nodeBar(id, parked) {
+  const b = (ic, label, fn, cls) => h('button', { class: 'nd-bb' + (cls ? ' ' + cls : ''), type: 'button', 'aria-label': label, title: label, onclick: e => { e.stopPropagation(); fn(); } }, icon(ic, 'sm'));
+  return h('div', { class: 'nd-bar' }, parked
+    ? [b('undo', 'Put back in the flow', () => cvUnpark(id)), b('trash', 'Delete', () => cvDel(id), 'del')]
+    : [b('edit', 'Open', () => cvOpen(id)), b('copy', 'Duplicate', () => cvDup(id)), b('trash', 'Delete', () => cvDel(id), 'del')]);
+}
+function cvTriggerNode() { return CV.compact ? cvTriggerTile() : cvTriggerCard(); }
+function cvTriggerTile() {
+  const w = EW.work, block = w.kind === 'block', action = w.kind === 'case_action', phrases = w.training_phrases || [];
+  const name = block ? 'Run by other workflows' : action ? 'A button on a case' : 'Starts when…';
+  const sub = block ? '' : phrases.length ? '“' + phrases[0] + '”' : w.slash_command ? '/' + w.slash_command : '';
+  return h('div', { class: 'nd nc trig k-trigger' + (CV.sel.has('trigger') ? ' sel' : ''), 'data-id': 'trigger', style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': 'What starts this flow' },
+    h('span', { class: 'nd-ord trg' }, icon('bolt', 'xs')), h('span', { class: 'nd-port out' }),
+    h('div', { class: 'nc-sq', title: 'What starts this flow' }, icon('bolt')),
+    h('div', { class: 'nc-nm' }, name), sub ? h('div', { class: 'nc-sub' }, sub) : null);
+}
+function cvTriggerCard() {
   const w = EW.work, d = EW.d, block = w.kind === 'block', action = w.kind === 'case_action';
   const phrases = w.training_phrases || [];
   const who = d.granted_roles || [], party = ((w.settings && w.settings.who_can_use) || []).map(r => PARTY_PLAIN[r] || r);
@@ -70,22 +106,47 @@ function cvTriggerNode() {
     h('div', { class: 'nd-h' }, h('span', { class: 'nd-gi' }, icon('bolt')), h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, 'When…'), h('div', { class: 'nd-t' }, title)), h('div', { class: 'nd-tags' }, h('span', { class: 'tag' }, 'Starts it'))),
     ...body, h('div', { style: { height: '4px' } }));
 }
-function cvStepNode(s, i) {
-  const id = idAt(i), spec = catalogSpec(s.op), key = cvKey(s), blk = s.op === 'run_workflow';
-  const flow = blk ? ST.byKey[(s.params || {}).workflow] : null, n = flow ? flow.step_count : 0;
-  const open = !!(flow && CV.open.has(flow.id)), wait = CV_WAITS[s.op];
-  const st = CV.run && CV.run.states[id];
-  const problems = problemsFor(i + 1).filter(p => p[0] === 'bad').length;
-  const stops = [cvStopText(s), ...((flow && CV.peek[flow.id]) || []).map(cvStopText)].filter(Boolean);
+// a step in the flow (i is its place in the flow) or a parked step (k is its place in the parked list)
+const cvStepNode = (s, i, k) => CV.compact ? cvStepTile(s, i, k) : cvStepCard(s, i, k);
+function stepFacts(s, id) {
+  const blk = s.op === 'run_workflow', flow = blk ? ST.byKey[(s.params || {}).workflow] : null;
+  return { spec: catalogSpec(s.op), key: cvKey(s), blk, flow, wait: CV_WAITS[s.op], st: CV.run && CV.run.states[id],
+    stops: [cvStopText(s), ...((flow && CV.peek[flow.id]) || []).map(cvStopText)].filter(Boolean) };
+}
+function cvStepTile(s, i, k) {
+  const parked = k != null, id = parked ? pidAt(k) : idAt(i), f = stepFacts(s, id), p = s.params || {};
+  const problems = parked ? 0 : problemsFor(i + 1).filter(x => x[0] === 'bad').length;
+  const name = f.blk ? (f.flow ? f.flow.name : 'Building block (missing)') : (f.spec ? f.spec.label : s.op);
+  const sub = parked ? 'Parked: does not run' : f.blk ? 'Building block' : p.table ? tlabel(p.table) : '';
+  const bdg = [
+    f.stops.length ? h('span', { class: 'nc-b nc-b-stop', title: 'Can stop the flow: ' + f.stops.slice(0, 3).join(' / ') }, icon('stop', 'xs')) : null,
+    s.when ? h('span', { class: 'nc-b nc-b-if', title: 'Only if ' + condText(s.when) }, icon('branch', 'xs')) : null,
+    f.wait ? h('span', { class: 'nc-b nc-b-wait', title: f.wait }, icon('pause', 'xs')) : null,
+    isAiStep(s) ? h('span', { class: 'nc-b nc-b-ai', title: 'The assistant (AI) is used in this step' }, icon('spark', 'xs')) : null];
+  return h('div', { class: 'nd nc k-' + f.key + (f.blk ? ' blk' : '') + (parked ? ' parked' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': f.st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': (parked ? 'Parked, does not run: ' : '') + describeStep(s) },
+    parked ? null : h('span', { class: 'nd-ord' }, i + 1), parked ? null : h('span', { class: 'nd-port in' }), parked ? null : h('span', { class: 'nd-port out' }),
+    h('span', { class: 'nd-stb' }, f.st ? CV_ST[f.st] || '' : ''),
+    problems ? h('span', { class: 'nd-bad', title: 'This step has a problem to fix' }, '!') : null,
+    nodeBar(id, parked),
+    h('div', { class: 'nc-sq', title: describeStep(s) }, icon(cvIcon(s.op)), bdg.some(Boolean) ? h('div', { class: 'nc-bdg' }, bdg) : null),
+    h('div', { class: 'nc-nm' }, name), sub ? h('div', { class: 'nc-sub' }, sub) : null);
+}
+function cvStepCard(s, i, k) {
+  const parked = k != null, id = parked ? pidAt(k) : idAt(i), f = stepFacts(s, id), spec = f.spec, key = f.key, blk = f.blk, flow = f.flow, wait = f.wait, st = f.st, n = flow ? flow.step_count : 0;
+  const open = !!(flow && CV.open.has(flow.id));
+  const problems = parked ? 0 : problemsFor(i + 1).filter(p => p[0] === 'bad').length;
+  const stops = f.stops;
   const tag = blk ? h('span', { class: 'tag blk' }, 'Block') : isAiStep(s) ? h('span', { class: 'tag ai' }, '✦ AI') : h('span', { class: 'tag tcode' }, 'Code');
   const sub = blk ? ((flow && flow.description) || 'Runs the steps of another workflow') : (spec ? spec.label : s.op);
-  return h('div', { class: 'nd k-' + key + (blk ? ' blk' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': describeStep(s) },
-    h('span', { class: 'nd-ord' }, i + 1), h('span', { class: 'nd-port in' }), h('span', { class: 'nd-port out' }), h('span', { class: 'nd-stb' }, st ? CV_ST[st] || '' : ''),
+  return h('div', { class: 'nd k-' + key + (blk ? ' blk' : '') + (parked ? ' parked' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': (parked ? 'Parked, does not run: ' : '') + describeStep(s) },
+    parked ? null : h('span', { class: 'nd-ord' }, i + 1), parked ? null : h('span', { class: 'nd-port in' }), parked ? null : h('span', { class: 'nd-port out' }), h('span', { class: 'nd-stb' }, st ? CV_ST[st] || '' : ''),
     problems ? h('span', { class: 'nd-bad', title: 'This step has a problem to fix' }, '!') : null,
+    nodeBar(id, parked),
     h('div', { class: 'nd-h' },
       h('span', { class: 'nd-gi' }, icon(cvIcon(s.op))),
       h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, blk ? 'Building block' : (spec ? spec.group : 'Step')), h('div', { class: 'nd-t' }, describeStep(s)), CV.tech ? null : h('div', { class: 'nd-s' }, sub)),
       h('div', { class: 'nd-tags' }, tag)),
+    parked ? h('div', { class: 'nd-parkn' }, icon('unlink', 'sm'), 'Parked: it stays here but does not run') : null,
     CV.tech ? h('pre', { class: 'nd-tech' }, JSON.stringify({ op: s.op, params: s.params || {}, ...(s.when ? { when: s.when } : {}) }, null, 1).replace(/\n\s*/g, ' ')) : null,
     s.when ? h('div', { class: 'nd-cond' }, icon('branch', 'sm'), 'only if ' + condText(s.when)) : null,
     wait ? h('div', { class: 'nd-wait' }, icon('pause', 'sm'), wait) : null,
@@ -95,17 +156,31 @@ function cvStepNode(s, i) {
     open ? h('div', { class: 'nd-inside' }, CV.peek[flow.id]
       ? CV.peek[flow.id].map(x => h('div', { class: 'nd-irow k-' + cvKey(x) }, h('i'), h('span', null, describeStep(x)), cvStopText(x) ? h('em', null, 'can stop') : null, x.when ? h('em', { class: 'when' }, 'only if') : null))
       : h('div', { class: 'muted small' }, 'Loading…')) : null,
-    stops.length ? h('div', { class: 'nd-exit' + (st === 'failed' ? ' lit' : '') }, h('div', { class: 'nd-xp' }, h('b', null, icon('stop', 'xs'), 'Stops'), stops.slice(0, 3).map(t => h('div', null, t)))) : null);
+    stops.length && !parked ? h('div', { class: 'nd-exit' + (st === 'failed' ? ' lit' : '') }, h('div', { class: 'nd-xp' }, h('b', null, icon('stop', 'xs'), 'Stops'), stops.slice(0, 3).map(t => h('div', null, t)))) : null);
 }
 function cvReportNode() {
+  const list = EW.work.response_format === 'list';
+  if (CV.compact) {
+    return h('div', { class: 'nd nc k-look' + (CV.sel.has('report') ? ' sel' : ''), 'data-id': 'report', style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': 'A saved report' },
+      h('span', { class: 'nd-ord' }, '1'), h('span', { class: 'nd-port in' }), h('span', { class: 'nd-port out' }),
+      h('div', { class: 'nc-sq', title: 'Looks things up with a saved query' }, icon('table'), list ? null : h('div', { class: 'nc-bdg' }, h('span', { class: 'nc-b nc-b-ai', title: 'The assistant words the answer' }, icon('spark', 'xs')))),
+      h('div', { class: 'nc-nm' }, 'A saved report'), h('div', { class: 'nc-sub' }, list ? 'Rows shown as stored' : 'Worded by the assistant'));
+  }
   return h('div', { class: 'nd k-look' + (CV.sel.has('report') ? ' sel' : ''), 'data-id': 'report', style: { visibility: 'hidden' }, tabindex: 0, role: 'button' },
     h('span', { class: 'nd-ord' }, '1'), h('span', { class: 'nd-port in' }), h('span', { class: 'nd-port out' }),
-    h('div', { class: 'nd-h' }, h('span', { class: 'nd-gi' }, icon('table')), h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, 'A saved report'), h('div', { class: 'nd-t' }, 'Looks things up with a saved query'), h('div', { class: 'nd-s' }, EW.work.response_format === 'list' ? 'Every row shown exactly as stored' : 'The assistant words the answer')),
-      h('div', { class: 'nd-tags' }, EW.work.response_format === 'list' ? h('span', { class: 'tag tcode' }, 'Code') : h('span', { class: 'tag ai' }, '✦ AI'))));
+    h('div', { class: 'nd-h' }, h('span', { class: 'nd-gi' }, icon('table')), h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, 'A saved report'), h('div', { class: 'nd-t' }, 'Looks things up with a saved query'), h('div', { class: 'nd-s' }, list ? 'Every row shown exactly as stored' : 'The assistant words the answer')),
+      h('div', { class: 'nd-tags' }, list ? h('span', { class: 'tag tcode' }, 'Code') : h('span', { class: 'tag ai' }, '✦ AI'))));
 }
 function cvEndNode() {
+  const block = EW.work.kind === 'block';
+  if (CV.compact && !isRead() && !oneStepOnly()) {           // a dashed square at the end of the flow: click it to add a step
+    const add = el => cvOpenAdd(EW.work.steps.length, el);
+    return h('div', { class: 'nd nc nc-end', role: 'button', tabindex: 0, 'data-id': 'end', 'data-popkeep': '1', style: { visibility: 'hidden' }, 'aria-label': 'Add a step at the end', title: (block ? 'Done: carries on with the workflow that ran it' : 'Done: tells the person') + '. Click to add a step here.',
+      onclick: e => { e.stopPropagation(); add(e.currentTarget); }, onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); add(e.currentTarget); } } },
+      h('span', { class: 'nd-port in' }), h('div', { class: 'nc-sq' }, icon('plus')), h('div', { class: 'nc-nm' }, 'Add a step'), h('div', { class: 'nc-sub' }, block ? 'Then it carries on' : 'Then it tells the person'));
+  }
   return h('div', { class: 'nd end', 'data-id': 'end', style: { visibility: 'hidden' } }, h('span', { class: 'nd-port in' }), icon('check', 'sm'),
-    EW.work.kind === 'block' ? 'Done: carries on with the workflow that ran it' : 'Done: tells the person');
+    block ? 'Done: carries on with the workflow that ran it' : 'Done: tells the person');
 }
 // opening a block shows the steps inside it (fetched once)
 async function cvToggle(flow) {
@@ -125,30 +200,43 @@ async function cvPeek(flow) {
 }
 // the steps inside blocks can stop the whole workflow, so they are fetched up front to draw the red "Stops" label
 function prefetchBlocks() {
-  EW.work.steps.forEach(s => { const f = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null; if (f && f.step_count) cvPeek(f); });
+  [...EW.work.steps, ...EW.work.parked.map(p => p.step)].forEach(s => { const f = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null; if (f && f.step_count) cvPeek(f); });
 }
 
 function renderNodes() {
   if (!CV || !CV.nodesEl) return;
   const prev = { ...CV.hm }, els = [cvTriggerNode()];
   if (isRead()) els.push(cvReportNode()); else EW.work.steps.forEach((s, i) => els.push(cvStepNode(s, i)));
+  EW.work.parked.forEach((p, k) => els.push(cvStepNode(p.step, -1, k)));
   els.push(cvEndNode());
   fill(CV.nodesEl, els);
   CV.el.classList.toggle('rowmode', rowish());
+  CV.el.classList.toggle('compact', CV.compact);
+  hideWireBar();
   layoutAfterRender(prev);
 }
+// the key that says which boxes there are and in what order: when it changes, Rows and By stage arrange themselves again
+const arrKey = () => chain().join() + '|' + EW.pids.join();
+const geoNow = () => geoKey([...chain(), ...EW.pids.map(String)]);
 function layoutAfterRender(prev) {
-  const NW = nodeW(), ids = chain(), clean = snapJSON() === EW.last;
+  const NW = colW(), ids = chain(), clean = snapJSON() === EW.last;
   measureNodes();
   ids.forEach((id, k) => {                                   // a new box goes under the one before it
     if (EW.pos[id]) return;
     if (k === 0) EW.pos[id] = { x: CV_CX - NW / 2, y: CV_TOP };
-    else { const p = EW.pos[ids[k - 1]]; EW.pos[id] = { x: p.x, y: p.y + (CV.hm[ids[k - 1]] || 100) + CV_GAP }; }
+    else { const p = EW.pos[ids[k - 1]]; EW.pos[id] = { x: p.x, y: p.y + (CV.hm[ids[k - 1]] || 100) + gapV() }; }
   });
+  const lost = EW.pids.map(String).filter(id => !EW.pos[id]);   // a parked box with no place yet waits under the flow
+  if (lost.length) {
+    let low = 0, left = 1e9;
+    ids.forEach(o => { const q = EW.pos[o]; if (q) { low = Math.max(low, q.y + vOf(o)); left = Math.min(left, q.x); } });
+    let x = left < 1e8 ? left : CV_X_ROWS;
+    lost.forEach(id => { EW.pos[id] = { x, y: low + 90 }; x += wOf(id) + gapX(); });
+  }
   if (CV.justAdded) {                                        // a box added in the middle pushes the ones below it down
     const k = ids.indexOf(CV.justAdded);
     if (k > 0 && k < ids.length - 1) {
-      const n = EW.pos[ids[k]], m = EW.pos[ids[k + 1]], need = n.y + CV.hm[ids[k]] + CV_GAP;
+      const n = EW.pos[ids[k]], m = EW.pos[ids[k + 1]], need = n.y + CV.hm[ids[k]] + gapV();
       if (Math.abs(m.x - n.x) < NW && m.y < need) { const d = need - m.y; for (let j = k + 1; j < ids.length; j++) EW.pos[ids[j]].y += d; }
     }
     CV.justAdded = null;
@@ -159,13 +247,13 @@ function layoutAfterRender(prev) {
     const d = now - old, p = EW.pos[id];
     for (let j = k + 1; j < ids.length; j++) { const q = EW.pos[ids[j]]; if (q.y >= p.y + old - 4 && Math.abs(q.x - p.x) < NW) q.y += d; }
   });
-  if (rowish()) {                                            // Rows and By stage stay tidy: the boxes are arranged again when steps are added, removed or re-ordered
-    const sk = ids.join(), gk = geoKey(ids);
+  if (rowish()) {                                            // Rows and By stage stay tidy: the boxes are arranged again when steps are added, removed, parked or re-ordered
+    const sk = arrKey(), gk = geoNow();
     if (EW.arrIds == null) { EW.arrIds = sk; EW.arrGeo = gk; }
     else if (EW.arrIds !== sk || CV.reflow || (EW.autoArr && EW.arrGeo !== gk)) {
       const fresh = EW.autoArr && EW.arrIds === sk && !CV.reflow;   // only the sizes changed (the "Stops" notes arrived) and nobody placed anything by hand: pick the row length again and fit the screen again
       const pl = planFor(EW.mode, fresh ? null : EW.arrCols);
-      ids.forEach(id => { EW.pos[id] = pl.pos[id]; });
+      Object.keys(pl.pos).forEach(id => { EW.pos[id] = pl.pos[id]; });
       if (fresh) { EW.arrCols = pl.cols; if (CV.auto) fitView(true); }
       EW.arrIds = sk; EW.arrGeo = gk; CV.reflow = false;
     }
@@ -182,7 +270,7 @@ function connMode(a, b) {
   if (!pa || !pb) return 'v';
   const wa = wOf(a), ha = hOf(a), wb = wOf(b), hb = hOf(b);
   if (pb.x >= pa.x + wa + 30 && pb.y < pa.y + ha && pb.y + hb > pa.y) return 'h';
-  if (pb.y >= pa.y + ha + 30 && Math.abs((pb.x + wb / 2) - (pa.x + wa / 2)) > nodeW() * 0.6) return 'e';
+  if (pb.y >= pa.y + ha + 30 && Math.abs((pb.x + wb / 2) - (pa.x + wa / 2)) > colW() * 0.6) return 'e';
   return 'v';
 }
 function vPath(A, B) {
@@ -207,12 +295,31 @@ function ePath(a, b, A, B) {
   const s = B.x > A.x ? 1 : -1;
   return { d: 'M' + A.x + ' ' + A.y + ' V' + (ym - r) + ' Q' + A.x + ' ' + ym + ' ' + (A.x + s * r) + ' ' + ym + ' H' + (B.x - s * r) + ' Q' + B.x + ' ' + ym + ' ' + B.x + ' ' + (ym + r) + ' V' + B.y, mx: (A.x + B.x) / 2, my: ym };
 }
+// the bar that appears on a wire when the pointer is on it: add a step here, or remove the link (park the next step)
+function wireHit(P, info) {
+  const el = svgEl('path', { class: 'wirehit', d: P.d });
+  el._info = info;
+  el.addEventListener('pointerenter', () => { if (!CV.G) showWireBar(info); });
+  el.addEventListener('pointerleave', hideWireBarSoon);
+  return el;
+}
+function showWireBar(info) {
+  const bar = CV && CV.wbar;
+  if (!bar || !bar.isConnected) return;
+  clearTimeout(CV.wbarT);
+  const b = (ic, label, fn) => h('button', { class: 'nd-bb', type: 'button', 'aria-label': label, title: label, onclick: e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); hideWireBar(); fn({ getBoundingClientRect: () => r }); } }, icon(ic, 'sm'));
+  fill(bar, b('plus', 'Add a step here', anchor => cvOpenAdd(info.at, anchor)),
+    info.next ? b('unlink', 'Remove link: the next step is parked (it stays on the canvas but does not run)', () => cvPark(info.next)) : null);
+  bar.style.left = info.x + 'px'; bar.style.top = info.y + 'px'; bar.style.display = 'flex';
+}
+function hideWireBar() { if (!CV) return; clearTimeout(CV.wbarT); if (CV.wbar) CV.wbar.style.display = 'none'; }
+function hideWireBarSoon() { if (!CV) return; clearTimeout(CV.wbarT); CV.wbarT = setTimeout(hideWireBar, 220); }
 function drawWires() {
   const ids = wireIds(), run = CV.run, okSt = ['ran', 'would', 'skipped'];
   const stateOf = id => run && run.states[id];
   const completed = id => id === 'trigger' || okSt.includes(stateOf(id));
   const began = id => id === 'end' ? !run.stopped : ['ran', 'would', 'skipped', 'failed'].includes(stateOf(id));
-  const paths = [], labels = [], modes = [];
+  const paths = [], hits = [], labels = [], modes = [];
   CV.plusPts = [];
   CV.pm = { in: {}, out: {} };                               // boxes side by side: the wire leaves from the side dot
   for (let i = 0; i < ids.length - 1; i++) {
@@ -229,17 +336,17 @@ function drawWires() {
     if (!run && !isRead() && !oneStepOnly()) {
       const at = a === 'trigger' ? 0 : (b === 'end' ? EW.ids.length : idxOf(b));
       CV.plusPts.push({ at, x: P.mx, y: P.my });
-      labels.push(h('button', { class: 'plus', type: 'button', 'data-popkeep': '1', 'aria-label': 'Add a step here', style: { left: (P.mx - 11) + 'px', top: (P.my - 11) + 'px' }, onclick: e => { e.stopPropagation(); cvOpenAdd(at, e.currentTarget); } }, icon('plus', 'xs')));
+      hits.push(wireHit(P, { at, x: P.mx, y: P.my, next: b === 'end' ? null : b }));
     }
   }
-  const bulge = nodeW() / 2 + 110;                           // "only if": a dashed way around the box
+  const bulge = colW() / 2 + 110;                            // "only if": a dashed way around the box
   EW.work.steps.forEach((s, i) => {
     if (!s.when) return;
     const k = ids.indexOf(idAt(i)), a = ids[k - 1], b = ids[k + 1];
     if (!a || !b || !posOf(a) || !posOf(b)) return;
     const A = outPt(a), B = inPt(b), m1 = modes[k - 1], m2 = modes[k];
     if (m1 === 'h' && m2 === 'h') {                          // boxes in a row: an arch over the box
-      const up = Math.max(80, vOf(ids[k]) * 0.5 + 50);
+      const up = CV.compact ? 92 : Math.max(80, vOf(ids[k]) * 0.5 + 50);
       paths.push(svgEl('path', { class: 'wire skipw', d: 'M' + A.x + ' ' + A.y + ' C' + A.x + ' ' + (A.y - up) + ', ' + B.x + ' ' + (B.y - up) + ', ' + B.x + ' ' + B.y, 'marker-end': 'url(#ah)' }));
       labels.push(h('span', { class: 'skiptxt c', style: { left: ((A.x + B.x) / 2) + 'px', top: (Math.min(A.y, B.y) - up * 0.75 - 2) + 'px' } }, 'otherwise skipped'));
     } else if (m1 === 'v' && m2 === 'v') {
@@ -255,13 +362,14 @@ function drawWires() {
       prev = k;
     });
   }
-  fill(CV.wg, paths); fill(CV.labels, labels);
+  fill(CV.wg, [...paths, ...hits]); fill(CV.labels, labels);
 }
 function applyZoom() {
   const z = CV.zoom, cv = CV.el; let R = 0, B = 0;
   [...CV.nodesEl.children].forEach(el => { const p = posOf(el.dataset.id); if (!p) return; R = Math.max(R, p.x + el.offsetWidth + (el.querySelector('.nd-exit') ? 290 : 30)); B = Math.max(B, p.y + el.offsetHeight); });
   const W = Math.max(R + 140, cv.clientWidth / z), H = Math.max(B + 300, cv.clientHeight / z);
   CV.stage.style.width = W + 'px'; CV.stage.style.height = H + 'px'; CV.stage.style.transform = 'scale(' + z + ')';
+  CV.stage.style.setProperty('--zi', String(Math.round(Math.max(1, Math.min(2.2, 1 / z)) * 100) / 100));   // the little bars keep a readable size when zoomed out
   CV.sizer.style.width = W * z + 'px'; CV.sizer.style.height = H * z + 'px'; CV.sizer.style.backgroundSize = (22 * z) + 'px ' + (22 * z) + 'px';
   CV.zval.textContent = Math.round(z * 100) + '%';
 }
@@ -326,15 +434,25 @@ function stageItems(ids) {                                    // steps of the sa
   return ids.map(id => { const k = stageOf(id), brk = prev !== null && k !== prev; prev = k; return { id, brk }; });
 }
 function gridPlan(items, cols, x0) {
-  const pos = {}, rows = []; let row = [];
+  const pos = {}, rows = [], gx = gapX(), gy = gapY(); let row = [];
   items.forEach(it => { if (row.length && (row.length >= cols || it.brk)) { rows.push(row); row = []; } row.push(it.id); });
   if (row.length) rows.push(row);
   let y = CV_TOP, W = 0;
   rows.forEach(r => {
     let x = x0, rh = 0;
-    r.forEach(id => { pos[id] = { x, y }; rh = Math.max(rh, vOf(id)); x += wOf(id) + exOf(id) + CV_GX; });
-    W = Math.max(W, x - CV_GX); y += rh + CV_GY;
+    r.forEach(id => { pos[id] = { x, y }; rh = Math.max(rh, vOf(id)); x += wOf(id) + exOf(id) + gx; });
+    W = Math.max(W, x - gx); y += rh + gy;
   });
+  if (EW.pids.length) {                                        // parked boxes wait in a row of their own, under the flow
+    const limit = Math.max(W, x0 + 4 * (wOf(pidAt(0)) + gx));
+    let x = x0, rh = 0; y += 36;
+    EW.pids.forEach(pid => {
+      const id = String(pid);
+      if (x > x0 && x + wOf(id) > limit) { x = x0; y += rh + gy; rh = 0; }
+      pos[id] = { x, y }; rh = Math.max(rh, vOf(id)); x += wOf(id) + exOf(id) + gx; W = Math.max(W, x - gx);
+    });
+    y += rh + gy;
+  }
   return { pos, cols, W: W + 80, H: y + 80 };
 }
 // the number of boxes per row that lets the whole flow be shown biggest; a tie goes to fewer boxes per row
@@ -349,7 +467,7 @@ function bestPlan(items, x0, maxCols) {
 }
 function planFor(mode, cols) {
   const ids = chain(), items = mode === 'stage' ? stageItems(ids) : rowItems(ids), x0 = mode === 'stage' ? CV_X_STAGE : CV_X_ROWS;
-  return cols ? gridPlan(items, cols, x0) : bestPlan(items, x0, mode === 'stage' ? 5 : 6);
+  return cols ? gridPlan(items, cols, x0) : bestPlan(items, x0, CV.compact ? (mode === 'stage' ? 6 : 8) : (mode === 'stage' ? 5 : 6));
 }
 const ARRANGED = { rows: 'Arranged in rows.', stage: 'Arranged by stage.', column: 'Arranged in one column.' };
 async function arrange(mode, opts) {
@@ -357,20 +475,25 @@ async function arrange(mode, opts) {
   const mine = CV;
   if (!opts.quiet) { for (let i = 0; i < 20 && CV.loading.size; i++) await new Promise(r => setTimeout(r, 100)); }   // let the "Stops" notes load first: they take room
   if (mine !== CV || !CV.el || !CV.el.isConnected) return;
-  const ids = chain(), NW = nodeW();
+  const ids = chain();
   EW.mode = mode; CV.el.classList.toggle('rowmode', rowish()); measureNodes();
   let plan;
-  if (mode === 'column') { const pos = {}; let y = CV_TOP; ids.forEach(id => { pos[id] = { x: CV_CX - NW / 2, y }; y += hOf(id) + CV_GAP; }); plan = { pos, cols: null }; }
+  if (mode === 'column') {
+    const pos = {}; let y = CV_TOP, py = CV_TOP;
+    ids.forEach(id => { pos[id] = { x: CV_CX - wOf(id) / 2, y }; y += hOf(id) + gapV(); });
+    EW.pids.forEach(pid => { const id = String(pid); pos[id] = { x: CV_CX + colW() / 2 + (CV.compact ? 150 : 330), y: py }; py += hOf(id) + gapY(); });   // parked boxes stack at the right
+    plan = { pos, cols: null };
+  }
   else plan = planFor(mode, null);
-  EW.arrCols = plan.cols; EW.arrIds = ids.join(); EW.arrGeo = geoKey(ids); EW.autoArr = true;
-  const same = ids.every(id => EW.pos[id] && Math.abs(EW.pos[id].x - plan.pos[id].x) < 1 && Math.abs(EW.pos[id].y - plan.pos[id].y) < 1);
-  if (opts.quiet) { ids.forEach(id => { EW.pos[id] = plan.pos[id]; }); EW.last = snapJSON(); positionNodes(); drawWires(); applyZoom(); return; }
+  EW.arrCols = plan.cols; EW.arrIds = arrKey(); EW.arrGeo = geoNow(); EW.autoArr = true;
+  const same = Object.keys(plan.pos).every(id => EW.pos[id] && Math.abs(EW.pos[id].x - plan.pos[id].x) < 1 && Math.abs(EW.pos[id].y - plan.pos[id].y) < 1);
+  if (opts.quiet) { Object.keys(plan.pos).forEach(id => { EW.pos[id] = plan.pos[id]; }); EW.last = snapJSON(); positionNodes(); drawWires(); applyZoom(); return; }
   if (same) { drawWires(); fitView(mode !== 'column'); commitLayout(); toast('Already arranged like this.'); return; }
   animateTo(plan.pos, () => { if (mode === 'column') CV.el.scrollTo({ left: 0, top: 0, behavior: 'smooth' }); else fitView(true); toast(ARRANGED[mode] + ' The flow still runs in the same order.'); });
 }
 const geoKey = ids => ids.map(id => vOf(id) + ':' + exOf(id)).join();
 function animateTo(to, after) {
-  const from = {}; Object.keys(to).forEach(id => { from[id] = { ...EW.pos[id] }; });
+  const from = {}; Object.keys(to).forEach(id => { from[id] = { ...(EW.pos[id] || to[id]) }; });
   const done = () => { commitLayout(); if (after) after(); };
   const set = e => { Object.keys(to).forEach(id => { EW.pos[id] = { x: from[id].x + (to[id].x - from[id].x) * e, y: from[id].y + (to[id].y - from[id].y) * e }; }); positionNodes(); drawWires(); applyZoom(); };
   if (document.hidden) { set(1); done(); return; }
@@ -395,11 +518,37 @@ function tidyMenu(anchor) {
     h('div', { class: 'muted small', style: { padding: '6px 10px 4px' } }, 'The order the steps run in never changes. Only the places do.')], { width: 330, up: true });
 }
 
+// ----- the three ways to draw the steps: Compact (little tiles), Detailed (full cards), Technical (cards with the settings) -----
+// Where boxes sit is kept for each size on its own (tiles and cards are not the same size); the other size is arranged in rows the first time.
+function setView(v) {
+  if (!CV || CV.view === v) return;
+  const resize = CV.compact !== (v === 'compact');
+  store.set('panel.cview', v);
+  CV.view = v; CV.tech = v === 'tech'; CV.compact = v === 'compact';
+  syncSeg();
+  hideWireBar();
+  if (!resize) { CV.reflow = true; renderNodes(); return; }
+  EW.stash[EW.size] = { pos: clone(EW.pos), mode: EW.mode, cols: EW.arrCols };
+  EW.size = CV.compact ? 'compact' : 'detailed';
+  const back = EW.stash[EW.size];
+  EW.pos = back ? back.pos : {}; EW.mode = back ? back.mode : ''; EW.arrCols = back ? back.cols : null; EW.arrIds = null; EW.autoArr = false;
+  EW.last = snapJSON();                                          // changing how the boxes are drawn is not a change to the flow
+  CV.hm = {}; CV.wm = {}; CV.ex = {}; CV.vh = {};
+  renderNodes();
+  if (!back) arrange('rows', { quiet: true });
+  fitView(true);
+}
+function syncSeg() {
+  const seg = CV && CV.seg;
+  if (seg) [...seg.children].forEach(b => b.classList.toggle('on', b.dataset.view === CV.view));
+}
+
 // ----- moving boxes, moving the canvas, drawing wires -----
 function wireCanvas(cv) {
   cv.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
     if (e.target.closest('.plus,button,input,select,textarea,a')) return;
+    if (!e.target.closest('.wbar')) hideWireBar();
     const node = e.target.closest('.nd');
     if (node && e.target.closest('.nd-port.out') && node.dataset.id !== 'end') { startWire(e, node); return; }
     if (node && node.dataset.id !== 'end') {
@@ -415,13 +564,13 @@ function wireCanvas(cv) {
     if (G.type === 'pan') {
       const dx = e.clientX - G.sx, dy = e.clientY - G.sy;
       if (Math.hypot(dx, dy) > 3) G.moved = true;
-      cv.scrollLeft = G.sl - dx; cv.scrollTop = G.st - dy; cv.classList.toggle('panning', G.moved); return;
+      cv.scrollLeft = G.sl - dx; cv.scrollTop = G.st - dy; cv.classList.toggle('panning', G.moved); cv.classList.toggle('gest', G.moved); return;
     }
     if (G.type === 'node') {
       const dx = (e.clientX - G.sx) / CV.zoom, dy = (e.clientY - G.sy) / CV.zoom;
       if (!G.moved) {
         if (Math.hypot(dx, dy) * CV.zoom < 4) return;
-        G.moved = true;
+        G.moved = true; cv.classList.add('gest');
         if (!G.wasSel && !G.multi) { CV.sel = new Set([G.id]); G.group = [G.id]; G.orig = { [G.id]: { ...EW.pos[G.id] } }; }
         [...CV.nodesEl.children].forEach(el => { el.classList.toggle('sel', CV.sel.has(el.dataset.id)); if (G.group.includes(el.dataset.id)) el.classList.add('dragging'); });
       }
@@ -442,8 +591,15 @@ function wireCanvas(cv) {
     if (!g) return;
     CV.G = null;
     try { cv.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
-    cv.classList.remove('panning');
-    if (g.type === 'pan') { if (!g.moved && CV.sel.size) { CV.sel = new Set(); renderNodes(); renderInspector(); } return; }
+    cv.classList.remove('panning', 'gest');
+    if (g.type === 'pan') {
+      if (!g.moved) {
+        const t = document.elementFromPoint(e.clientX, e.clientY);
+        if (t && t._info) { showWireBar(t._info); return; }     // a tap on a wire (there is no mouse to hover with) opens its bar
+        if (CV.sel.size) { CV.sel = new Set(); renderNodes(); renderInspector(); }
+      }
+      return;
+    }
     if (g.type === 'node') {
       CV.nodesEl.querySelectorAll('.dragging').forEach(n => n.classList.remove('dragging'));
       if (!g.moved) {
@@ -455,7 +611,7 @@ function wireCanvas(cv) {
     }
     if (g.type === 'wire') endWire(e, g);
   });
-  cv.addEventListener('pointercancel', () => { if (CV.G && CV.G.tmp) CV.G.tmp.remove(); CV.G = null; cv.classList.remove('panning'); });
+  cv.addEventListener('pointercancel', () => { if (CV.G && CV.G.tmp) CV.G.tmp.remove(); CV.G = null; cv.classList.remove('panning', 'gest'); });
   cv.addEventListener('wheel', e => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); setZoom(CV.zoom * (e.deltaY < 0 ? 1.1 : 0.9), e.clientX, e.clientY); }, { passive: false });
   // a step dragged in from the list on the left: dropped near a "+" it goes there, anywhere else it goes to that spot
   cv.addEventListener('dragover', e => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
@@ -465,7 +621,7 @@ function wireCanvas(cv) {
     if (!d) return;
     const sp = toStage(e.clientX, e.clientY); let at = null, best = 80;
     CV.plusPts.forEach(p => { const dist = Math.hypot(p.x - sp.x, p.y - sp.y); if (dist < best) { best = dist; at = p.at; } });
-    usePalItem(d, at, at == null ? { x: Math.max(8, sp.x - nodeW() / 2), y: Math.max(8, sp.y - 30) } : null);
+    usePalItem(d, at, at == null ? { x: Math.max(8, sp.x - colW() / 2), y: Math.max(8, sp.y - 30) } : null);
   });
   cv.addEventListener('keydown', e => {
     const n = e.target.closest && e.target.closest('.nd');
@@ -477,6 +633,7 @@ function startWire(e, node) {
   const p = svgEl('path', { class: 'wire tmpw' });
   CV.wg.append(p);
   CV.G = { type: 'wire', from: node.dataset.id, moved: false, sx: e.clientX, sy: e.clientY, tmp: p, target: null };
+  CV.el.classList.add('gest');
   CV.el.setPointerCapture(e.pointerId); e.preventDefault();
 }
 function endWire(e, g) {
@@ -486,22 +643,24 @@ function endWire(e, g) {
   if (isRead()) return;
   const sp = toStage(e.clientX, e.clientY), at = g.from === 'trigger' ? 0 : idxOf(g.from) + 1;
   const anchor = { getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY, width: 0, height: 0 }) };
-  cvOpenAdd(at, anchor, { x: Math.max(8, sp.x - nodeW() / 2), y: Math.max(8, sp.y) });
+  cvOpenAdd(at, anchor, { x: Math.max(8, sp.x - colW() / 2), y: Math.max(8, sp.y) });
 }
-// drag from a box's dot onto another box: that box now runs right after this one
+// drag from a box's dot onto another box: that box now runs right after this one (a parked box is put back into the flow there)
 function reorderAfter(aId, bId) {
-  const bi = idxOf(bId);
-  if (bi < 0) return;
+  const parked = isParked(bId), bi = idxOf(bId);
+  if (bi < 0 && !parked) return;
   const before = EW.ids.join();
-  const [s] = EW.work.steps.splice(bi, 1), [id] = EW.ids.splice(bi, 1);
+  let s, id;
+  if (parked) { const k = pidxOf(bId); s = EW.work.parked.splice(k, 1)[0].step; id = EW.pids.splice(k, 1)[0]; }
+  else { s = EW.work.steps.splice(bi, 1)[0]; id = EW.ids.splice(bi, 1)[0]; }
   const ai = aId === 'trigger' ? -1 : idxOf(aId);
   EW.work.steps.splice(ai + 1, 0, s); EW.ids.splice(ai + 1, 0, id);
-  if (EW.ids.join() === before) { toast('“' + describeStep(s) + '” already runs right after that.'); return; }
-  CV.run = null; commit(true);
-  toast('“' + describeStep(s) + '” now runs right after the one you picked. Boxes stay where they are.');
+  if (!parked && EW.ids.join() === before) { toast('“' + stepName(s) + '” already runs right after that.'); return; }
+  CV.run = null; if (parked) CV.sel = new Set([String(id)]); commit(true, true);
+  toast(parked ? '“' + stepName(s) + '” is back in the flow, right after the one you picked.' : '“' + stepName(s) + '” now runs right after the one you picked. Boxes stay where they are.', null, { label: 'Undo', run: undo });
 }
 
-// ----- adding, removing, re-ordering steps -----
+// ----- adding, removing, parking, re-ordering steps -----
 const ONE_STEP = 'A building block is one step. To do several things, make a building block for each and run them one after another in a flow.';
 const oneStepOnly = () => EW.work.kind === 'block' && EW.work.steps.length >= 1;
 function cvAddStep(op, at, given, pos) {
@@ -518,21 +677,50 @@ function cvAddStep(op, at, given, pos) {
   if (CV.pal && innerWidth <= 1180) CV.pal.classList.add('closed');   // on a narrow screen the list covers the canvas
   scrollToNode(id);
 }
-async function removeSelected() {
-  const ids = [...CV.sel].filter(id => id !== 'trigger' && id !== 'report');
-  if (!ids.length) { toast('The first box cannot be removed. Every flow starts somewhere.'); return; }
-  const names = ids.map(id => describeStep(EW.work.steps[idxOf(id)]));
-  if (!await confirmBox('Remove ' + (ids.length === 1 ? 'this step? “' + names[0] + '”' : ids.length + ' steps?') + ' Undo brings it back.', { ok: 'Remove', danger: true })) return;
+// open, duplicate or delete one box (the little bar above a box, and the buttons in the panel, use these)
+function cvOpen(id) {
+  CV.sel = new Set([id]); if (CV.panel !== 'try') { CV.panel = 'insp'; CV.itab = 'set'; }
+  renderNodes(); renderInspector(); revealAbove(id);
+}
+function cvDup(id) { if (idxOf(id) < 0) return; CV.sel = new Set([id]); stepAct('dup'); }
+function cvDel(id) { CV.sel = new Set([id]); removeSelected(); }
+// no "are you sure": Undo is in the message, and nothing is kept until Save
+function removeSelected() {
+  const all = [...CV.sel].filter(id => id !== 'trigger' && id !== 'report');
+  if (!all.length) { toast('The first box cannot be removed. Every flow starts somewhere.'); return; }
+  const names = all.map(id => stepName(isParked(id) ? EW.work.parked[pidxOf(id)].step : EW.work.steps[idxOf(id)]));
+  const ids = all.filter(id => !isParked(id));
   ids.forEach(id => {                                         // the boxes below move up to close the gap
     const p = EW.pos[id], hh = CV.hm[id] || 100;
-    chain().forEach(o => { const q = EW.pos[o]; if (o !== id && !ids.includes(o) && q && p && q.y > p.y && Math.abs(q.x - p.x) < nodeW()) q.y -= hh + CV_GAP; });
+    chain().forEach(o => { const q = EW.pos[o]; if (o !== id && !ids.includes(o) && q && p && q.y > p.y && Math.abs(q.x - p.x) < colW()) q.y -= hh + gapV(); });
   });
   ids.forEach(id => { const i = idxOf(id); if (i >= 0) { EW.work.steps.splice(i, 1); EW.ids.splice(i, 1); } });
-  CV.sel = new Set(); CV.run = null; commit(true);
+  all.filter(isParked).forEach(id => { const k = pidxOf(id); if (k >= 0) { EW.work.parked.splice(k, 1); EW.pids.splice(k, 1); } });
+  CV.sel = new Set(); CV.run = null; commit(true, true);
+  toast(all.length === 1 ? 'Deleted “' + names[0] + '”.' : 'Deleted ' + plural(all.length, 'step') + '.', null, { label: 'Undo', run: undo });
+}
+// Remove link: the step after the wire is parked. It leaves the flow (so it does not run, and the steps around it join up) but stays on the canvas.
+function cvPark(id) {
+  const i = idxOf(id);
+  if (i < 0 || oneStepOnly()) return;
+  if (!EW.layoutCap) { toast('This organisation’s database cannot keep parked steps yet.', 'bad'); return; }
+  const s = EW.work.steps.splice(i, 1)[0], pid = EW.ids.splice(i, 1)[0];
+  EW.work.parked.push({ step: s, at: i }); EW.pids.push(pid);   // the box keeps its id, so it stays where it is
+  CV.sel = new Set(); CV.run = null; CV.reflow = true; commit(true, true);
+  toast('Link removed. “' + stepName(s) + '” is parked: it stays here but does not run.', null, { label: 'Undo', run: undo });
+}
+function cvUnpark(id) {
+  const k = pidxOf(id);
+  if (k < 0) return;
+  const p = EW.work.parked.splice(k, 1)[0], pid = EW.pids.splice(k, 1)[0], at = Math.max(0, Math.min(p.at, EW.work.steps.length));
+  EW.work.steps.splice(at, 0, p.step); EW.ids.splice(at, 0, pid);
+  CV.sel = new Set([String(pid)]); CV.run = null; CV.reflow = true; commit(true, true);
+  toast('“' + stepName(p.step) + '” is back in the flow.', null, { label: 'Undo', run: undo });
 }
 function stepAct(act) {
   const id = primary(), i = idxOf(id);
   if (act === 'del') { removeSelected(); return; }
+  if (act === 'park') { cvPark(id); return; }
   if (i < 0) return;
   if (act === 'up' || act === 'down') {
     const j = act === 'up' ? i - 1 : i + 1;
@@ -541,7 +729,7 @@ function stepAct(act) {
     [EW.work.steps[i], EW.work.steps[j]] = [EW.work.steps[j], EW.work.steps[i]];
     [EW.ids[i], EW.ids[j]] = [EW.ids[j], EW.ids[i]];
     const first = idAt(Math.min(i, j)), second = idAt(Math.max(i, j)), top = Math.min(pa.y, pb.y);
-    if (Math.abs(pa.x - pb.x) < nodeW()) { const x = Math.min(pa.x, pb.x); EW.pos[first] = { x, y: top }; EW.pos[second] = { x, y: top + (CV.hm[first] || 100) + CV_GAP }; }
+    if (Math.abs(pa.x - pb.x) < colW()) { const x = Math.min(pa.x, pb.x); EW.pos[first] = { x, y: top }; EW.pos[second] = { x, y: top + (CV.hm[first] || 100) + gapV() }; }
     else { EW.pos[a] = pb; EW.pos[b] = pa; }
   }
   if (act === 'dup') {
@@ -552,8 +740,16 @@ function stepAct(act) {
   }
   CV.run = null; commit(true);
 }
+// N: "What happens next?" for a new step, right after the box that is chosen (or at the end of the flow)
+function cvNext() {
+  if (isRead()) { toast('This workflow answers with a saved report, so it has no steps to add.'); return; }
+  if (oneStepOnly()) { toast(ONE_STEP, 'bad'); return; }
+  const id = primary(), i = id ? idxOf(id) : -1, at = i >= 0 ? i + 1 : EW.work.steps.length;
+  const el = (i >= 0 && CV.nodesEl.querySelector('[data-id="' + id + '"]')) || CV.nodesEl.querySelector('[data-id="end"]') || CV.el;
+  cvOpenAdd(at, el);
+}
 
-// ----- keys: Tidy up, Undo, Delete, Escape (only while a flow is open and nothing is being typed) -----
+// ----- keys: Tidy up, Undo, Delete, N, Escape (only while a flow is open and nothing is being typed) -----
 document.addEventListener('keydown', e => {
   if (!EW || !CV || !CV.el || !CV.el.isConnected) return;
   const t = e.target;
@@ -562,6 +758,7 @@ document.addEventListener('keydown', e => {
   if (e.shiftKey && e.altKey && e.key.toLowerCase() === 't') { e.preventDefault(); arrange(EW.mode || 'rows'); }
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   else if ((e.key === 'Delete' || e.key === 'Backspace') && CV.sel.size) { e.preventDefault(); removeSelected(); }
+  else if ((e.key === 'n' || e.key === 'N') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cvNext(); }
   else if (e.key === 'Escape' && CV.sel.size) { CV.sel = new Set(); renderNodes(); renderInspector(); }
 });
 window.addEventListener('resize', () => { if (CV && CV.el && CV.el.isConnected) applyZoom(); });

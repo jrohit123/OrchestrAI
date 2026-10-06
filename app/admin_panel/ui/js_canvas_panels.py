@@ -64,7 +64,7 @@ function usePalItem(d, at, pos) {
 }
 function cvOpenAdd(at, anchor, pos) {
   const input = h('input', { class: 'input sm', placeholder: 'Search steps…' });
-  const p = openPop(anchor, [h('div', { style: { padding: '6px' } }, input), paletteNode(true)], { width: 310 });
+  const p = openPop(anchor, [h('div', { class: 'pk-h' }, 'What happens next?'), h('div', { style: { padding: '2px 6px 6px' } }, input), paletteNode(true)], { width: 310 });
   input.focus(); input.addEventListener('input', () => filterPal(p, input.value));
   p.addEventListener('click', e => {
     const b = e.target.closest('.pi');
@@ -126,15 +126,23 @@ function inspectorContent() {
   const id = primary();
   if (id === 'trigger') return triggerPanel();
   if (id === 'report') return reportPanel();
+  if (isParked(id)) return parkedPanel(pidxOf(id));
   const i = idxOf(id);
   return i < 0 ? [] : stepPanel(i);
+}
+function parkedPanel(k) {
+  const s = EW.work.parked[k].step, spec = catalogSpec(s.op), id = pidAt(k);
+  return [insHead(cvKey(s), cvIcon(s.op), 'Parked · does not run', describeStep(s), spec ? spec.help : ''),
+    h('div', { class: 'ib' }, h('div', { class: 'notice' }, icon('unlink'), h('div', { class: 'small' }, h('b', null, 'This step is parked.'), ' It is not part of the flow, so it does not run. It stays on the canvas so you can use it again: put it back in the flow, or drag a dot from any box onto it to make it run right after that box.'))),
+    h('div', { class: 'if' }, h('button', { class: 'btn sm primary', type: 'button', onclick: () => cvUnpark(id) }, icon('undo', 'sm'), 'Put back in the flow'),
+      h('button', { class: 'btn sm danger', type: 'button', onclick: () => cvDel(id) }, icon('trash', 'sm'), 'Delete'))];
 }
 function multiPanel() {
   const steps = EW.work.steps.filter((_, i) => CV.sel.has(idAt(i)));
   return [insHead('block', 'layers', 'Several boxes', CV.sel.size + ' boxes selected', 'Drag any of them to move them all together.'),
     h('div', { class: 'ib' }, h('div', { class: 'stack s8' }, steps.map(s => h('div', { class: 'row flat k-' + cvKey(s), style: { padding: '7px 10px', border: '1px solid var(--line)', borderRadius: '9px' } }, h('i', { style: { width: '9px', height: '9px', borderRadius: '3px', background: 'var(--kc)', flex: 'none' } }), h('span', { class: 'grow' }, describeStep(s))))),
       h('div', { class: 'notice' }, icon('star'), h('div', { class: 'small' }, h('b', null, 'Make your own node.'), ' Soon you can save these as one node with a name and a colour, and use it in any flow.'))),
-    h('div', { class: 'if' }, h('button', { class: 'btn sm danger', type: 'button', onclick: () => stepAct('del') }, icon('trash', 'sm'), 'Remove'))];
+    h('div', { class: 'if' }, h('button', { class: 'btn sm danger', type: 'button', onclick: () => stepAct('del') }, icon('trash', 'sm'), 'Delete'))];
 }
 function triggerPanel() {
   const w = EW.work, tabs = [['start', 'Starts it'], ['asks', 'Asks for'], ['safe', 'Safeguards'], ['hist', 'History'], ['json', 'JSON']];
@@ -159,7 +167,7 @@ function stepPanel(i) {
   const act = (a, ic, label, extra) => h('button', { class: 'btn sm' + (extra || ''), type: 'button', disabled: (a === 'up' && i === 0) || (a === 'down' && i === n - 1), onclick: () => stepAct(a) }, icon(ic, 'sm'), label);
   return [insHead(key, cvIcon(s.op), (blk ? 'Building block' : (spec ? spec.group : 'Step')) + ' · step ' + (i + 1), describeStep(s), spec ? spec.help : ''),
     insTabs(tabs, CV.itab, k => { CV.itab = k; }), h('div', { class: 'ib' }, CV.probEl, body),
-    h('div', { class: 'if' }, act('up', 'up', 'Move up'), act('down', 'down', 'Move down'), act('dup', 'copy', 'Duplicate'), act('del', 'trash', 'Remove', ' danger'))];
+    h('div', { class: 'if' }, act('up', 'up', 'Move up'), act('down', 'down', 'Move down'), act('dup', 'copy', 'Duplicate'), EW.work.kind === 'block' ? null : act('park', 'unlink', 'Park'), act('del', 'trash', 'Delete', ' danger'))];
 }
 function settingsTab(s, i) {
   const spec = catalogSpec(s.op), box = h('div', { class: 'stack' });
@@ -262,7 +270,7 @@ function drawProblems() {
 function legendPop(anchor) {
   const row = (c, t) => h('div', { class: 'lgrow' }, h('i', { style: { background: 'var(' + c + ')' } }), t);
   openPop(anchor, [h('div', { class: 'ml' }, 'Colour = what a step does'), row('--k-trigger', 'When… (what starts it)'), row('--k-look', 'Look up and check'), row('--k-save', 'Save changes'), row('--k-tell', 'Tell people'), row('--k-approve', 'Approvals (code or approver)'), row('--k-other', 'Other'), row('--k-block', 'Building block (stacked card)'), row('--k-ai', 'AI is only used where marked'),
-    h('div', { class: 'ml' }, 'Wires and numbers'), h('div', { class: 'lgrow' }, 'Number on a box: when it runs'), h('div', { class: 'lgrow' }, 'Dot under a box: drag it onto another box to re-order'), h('div', { class: 'lgrow' }, 'Boxes side by side: the wire runs from the dot on the side'),
+    h('div', { class: 'ml' }, 'Wires and numbers'), h('div', { class: 'lgrow' }, 'Number on a box: when it runs'), h('div', { class: 'lgrow' }, 'Dot on a box: drag it onto another box to re-order, or onto empty space to add a step'), h('div', { class: 'lgrow' }, 'Point at a box: open, duplicate or delete it'), h('div', { class: 'lgrow' }, 'Point at a wire: add a step, or remove the link (the next step is parked)'), h('div', { class: 'lgrow' }, 'Dashed box: parked, it does not run'), h('div', { class: 'lgrow' }, 'Press N: add a step (after the box you chose)'),
     h('div', { class: 'lgrow muted' }, 'Dashed way around: skipped unless “only if” is true'), h('div', { class: 'lgrow', style: { color: 'var(--k-stop)' } }, 'Red dashed exit: stops and says…'), h('div', { class: 'lgrow', style: { color: 'var(--k-approve)' } }, 'Pink bar: waits for a person')], { width: 340, up: true });
 }
 function drawEditor() {
@@ -280,16 +288,19 @@ function drawEditor() {
   const marker = (id, cls) => svgEl('marker', { id, viewBox: '0 0 10 10', refX: '8.5', refY: '5', markerWidth: '8', markerHeight: '8', orient: 'auto' }, svgEl('path', { d: 'M1 1 L9 5 L1 9z', class: cls }));
   const wires = svgEl('svg', { class: 'wires', 'aria-hidden': 'true' }, svgEl('defs', {}, marker('ah', 'arrow'), marker('ah-ok', 'arrow ok')), wg);
   const nodesEl = h('div', { class: 'nodes' }), labels = h('div', { class: 'wlabels' });
-  const stage = h('div', { class: 'stage' }, wires, nodesEl, labels), sizer = h('div', { class: 'sizer' }, stage);
+  const wbar = h('div', { class: 'wbar', 'data-popkeep': '1' });
+  wbar.addEventListener('pointerenter', () => clearTimeout(CV.wbarT)); wbar.addEventListener('pointerleave', hideWireBarSoon);
+  const stage = h('div', { class: 'stage' }, wires, nodesEl, labels, wbar), sizer = h('div', { class: 'sizer' }, stage);
   const cv = h('div', { class: 'cv', tabindex: '-1' }, sizer);
   const zval = h('span', { class: 'zv' }, '100%');
   const insp = h('aside', { class: 'insp closed', 'aria-label': 'Settings of the selected step' });
-  Object.assign(CV, { el: cv, sizer, stage, wg, nodesEl, labels, zval, insp });
+  Object.assign(CV, { el: cv, sizer, stage, wg, nodesEl, labels, zval, insp, wbar });
   wireCanvas(cv);
   const zb = (label, ic, fn) => h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': label, 'data-tip': label, onclick: fn }, icon(ic, 'sm'));
-  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Plain words or technical' },
-    h('button', { type: 'button', class: CV.tech ? '' : 'on', onclick: e => { CV.tech = false; CV.reflow = true; seg.children[0].classList.add('on'); seg.children[1].classList.remove('on'); renderNodes(); } }, 'Plain words'),
-    h('button', { type: 'button', class: CV.tech ? 'on' : '', onclick: e => { CV.tech = true; CV.reflow = true; seg.children[1].classList.add('on'); seg.children[0].classList.remove('on'); renderNodes(); } }, 'Technical'));
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How the steps are drawn' },
+    [['compact', 'Compact', 'Little tiles, so more of the flow fits on the screen'], ['detail', 'Detailed', 'Full cards in plain words'], ['tech', 'Technical', 'Full cards with the technical settings']].map(([v, label, tip]) =>
+      h('button', { type: 'button', class: CV.view === v ? 'on' : '', 'data-view': v, 'data-tip': tip, onclick: () => setView(v) }, label)));
+  CV.seg = seg;
   const dock = h('div', { class: 'dock min' },
     h('button', { class: 'dhd', type: 'button', onclick: () => dock.classList.toggle('min') }, icon('spark'), h('span', null, 'Ask the assistant to change this flow'), icon('chevd', 'sm')),
     chatDock(read));
@@ -312,8 +323,8 @@ function drawEditor() {
           h('span', { class: 'vdiv' }),
           h('button', { class: 'btn sm ghost tidy', type: 'button', 'data-popkeep': '1', 'data-tip': 'Arrange the boxes: rows, by stage or a column (Shift+Alt+T)', onclick: e => tidyMenu(e.currentTarget) }, icon('tidy', 'sm'), lbl('Tidy up'), icon('chevd', 'xs')),
           h('span', { class: 'vdiv opt' }), seg, h('span', { class: 'vdiv' }),
-          h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { CV.pal.classList.toggle('closed'); applyZoom(); } }, icon('panel', 'sm'), lbl('Steps')),
-          h('button', { class: 'btn sm ghost', type: 'button', 'data-popkeep': '1', onclick: e => legendPop(e.currentTarget) }, icon('help', 'sm'), lbl('Legend'))),
+          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Steps you can add', 'data-tip': 'The list of steps you can add', onclick: () => { CV.pal.classList.toggle('closed'); applyZoom(); } }, icon('panel', 'sm'), lbl('Steps')),
+          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Legend', 'data-tip': 'What the colours, dots and bars mean', 'data-popkeep': '1', onclick: e => legendPop(e.currentTarget) }, icon('help', 'sm'), lbl('Legend'))),
         dock),
       insp)));
   const cn = document.getElementById('crumbname'); if (cn) cn.textContent = EW.work.name;
@@ -324,13 +335,13 @@ function drawEditor() {
 }
 // a flow that has never had a layout saved opens in rows that fit the screen, as Tidy up > Rows would make it (nothing is saved until someone moves or arranges a box)
 function tidyFirst() {
-  if (EW.mode || chain().length < 3 || !CV.el) return false;
+  if (EW.mode || chain().length < (CV.compact ? 2 : 3) || !CV.el) return false;
   arrange('rows', { quiet: true });
   return true;
 }
 function drawPane() {
   if (!CV || !CV.nodesEl) return;
-  const ok = new Set(chain());
+  const ok = new Set([...chain(), ...EW.pids.map(String)]);
   CV.sel = new Set([...CV.sel].filter(id => ok.has(id)));
   renderNodes(); renderInspector(); prefetchBlocks();
 }

@@ -26,7 +26,7 @@ function tidySteps(steps) {
     return { ...s, params };
   });
 }
-const tidyWork = w => ({ ...w, steps: tidySteps(w.steps) });
+const tidyWork = w => ({ ...w, steps: tidySteps(w.steps), parked: (w.parked || []).map(p => ({ ...p, step: tidySteps([p.step])[0] })) });
 function fieldLabel(k) {
   const spec = EW && EW.work.entity_schema && EW.work.entity_schema[k];
   return (spec && spec.label) ? spec.label.toLowerCase() : pretty(k).toLowerCase();

@@ -604,13 +604,17 @@ class Layout(BaseModel):
     # how the boxes were arranged with Tidy up (rows, by stage or column), and how many boxes sit in a row
     mode: Literal["column", "rows", "stage"] | None = None
     cols: int | None = Field(default=None, ge=1, le=8)
+    # which size of box the places were made for: little tiles or full cards (a layout saved
+    # before tiles existed says nothing and was made for full cards)
+    view: Literal["compact", "detailed"] | None = None
+    # where the parked steps sit (steps taken out of the flow and kept on the canvas), in the
+    # order they are kept in the workflow's settings under 'parked'
+    parked: list[Point] | None = Field(default=None, max_length=100)
 
-    @field_validator("steps", "trigger", "report")
+    @field_validator("steps", "trigger", "report", "parked")
     @classmethod
     def _sane(cls, value):
-        points = (
-            [] if value is None else (value if isinstance(value[0], list) else [value])
-        )
+        points = [] if not value else (value if isinstance(value[0], list) else [value])
         for x, y in points:
             if not (abs(x) <= 100000 and abs(y) <= 100000):
                 raise ValueError("a box is placed outside the canvas")

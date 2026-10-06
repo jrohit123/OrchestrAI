@@ -569,6 +569,68 @@ _CANVAS = r"""
 .nd.ghost{border:2px dashed var(--k-save);background:color-mix(in srgb,var(--k-save) 7%,var(--surface));cursor:default}
 .nd-ghostbar{display:flex;gap:8px;padding:0 14px 13px 61px}
 
+/* little tiles: a coloured square with the step's picture, and its name under it */
+.nd.nc{width:116px;background:none;border:0;box-shadow:none;border-radius:0;padding:0;cursor:grab;text-align:center;font:inherit;color:inherit}
+.nd.nc::before{display:none}
+.nd.nc:hover{box-shadow:none}
+.nd.nc.sel{border-color:transparent;outline:0}
+.nd.nc.trig{background:none;border-color:transparent}
+.nc-sq{position:relative;width:68px;height:68px;margin:0 auto;border-radius:18px;background:color-mix(in srgb,var(--kc) 11%,var(--surface));border:1.5px solid color-mix(in srgb,var(--kc) 40%,var(--line-2));box-shadow:var(--sh1);display:grid;place-items:center;color:var(--kc);transition:box-shadow .15s,border-color .15s}
+.nc-sq .ico{width:30px;height:30px;stroke-width:1.7}
+.nd.nc:hover .nc-sq{box-shadow:var(--sh2)}
+.nd.nc.sel .nc-sq{border-color:var(--brand);outline:3px solid var(--brand-line)}
+.nd.nc.drop{outline:0}
+.nd.nc.drop .nc-sq{outline:3px dashed var(--brand);outline-offset:3px}
+.nd.nc.dragging .nc-sq{box-shadow:0 18px 40px -12px rgba(15,19,32,.35)}
+.nd.nc.blk .nc-sq{box-shadow:0 4px 0 -1px var(--surface),0 5px 0 -1px var(--line-2),var(--sh1)}
+.nd.nc.trig .nc-sq{border-color:color-mix(in srgb,var(--k-trigger) 55%,var(--line-2));background:linear-gradient(180deg,color-mix(in srgb,var(--k-trigger) 14%,var(--surface)),var(--surface))}
+.nc-nm{margin-top:7px;padding:0 3px;font-size:12.5px;font-weight:650;line-height:1.25;color:var(--ink);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.nc-sub{margin-top:1px;padding:0 3px;font-size:11px;line-height:1.3;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nd.nc .nd-ord{top:-9px;left:14px}
+.nd.nc .nd-stb,.nd.nc .nd-bad{top:-9px;right:13px}
+.nd.nc .nd-port.out{bottom:-17px}
+.nd.nc[data-pin="left"] .nd-port.in{left:17px;top:27px;margin:0}
+.nd.nc[data-pout="right"] .nd-port.out{left:auto;right:17px;bottom:auto;top:27px;margin:0}
+.nd.nc[data-st="ran"] .nc-sq{border-color:color-mix(in srgb,var(--k-save) 70%,var(--line-2))}
+.nd.nc[data-st="would"] .nc-sq{border-color:color-mix(in srgb,var(--k-look) 70%,var(--line-2))}
+.nd.nc[data-st="failed"] .nc-sq{border-color:var(--k-stop)}
+.nc-bdg{position:absolute;right:-8px;bottom:-8px;display:flex;gap:3px}
+.nc-b{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:1.5px solid var(--line-2);color:var(--muted);box-shadow:0 0 0 2px var(--bg)}
+.nc-b .ico{width:11px;height:11px;stroke-width:2.2}
+.nc-b-stop{color:var(--k-stop);border-color:var(--k-stop)}
+.nc-b-if{color:var(--info);border-color:var(--info)}
+.nc-b-wait{color:var(--k-approve);border-color:var(--k-approve)}
+.nc-b-ai{color:#fff;background:var(--k-ai);border-color:var(--k-ai)}
+/* the dashed square at the end of the flow: click it to add a step */
+.nd.nc-end{cursor:pointer}
+.nd.nc-end .nc-sq{background:none;border:1.5px dashed var(--line-2);box-shadow:none;color:var(--muted)}
+.nd.nc-end:hover .nc-sq,.nd.nc-end:focus-visible .nc-sq{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+.nd.nc-end .nc-nm{color:var(--muted)}
+.nd.nc-end .nc-sub{white-space:normal}
+/* parked: taken out of the flow, kept on the canvas */
+.nd.parked{opacity:.82}
+.nd.parked:not(.nc){border-style:dashed}
+.nd.nc.parked .nc-sq{border-style:dashed;background:var(--surface);box-shadow:none}
+.nd.nc.parked .nc-nm{color:var(--muted)}
+.nd-parkn{display:flex;gap:6px;align-items:center;padding:0 14px 12px 61px;font-size:12.5px;color:var(--muted);font-weight:650}
+/* the bar above a box, the bar on a wire, and the step picker's title */
+.nd-bar{position:absolute;left:50%;top:-42px;display:none;gap:2px;padding:3px;background:var(--surface);border:1px solid var(--line-2);border-radius:10px;box-shadow:var(--sh2);z-index:8;cursor:default;white-space:nowrap;transform:translateX(-50%) scale(var(--zi,1));transform-origin:50% 100%}
+.nd-bar::after{content:"";position:absolute;left:-6px;right:-6px;top:100%;height:14px}
+.nd:hover>.nd-bar,.nd:focus-visible>.nd-bar{display:flex}
+.nd-bb{width:28px;height:28px;border:0;background:none;border-radius:7px;color:var(--ink-2);display:grid;place-items:center;padding:0;cursor:pointer}
+.nd-bb:hover,.nd-bb:focus-visible{background:var(--sunken);color:var(--brand)}
+.nd-bb.del:hover{color:var(--bad)}
+.wbar{position:absolute;display:none;gap:2px;padding:3px;background:var(--surface);border:1px solid var(--line-2);border-radius:10px;box-shadow:var(--sh2);z-index:9;transform:translate(-50%,-50%) scale(var(--zi,1))}
+.cv.gest .nd-bar,.cv.gest .wbar{display:none!important}
+.wirehit{fill:none;stroke:transparent;stroke-width:22;pointer-events:stroke;cursor:pointer}
+.pk-h{padding:8px 10px 2px;font-weight:700;font-size:13.5px}
+/* the bar at the bottom of the canvas and the chat pill share the space: when the canvas is narrow the words on the bar go and the pill moves above it */
+.cvwrap{container-type:inline-size}
+@container (max-width:1120px){.zoomb .tx{display:none}}
+@container (max-width:860px){.dock.min{right:auto;left:14px;bottom:66px}}
+.toast .tact{margin-left:14px;border:0;background:rgba(255,255,255,.2);color:#fff;font-weight:700;padding:3px 11px;border-radius:7px;cursor:pointer}
+.toast .tact:hover{background:rgba(255,255,255,.34)}
+
 .insp{width:420px;border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0}
 .insp.closed{display:none}
 .insp .ih{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:11px;align-items:flex-start}

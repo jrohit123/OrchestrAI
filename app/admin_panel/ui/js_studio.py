@@ -14,28 +14,31 @@ const EDIT_KEYS = ['name', 'description', 'steps', 'entity_schema', 'gates', 'tr
 // Where the boxes sit on the canvas is kept in settings.layout, apart from the rest of the workflow:
 // moving a box is not a change to what the workflow does, so it never makes a new version or "Unsaved".
 const LAYOUT_V = 1;
-function layoutToPos(layout, ids) {
+// The places belong to one size of box (little tiles or full cards). A layout saved before tiles existed was made for full cards.
+const layoutFits = (layout, ids, size) => !!layout && layout.v === LAYOUT_V && Array.isArray(layout.steps) && layout.steps.length === ids.length && (layout.view || 'detailed') === size;
+function layoutToPos(layout, ids, pids, size) {
   const pos = {};
-  if (layout && layout.v === LAYOUT_V && Array.isArray(layout.steps) && layout.steps.length === ids.length) {
+  if (layoutFits(layout, ids, size)) {
     if (Array.isArray(layout.trigger)) pos.trigger = { x: layout.trigger[0], y: layout.trigger[1] };
     ids.forEach((id, i) => { const p = layout.steps[i]; if (Array.isArray(p)) pos[String(id)] = { x: p[0], y: p[1] }; });
     if (Array.isArray(layout.report)) pos.report = { x: layout.report[0], y: layout.report[1] };
+    if (Array.isArray(layout.parked) && layout.parked.length === pids.length) pids.forEach((id, k) => { const p = layout.parked[k]; if (Array.isArray(p)) pos[String(id)] = { x: p[0], y: p[1] }; });
   }
   return pos;
 }
-function layoutMode(layout, ids) {                // how the boxes were arranged: rows, stage or column (empty when placed by hand)
-  const ok = layout && layout.v === LAYOUT_V && Array.isArray(layout.steps) && layout.steps.length === ids.length;
-  return ok && ['column', 'rows', 'stage'].includes(layout.mode) ? layout.mode : '';
+function layoutMode(layout, ids, size) {          // how the boxes were arranged: rows, stage or column (empty when placed by hand)
+  return layoutFits(layout, ids, size) && ['column', 'rows', 'stage'].includes(layout.mode) ? layout.mode : '';
 }
-function layoutOut(pos, idList, mode, cols) {
+function layoutOut(pos, idList, mode, cols, pidList, size) {
   pos = pos || EW.pos;
-  const ids = (idList || EW.ids).map(String);
+  const ids = (idList || EW.ids).map(String), pids = (pidList || EW.pids).map(String);
   const ok = id => pos[id] && isFinite(pos[id].x) && isFinite(pos[id].y);
   if (!ids.every(ok)) return null;
   const pt = id => [Math.round(pos[id].x), Math.round(pos[id].y)];
-  const out = { v: LAYOUT_V, n: ids.length, steps: ids.map(pt) };
+  const out = { v: LAYOUT_V, n: ids.length, steps: ids.map(pt), view: size || EW.size };
   if (ok('trigger')) out.trigger = pt('trigger');
   if (ok('report')) out.report = pt('report');
+  if (pids.length && pids.every(ok)) out.parked = pids.map(pt);
   const m = mode === undefined ? EW.mode : mode, c = cols === undefined ? EW.arrCols : cols;
   if (m) { out.mode = m; if (c && m !== 'column') out.cols = c; }
   return out;
@@ -44,23 +47,26 @@ function editorState(d, keep) {
   const settings = clone(d.settings) || {};
   const layout = settings.layout || null;
   delete settings.layout;
-  const work = { name: d.name, description: d.description || '', steps: clone(d.steps), entity_schema: clone(d.entity_schema), gates: clone(d.gates), training_phrases: clone(d.training_phrases), slash_command: d.slash_command || '', kind: d.kind, settings, response_format: d.response_format || 'generic' };
-  const ids = d.steps.map((_, i) => i);
-  const E = { id: d.id, d, work, orig: clone(work), ids, nextId: ids.length, undo: [], last: '', lastPush: 0, check: { errors: [], warnings: [] }, serverProblems: null, chat: (keep && keep.chat) || [],
-    pos: layoutToPos(layout, ids), mode: layoutMode(layout, ids), arrCols: (layout && layout.cols) || null, autoArr: false, layoutCap: !!S.boot.caps.workflow_kind, layoutSent: null, cv: null };
+  const parkedRaw = Array.isArray(settings.parked) ? settings.parked : [];   // steps taken out of the flow: they stay on the canvas and never run
+  delete settings.parked;
+  const parked = parkedRaw.filter(p => p && p.step && typeof p.step === 'object').map(p => ({ step: p.step, at: Number.isInteger(p.at) ? p.at : 0 }));
+  const work = { name: d.name, description: d.description || '', steps: clone(d.steps), entity_schema: clone(d.entity_schema), gates: clone(d.gates), training_phrases: clone(d.training_phrases), slash_command: d.slash_command || '', kind: d.kind, settings, response_format: d.response_format || 'generic', parked };
+  const ids = d.steps.map((_, i) => i), pids = parked.map((_, k) => ids.length + k), size = cvSize();
+  const E = { id: d.id, d, work, orig: clone(work), ids, pids, nextId: ids.length + pids.length, undo: [], last: '', lastPush: 0, check: { errors: [], warnings: [] }, serverProblems: null, chat: (keep && keep.chat) || [],
+    size, stash: {}, pos: layoutToPos(layout, ids, pids, size), mode: layoutMode(layout, ids, size), arrCols: (layoutFits(layout, ids, size) && layout.cols) || null, autoArr: false, layoutCap: !!S.boot.caps.workflow_kind, layoutSent: null, cv: null };
   if (!E.layoutCap) {                // an older database has no settings column: this browser remembers the layout instead
-    try { const kept = JSON.parse(store.get('layout:' + ORG + ':' + d.id) || 'null'); E.pos = layoutToPos(kept, ids); E.mode = layoutMode(kept, ids); E.arrCols = (kept && kept.cols) || null; } catch (e) { /* keep the automatic layout */ }
+    try { const kept = JSON.parse(store.get('layout:' + ORG + ':' + d.id) || 'null'); E.pos = layoutToPos(kept, ids, pids, size); E.mode = layoutMode(kept, ids, size); E.arrCols = (layoutFits(kept, ids, size) && kept.cols) || null; } catch (e) { /* keep the automatic layout */ }
   }
-  E.saw = Object.keys(E.pos).length > 0;           // a saved layout exists: open as it was left
-  const sent = E.saw ? layoutOut(E.pos, ids, E.mode, E.arrCols) : null;
+  E.saw = Object.keys(E.pos).length > 0;           // a saved layout exists (for this size of box): open as it was left
+  const sent = E.saw ? layoutOut(E.pos, ids, E.mode, E.arrCols, pids, size) : null;
   E.layoutSent = sent ? JSON.stringify(sent) : null;
-  E.last = JSON.stringify({ work, ids, pos: E.pos, mode: E.mode, cols: E.arrCols });
+  E.last = JSON.stringify({ work, ids, pids, pos: E.pos, mode: E.mode, cols: E.arrCols, size });
   return E;
 }
 const isDirty = () => !same(tidyWork(EW.work), tidyWork(EW.orig));
 let checkTimer = null, ui = {};
 
-const snapJSON = () => JSON.stringify({ work: EW.work, ids: EW.ids, pos: EW.pos, mode: EW.mode, cols: EW.arrCols });
+const snapJSON = () => JSON.stringify({ work: EW.work, ids: EW.ids, pids: EW.pids, pos: EW.pos, mode: EW.mode, cols: EW.arrCols, size: EW.size });
 // remember the state before a change, so Undo can come back to it (quick typing counts as one change)
 function snapshot(force) {
   const now = snapJSON();
@@ -70,8 +76,8 @@ function snapshot(force) {
   EW.last = now;
   return true;
 }
-function commit(redraw) {
-  snapshot(false);
+function commit(redraw, force) {          // force: this change is an undo step of its own, even when it follows another quickly
+  snapshot(!!force);
   EW.serverProblems = null;
   updateBar(); scheduleCheck();
   if (redraw) drawPane(); else refreshTitles();
@@ -81,7 +87,10 @@ function commitLayout() { snapshot(true); updateBar(); queueLayoutSave(); }
 function undo() {
   if (!EW.undo.length) { toast('Nothing to undo'); return; }
   const prev = JSON.parse(EW.undo.pop());
-  EW.work = prev.work; EW.ids = prev.ids; EW.pos = prev.pos || {}; EW.mode = prev.mode || ''; EW.arrCols = prev.cols || null; EW.arrIds = null; EW.last = JSON.stringify(prev); EW.serverProblems = null;
+  EW.work = prev.work; EW.ids = prev.ids; EW.pids = prev.pids || [];
+  if ((prev.size || EW.size) === EW.size) { EW.pos = prev.pos || {}; EW.mode = prev.mode || ''; EW.arrCols = prev.cols || null; }   // the places only come back if they were made for this size of box
+  EW.arrIds = null; EW.last = snapJSON(); EW.serverProblems = null;
+  document.querySelectorAll('.toast.has-act').forEach(t => t.remove());   // what they offered to undo is undone now
   drawPane(); updateBar(); scheduleCheck(); queueLayoutSave();
 }
 // the layout is saved quietly: no new version, no "Unsaved". While the steps themselves have unsaved
@@ -115,9 +124,15 @@ function problemsFor(n) {
 async function save() {
   const changes = {}, now = tidyWork(EW.work), was = tidyWork(EW.orig);
   EDIT_KEYS.forEach(k => { if (!same(now[k], was[k])) changes[k] = now[k]; });
-  if (!Object.keys(changes).length) { toast('Nothing to save'); return; }
+  const parkedChanged = !same(now.parked, was.parked);
+  if (!Object.keys(changes).length && !parkedChanged) { toast('Nothing to save'); return; }
   const lay = EW.layoutCap ? layoutOut() : null;   // the boxes' places go along, so they follow the steps if these were re-ordered
-  if (lay) changes.settings = { ...(changes.settings || now.settings || {}), layout: lay };
+  if (changes.settings || lay || parkedChanged) {   // the settings are saved as a whole: the layout and the parked steps always travel in them
+    const s = { ...(changes.settings || now.settings || {}) }, oldLay = EW.d.settings && EW.d.settings.layout;
+    if (lay || oldLay) s.layout = lay || oldLay;
+    if (now.parked.length) s.parked = now.parked.map(p => ({ step: p.step, at: p.at })); else delete s.parked;
+    changes.settings = s;
+  }
   ui.save.disabled = true;
   try {
     const r = await api.put('/workflows/' + EW.id + '/definition', { base_version: EW.d.version, ...changes });
@@ -137,7 +152,7 @@ async function reloadEditor() {
   EW = editorState(d, EW);
   drawEditor(); scheduleCheck();
 }
-function discard() { if (!isDirty()) return; confirmBox('Throw away your unsaved changes?', { ok: 'Discard', danger: true }).then(ok => { if (ok) { EW.work = clone(EW.orig); EW.ids = EW.d.steps.map((_, i) => i); EW.nextId = EW.ids.length; EW.undo = []; EW.last = snapJSON(); drawPane(); updateBar(); scheduleCheck(); } }); }
+function discard() { if (!isDirty()) return; confirmBox('Throw away your unsaved changes?', { ok: 'Discard', danger: true }).then(ok => { if (ok) { EW.work = clone(EW.orig); EW.ids = EW.d.steps.map((_, i) => i); EW.pids = EW.work.parked.map((_, k) => EW.ids.length + k); EW.nextId = EW.ids.length + EW.pids.length; EW.undo = []; EW.last = snapJSON(); drawPane(); updateBar(); scheduleCheck(); } }); }
 
 async function renderEditor(root, id) {
   const mine = S.renderId;

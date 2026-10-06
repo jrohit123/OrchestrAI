@@ -184,12 +184,16 @@ function pager(total, page, size, onPage) {
 const copyBtn = text => h('button', { class: 'btn sm ghost', onclick: () => navigator.clipboard && navigator.clipboard.writeText(text).then(() => toast('Copied', 'ok')) }, 'Copy');
 
 // ───────────────────────── toasts, modals, drawer ─────────────────────────
-function toast(msg, tone) {
+function toast(msg, tone, act) {         // act = { label, run }: one button inside the message, such as Undo
   let box = document.querySelector('.toasts');
   if (!box) { box = h('div', { class: 'toasts' }); document.body.append(box); }
-  const t = h('div', { class: 'toast' + (tone ? ' ' + tone : '') }, msg);
+  const t = h('div', { class: 'toast' + (tone ? ' ' + tone : '') + (act ? ' has-act' : '') }, msg);
+  if (act) {                                               // only the latest message keeps its button: Undo always means the latest change
+    box.querySelectorAll('.toast.has-act').forEach(o => o.remove());
+    t.append(h('button', { class: 'tact', type: 'button', onclick: () => { t.remove(); act.run(); } }, act.label));
+  }
   box.append(t);
-  setTimeout(() => t.remove(), tone === 'bad' ? 7000 : 3500);
+  setTimeout(() => t.remove(), act ? 9000 : tone === 'bad' ? 7000 : 3500);
 }
 const modalStack = [];
 function modal(o) {
