@@ -262,7 +262,7 @@ function drawProblems() {
 function legendPop(anchor) {
   const row = (c, t) => h('div', { class: 'lgrow' }, h('i', { style: { background: 'var(' + c + ')' } }), t);
   openPop(anchor, [h('div', { class: 'ml' }, 'Colour = what a step does'), row('--k-trigger', 'When… (what starts it)'), row('--k-look', 'Look up and check'), row('--k-save', 'Save changes'), row('--k-tell', 'Tell people'), row('--k-approve', 'Approvals (code or approver)'), row('--k-other', 'Other'), row('--k-block', 'Building block (stacked card)'), row('--k-ai', 'AI is only used where marked'),
-    h('div', { class: 'ml' }, 'Wires and numbers'), h('div', { class: 'lgrow' }, 'Number on a box: when it runs'), h('div', { class: 'lgrow' }, 'Dot under a box: drag it onto another box to re-order'),
+    h('div', { class: 'ml' }, 'Wires and numbers'), h('div', { class: 'lgrow' }, 'Number on a box: when it runs'), h('div', { class: 'lgrow' }, 'Dot under a box: drag it onto another box to re-order'), h('div', { class: 'lgrow' }, 'Boxes side by side: the wire runs from the dot on the side'),
     h('div', { class: 'lgrow muted' }, 'Dashed way around: skipped unless “only if” is true'), h('div', { class: 'lgrow', style: { color: 'var(--k-stop)' } }, 'Red dashed exit: stops and says…'), h('div', { class: 'lgrow', style: { color: 'var(--k-approve)' } }, 'Pink bar: waits for a person')], { width: 340, up: true });
 }
 function drawEditor() {
@@ -288,8 +288,8 @@ function drawEditor() {
   wireCanvas(cv);
   const zb = (label, ic, fn) => h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': label, 'data-tip': label, onclick: fn }, icon(ic, 'sm'));
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Plain words or technical' },
-    h('button', { type: 'button', class: CV.tech ? '' : 'on', onclick: e => { CV.tech = false; seg.children[0].classList.add('on'); seg.children[1].classList.remove('on'); renderNodes(); } }, 'Plain words'),
-    h('button', { type: 'button', class: CV.tech ? 'on' : '', onclick: e => { CV.tech = true; seg.children[1].classList.add('on'); seg.children[0].classList.remove('on'); renderNodes(); } }, 'Technical'));
+    h('button', { type: 'button', class: CV.tech ? '' : 'on', onclick: e => { CV.tech = false; CV.reflow = true; seg.children[0].classList.add('on'); seg.children[1].classList.remove('on'); renderNodes(); } }, 'Plain words'),
+    h('button', { type: 'button', class: CV.tech ? 'on' : '', onclick: e => { CV.tech = true; CV.reflow = true; seg.children[1].classList.add('on'); seg.children[0].classList.remove('on'); renderNodes(); } }, 'Technical'));
   const dock = h('div', { class: 'dock min' },
     h('button', { class: 'dhd', type: 'button', onclick: () => dock.classList.toggle('min') }, icon('spark'), h('span', null, 'Ask the assistant to change this flow'), icon('chevd', 'sm')),
     chatDock(read));
@@ -310,7 +310,7 @@ function drawEditor() {
         CV.banner, cv,
         h('div', { class: 'zoomb' }, zb('Zoom out', 'minus', () => setZoom(CV.zoom - 0.1)), zval, zb('Zoom in', 'plus', () => setZoom(CV.zoom + 0.1)), zb('Fit everything on screen', 'fit', () => fitView(true)),
           h('span', { class: 'vdiv' }),
-          h('button', { class: 'btn sm ghost tidy', type: 'button', 'data-tip': 'Arrange all the boxes neatly in a column (Shift+Alt+T)', onclick: tidy }, icon('tidy', 'sm'), lbl('Tidy up')),
+          h('button', { class: 'btn sm ghost tidy', type: 'button', 'data-popkeep': '1', 'data-tip': 'Arrange the boxes: rows, by stage or a column (Shift+Alt+T)', onclick: e => tidyMenu(e.currentTarget) }, icon('tidy', 'sm'), lbl('Tidy up'), icon('chevd', 'xs')),
           h('span', { class: 'vdiv opt' }), seg, h('span', { class: 'vdiv' }),
           h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { CV.pal.classList.toggle('closed'); applyZoom(); } }, icon('panel', 'sm'), lbl('Steps')),
           h('button', { class: 'btn sm ghost', type: 'button', 'data-popkeep': '1', onclick: e => legendPop(e.currentTarget) }, icon('help', 'sm'), lbl('Legend'))),
@@ -319,11 +319,15 @@ function drawEditor() {
   const cn = document.getElementById('crumbname'); if (cn) cn.textContent = EW.work.name;
   renderNodes(); renderInspector(); updateBar(); prefetchBlocks();
   if (CV.panel === 'try') renderInspector();
-  if (!EW.saw) tidyFirst();
-  fitView(false);
+  const arranged = !EW.saw && tidyFirst();
+  fitView(!!arranged || rowish());                   // rows and stages were made to fit the screen: open them that way
 }
-// a flow that has never had a layout saved opens as one tidy column, exactly like Tidy up would make it
-function tidyFirst() { /* new boxes are already placed in a column by layoutAfterRender */ }
+// a flow that has never had a layout saved opens in rows that fit the screen, as Tidy up > Rows would make it (nothing is saved until someone moves or arranges a box)
+function tidyFirst() {
+  if (EW.mode || chain().length < 3 || !CV.el) return false;
+  arrange('rows', { quiet: true });
+  return true;
+}
 function drawPane() {
   if (!CV || !CV.nodesEl) return;
   const ok = new Set(chain());

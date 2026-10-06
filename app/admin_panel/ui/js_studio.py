@@ -23,7 +23,11 @@ function layoutToPos(layout, ids) {
   }
   return pos;
 }
-function layoutOut(pos, idList) {
+function layoutMode(layout, ids) {                // how the boxes were arranged: rows, stage or column (empty when placed by hand)
+  const ok = layout && layout.v === LAYOUT_V && Array.isArray(layout.steps) && layout.steps.length === ids.length;
+  return ok && ['column', 'rows', 'stage'].includes(layout.mode) ? layout.mode : '';
+}
+function layoutOut(pos, idList, mode, cols) {
   pos = pos || EW.pos;
   const ids = (idList || EW.ids).map(String);
   const ok = id => pos[id] && isFinite(pos[id].x) && isFinite(pos[id].y);
@@ -32,6 +36,8 @@ function layoutOut(pos, idList) {
   const out = { v: LAYOUT_V, n: ids.length, steps: ids.map(pt) };
   if (ok('trigger')) out.trigger = pt('trigger');
   if (ok('report')) out.report = pt('report');
+  const m = mode === undefined ? EW.mode : mode, c = cols === undefined ? EW.arrCols : cols;
+  if (m) { out.mode = m; if (c && m !== 'column') out.cols = c; }
   return out;
 }
 function editorState(d, keep) {
@@ -41,20 +47,20 @@ function editorState(d, keep) {
   const work = { name: d.name, description: d.description || '', steps: clone(d.steps), entity_schema: clone(d.entity_schema), gates: clone(d.gates), training_phrases: clone(d.training_phrases), slash_command: d.slash_command || '', kind: d.kind, settings, response_format: d.response_format || 'generic' };
   const ids = d.steps.map((_, i) => i);
   const E = { id: d.id, d, work, orig: clone(work), ids, nextId: ids.length, undo: [], last: '', lastPush: 0, check: { errors: [], warnings: [] }, serverProblems: null, chat: (keep && keep.chat) || [],
-    pos: layoutToPos(layout, ids), layoutCap: !!S.boot.caps.workflow_kind, layoutSent: null, cv: null };
+    pos: layoutToPos(layout, ids), mode: layoutMode(layout, ids), arrCols: (layout && layout.cols) || null, autoArr: false, layoutCap: !!S.boot.caps.workflow_kind, layoutSent: null, cv: null };
   if (!E.layoutCap) {                // an older database has no settings column: this browser remembers the layout instead
-    try { E.pos = layoutToPos(JSON.parse(store.get('layout:' + ORG + ':' + d.id) || 'null'), ids); } catch (e) { /* keep the automatic layout */ }
+    try { const kept = JSON.parse(store.get('layout:' + ORG + ':' + d.id) || 'null'); E.pos = layoutToPos(kept, ids); E.mode = layoutMode(kept, ids); E.arrCols = (kept && kept.cols) || null; } catch (e) { /* keep the automatic layout */ }
   }
   E.saw = Object.keys(E.pos).length > 0;           // a saved layout exists: open as it was left
-  const sent = E.saw ? layoutOut(E.pos, ids) : null;
+  const sent = E.saw ? layoutOut(E.pos, ids, E.mode, E.arrCols) : null;
   E.layoutSent = sent ? JSON.stringify(sent) : null;
-  E.last = JSON.stringify({ work, ids, pos: E.pos });
+  E.last = JSON.stringify({ work, ids, pos: E.pos, mode: E.mode, cols: E.arrCols });
   return E;
 }
 const isDirty = () => !same(tidyWork(EW.work), tidyWork(EW.orig));
 let checkTimer = null, ui = {};
 
-const snapJSON = () => JSON.stringify({ work: EW.work, ids: EW.ids, pos: EW.pos });
+const snapJSON = () => JSON.stringify({ work: EW.work, ids: EW.ids, pos: EW.pos, mode: EW.mode, cols: EW.arrCols });
 // remember the state before a change, so Undo can come back to it (quick typing counts as one change)
 function snapshot(force) {
   const now = snapJSON();
@@ -75,7 +81,7 @@ function commitLayout() { snapshot(true); updateBar(); queueLayoutSave(); }
 function undo() {
   if (!EW.undo.length) { toast('Nothing to undo'); return; }
   const prev = JSON.parse(EW.undo.pop());
-  EW.work = prev.work; EW.ids = prev.ids; EW.pos = prev.pos || {}; EW.last = JSON.stringify(prev); EW.serverProblems = null;
+  EW.work = prev.work; EW.ids = prev.ids; EW.pos = prev.pos || {}; EW.mode = prev.mode || ''; EW.arrCols = prev.cols || null; EW.arrIds = null; EW.last = JSON.stringify(prev); EW.serverProblems = null;
   drawPane(); updateBar(); scheduleCheck(); queueLayoutSave();
 }
 // the layout is saved quietly: no new version, no "Unsaved". While the steps themselves have unsaved

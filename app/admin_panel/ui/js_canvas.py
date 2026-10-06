@@ -4,6 +4,8 @@ JS = r"""
 // box sits never changes the flow. What is shown comes from the workflow being edited (EW) and the
 // step catalogue (ST); nothing about what a step means is written here.
 const CV_GAP = 84, CV_TOP = 48, CV_CX = 380;
+const CV_GX = 64, CV_GY = 80, CV_X_ROWS = 60, CV_X_STAGE = 200, CV_PORT_Y = 28;   // rows: space between boxes, between rows, the left edge, and where a side wire meets a box
+const CV_STAGE = { trigger: 'Start', look: 'Look up and check', block: 'Building blocks', save: 'Save changes', tell: 'Tell people', approve: 'Approvals', other: 'Other steps' };
 let CV = null;                                          // the view of the flow that is open (zoom, selection, what is expanded)
 const CV_KIND = { 'Look up and check': 'look', 'Save changes': 'save', 'Tell people': 'tell', 'Approvals': 'approve', 'Other': 'other' };
 const CV_ICON = { resolve_entity: 'search', conflict_check: 'stop', require_permission: 'shield', derive_field: 'bolt', compute: 'calc', 'db.insert_row': 'plus', 'db.update_row': 'edit', 'db.upsert_row': 'refresh', 'db.delete_row': 'trash', 'notify.user': 'mail', 'notify.whatsapp': 'chat', 'pdf.generate': 'file', otp_gate: 'key', approval_gate: 'usercheck', ai_price_interpret: 'spark', run_workflow: 'layers', 'case.categorize': 'tag', 'case.route': 'route', 'case.authorize': 'shield', 'case.add_parties': 'users', 'case.attach_photos': 'camera', 'notify.parties': 'send' };
@@ -26,7 +28,7 @@ const chain = () => isRead() ? ['trigger', 'report'] : ['trigger', ...EW.ids.map
 const wireIds = () => [...chain(), 'end'];
 const primary = () => CV.sel.size === 1 ? [...CV.sel][0] : null;
 function newCanvas() {
-  return { for: EW, zoom: 1, auto: true, hm: {}, wm: {}, sel: new Set(), panel: 'insp', itab: 'set', ttab: 'start', open: new Set(), peek: {}, loading: new Set(),
+  return { for: EW, zoom: 1, auto: true, hm: {}, wm: {}, ex: {}, vh: {}, pm: { in: {}, out: {} }, reflow: false, sel: new Set(), panel: 'insp', itab: 'set', ttab: 'start', open: new Set(), peek: {}, loading: new Set(),
     palOpen: new Set(['act', 'act:Look up and check']), tech: false, run: null, justAdded: null, G: null, frame: false, plusPts: [], inspKey: '' };
 }
 
@@ -39,8 +41,10 @@ function posOf(id) {
   }
   return EW.pos[id] || null;
 }
-const outPt = id => { const p = posOf(id); return { x: p.x + (CV.wm[id] || nodeW()) / 2, y: p.y + (CV.hm[id] || 100) }; };
-const inPt = id => { const p = posOf(id); return { x: p.x + (CV.wm[id] || nodeW()) / 2, y: p.y }; };
+const wOf = id => CV.wm[id] || nodeW(), hOf = id => CV.hm[id] || 100, exOf = id => CV.ex[id] || 0, vOf = id => CV.vh[id] || hOf(id);
+// where a wire leaves a box and enters the next: under and over them, or at the sides when boxes sit in a row
+const outPt = id => { const p = posOf(id); return (CV.pm.out[id] === 'right') ? { x: p.x + wOf(id), y: p.y + CV_PORT_Y } : { x: p.x + wOf(id) / 2, y: p.y + hOf(id) }; };
+const inPt = id => { const p = posOf(id); return (CV.pm.in[id] === 'left') ? { x: p.x, y: p.y + CV_PORT_Y } : { x: p.x + wOf(id) / 2, y: p.y }; };
 const toStage = (cx, cy) => { const r = CV.sizer.getBoundingClientRect(); return { x: (cx - r.left) / CV.zoom, y: (cy - r.top) / CV.zoom }; };
 
 // ----- the boxes -----
@@ -106,6 +110,7 @@ function cvEndNode() {
 // opening a block shows the steps inside it (fetched once)
 async function cvToggle(flow) {
   if (CV.open.has(flow.id)) CV.open.delete(flow.id); else CV.open.add(flow.id);
+  CV.reflow = true;
   renderNodes();
   if (CV.open.has(flow.id) && !CV.peek[flow.id]) await cvPeek(flow);
 }
@@ -129,11 +134,12 @@ function renderNodes() {
   if (isRead()) els.push(cvReportNode()); else EW.work.steps.forEach((s, i) => els.push(cvStepNode(s, i)));
   els.push(cvEndNode());
   fill(CV.nodesEl, els);
+  CV.el.classList.toggle('rowmode', rowish());
   layoutAfterRender(prev);
 }
 function layoutAfterRender(prev) {
   const NW = nodeW(), ids = chain(), clean = snapJSON() === EW.last;
-  [...CV.nodesEl.children].forEach(el => { CV.hm[el.dataset.id] = el.offsetHeight; CV.wm[el.dataset.id] = el.offsetWidth; });
+  measureNodes();
   ids.forEach((id, k) => {                                   // a new box goes under the one before it
     if (EW.pos[id]) return;
     if (k === 0) EW.pos[id] = { x: CV_CX - NW / 2, y: CV_TOP };
@@ -153,29 +159,77 @@ function layoutAfterRender(prev) {
     const d = now - old, p = EW.pos[id];
     for (let j = k + 1; j < ids.length; j++) { const q = EW.pos[ids[j]]; if (q.y >= p.y + old - 4 && Math.abs(q.x - p.x) < NW) q.y += d; }
   });
+  if (rowish()) {                                            // Rows and By stage stay tidy: the boxes are arranged again when steps are added, removed or re-ordered
+    const sk = ids.join(), gk = geoKey(ids);
+    if (EW.arrIds == null) { EW.arrIds = sk; EW.arrGeo = gk; }
+    else if (EW.arrIds !== sk || CV.reflow || (EW.autoArr && EW.arrGeo !== gk)) {
+      const fresh = EW.autoArr && EW.arrIds === sk && !CV.reflow;   // only the sizes changed (the "Stops" notes arrived) and nobody placed anything by hand: pick the row length again and fit the screen again
+      const pl = planFor(EW.mode, fresh ? null : EW.arrCols);
+      ids.forEach(id => { EW.pos[id] = pl.pos[id]; });
+      if (fresh) { EW.arrCols = pl.cols; if (CV.auto) fitView(true); }
+      EW.arrIds = sk; EW.arrGeo = gk; CV.reflow = false;
+    }
+  }
   if (clean) EW.last = snapJSON();                           // where boxes were first put is not a change
   positionNodes(); drawWires(); applyZoom();
 }
 function positionNodes() {
   [...CV.nodesEl.children].forEach(el => { const p = posOf(el.dataset.id); if (!p) return; el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; el.style.visibility = 'visible'; });
 }
+// how one wire runs from a box to the next: along a row (h), down and across to the next row (e), or straight down (v)
+function connMode(a, b) {
+  const pa = posOf(a), pb = posOf(b);
+  if (!pa || !pb) return 'v';
+  const wa = wOf(a), ha = hOf(a), wb = wOf(b), hb = hOf(b);
+  if (pb.x >= pa.x + wa + 30 && pb.y < pa.y + ha && pb.y + hb > pa.y) return 'h';
+  if (pb.y >= pa.y + ha + 30 && Math.abs((pb.x + wb / 2) - (pa.x + wa / 2)) > nodeW() * 0.6) return 'e';
+  return 'v';
+}
+function vPath(A, B) {
+  const dy = Math.max(40, Math.min(160, Math.abs(B.y - A.y) / 2));
+  return { d: 'M' + A.x + ' ' + A.y + ' C' + A.x + ' ' + (A.y + dy) + ', ' + B.x + ' ' + (B.y - dy) + ', ' + B.x + ' ' + B.y, mx: (A.x + B.x) / 2, my: (A.y + B.y) / 2 };
+}
+function hPath(A, B) {
+  const dx = Math.max(28, Math.min(160, Math.abs(B.x - A.x) / 2));
+  return { d: 'M' + A.x + ' ' + A.y + ' C' + (A.x + dx) + ' ' + A.y + ', ' + (B.x - dx) + ' ' + B.y + ', ' + B.x + ' ' + B.y, mx: (A.x + B.x) / 2, my: (A.y + B.y) / 2 };
+}
+// down out of a box, along the free space under its row, and down into the box in the next row
+function ePath(a, b, A, B) {
+  let low = A.y;
+  [...chain(), 'end'].forEach(id => {
+    if (id === a || id === b) return;
+    const p = posOf(id); if (!p) return;
+    const bottom = p.y + vOf(id);
+    if (p.x < Math.max(A.x, B.x) + 20 && p.x + wOf(id) + exOf(id) > Math.min(A.x, B.x) - 20 && p.y < B.y - 4 && bottom > A.y - hOf(a)) low = Math.max(low, bottom);
+  });
+  const ym = low + 26, r = 14;
+  if (ym > B.y - 22) return vPath(A, B);
+  const s = B.x > A.x ? 1 : -1;
+  return { d: 'M' + A.x + ' ' + A.y + ' V' + (ym - r) + ' Q' + A.x + ' ' + ym + ' ' + (A.x + s * r) + ' ' + ym + ' H' + (B.x - s * r) + ' Q' + B.x + ' ' + ym + ' ' + B.x + ' ' + (ym + r) + ' V' + B.y, mx: (A.x + B.x) / 2, my: ym };
+}
 function drawWires() {
   const ids = wireIds(), run = CV.run, okSt = ['ran', 'would', 'skipped'];
   const stateOf = id => run && run.states[id];
   const completed = id => id === 'trigger' || okSt.includes(stateOf(id));
   const began = id => id === 'end' ? !run.stopped : ['ran', 'would', 'skipped', 'failed'].includes(stateOf(id));
-  const paths = [], labels = [];
+  const paths = [], labels = [], modes = [];
   CV.plusPts = [];
+  CV.pm = { in: {}, out: {} };                               // boxes side by side: the wire leaves from the side dot
+  for (let i = 0; i < ids.length - 1; i++) {
+    const m = connMode(ids[i], ids[i + 1]); modes.push(m);
+    if (m === 'h') { CV.pm.out[ids[i]] = 'right'; CV.pm.in[ids[i + 1]] = 'left'; }
+  }
+  [...CV.nodesEl.children].forEach(el => { el.dataset.pin = CV.pm.in[el.dataset.id] || 'top'; el.dataset.pout = CV.pm.out[el.dataset.id] || 'bottom'; });
   for (let i = 0; i < ids.length - 1; i++) {
     const a = ids[i], b = ids[i + 1];
     if (!posOf(a) || !posOf(b)) continue;
-    const A = outPt(a), B = inPt(b), dy = Math.max(40, Math.min(160, Math.abs(B.y - A.y) / 2));
+    const A = outPt(a), B = inPt(b), m = modes[i], P = m === 'h' ? hPath(A, B) : m === 'e' ? ePath(a, b, A, B) : vPath(A, B);
     const lit = run && completed(a) && began(b);
-    paths.push(svgEl('path', { class: 'wire' + (lit ? ' done' : ''), d: 'M' + A.x + ' ' + A.y + ' C' + A.x + ' ' + (A.y + dy) + ', ' + B.x + ' ' + (B.y - dy) + ', ' + B.x + ' ' + B.y, 'marker-end': 'url(#' + (lit ? 'ah-ok' : 'ah') + ')' }));
+    paths.push(svgEl('path', { class: 'wire' + (lit ? ' done' : ''), d: P.d, 'marker-end': 'url(#' + (lit ? 'ah-ok' : 'ah') + ')' }));
     if (!run && !isRead() && !oneStepOnly()) {
-      const at = a === 'trigger' ? 0 : (b === 'end' ? EW.ids.length : idxOf(b)), mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
-      CV.plusPts.push({ at, x: mx, y: my });
-      labels.push(h('button', { class: 'plus', type: 'button', 'data-popkeep': '1', 'aria-label': 'Add a step here', style: { left: (mx - 11) + 'px', top: (my - 11) + 'px' }, onclick: e => { e.stopPropagation(); cvOpenAdd(at, e.currentTarget); } }, icon('plus', 'xs')));
+      const at = a === 'trigger' ? 0 : (b === 'end' ? EW.ids.length : idxOf(b));
+      CV.plusPts.push({ at, x: P.mx, y: P.my });
+      labels.push(h('button', { class: 'plus', type: 'button', 'data-popkeep': '1', 'aria-label': 'Add a step here', style: { left: (P.mx - 11) + 'px', top: (P.my - 11) + 'px' }, onclick: e => { e.stopPropagation(); cvOpenAdd(at, e.currentTarget); } }, icon('plus', 'xs')));
     }
   }
   const bulge = nodeW() / 2 + 110;                           // "only if": a dashed way around the box
@@ -183,10 +237,24 @@ function drawWires() {
     if (!s.when) return;
     const k = ids.indexOf(idAt(i)), a = ids[k - 1], b = ids[k + 1];
     if (!a || !b || !posOf(a) || !posOf(b)) return;
-    const A = outPt(a), B = inPt(b);
-    paths.push(svgEl('path', { class: 'wire skipw', d: 'M' + A.x + ' ' + A.y + ' C' + (A.x - bulge) + ' ' + (A.y + 50) + ', ' + (B.x - bulge) + ' ' + (B.y - 50) + ', ' + B.x + ' ' + B.y, 'marker-end': 'url(#ah)' }));
-    labels.push(h('span', { class: 'skiptxt', style: { left: ((A.x + B.x) / 2 - bulge * 0.75 - 6) + 'px', top: ((A.y + B.y) / 2) + 'px' } }, 'otherwise skipped'));
+    const A = outPt(a), B = inPt(b), m1 = modes[k - 1], m2 = modes[k];
+    if (m1 === 'h' && m2 === 'h') {                          // boxes in a row: an arch over the box
+      const up = Math.max(80, vOf(ids[k]) * 0.5 + 50);
+      paths.push(svgEl('path', { class: 'wire skipw', d: 'M' + A.x + ' ' + A.y + ' C' + A.x + ' ' + (A.y - up) + ', ' + B.x + ' ' + (B.y - up) + ', ' + B.x + ' ' + B.y, 'marker-end': 'url(#ah)' }));
+      labels.push(h('span', { class: 'skiptxt c', style: { left: ((A.x + B.x) / 2) + 'px', top: (Math.min(A.y, B.y) - up * 0.75 - 2) + 'px' } }, 'otherwise skipped'));
+    } else if (m1 === 'v' && m2 === 'v') {
+      paths.push(svgEl('path', { class: 'wire skipw', d: 'M' + A.x + ' ' + A.y + ' C' + (A.x - bulge) + ' ' + (A.y + 50) + ', ' + (B.x - bulge) + ' ' + (B.y - 50) + ', ' + B.x + ' ' + B.y, 'marker-end': 'url(#ah)' }));
+      labels.push(h('span', { class: 'skiptxt', style: { left: ((A.x + B.x) / 2 - bulge * 0.75 - 6) + 'px', top: ((A.y + B.y) / 2) + 'px' } }, 'otherwise skipped'));
+    }
   });
+  if (EW.mode === 'stage') {                                 // the name of each stage, left of its first box
+    let prev = null;
+    chain().forEach(id => {
+      const k = stageOf(id), p = posOf(id);
+      if (k !== prev && p) labels.push(h('div', { class: 'stglbl k-' + k, style: { left: (p.x - 172) + 'px', top: (p.y + 6) + 'px' } }, CV_STAGE[k]));
+      prev = k;
+    });
+  }
   fill(CV.wg, paths); fill(CV.labels, labels);
 }
 function applyZoom() {
@@ -207,6 +275,7 @@ function setZoom(z, cx, cy) {
 function bounds() {
   let L = 1e9, T = 1e9, R = 0, B = 0;
   [...CV.nodesEl.children].forEach(el => { const p = posOf(el.dataset.id); if (!p) return; L = Math.min(L, p.x); T = Math.min(T, p.y); R = Math.max(R, p.x + el.offsetWidth + (el.querySelector('.nd-exit') ? 270 : 0)); B = Math.max(B, p.y + el.offsetHeight); });
+  if (EW.mode === 'stage' && L < 1e8) L -= 180;               // the stage names sit left of the boxes
   return { L, T, R, B };
 }
 // Fit: everything on screen. Opening a flow only fits the width, so the text stays readable and a long flow scrolls.
@@ -235,21 +304,95 @@ function scrollToNode(id) {
   if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
 }
 
-// ----- Tidy up: one neat column, in the order the steps run -----
-function tidy() {
-  const NW = nodeW(), ids = chain(), to = {}; let y = CV_TOP;
-  ids.forEach(id => { to[id] = { x: CV_CX - NW / 2, y }; y += (CV.hm[id] || 100) + CV_GAP; });
-  if (ids.every(id => EW.pos[id] && Math.abs(EW.pos[id].x - to[id].x) < 1 && Math.abs(EW.pos[id].y - to[id].y) < 1)) { toast('Already tidy.'); return; }
-  animateTo(to);
+// ----- Tidy up: Rows (fit the screen), By stage, or one Column. Only where the boxes sit changes, never what runs when -----
+const rowish = () => !!EW && (EW.mode === 'rows' || EW.mode === 'stage');
+const stageOf = id => id === 'trigger' ? 'trigger' : id === 'report' ? 'look' : cvKey(EW.work.steps[idxOf(id)]);
+function measureNodes() {
+  [...CV.nodesEl.children].forEach(el => {
+    const id = el.dataset.id, x = el.querySelector('.nd-exit');
+    CV.hm[id] = el.offsetHeight; CV.wm[id] = el.offsetWidth;
+    CV.ex[id] = x ? x.offsetWidth : 0;                         // the red "Stops" note sits right of its box: room is kept for it
+    CV.vh[id] = x ? Math.max(el.offsetHeight, x.offsetTop + x.offsetHeight) : el.offsetHeight;
+  });
 }
-function animateTo(to) {
+// boxes in order, and where a new row has to start
+function rowItems(ids) {
+  const hs = ids.filter(id => id !== 'trigger').map(vOf).sort((a, b) => a - b), med = hs.length ? hs[hs.length >> 1] : 100;
+  const alone = ids.length > 2 && vOf('trigger') > med * 1.6;   // a tall "When…" box gets its own row
+  return ids.map((id, i) => ({ id, brk: alone && i === 1 }));
+}
+function stageItems(ids) {                                    // steps of the same kind that follow each other share a row
+  let prev = null;
+  return ids.map(id => { const k = stageOf(id), brk = prev !== null && k !== prev; prev = k; return { id, brk }; });
+}
+function gridPlan(items, cols, x0) {
+  const pos = {}, rows = []; let row = [];
+  items.forEach(it => { if (row.length && (row.length >= cols || it.brk)) { rows.push(row); row = []; } row.push(it.id); });
+  if (row.length) rows.push(row);
+  let y = CV_TOP, W = 0;
+  rows.forEach(r => {
+    let x = x0, rh = 0;
+    r.forEach(id => { pos[id] = { x, y }; rh = Math.max(rh, vOf(id)); x += wOf(id) + exOf(id) + CV_GX; });
+    W = Math.max(W, x - CV_GX); y += rh + CV_GY;
+  });
+  return { pos, cols, W: W + 80, H: y + 80 };
+}
+// the number of boxes per row that lets the whole flow be shown biggest; a tie goes to fewer boxes per row
+function bestPlan(items, x0, maxCols) {
+  const cw = CV.el.clientWidth, ch = Math.max(240, CV.el.clientHeight - 70);
+  let best = null;
+  for (let c = 1; c <= Math.max(1, Math.min(maxCols, items.length)); c++) {
+    const p = gridPlan(items, c, x0); p.z = Math.min(1, cw / p.W, ch / p.H);
+    if (!best || p.z > best.z * 1.03) best = p;
+  }
+  return best;
+}
+function planFor(mode, cols) {
+  const ids = chain(), items = mode === 'stage' ? stageItems(ids) : rowItems(ids), x0 = mode === 'stage' ? CV_X_STAGE : CV_X_ROWS;
+  return cols ? gridPlan(items, cols, x0) : bestPlan(items, x0, mode === 'stage' ? 5 : 6);
+}
+const ARRANGED = { rows: 'Arranged in rows.', stage: 'Arranged by stage.', column: 'Arranged in one column.' };
+async function arrange(mode, opts) {
+  opts = opts || {};
+  const mine = CV;
+  if (!opts.quiet) { for (let i = 0; i < 20 && CV.loading.size; i++) await new Promise(r => setTimeout(r, 100)); }   // let the "Stops" notes load first: they take room
+  if (mine !== CV || !CV.el || !CV.el.isConnected) return;
+  const ids = chain(), NW = nodeW();
+  EW.mode = mode; CV.el.classList.toggle('rowmode', rowish()); measureNodes();
+  let plan;
+  if (mode === 'column') { const pos = {}; let y = CV_TOP; ids.forEach(id => { pos[id] = { x: CV_CX - NW / 2, y }; y += hOf(id) + CV_GAP; }); plan = { pos, cols: null }; }
+  else plan = planFor(mode, null);
+  EW.arrCols = plan.cols; EW.arrIds = ids.join(); EW.arrGeo = geoKey(ids); EW.autoArr = true;
+  const same = ids.every(id => EW.pos[id] && Math.abs(EW.pos[id].x - plan.pos[id].x) < 1 && Math.abs(EW.pos[id].y - plan.pos[id].y) < 1);
+  if (opts.quiet) { ids.forEach(id => { EW.pos[id] = plan.pos[id]; }); EW.last = snapJSON(); positionNodes(); drawWires(); applyZoom(); return; }
+  if (same) { drawWires(); fitView(mode !== 'column'); commitLayout(); toast('Already arranged like this.'); return; }
+  animateTo(plan.pos, () => { if (mode === 'column') CV.el.scrollTo({ left: 0, top: 0, behavior: 'smooth' }); else fitView(true); toast(ARRANGED[mode] + ' The flow still runs in the same order.'); });
+}
+const geoKey = ids => ids.map(id => vOf(id) + ':' + exOf(id)).join();
+function animateTo(to, after) {
   const from = {}; Object.keys(to).forEach(id => { from[id] = { ...EW.pos[id] }; });
-  const done = () => { commitLayout(); CV.el.scrollTo({ left: 0, top: 0, behavior: 'smooth' }); toast('Tidied up. The flow still runs in the same order.'); };
+  const done = () => { commitLayout(); if (after) after(); };
   const set = e => { Object.keys(to).forEach(id => { EW.pos[id] = { x: from[id].x + (to[id].x - from[id].x) * e, y: from[id].y + (to[id].y - from[id].y) * e }; }); positionNodes(); drawWires(); applyZoom(); };
   if (document.hidden) { set(1); done(); return; }
   const t0 = performance.now(), dur = 420;
   const step = now => { const t = Math.min(1, (now - t0) / dur); set(1 - Math.pow(1 - t, 3)); if (t < 1) requestAnimationFrame(step); else done(); };
   requestAnimationFrame(step);
+}
+function tidyMenu(anchor) {
+  const thumb = m => {
+    const r = (x, y, w, hh) => svgEl('rect', { x, y, width: w, height: hh, rx: 1.2 });
+    const kids = m === 'column' ? [r(9, 1, 10, 4.5), r(9, 7.75, 10, 4.5), r(9, 14.5, 10, 4.5)]
+      : m === 'rows' ? [r(1, 3, 7.5, 5), r(10.25, 3, 7.5, 5), r(19.5, 3, 7.5, 5), r(1, 12, 7.5, 5), r(10.25, 12, 7.5, 5)]
+      : [r(9, 1, 10, 4), r(1, 7.5, 7.5, 5), r(10.25, 7.5, 7.5, 5), r(19.5, 7.5, 7.5, 5), r(1, 15, 7.5, 4), r(10.25, 15, 7.5, 4)];
+    return svgEl('svg', { class: 'tthumb', viewBox: '0 0 28 20', width: '28', height: '20', 'aria-hidden': 'true' }, ...kids);
+  };
+  const item = (m, name, text) => h('button', { class: 'mi' + (EW.mode === m ? ' on' : ''), type: 'button', onclick: () => { closePop(); arrange(m); } },
+    thumb(m), h('span', { class: 'grow' }, name, h('small', null, text)), EW.mode === m ? icon('check', 'sm') : null);
+  openPop(anchor, [h('div', { class: 'ml' }, 'Arrange the boxes'),
+    item('rows', 'Rows', 'Left to right, then down. Fits the screen.'),
+    item('stage', 'By stage', 'Rows grouped by what the steps do.'),
+    item('column', 'Column', 'One long column, top to bottom.'),
+    h('div', { class: 'muted small', style: { padding: '6px 10px 4px' } }, 'The order the steps run in never changes. Only the places do.')], { width: 330, up: true });
 }
 
 // ----- moving boxes, moving the canvas, drawing wires -----
@@ -307,7 +450,7 @@ function wireCanvas(cv) {
         if (g.multi) { CV.sel.has(g.id) ? CV.sel.delete(g.id) : CV.sel.add(g.id); } else CV.sel = new Set([g.id]);
         if (CV.panel !== 'try') { CV.panel = 'insp'; CV.itab = 'set'; }
         renderNodes(); renderInspector(); revealAbove(g.id);
-      } else commitLayout();
+      } else { EW.autoArr = false; commitLayout(); }
       return;
     }
     if (g.type === 'wire') endWire(e, g);
@@ -416,7 +559,7 @@ document.addEventListener('keydown', e => {
   const t = e.target;
   if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
   if (modalStack.length) return;
-  if (e.shiftKey && e.altKey && e.key.toLowerCase() === 't') { e.preventDefault(); tidy(); }
+  if (e.shiftKey && e.altKey && e.key.toLowerCase() === 't') { e.preventDefault(); arrange(EW.mode || 'rows'); }
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   else if ((e.key === 'Delete' || e.key === 'Backspace') && CV.sel.size) { e.preventDefault(); removeSelected(); }
   else if (e.key === 'Escape' && CV.sel.size) { CV.sel = new Set(); renderNodes(); renderInspector(); }

@@ -601,6 +601,9 @@ class Layout(BaseModel):
     steps: list[Point] = Field(max_length=500)
     trigger: Point | None = None
     report: Point | None = None
+    # how the boxes were arranged with Tidy up (rows, by stage or column), and how many boxes sit in a row
+    mode: Literal["column", "rows", "stage"] | None = None
+    cols: int | None = Field(default=None, ge=1, le=8)
 
     @field_validator("steps", "trigger", "report")
     @classmethod

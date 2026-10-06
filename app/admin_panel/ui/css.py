@@ -505,6 +505,14 @@ _CANVAS = r"""
 .zoomb{position:absolute;left:14px;bottom:14px;z-index:20;display:flex;gap:2px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh2);align-items:center;flex-wrap:wrap;max-width:calc(100% - 28px)}
 .zoomb .zv{min-width:48px;text-align:center;font-weight:650;font-size:13px;color:var(--ink-2)}
 .zoomb .btn.tidy{color:var(--brand);font-weight:700}
+/* boxes side by side: the wire leaves and enters at the sides, level with the box's title */
+.nd[data-pin="left"] .nd-port.in{left:-7px;top:21px;margin:0}
+.nd[data-pout="right"] .nd-port.out{left:auto;right:-7px;bottom:auto;top:21px;margin:0}
+.cv.rowmode .nd-exit{top:56px;transform:none}
+.skiptxt.c{transform:translate(-50%,-50%)}
+.stglbl{position:absolute;width:150px;text-align:right;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--kc,var(--muted));line-height:1.25;pointer-events:none}
+.tthumb{flex:none;color:var(--muted)}.tthumb rect{fill:currentColor;opacity:.6}
+.pop .mi.on{background:var(--brand-soft)}.pop .mi .grow{min-width:0}
 
 .nd{--kc:var(--k-look);position:absolute;width:var(--nw);background:var(--surface);border:1px solid var(--line-2);border-radius:14px;box-shadow:var(--sh1);text-align:left;cursor:grab;user-select:none;touch-action:none;transition:box-shadow .15s,border-color .15s,opacity .2s}
 .nd::before{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:4px;border-radius:0 4px 4px 0;background:var(--kc)}
