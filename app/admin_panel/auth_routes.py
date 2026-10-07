@@ -48,6 +48,7 @@ from app.admin_panel.auth import (
     throttle,
     verify_password,
 )
+from app.admin_panel.auth_log import LOG_RANGE_PATTERN, LOG_VIEW_PATTERN, read_log
 from app.db import fetch_one, get_all_source_keys, routing_pool
 from app.logging_config import get_context_logger
 
@@ -489,34 +490,29 @@ async def activity(
     _: Super,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 40,
+    view: Annotated[str, Query(pattern=LOG_VIEW_PATTERN)] = "all",
+    q: Annotated[str, Query(max_length=100)] = "",
+    org: Annotated[str, Query(max_length=100)] = "",
+    range_: Annotated[str, Query(alias="range", pattern=LOG_RANGE_PATTERN)] = "all",
 ):
-    total = await routing_pool().fetchval("SELECT count(*) FROM panel_audit")
-    found = await routing_pool().fetch(
-        "SELECT p.id, p.at, p.email, COALESCE(a.name, p.email, 'Someone') AS who, p.action, p.ok, "
-        "p.source_key, p.detail, p.ip FROM panel_audit p "
-        "LEFT JOIN panel_accounts a ON a.id = p.account_id "
-        "ORDER BY p.id DESC LIMIT $1 OFFSET $2",
-        page_size,
-        (page - 1) * page_size,
+    """The sign-in log, newest first. The buttons (view), the search, the organisation and the range
+    narrow it; counts say how many lines each button would show under the same search, organisation
+    and range."""
+    got = await read_log(
+        routing_pool(),
+        view=view,
+        q=q,
+        org=org.strip(),
+        range_=range_,
+        page=page,
+        page_size=page_size,
     )
+    keys = await get_all_source_keys()
     return {
-        "total": total,
+        **got,
         "page": page,
         "page_size": page_size,
-        "rows": [
-            {
-                "id": r["id"],
-                "at": r["at"].isoformat(),
-                "who": r["who"],
-                "email": r["email"],
-                "action": r["action"],
-                "ok": r["ok"],
-                "org": r["source_key"],
-                "detail": r["detail"],
-                "ip": r["ip"],
-            }
-            for r in found
-        ],
+        "orgs": [{"key": k, "name": await org_name(k)} for k in sorted(keys)],
     }
 
 

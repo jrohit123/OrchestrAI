@@ -117,6 +117,21 @@ body.rail .pr-help{display:none}
 .sa-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line)}
 .sa-line:last-child{border-bottom:0}
 .sa-line .t{min-width:0}
+table.logt td:first-child{white-space:nowrap}
+@media (max-width:760px){
+table.logt,table.logt tbody{display:block}
+table.logt thead{display:none}
+table.logt tr{display:flex;flex-wrap:wrap;align-items:flex-start;gap:2px 10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+table.logt tr:last-child{border-bottom:0}
+table.logt td,table.logt td.wide{display:block;min-width:0;padding:0;border:0}
+table.logt td:nth-child(2){order:1;flex:1 1 0}
+table.logt td:nth-child(5){order:2}
+table.logt td:nth-child(1){order:3;flex:1 0 100%;font-size:12.5px}
+table.logt td:nth-child(3){order:4;flex:1 0 100%;margin-top:6px}
+table.logt td:nth-child(4){order:5;font-size:12.5px}
+table.logt td:nth-child(6){order:6;margin-left:auto}
+}
+.sa-ask{margin:6px 0 4px;padding:8px 12px;border-left:3px solid var(--brand);background:var(--brand-soft);border-radius:0 8px 8px 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
 .sa-two{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;align-items:start}
 @media (max-width:900px){.sa-two{grid-template-columns:minmax(0,1fr)}}
 .sa-pick{display:grid;gap:6px}

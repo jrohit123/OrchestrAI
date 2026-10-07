@@ -40,7 +40,14 @@ only at "Forgot password". A normal sign-in is email and password, for super adm
 - **Take it away, switch an account off, sign someone out everywhere:** Dashboard access, the
   three dots on their row. Switching off works on their very next click.
 - **Add a super admin:** Dashboard access, Add a super admin.
-- **See what happened:** Sign-in log (every sign-in, failure, lock, sign-up, change of access).
+- **See what happened:** Sign-in log (every sign-in, failure, lock, sign-up, message and change of access).
+  Quick buttons narrow it: All, Messages from admins (what an admin wrote with "Ask a super admin", shown
+  whole), Sign-ins, Problems (everything that failed), Sign-ups and codes, Access changes. The number on a
+  button follows the other filters. Search finds a name, an email, an address or words of a message (every
+  word typed must be found); the Organisation list shows lines about one organisation or by its admins;
+  Today, Last 7 days, Last 30 days or All time sets how far back. The address keeps the filters, so a
+  filtered view can be saved or sent. Which buttons show which kinds of line is `LOG_GROUPS` in
+  `app/admin_panel/auth_log.py`.
 
 ## When something goes wrong (SQL for Railway's query box on the routing database)
 

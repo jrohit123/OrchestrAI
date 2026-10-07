@@ -43,7 +43,7 @@ async def ask(body: AskBody, ctx: CtxDep, request: Request):
         email=ctx.account_email,
         ok=sent > 0,
         source_key=ctx.source_key,
-        detail=f"Asked the super admins ({sent} of {len(supers)} emails sent): {text[:200]}",
+        detail=f"Asked the super admins ({sent} of {len(supers)} emails sent): {text}",
     )
     if not sent:
         raise HTTPException(

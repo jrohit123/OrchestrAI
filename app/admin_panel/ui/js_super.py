@@ -10,9 +10,10 @@ const AUDIT_WORDS = {
   access_given: 'Access given', access_taken: 'Access taken away', switched_on: 'Switched on', switched_off: 'Switched off', super_added: 'Made a super admin',
   signed_out_everywhere: 'Signed out everywhere', invite_again: 'Invitation sent again', ask: 'Asked the super admins',
 };
+const auditNote = r => r.detail && r.detail.trim().toLowerCase() !== (AUDIT_WORDS[r.action] || '').toLowerCase() ? r.detail : '';
 const accountState = a => a.locked ? badge('Locked for a while', 'bad') : a.status === 'active' ? badge('Active', 'ok') : a.status === 'invited' ? badge('Has not signed up yet', 'info') : badge('Switched off');
 const orgNameOf = (orgs, key) => (orgs.find(o => o.key === key) || {}).name || key;
-const auditLine = r => h('div', { class: 'sa-line' }, h('div', { class: 't' }, h('b', null, r.who), ' · ', AUDIT_WORDS[r.action] || pretty(r.action), r.ok === false ? [' ', badge('failed', 'bad')] : null, r.detail ? h('div', { class: 'muted small' }, r.detail) : null), h('span', { class: 'muted small' }, ago(r.at)));
+const auditLine = r => h('div', { class: 'sa-line' }, h('div', { class: 't' }, h('b', null, r.who), ' · ', AUDIT_WORDS[r.action] || pretty(r.action), r.ok === false ? [' ', badge('failed', 'bad')] : null, auditNote(r) ? h('div', { class: 'muted small' }, auditNote(r).length > 180 ? auditNote(r).slice(0, 180) + '…' : auditNote(r)) : null), h('span', { class: 'muted small' }, ago(r.at)));
 
 // pick a person of one organisation, to give them dashboard access
 function orgPersonPicker(orgKey, onPick) {
@@ -175,16 +176,51 @@ async function superAccounts(root) {
     { label: '', render: a => h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'More for ' + a.name, 'data-popkeep': '1', onclick: e => accountMenu(a, o.orgs, again, e.currentTarget) }, icon('dots', 'sm')) },
   ], d.accounts, { emptyTitle: 'Nobody yet' })));
 }
+// The sign-in log: quick buttons by topic, a search, one organisation and a range. The numbers on the
+// buttons come from the server and follow the other filters, so they always match what a click shows.
+const LOG_VIEWS = [['all', 'All'], ['messages', 'Messages from admins'], ['sign_in', 'Sign-ins'], ['problems', 'Problems'], ['sign_up', 'Sign-ups and codes'], ['access', 'Access changes']];
+const LOG_RANGES = [['all', 'All time'], ['today', 'Today'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']];
 async function superActivity(root, r) {
-  const page = Number(r.q.page || 1);
-  const d = await authApi.get('/activity' + qs({ page, page_size: 40 }));
-  root.append(h('div', { class: 'card' }, table([
-    { label: 'When', render: x => h('span', { class: 'muted' }, fmtDT(x.at)) },
-    { label: 'Who', cls: 'wide', render: x => h('div', null, h('b', null, x.who), x.email && x.email !== x.who ? h('div', { class: 'muted small' }, x.email) : null) },
-    { label: 'What', cls: 'wide', render: x => h('div', null, AUDIT_WORDS[x.action] || pretty(x.action), x.detail ? h('div', { class: 'muted small' }, x.detail) : null) },
-    { label: 'Result', render: x => x.ok ? badge('OK', 'ok') : badge('Failed', 'bad') },
-    { label: 'From', render: x => h('span', { class: 'muted small' }, x.ip || '') },
-  ], d.rows, { emptyTitle: 'Nothing yet' }), pager(d.total, d.page, d.page_size, p => { location.hash = href('activity', '', { page: p }); })));
+  const mine = S.renderId;
+  const q = { ...r.q };
+  if (!LOG_VIEWS.some(v => v[0] === q.view)) q.view = 'all';        // a made-up address falls back to everything
+  if (!LOG_RANGES.some(v => v[0] === q.range)) q.range = 'all';
+  q.page = Number(q.page || 1) || 1;
+  const bar = h('div', { class: 'filters' }), chips = h('div', { class: 'chips', style: { marginBottom: '12px' } }), out = h('div', { class: 'card' });
+  root.append(bar, chips, out);
+  const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
+  const search = h('input', { type: 'search', placeholder: 'Search a name, an email, or words in a message', value: q.q || '', style: { flex: 1, minWidth: '240px', maxWidth: '420px' }, 'aria-label': 'Search the sign-in log' });
+  search.addEventListener('input', debounce(() => update({ q: search.value }), 300));
+  const orgSel = sel([['', 'All organisations']], '', { class: 'select sm', style: { width: 'auto' }, 'aria-label': 'Organisation', onchange: e => update({ org: e.target.value }) });
+  const rangeSel = sel(LOG_RANGES, q.range, { class: 'select sm', style: { width: 'auto' }, 'aria-label': 'How far back', onchange: e => update({ range: e.target.value }) });
+  const clearBtn = h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { search.value = ''; orgSel.value = ''; rangeSel.value = 'all'; update({ q: '', org: '', range: 'all', view: 'all' }); } }, 'Clear filters');
+  add(bar, [search, orgSel, rangeSel, h('span', { class: 'sp' }), clearBtn]);
+  let orgsReady = false, latest = 0;
+  async function load() {
+    if (mine !== S.renderId) return;
+    const turn = ++latest;                                           // an older answer must never replace a newer one
+    setQuery({ ...q, view: q.view === 'all' ? '' : q.view, range: q.range === 'all' ? '' : q.range });
+    clearBtn.style.display = q.q || q.org || q.view !== 'all' || q.range !== 'all' ? '' : 'none';
+    fill(out, h('div', { class: 'empty' }, 'Loading…'));
+    try {
+      const d = await authApi.get('/activity' + qs({ page: q.page, page_size: 40, view: q.view, q: q.q, org: q.org, range: q.range }));
+      if (mine !== S.renderId || turn !== latest) return;
+      if (!orgsReady) { orgsReady = true; d.orgs.forEach(o => orgSel.append(h('option', { value: o.key }, o.name))); orgSel.value = q.org || ''; }
+      const nameOf = k => orgNameOf(d.orgs, k);
+      fill(chips, LOG_VIEWS.map(([key, label]) => h('button', { type: 'button', class: 'chip' + (q.view === key ? ' on' : ''), 'aria-pressed': String(q.view === key), onclick: () => update({ view: key }) }, label + ' ', h('span', { style: { opacity: .7 } }, d.counts[key]))));
+      const asked = x => h('div', null, AUDIT_WORDS.ask, h('div', { class: 'sa-ask' }, x.message),
+        h('div', { class: 'muted small' }, 'Emailed to ' + (x.emails_sent === x.emails_tried ? plural(x.emails_sent, 'super admin') : x.emails_sent + ' of ' + plural(x.emails_tried, 'super admin'))));
+      fill(out, table([
+        { label: 'When', render: x => h('span', { class: 'muted' }, fmtDT(x.at)) },
+        { label: 'Who', cls: 'wide', render: x => h('div', null, h('b', null, x.who), x.email && x.email !== x.who ? h('div', { class: 'muted small' }, x.email) : null) },
+        { label: 'What', cls: 'wide', render: x => x.message != null ? asked(x) : h('div', null, AUDIT_WORDS[x.action] || pretty(x.action), auditNote(x) ? h('div', { class: 'muted small' }, auditNote(x)) : null) },
+        { label: 'Organisation', render: x => x.orgs.length ? x.orgs.map(nameOf).join(', ') : h('span', { class: 'muted' }, '—') },
+        { label: 'Result', render: x => x.ok ? badge('OK', 'ok') : badge('Failed', 'bad') },
+        { label: 'From', render: x => h('span', { class: 'muted small' }, x.ip || '') },
+      ], d.rows, { cls: 'logt', emptyTitle: 'Nothing matches', emptyText: 'Try another button, a wider range, or clear the filters.' }), pager(d.total, d.page, d.page_size, p => update({ page: p })));
+    } catch (e) { if (turn === latest) fill(out, notice(e.message, 'bad')); }
+  }
+  await load();
 }
 const SUPER_SCREENS = { overview: superOverview, orgs: superOrgs, accounts: superAccounts, activity: superActivity };
 async function superRoute() {
@@ -197,7 +233,7 @@ async function superRoute() {
   closePop(); setTopAction(null);
   setCrumbs([h('span', null, tab[1])]);
   document.title = tab[1] + ' · OrchestrAI';
-  const sub = { overview: 'Every organisation at a glance', orgs: 'Open any organisation’s dashboard, or give someone access to it', accounts: 'Who can sign in, and to what', activity: 'Every sign-in and every change of access' }[key];
+  const sub = { overview: 'Every organisation at a glance', orgs: 'Open any organisation’s dashboard, or give someone access to it', accounts: 'Who can sign in, and to what', activity: 'Every sign-in, every message from an admin, and every change of access' }[key];
   const loading = h('div', { class: 'empty' }, 'Loading…'), content = h('div');
   fill(document.getElementById('main'), h('div', { class: 'screen' }, h('div', { class: 'ph' }, h('div', null, h('h1', null, key === 'overview' ? greeting() + ', ' + firstName(S.me.name) : tab[1]), h('div', { class: 'sub' }, sub))), loading, content));
   try { await SUPER_SCREENS[key](content, r); }
