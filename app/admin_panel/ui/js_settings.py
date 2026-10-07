@@ -29,7 +29,7 @@ async function settingsOrgCard(info) {
 function settingsTimeCard(info) {
   return setCard('time', 'Time & language',
     setRow('Time zone', 'Used by schedules, reminders, “due in” and every date on screen.', h('b', null, zoneLabel(info.org.timezone)), h('span', { class: 'badge', 'data-tip': 'Everything runs on this time zone today. Choosing another one is planned.' }, 'Fixed for now')),
-    setRow('Language of messages', 'The words the assistant uses come from its instructions and message texts.', h('b', null, 'English')));
+    setRow('Language of messages', 'The words the chat bot uses come from Messages and AI notes.', h('b', null, 'English')));
 }
 
 // one number: a box, its unit, the built-in value, and a way back to it
@@ -99,12 +99,12 @@ async function settingsSupportCard() {
       h('div', { class: 'chips' }, Object.entries(LABELS).map(([k, l]) => h('span', { class: 'badge ' + (d.caps[k] ? 'ok' : '') }, (d.caps[k] ? '✓ ' : '✗ ') + l))),
       h('div', { class: 'muted small' }, 'Cases count as finished when their status is: ' + d.closed_values.join(', ') + '. ' + plural(d.counts.users, 'person', 'people') + ', ' + plural(d.counts.workflows, 'flow') + '.'))) : null,
     setRow('End every ongoing conversation', 'People can simply start again.', h('button', { class: 'btn danger', onclick: async () => {
-      if (!await confirmBox('End every ongoing conversation with the assistant? People can simply start again.', { ok: 'End them all', danger: true })) return;
+      if (!await confirmBox('End every ongoing conversation with the chat bot? People can simply start again.', { ok: 'End them all', danger: true })) return;
       try { await api.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
 }
 
 SECTIONS.settings = {
-  title: 'Settings', sub: 'Your organisation and how the assistant behaves, each setting in one place.',
+  title: 'Settings', sub: 'Your organisation and how the chat bot behaves, each setting in one place.',
   async render(root, route) {
     if (route && route.tab === 'history') return renderHistory(root, route);
     const info = await api.get('/org-settings');

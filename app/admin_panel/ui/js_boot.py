@@ -10,12 +10,14 @@ const SETUP = new Set(NAV[1][1]);
 const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
-  ['Flow', 'One thing the assistant can do for people, like filing a complaint.'],
+  ['Flow', 'One thing the chat bot can do for people, like filing a complaint.'],
   ['Trigger', 'What starts a flow: a phrase someone says or a button they tap.'],
   ['Step', 'One box in a flow: look something up, save it, ask for approval, send a message.'],
   ['Building block', 'A small ready-made step that many flows use. Change it once and they all change.'],
   ['Role', 'A group of people who may do the same things, like Admin or Tenant.'],
   ['Seat', 'A job someone holds, like Secretary. Holding it can change their role.'],
+  ['Chat bot', 'What people talk to on Telegram or WhatsApp. It understands what they write and starts the right flow.'],
+  ['AI helper', 'Helps you in this dashboard: describe a flow and it drafts it for you to check.'],
 ];
 function openWords(anchor, up) {
   openPop(anchor, h('div', { class: 'words' }, h('b', null, 'Words used here'), h('dl', null, GLOSSARY.map(([w, m]) => h('div', null, h('dt', null, w), h('dd', null, m))))), { width: 360, up: !!up });
@@ -63,7 +65,7 @@ async function renderSection(sec, r) {
   const group = SETUP.has(sec.key) ? [h('span', { class: 'muted' }, 'Set up')] : [];
   setCrumbs(editing ? [...group, h('a', { href: href('workflows') }, 'Flows'), h('span', { id: 'crumbname' }, '…')]
     : tab && tab !== sec.tabs[0] ? [...group, h('a', { href: href(sec.key) }, sec.label), h('span', null, tab.label)] : [...group, h('span', null, sec.label)]);
-  const heading = impl.heading ? impl.heading(sec) : { title: sec.label, sub: impl.sub };
+  const heading = impl.heading ? impl.heading(sec, r) : { title: sec.label, sub: impl.sub };
   const head = editing ? null : h('div', { class: 'ph' }, h('div', null, h('h1', null, heading.title), heading.sub ? h('div', { class: 'sub' }, heading.sub) : null), impl.actions ? impl.actions(r) : null);
   const tabs = tab && !editing && sec.tabs.length > 1 ? h('div', { class: 'tabs' }, sec.tabs.map(t => h('a', { class: 'tab' + (t.key === tab.key ? ' active' : ''), href: href(sec.key, t.key === sec.tabs[0].key ? '' : t.key) }, t.label))) : null;
   const loading = h('div', { class: 'empty' }, 'Loading…'), content = h('div');

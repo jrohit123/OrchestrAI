@@ -2,8 +2,8 @@ JS = r"""
 // ───────────────────────── People & access ─────────────────────────
 const LEVELS = { 1: 'See only', 2: 'Can start', 3: 'Can work on', 4: 'Full control' };
 const GRANT_STATE = { live: ['Live', 'ok'], scheduled: ['Starts later', 'info'], expired: ['Expired', ''], revoked: ['Revoked', ''] };
-// Remove this line when the assistant starts reading special access.
-const ACCESS_NOTICE = 'Not active yet. What you add here is only a note: the assistant does not read it, so it does not change what anyone can do. To let a role use a flow, tick it under Roles. To let someone act on complaints sent to them, make them the holder of a seat or name them in a rule under Case rules.';
+// Remove this line when the chat bot starts reading special access.
+const ACCESS_NOTICE = 'Not active yet. What you add here is only a note: the chat bot does not read it, so it does not change what anyone can do. To let a role use a flow, tick it under Roles. To let someone act on complaints sent to them, make them the holder of a seat or name them in a rule under Case rules.';
 const homeText = x => (x.wing ? x.wing + '-' : '') + x.flat_no + ' · ' + pretty(x.residential_status);
 
 function kvEditor(initial, keyHints) {
@@ -58,10 +58,10 @@ async function showPerson(id) {
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Account'), h('div', { class: 'card-b stack' },
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Role'), role, saveRole, h('a', { class: 'small', href: href('access', '', { role: p.role_id || '' }) }, 'What can this role do?')),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Active'), switchEl(p.is_active, async v => { await api.patch('/people/' + id, { is_active: v }); toast(v ? 'Switched on' : 'Switched off', 'ok'); reload(); }),
-        h('span', { class: 'muted small' }, 'Inactive people cannot use the assistant and cannot be given cases.')),
+        h('span', { class: 'muted small' }, 'Inactive people cannot use the chat bot and cannot be given cases.')),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Email'), p.email || '—'),
-      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Messaging'), p.reachable ? 'Linked (' + (p.phone_hint || '') + ')' : h('span', null, h('b', null, 'Not on ' + chatWord() + ' yet. '), 'Ask them to send their email address to the assistant once. It links them straight away. ',
-        h('button', { class: 'btn sm', type: 'button', style: { marginTop: '6px' }, onclick: () => navigator.clipboard && navigator.clipboard.writeText('Hi ' + p.name.split(' ')[0] + ', you can now use the ' + S.boot.org.name + ' assistant. Open its chat on ' + chatWord() + ' and send it your email address (' + (p.email || '') + ') once. It will link you to your account.').then(() => toast('Message copied. Send it to ' + p.name.split(' ')[0] + '.', 'ok')) }, icon('copy', 'sm'), 'Copy the message to send'))),
+      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Messaging'), p.reachable ? 'Linked (' + (p.phone_hint || '') + ')' : h('span', null, h('b', null, 'Not on ' + chatWord() + ' yet. '), 'Ask them to send their email address to the chat bot once. It links them straight away. ',
+        h('button', { class: 'btn sm', type: 'button', style: { marginTop: '6px' }, onclick: () => navigator.clipboard && navigator.clipboard.writeText('Hi ' + p.name.split(' ')[0] + ', you can now use the ' + S.boot.org.name + ' chat bot. Open its chat on ' + chatWord() + ' and send it your email address (' + (p.email || '') + ') once. It will link you to your account.').then(() => toast('Message copied. Send it to ' + p.name.split(' ')[0] + '.', 'ok')) }, icon('copy', 'sm'), 'Copy the message to send'))),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Added'), fmtD(p.created_at)),
       d.chats && d.chats.turns ? h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Chats'), plural(d.chats.turns, 'message'), ' · last ' + ago(d.chats.last_at), h('a', { class: 'btn sm', href: href('conversations', '', { user: id }) }, 'View chats →')) : null)));
     // homes
@@ -166,8 +166,8 @@ function addPersonModal(lk) {
   const phone = byNumber ? h('input', { class: 'input', type: 'text', placeholder: '+91 98765 43210', maxlength: 40 }) : null;
   const role = sel([['', 'Choose a role…'], ...lk.roles.map(r => [r.id, roleLabel(r.name)])], '');
   modal({ title: 'Add person',
-    body: h('div', null, field('Name', name), field('Email', email, byNumber ? 'Needed to tell people apart.' : 'The assistant links them to this account when they send it.'),
-      phone ? field('WhatsApp number', phone, 'With the country code, like +91 98765 43210. The assistant knows them by this number.') : null,
+    body: h('div', null, field('Name', name), field('Email', email, byNumber ? 'Needed to tell people apart.' : 'The chat bot links them to this account when they send it.'),
+      phone ? field('WhatsApp number', phone, 'With the country code, like +91 98765 43210. The chat bot knows them by this number.') : null,
       field('Role', role, h('span', null, 'Not sure? ', h('a', { href: href('access') }, 'See what each role can do'), '.'))),
     actions: [{ label: 'Cancel' }, { label: 'Add person', primary: true, run: async () => {
       if (name.value.trim().length < 2) throw new Error('Write the person’s name.');
@@ -309,7 +309,7 @@ async function renderRolesTab(root) {
 }
 
 SECTIONS.people = {
-  title: 'People', sub: 'Everyone who can use the assistant, and what their role lets them do',
+  title: 'People', sub: 'Everyone who can use the chat bot, and what their role lets them do',
   async render(root, route) { return renderPeopleTab(root, route); },
 };
 SECTIONS.access = {

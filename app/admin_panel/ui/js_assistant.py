@@ -1,6 +1,6 @@
 JS = r"""
-// ───────────────────────── Assistant: Messages ─────────────────────────
-// Every text the assistant sends by itself. Groups on the left, the messages of one group in the
+// ───────────────────────── Chat bot: Messages ─────────────────────────
+// Every text the chat bot sends by itself. Groups on the left, the messages of one group in the
 // middle, and an editor with a phone preview on the right. What is shown comes from the server,
 // including the check of what was typed, so the preview is exactly what people will receive.
 const MV = { data: null, group: null, key: null };
@@ -78,7 +78,7 @@ function messageEditor(m, ready, reload) {
         h('div', null, chips)),
       notes,
       h('div', { class: 'field' }, h('label', null, 'How it looks to the person'),
-        h('div', { class: 'phone' }, h('div', { class: 'pbar' }, h('span', { class: 'logo sm' }, S.boot.org.name[0]), 'Assistant'), h('div', { class: 'pbody' }, bubble)),
+        h('div', { class: 'phone' }, h('div', { class: 'pbar' }, h('span', { class: 'logo sm' }, S.boot.org.name[0]), 'Chat bot'), h('div', { class: 'pbody' }, bubble)),
         h('div', { class: 'hint' }, 'Sample values are filled in. *bold* and _italic_ show as they do in the chat.')),
       h('div', { class: 'row' }, save, builtIn, hist,
         h('span', { class: 'muted small' }, m.source === 'own' ? 'Version ' + m.version + (m.updated_by ? ' · by ' + m.updated_by : '') : m.source === 'shared' ? 'A shared wording is in use.' : 'Says what it always said.'))));
@@ -117,10 +117,13 @@ async function renderMessages(root) {
   await redraw();
 }
 
-// ───────────────────────── Assistant: AI instructions ─────────────────────────
-// The written text the assistant follows, in layers put one after the other. Pick a layer, edit it,
-// compare it with an earlier version, go back. "What the assistant reads" shows them put together.
+// ───────────────────────── Chat bot: AI notes ─────────────────────────
+// The notes the chat bot's AI reads before every message, in parts that are put one after the other.
+// Only the organisation's own notes are meant to be changed, so they come first and in plain words;
+// the shared rules and the industry text wait under Advanced. Edit a part, compare it with an
+// earlier version, go back. See everything the AI reads shows the parts put together.
 const IV = { data: null, key: null };
+const botApp = () => ((S.boot.org && S.boot.org.channel) === 'whatsapp' ? 'WhatsApp' : 'Telegram');
 
 // which lines were added or removed between two texts (plain longest-common-lines)
 function lineDiff(a, b) {
@@ -151,17 +154,18 @@ function diffRows(a, b) {
   if (skipped) rows.push(h('div', { class: 'dl gap' }, skipped + ' unchanged line' + (skipped === 1 ? '' : 's')));
   return { rows, changed: d.some(r => r.t !== 'same') };
 }
-const instructionBadge = L => L.source === 'own' ? badge('Edited · version ' + L.version, 'brand') : L.source === 'industry' ? badge('Industry text') : L.source === 'shared' ? badge('Shared text') : badge('Built-in');
+const instructionBadge = L => L.source === 'own' ? badge('Edited · version ' + L.version, 'brand') : L.source === 'industry' ? badge('Industry text') : L.source === 'shared' ? badge('Shared text') : L.can_be_empty && !String(L.text).trim() ? badge('Nothing written yet') : badge('Built-in');
 
-function instructionEditor(L, ready, reload) {
-  const ta = h('textarea', { class: 'textarea promptbox', spellcheck: 'false', 'aria-label': 'Instructions for ' + L.name });
+// own = the organisation's own notes: plain words, a short box, Clear notes instead of Use built-in text
+function instructionEditor(L, ready, reload, own) {
+  const ta = h('textarea', { class: 'textarea promptbox' + (own ? ' an-short' : ''), spellcheck: own ? 'true' : 'false', 'aria-label': (own ? 'Notes for the AI: ' : 'Text of ') + L.name });
   ta.value = L.text; ta.readOnly = !ready; ta.dataset.saved = L.text.trim();
-  if (L.can_be_empty) ta.placeholder = 'Nothing here yet. Write local facts the assistant should know, for example the names of your buildings, house rules, or how people here say things.';
-  const counts = h('span', { class: 'muted small' }), notes = h('div', { class: 'stack s8' });
+  if (L.can_be_empty) ta.placeholder = 'Write your notes here, one idea per line.';
+  const counts = h('span', { class: 'muted small' }), notes = h('div', { class: 'stack s8 an-notes' });
   const save = h('button', { class: 'btn primary', type: 'button', disabled: true }, 'Save');
-  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || L.source !== 'own' }, 'Use built-in text');
+  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || L.source !== 'own' }, own ? 'Clear notes' : 'Use built-in text');
   const hist = h('button', { class: 'btn ghost', type: 'button', 'data-popkeep': true, disabled: !ready }, icon('hist', 'sm'), 'History');
-  const reads = h('button', { class: 'btn ghost', type: 'button' }, icon('spark', 'sm'), 'What the assistant reads');
+  const reads = own ? h('button', { class: 'btn ghost', type: 'button' }, icon('spark', 'sm'), 'See everything the AI reads') : null;
   let seq = 0, verdict = { ok: true, problems: [], warnings: [], characters: L.text.length, lines: L.text.split('\n').length };
   const dirty = () => ta.value.trim() !== L.text.trim();
   const paint = () => {
@@ -181,19 +185,21 @@ function instructionEditor(L, ready, reload) {
     try {
       const r = await api.put('/instructions/' + encKey(L.key), { text: ta.value });
       toast(!r.changed ? 'Nothing to save' : r.version ? 'Saved as version ' + r.version : 'Back to the built-in text', 'ok');
+      ta.dataset.saved = ta.value.trim();
       await reload();
     } catch (e) { toast(e.message, 'bad'); paint(); }
   };
   builtIn.onclick = async () => {
-    if (!await confirmBox('Go back to the built-in text of “' + L.name + '”? Your own versions stay in the history.', { ok: 'Use built-in text' })) return;
-    try { await api.del('/instructions/' + encKey(L.key)); toast('Back to the built-in text', 'ok'); await reload(); }
+    const question = own ? 'Clear these notes? The chat bot goes back to having none. Earlier versions stay in the history.' : 'Go back to the built-in text of “' + L.name + '”? Your own versions stay in the history.';
+    if (!await confirmBox(question, { ok: own ? 'Clear notes' : 'Use built-in text' })) return;
+    try { await api.del('/instructions/' + encKey(L.key)); toast(own ? 'Notes cleared' : 'Back to the built-in text', 'ok'); ta.dataset.saved = ta.value.trim(); await reload(); }
     catch (e) { toast(e.message, 'bad'); }
   };
-  reads.onclick = async () => {
+  if (reads) reads.onclick = async () => {
     try {
       const d = await api.get('/instructions/assembled');
-      modal({ title: 'What the assistant reads', wide: true, body: h('div', { class: 'stack' },
-        h('div', { class: 'muted small' }, 'All the layers put together, in this order, as saved now (' + d.characters.toLocaleString() + ' characters). On every message the system adds today’s date, the person’s role and what they may do, the flows they can start and the tables it may read.'),
+      modal({ title: 'What the AI reads', wide: true, body: h('div', { class: 'stack' },
+        h('div', { class: 'muted small' }, 'All the parts put together, in this order, as saved now (' + d.characters.toLocaleString() + ' characters). On every message the system adds today’s date, the person’s role and what they may do, the flows they can start and the tables it may read.'),
         h('pre', { class: 'promptview' }, d.text || '(nothing)')), actions: [{ label: 'Close' }] });
     } catch (e) { toast(e.message, 'bad'); }
   };
@@ -210,53 +216,68 @@ function instructionEditor(L, ready, reload) {
             h('div', { class: 'muted small' }, '− only in version ' + v.version + ' · + only in what is in use now'),
             x.changed ? h('div', { class: 'difflist' }, x.rows) : h('div', { class: 'muted' }, 'They are the same.')), actions: [{ label: 'Close' }] }); } }, 'Compare'),
           h('button', { class: 'btn sm', type: 'button', onclick: () => { closePop(); ta.value = v.text; ta.dispatchEvent(new Event('input')); ta.focus(); } }, 'Use this text'))))
-        : [h('div', { class: 'muted small', style: { padding: '8px 10px' } }, 'No saved versions yet. These instructions are the built-in text.')];
+        : [h('div', { class: 'muted small', style: { padding: '8px 10px' } }, own ? 'No saved versions yet. You have not written any notes.' : 'No saved versions yet. This is the built-in text.')];
       openPop(anchor, [h('div', { class: 'ml' }, 'Earlier versions'), ...rows], { width: 420 });
     } catch (e) { toast(e.message, 'bad'); }
   };
   paint();
   return h('div', { class: 'card' }, h('div', { class: 'card-h' }, L.name, instructionBadge(L)),
     h('div', { class: 'card-b stack' },
-      h('div', { class: 'muted small' }, L.about),
+      own ? h('div', { class: 'stack s8' },
+        h('div', null, h('b', null, 'Tell the chat bot about your place. '), 'Its AI reads these notes before every message, right after the shared rules. Things worth writing:'),
+        h('ul', { class: 'an-ideas' }, h('li', null, 'Different names people use for the same thing, like two names for one building.'), h('li', null, 'Rules of your place the chat bot should respect.'), h('li', null, 'How it should sound, formal or friendly.')))
+        : h('div', { class: 'muted small' }, L.about),
       h('div', { class: 'field' }, ta, h('div', { class: 'hint' }, counts)),
       notes,
       h('div', { class: 'row' }, save, builtIn, hist, reads,
-        h('span', { class: 'muted small' }, L.source === 'own' && L.updated_by ? 'Last saved by ' + L.updated_by : ''))));
+        h('span', { class: 'muted small' }, L.source === 'own' && L.updated_by ? 'Last saved by ' + L.updated_by : '')),
+      own ? notice('The AI only understands and words things. Looking up, saving and calculating are done by code, so these notes never change a number.', 'teal') : null));
 }
 
 async function renderInstructions(root) {
-  const redraw = async () => { IV.data = await api.get('/instructions'); fill(root, build()); };
-  const build = () => {
-    const d = IV.data;
-    const L = d.layers.find(x => x.key === IV.key) || d.layers[d.layers.length - 1];
+  const mainBox = h('div'), advBox = h('div');
+  const unsaved = box => { const t = box.querySelector('.promptbox'); return !!t && t.value.trim() !== (t.dataset.saved || ''); };
+  const reload = async () => { IV.data = await api.get('/instructions'); if (!unsaved(mainBox)) drawMain(); if (!unsaved(advBox)) drawAdv(); };
+  // the organisation's own notes: the one part meant to be changed
+  const drawMain = () => {
+    const own = IV.data.layers.find(x => x.key === 'agent.client');
+    fill(mainBox, own ? instructionEditor(own, IV.data.ready, reload, true) : null);
+  };
+  // the parts that come built in with the product, tucked away
+  const drawAdv = () => {
+    const d = IV.data, rest = d.layers.filter(x => x.key !== 'agent.client'), L = rest.find(x => x.key === IV.key) || rest[0];
+    if (!L) { fill(advBox, null); return; }
     IV.key = L.key;
     const pick = async key => {
-      const cur = document.querySelector('.promptbox');
-      if (cur && cur.value.trim() !== (cur.dataset.saved || '') && !await confirmBox('Leave these instructions? What you changed is not saved.', { ok: 'Leave without saving' })) return;
-      IV.key = key; fill(root, build());
+      const cur = advBox.querySelector('.promptbox');
+      if (cur && cur.value.trim() !== (cur.dataset.saved || '') && !await confirmBox('Leave this text? What you changed is not saved.', { ok: 'Leave without saving' })) return;
+      IV.key = key; drawAdv();
     };
     const stack = [];
     d.layers.forEach((x, i) => {
       if (i) stack.push(h('div', { class: 'lplus' }, '+'));
-      stack.push(h('button', { type: 'button', class: 'lyr l' + (i + 1) + (x.key === L.key ? ' on' : ''), onclick: () => pick(x.key) },
-        h('span', { class: 'ln' }, String(i + 1)), h('div', { class: 'grow' }, h('b', null, x.name), h('div', { class: 'muted small' }, x.about)), instructionBadge(x)));
+      const inner = [h('span', { class: 'ln' }, String(i + 1)), h('div', { class: 'grow' }, h('b', null, x.name), h('div', { class: 'muted small' }, x.key === 'agent.client' ? 'Your own notes, written in the box above.' : x.about)), instructionBadge(x)];
+      stack.push(x.key === 'agent.client' ? h('div', { class: 'lyr auto l' + (i + 1) }, inner) : h('button', { type: 'button', class: 'lyr l' + (i + 1) + (x.key === L.key ? ' on' : ''), onclick: () => pick(x.key) }, inner));
     });
     stack.push(h('div', { class: 'lplus' }, '+'));
     stack.push(h('div', { class: 'lyr auto l4' }, h('span', { class: 'ln' }, '4'),
       h('div', { class: 'grow' }, h('b', null, 'Today’s facts ', badge('automatic')), h('div', { class: 'muted small' }, 'The date, the person’s role and what they may do, the flows they can start, the tables it may read. Filled in by the system, not written by anyone.'))));
-    return [
-      d.ready ? null : notice('This database has not been updated for editable instructions yet (migration core-0009). You can read the built-in text, but not change it.', 'warn'),
-      h('div', { class: 'aiwrap' },
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the assistant reads', h('span', { class: 'muted small' }, 'one after the other')), h('div', { class: 'card-b lyrs' }, stack)),
-        instructionEditor(L, d.ready, redraw),
-        notice('AI is used only where words have to be understood or written. Exact things (looking up, saving, calculating) are done by code, so these instructions never change a number.', 'teal')),
-    ];
+    fill(advBox, h('div', { class: 'aiwrap' },
+      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'The parts, in the order the AI reads them'), h('div', { class: 'card-b lyrs' }, stack)),
+      instructionEditor(L, d.ready, reload, false)));
   };
-  await redraw();
+  IV.data = await api.get('/instructions');
+  fill(root, [
+    IV.data.ready ? null : notice('This database has not been updated for editable AI notes yet (migration core-0009). You can read the built-in text, but not change it.', 'warn'),
+    h('div', { class: 'stack' }, mainBox,
+      h('details', { class: 'an-adv' }, h('summary', null, 'Advanced: the shared rules and the industry text'),
+        h('div', { class: 'muted small an-advnote' }, 'Built in with the product, the same starting point for every client of the same kind. Change them with care.'), advBox)),
+  ]);
+  drawMain(); drawAdv();
 }
 
 SECTIONS.assistant = {
-  title: 'Assistant', sub: 'What the assistant says by itself, and the written instructions it follows. Change them here; no code change, no waiting.',
+  heading: (sec, r) => ({ title: sec.label, sub: r.tab === 'instructions' ? 'The chat bot’s AI reads these notes before every message. Most days you do not need to change anything here.' : 'The chat bot is what people talk to on ' + botApp() + '. These are the texts it sends by itself, like a welcome or an error. Pick one and change the words.' }),
   async render(root, route) { return route.tab === 'instructions' ? renderInstructions(root) : renderMessages(root); },
 };
 """

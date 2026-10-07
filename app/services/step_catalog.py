@@ -803,7 +803,7 @@ def validate_steps(
         if not spec:
             if op in LEGACY_OPS:
                 continue
-            errors.append(f"Step {n}: '{op}' is not a step type this assistant knows.")
+            errors.append(f"Step {n}: '{op}' is not a step type this system knows.")
             continue
         label = f"Step {n} ({spec['label']})"
         params = step.get("params") or {}

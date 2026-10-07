@@ -105,7 +105,7 @@ async function renderFlows(root, route) {
     const hint = FV.kind === 'block' ? 'Small ready-made steps that flows use, such as Find a case. Change one and every flow that uses it changes. Most people never need to open these.' : '';
     const offToggle = parked.length ? h('label', { class: 'row small flat', style: { gap: '6px', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: !!FV.showOff, onchange: e => { FV.showOff = e.target.checked; draw(); } }), 'Show the ' + plural(parked.length, 'switched-off block') + ' too') : null;
     fill(body, list.length || parked.length ? h('div', { class: 'stack' }, hint || offToggle ? h('div', { class: 'row between' }, h('div', { class: 'muted small' }, hint), offToggle) : null, list.length ? h('div', { class: 'fcards' }, list.map(card)) : h('div', { class: 'card' }, empty('None match', '')))
-      : h('div', { class: 'card' }, empty(FV.text ? 'None match' : 'None yet', FV.kind === 'block' ? 'Make one with “New building block”, or describe it to the assistant.' : 'Make one with “New flow”.')));
+      : h('div', { class: 'card' }, empty(FV.text ? 'None match' : 'None yet', FV.kind === 'block' ? 'Make one with “New building block”, or describe it to the AI helper.' : 'Make one with “New flow”.')));
   }
   const view = h('div', { class: 'seg', role: 'group', 'aria-label': 'How to show flows' },
     h('button', { type: 'button', class: FV.view === 'cards' ? 'on' : '', onclick: () => { FV.view = 'cards'; setView(); } }, icon('board', 'sm'), 'Cards'),
@@ -122,7 +122,7 @@ async function renderFlows(root, route) {
       h('div', { class: 'hw-steps' },
         st('trigger', 'bolt', '1 · Starts when…', ['Someone says a phrase or taps a button. This is the ', h('b', null, 'trigger'), '.']),
         st('look', 'list', '2 · Does these steps', ['Look something up, save it, check who is allowed. Each one is a ', h('b', null, 'step'), '.']),
-        st('tell', 'mail', '3 · Tells the person', 'The assistant replies, and can message other people too.'))));
+        st('tell', 'mail', '3 · Tells the person', 'The chat bot replies, and can message other people too.'))));
   }
   fill(root, strip, chips,
     h('div', { class: 'filters', style: { justifyContent: 'space-between' } },
@@ -161,7 +161,7 @@ function newWorkflowModal(kinds, startKind) {
   function draw() {
     m.setTitle(KIND_TITLE[kind]);
     fill(kindRow, kind === 'workflow' ? h('div', { class: 'muted' }, 'How do you want to start?') : h('div', { class: 'notice' }, icon('info'), h('div', null, h('b', null, KIND_LABEL[kind] + '. '), KIND_HELP[kind])));
-    fill(seg, start('chat', 'spark', 'Describe it', 'Say what it should do. The assistant drafts it and you check it.', true), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
+    fill(seg, start('chat', 'spark', 'Describe it', 'Say what it should do. The AI helper drafts it and you check it.', true), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
     fill(foot, kind === 'workflow' ? (offered.length > 1 ? ['Making something else? ', offered.filter(k => k !== 'workflow').map((k, i) => [i ? ' · ' : null, h('a', { href: '#', onclick: e => { e.preventDefault(); kind = k; proposal = null; history = []; draw(); } }, 'A ' + what[k])])] : null)
       : h('a', { href: '#', onclick: e => { e.preventDefault(); kind = 'workflow'; proposal = null; history = []; draw(); } }, '← Make a flow instead'));
     const err = h('div', { class: 'small', style: { color: 'var(--bad)' } });

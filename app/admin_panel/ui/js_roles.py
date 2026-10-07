@@ -1,6 +1,6 @@
 JS = r"""
 // ───────────────────────── Roles & access: the roles editor ─────────────────────────
-// A role is a name, what its people may start (flows), what the assistant may look up for them, and
+// A role is a name, what its people may start (flows), what the chat bot may look up for them, and
 // whether they may approve. Every list here comes from the database; nothing on this screen knows what
 // a particular role is for. Making a role starts from a copy of one that exists, so nobody begins empty-handed.
 const roleLabel = n => pretty(n);
@@ -63,14 +63,14 @@ async function renderRoleEditor(root, route) {
     // 2. what they can do
     const flowRow = f => h('div', { class: 'rl-perm' }, h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: x.flows.has(f.intent_key), onchange: e => { e.target.checked ? x.flows.add(f.intent_key) : x.flows.delete(f.intent_key); armGuard(); drawEdit(); } }), h('span')),
       h('div', null, h('b', null, f.name), f.is_active ? null : [' ', badge('off')], f.description ? h('span', { class: 'muted small rl-desc' }, f.description) : null));
-    const can = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What they can do', h('span', { class: 'muted small' }, 'Each line is a flow the assistant offers them')),
+    const can = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What they can do', h('span', { class: 'muted small' }, 'Each line is a flow the chat bot offers them')),
       d.flows.length ? [d.flows.map(flowRow), x.flows.size ? null : h('div', { class: 'card-b muted small' }, 'This role cannot start anything yet.')] : empty('No flows yet', 'Make one on the Flows screen first.'));
-    // 3. what the assistant may look up
+    // 3. what the chat bot may look up
     const needBy = t => d.flows.filter(f => x.flows.has(f.intent_key) && (f.needs_tables || []).includes(t)).map(f => f.name);
     const chosen = sorted(x.tables), spare = d.tables.filter(t => !x.tables.has(t));
     const tableChip = t => { const by = needBy(t); return h('span', { class: 'chip' + (by.length ? ' sunk' : ''), 'data-tip': by.length ? 'Needed by: ' + by.join(', ') : null }, pretty(t),
       by.length ? icon('lock', 'xs') : h('button', { class: 'x', type: 'button', 'aria-label': 'Remove ' + pretty(t), style: { fontSize: '16px', padding: '0 2px' }, onclick: () => { x.tables.delete(t); drawEdit(); } }, '×')); };
-    const look = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the assistant may look up for them', h('span', { class: 'muted small' }, 'It never reads anything outside this list')),
+    const look = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the chat bot may look up for them', h('span', { class: 'muted small' }, 'It never reads anything outside this list')),
       h('div', { class: 'card-b stack s8' }, chosen.length ? h('div', { class: 'chips' }, chosen.map(tableChip)) : h('span', { class: 'muted' }, 'Nothing yet.'),
         spare.length ? sel([['', 'Add data…'], ...spare.map(t => [t, pretty(t)])], '', { onchange: e => { if (e.target.value) { x.tables.add(e.target.value); drawEdit(); } } }) : null,
         r && r.entity_types.length ? h('div', { class: 'muted small' }, 'It also reads these kinds of records: ' + r.entity_types.join(', ') + '.') : null));

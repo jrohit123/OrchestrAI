@@ -88,3 +88,12 @@ CSS += r"""
 .seg button[hidden]{display:none}
 .nf-start{margin-top:10px}
 """
+CSS += r"""
+/* ───── Chat bot: AI notes ───── */
+.promptbox.an-short{min-height:190px;font-family:inherit;font-size:14px;line-height:1.55}
+.an-notes:empty{display:none}
+.an-ideas{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13px;display:grid;gap:3px}
+.an-adv{margin-top:6px}
+.an-adv>summary{cursor:pointer;font-weight:600;color:var(--ink-2);padding:12px 2px}
+.an-advnote{margin:0 0 12px 2px}
+"""

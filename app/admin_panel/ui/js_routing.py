@@ -121,7 +121,7 @@ function categoryModal(lk, prios, cat, parentId, done) {
   const extra = extraEditor(cat ? cat.extra_fields : []);
   modal({ title: cat ? 'Edit kind of complaint' : 'New kind of complaint', wide: true,
     body: h('div', null, field('Name', label), h('div', { class: 'two' }, field('Sits under', parent), field('Default priority', prio, 'Used when the person does not say how urgent it is.')),
-      h('div', { class: 'two' }, field('Response target', target, 'How long this kind of case should take. Optional; the priority’s time is used otherwise.'), field('Words that point to it', words, 'Helps the assistant recognise this category.')),
+      h('div', { class: 'two' }, field('Response target', target, 'How long this kind of case should take. Optional; the priority’s time is used otherwise.'), field('Words that point to it', words, 'Helps the chat bot recognise this kind of complaint.')),
       field('Extra questions to ask', extra.el, 'Asked on top of the usual ones when someone reports this kind of case.')),
     actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, run: async () => {
       const b = { label: label.value.trim(), parent_id: parent.value || null, default_priority: prio.value || null, target_minutes: target.value ? Number(target.value) : null, keywords: words.value.split(',').map(x => x.trim()).filter(Boolean), extra_fields: extra.value() };

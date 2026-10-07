@@ -335,7 +335,7 @@ def tag_for(step: dict) -> dict:
     if is_ai(op):
         return {
             "by": "ai",
-            "why": "The assistant (a language model) reads the typed price.",
+            "why": "The AI (a language model) reads the typed price.",
         }
     if op == "run_workflow":
         return {

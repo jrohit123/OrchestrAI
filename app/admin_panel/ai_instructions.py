@@ -40,7 +40,7 @@ LAYERS: dict[str, tuple[str, str]] = {
     "agent.shared": (
         "Shared rules",
         (
-            "How the assistant behaves, how it asks, and when it says it is not sure. The same "
+            "How the chat bot behaves, how it asks, and when it says it is not sure. The same "
             "starting point for every client, so change it with care."
         ),
     ),
@@ -90,7 +90,7 @@ def check(key: str, text: str, built_in: str) -> dict[str, Any]:
     if text.strip() and len(built_in) > 500 and len(text) < len(built_in) * SHORT_AFTER:
         warnings.append(
             f"This is much shorter than the built-in text ({len(text):,} against "
-            f"{len(built_in):,} characters). The assistant will lose guidance it has today."
+            f"{len(built_in):,} characters). The chat bot will lose guidance it has today."
         )
     return {
         "ok": not problems,
@@ -280,9 +280,9 @@ async def save_text(key: str, body: TextBody, ctx: CtxDep):
                 ctx,
                 "instructions",
                 "text",
-                f"Changed the AI instructions: {name}"
+                f"Changed the AI notes: {name}"
                 if version
-                else f"Went back to the built-in AI instructions: {name}",
+                else f"Went back to the built-in AI notes: {name}",
                 target_type="prompts",
                 target_id=key,
                 before={"characters": len(was["body"] if was else built_in)},
@@ -305,7 +305,7 @@ async def use_built_in(key: str, ctx: CtxDep):
                 ctx,
                 "instructions",
                 "text",
-                f"Went back to the built-in AI instructions: {name}",
+                f"Went back to the built-in AI notes: {name}",
                 target_type="prompts",
                 target_id=key,
                 conn=conn,

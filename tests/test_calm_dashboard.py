@@ -130,7 +130,7 @@ def test_the_roles_editor_has_all_its_parts():
         "Start from",
         "Nothing, start empty",
         "What they can do",
-        "What the assistant may look up for them",
+        "What the chat bot may look up for them",
         "Largest amount they can approve",
         "Built in. ",
         "Delete role",
@@ -150,6 +150,38 @@ def test_the_routes_for_the_editor_and_the_menu_numbers_exist():
         ("/admin/{org_slug}/api/v2/nav-hints", "GET"),
     ]:
         assert want in routes, want
+
+
+def test_the_chat_bot_section_says_what_it_is():
+    section = next(
+        s
+        for s in meta._sections({"texts": True, "prompts": True})
+        if s["key"] == "assistant"
+    )
+    assert section["label"] == "Chat bot"
+    assert [t["label"] for t in section["tabs"]] == ["Messages", "AI notes"]
+    assert [t["key"] for t in section["tabs"]] == [
+        "messages",
+        "instructions",
+    ]  # old links work
+    for part in [
+        "Tell the chat bot about your place",
+        "Advanced: the shared rules and the industry text",
+        "See everything the AI reads",
+        "Clear notes",
+        "Nothing written yet",
+        "What the AI reads",
+    ]:
+        assert part in APP_JS, part
+
+
+def test_each_thing_has_one_name_chat_bot_ai_and_ai_helper():
+    for word in ["Chat bot", "AI helper"]:
+        assert f"['{word}'," in APP_JS, word  # said once, under Help & words
+    assert "Assistant" not in APP_JS  # no screen is called that any more
+    assert not re.search(r"\b(?:the|The|an|this) assistant\b", APP_JS)
+    assert "The AI helper drafts it" in APP_JS
+    assert "Ask the AI helper to change this flow" in APP_JS
 
 
 # ------------------------------------------------------------ old links still lead somewhere

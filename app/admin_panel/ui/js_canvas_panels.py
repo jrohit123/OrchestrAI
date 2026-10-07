@@ -65,7 +65,7 @@ function cvOpenAdd(at, anchor, pos) {
     closePop(); usePalItem(palData(b), at, pos);
   });
 }
-// "Make a new building block" opens the same dialog as New building block, with the assistant's draft first
+// "Make a new building block" opens the same dialog as New building block, with the AI helper's draft first
 async function makeNode() {
   try { await ensureStudio(); newWorkflowModal(!!S.boot.caps.workflow_kind, 'block'); } catch (e) { toast(e.message, 'bad'); }
 }
@@ -142,11 +142,11 @@ function triggerPanel() {
 }
 function reportPanel() {
   const d = EW.d;
-  const worded = sel([['list', 'By code: every row is shown exactly as stored'], ['generic', 'By the assistant (AI): it may shorten or reword']], EW.work.response_format, { onchange: e => { EW.work.response_format = e.target.value; commit(true); } });
+  const worded = sel([['list', 'By code: every row is shown exactly as stored'], ['generic', 'By the AI: it may shorten or reword']], EW.work.response_format, { onchange: e => { EW.work.response_format = e.target.value; commit(true); } });
   return [insHead('look', 'table', 'A saved report', 'This flow answers with a report', 'It looks things up with a saved query instead of steps.'),
     h('div', { class: 'ib' },
       h('div', { class: 'stack s8' }, h('div', { class: 'techlabel' }, h('span', null, 'The SQL it runs'), h('button', { class: 'btn sm', type: 'button', onclick: () => copyText(d.sql_template || '') }, 'Copy')), h('pre', { class: 'code' }, d.sql_template || '')),
-      field('How the answer is worded', worded, 'The query always finds the rows. This only chooses who words the reply: code never drops a row or changes a number; the assistant may.'),
+      field('How the answer is worded', worded, 'The query always finds the rows. This only chooses who words the reply: code never drops a row or changes a number; the AI may.'),
       h('div', { class: 'muted small' }, 'The report itself (the query above) cannot be changed from the dashboard yet.'))];
 }
 function stepPanel(i) {
@@ -298,7 +298,7 @@ function drawEditor() {
       h('button', { type: 'button', class: CV.view === v ? 'on' : '', hidden: v === 'tech' && CV.view !== 'tech', 'data-view': v, 'data-tip': tip, onclick: () => setView(v) }, label)));
   CV.seg = seg;
   const dock = h('div', { class: 'dock min' },
-    h('button', { class: 'dhd', type: 'button', onclick: () => dock.classList.toggle('min') }, icon('spark'), h('span', null, 'Ask the assistant to change this flow'), icon('chevd', 'sm')),
+    h('button', { class: 'dhd', type: 'button', onclick: () => dock.classList.toggle('min') }, icon('spark'), h('span', null, 'Ask the AI helper to change this flow'), icon('chevd', 'sm')),
     chatDock(read));
   const lbl = text => h('span', { class: 'tx' }, text);
   // said once, then out of the way

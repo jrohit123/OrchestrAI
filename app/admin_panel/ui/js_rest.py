@@ -7,7 +7,7 @@ async function transcriptModal(sessionId, fallback) {
   const thread = h('div', { class: 'thread' });
   rows.forEach(r => {
     if (r.input_text) thread.append(h('div', { class: 'msg them' }, h('div', { class: 'who' }, (r.user_name || 'Person') + ' · ' + fmtDT(r.created_at)), h('div', { class: 'b' }, rich(r.input_text))));
-    if (r.response_text) thread.append(h('div', { class: 'msg bot' }, h('div', { class: 'who' }, 'Assistant'), h('div', { class: 'b' }, rich(r.response_text))));
+    if (r.response_text) thread.append(h('div', { class: 'msg bot' }, h('div', { class: 'who' }, 'Chat bot'), h('div', { class: 'b' }, rich(r.response_text))));
   });
   modal({ title: 'Conversation', wide: true, body: rows.length ? thread : empty('Nothing recorded', ''), actions: [{ label: 'Close' }] });
   setTimeout(() => { thread.scrollTop = thread.scrollHeight; }, 0);
@@ -118,13 +118,13 @@ async function renderChanges(root, route) {
   await load();
 }
 SECTIONS.conversations = {
-  title: 'Conversations', sub: 'What people asked the assistant, and how it answered',
+  title: 'Conversations', sub: 'What people asked the chat bot, and how it answered',
   async render(root, route) { return renderChats(root, route); },
 };
-// History of changes (a tab of Settings): what was changed from this dashboard, and everything the assistant did
+// History of changes (a tab of Settings): what was changed from this dashboard, and everything the chat bot did
 async function renderHistory(root, route) {
   const caps = S.boot.caps;
-  const kinds = [caps.events ? ['changes', 'Changes made here'] : null, caps.audit ? ['assistant', 'Everything the assistant did'] : null].filter(Boolean);
+  const kinds = [caps.events ? ['changes', 'Changes made here'] : null, caps.audit ? ['assistant', 'Everything the chat bot did'] : null].filter(Boolean);
   const show = kinds.some(k => k[0] === route.q.show) ? route.q.show : kinds[0][0];
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'What to show' }, kinds.map(([k, l]) => h('button', { type: 'button', 'aria-pressed': String(show === k), onclick: () => go('settings', 'history', { show: k }) }, l)));
   const body = h('div');

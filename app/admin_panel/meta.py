@@ -28,7 +28,7 @@ router = APIRouter(
 def _sections(caps: dict[str, bool]) -> list[dict]:
     """Which screens this org gets. Driven by what its database can do, not by org name.
     The page puts Home, Cases, Conversations and People under "Every day" and the rest under
-    "Set up": how cases are sent and timed, roles and seats, what the assistant says, settings."""
+    "Set up": how cases are sent and timed, roles and seats, what the chat bot says, settings."""
     sections: list[dict] = [{"key": "overview", "label": "Home"}]
     if caps.get("cases"):
         sections.append({"key": "cases", "label": "Cases"})
@@ -38,12 +38,12 @@ def _sections(caps: dict[str, bool]) -> list[dict]:
     sections.append({"key": "workflows", "label": "Flows"})
     assistant_tabs = []
     if caps.get("texts"):
-        assistant_tabs.append({"key": "messages", "label": "What it says"})
+        assistant_tabs.append({"key": "messages", "label": "Messages"})
     if caps.get("prompts"):
-        assistant_tabs.append({"key": "instructions", "label": "How it answers"})
+        assistant_tabs.append({"key": "instructions", "label": "AI notes"})
     if assistant_tabs:
         sections.append(
-            {"key": "assistant", "label": "Assistant", "tabs": assistant_tabs}
+            {"key": "assistant", "label": "Chat bot", "tabs": assistant_tabs}
         )
     if caps.get("cases"):
         rule_tabs = []

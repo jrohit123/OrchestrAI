@@ -373,8 +373,8 @@ def test_the_screen_shows_the_layers_and_a_save_applies_at_once(world, monkeypat
     assert out["gone_again"] == {"ok": True, "changed": False}
     assert out["assembled_back"] == out["assembled_before"]
     assert out["log"] == [
-        "Changed the AI instructions: Notes for Godrej Emerald",
-        "Went back to the built-in AI instructions: Notes for Godrej Emerald",
+        "Changed the AI notes: Notes for Godrej Emerald",
+        "Went back to the built-in AI notes: Notes for Godrej Emerald",
     ]
 
 

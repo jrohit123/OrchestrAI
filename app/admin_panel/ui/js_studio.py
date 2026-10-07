@@ -171,7 +171,7 @@ const copyText = t => navigator.clipboard.writeText(t).then(() => toast('Copied'
 function stepTag(step) {
   const ai = isAiStep(step);
   const el = ai ? badge('AI', 'violet') : badge('Code', 'ok');
-  el.title = ai ? 'The assistant (a language model) reads the typed price here.' : 'Exact rules and SQL. No AI.';
+  el.title = ai ? 'The AI (a language model) reads the typed price here.' : 'Exact rules and SQL. No AI.';
   return el;
 }
 function traceView(r) {
@@ -200,7 +200,7 @@ function detailsPane() {
   const phrases = tagsEditor(w.training_phrases, [], l => { w.training_phrases = l; commit(false); });
   return h('div', { class: 'stack' },
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'About it'), h('div', { class: 'card-b stack' },
-      field('What it does', desc, 'One sentence. The assistant reads this to understand when to use it.'),
+      field('What it does', desc, 'One sentence. The AI reads this to understand when to use it.'),
       kinds ? field('What kind is it?', sel([['workflow', 'A flow people start'], ['case_action', 'A case button (on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only used by other flows. A case button is a button on a case.') : null,
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
@@ -237,7 +237,7 @@ function asksPane() {
     return h('div', { class: 'card' }, h('div', { class: 'card-b stack' },
       h('div', { class: 'row between' }, h('b', null, pretty(k), ' ', h('span', { class: 'muted small' }, '(' + k + ')')),
         h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { if (usedBy(k) && !await confirmBox('A step uses this field. Remove it anyway?', { ok: 'Remove', danger: true })) return; delete sch[k]; commit(true); } }, 'Remove')),
-      field('Notes for the assistant', h('input', { type: 'text', value: f.description || '', oninput: e => { f.description = e.target.value; commit(false); } }), 'The assistant reads this to know what the field is and how to understand an answer.'),
+      field('Notes for the AI', h('input', { type: 'text', value: f.description || '', oninput: e => { f.description = e.target.value; commit(false); } }), 'The AI reads this to know what the field is and how to understand an answer.'),
       h('div', { class: 'two' },
         field('Question the bot asks', h('input', { type: 'text', value: f.question || '', placeholder: 'e.g. Which case? Send the case number.', oninput: e => { if (e.target.value) f.question = e.target.value; else delete f.question; commit(false); } }), 'Shown to the person when the bot asks for this itself. Empty: the notes are used.'),
         field('Short name in the confirmation', h('input', { type: 'text', value: f.label || '', placeholder: pretty(k), oninput: e => { if (e.target.value) f.label = e.target.value; else delete f.label; commit(false); } }))),
@@ -259,12 +259,12 @@ function asksPane() {
   const add = h('div', { class: 'row' },
     h('input', { type: 'text', placeholder: 'New field name, e.g. comment_text', id: 'newfield', onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); addField(); } } }),
     h('button', { class: 'btn', type: 'button', onclick: addField }, '+ Add a field'));
-  wrap.append(h('div', { class: 'muted' }, 'What the assistant collects from the person before it runs the steps. Steps read these as the person’s answers.'), ...rows, add);
+  wrap.append(h('div', { class: 'muted' }, 'What the chat bot collects from the person before it runs the steps. Steps read these as the person’s answers.'), ...rows, add);
   if (!keys.length) wrap.prepend(h('div', { class: 'card' }, empty('Nothing is asked', 'This flow does not collect anything from the person.')));
   return wrap;
 }
 
-// how an answer is read: code (a lookup, as typed, fixed answers) or the assistant
+// how an answer is read: code (a lookup, as typed, fixed answers) or the AI
 function readMode(f) {
   const rb = f.read_by;
   if (rb === 'typed' || rb === 'as_typed') return 'typed';
@@ -276,7 +276,7 @@ function readMode(f) {
 function readByEditor(f) {
   const mode = readMode(f);
   const byCode = mode !== 'ai';
-  const pick = sel([['ai', 'The assistant works it out (AI)'], ['typed', 'Take the answer exactly as typed (code)'], ['lookup', 'Look it up in a table (code)'], ['choice', 'One of the allowed answers (code)']], mode, { onchange: e => {
+  const pick = sel([['ai', 'The AI works it out'], ['typed', 'Take the answer exactly as typed (code)'], ['lookup', 'Look it up in a table (code)'], ['choice', 'One of the allowed answers (code)']], mode, { onchange: e => {
     const v = e.target.value;
     if (v === 'ai') { if (Array.isArray(f.enum) && f.enum.length) f.read_by = 'ai'; else delete f.read_by; }
     else if (v === 'typed') f.read_by = 'typed';
@@ -284,7 +284,7 @@ function readByEditor(f) {
     else delete f.read_by;
     commit(true);
   } });
-  const box = h('div', { class: 'stack' }, field('How the answer is read', pick, 'Code is exact and instant, and cannot misread. The assistant is only needed for free sentences. If code is not sure, it hands the message to the assistant.'));
+  const box = h('div', { class: 'stack' }, field('How the answer is read', pick, 'Code is exact and instant, and cannot misread. The AI is only needed for free sentences. If code is not sure, it hands the message to the AI.'));
   box.querySelector('label').append(' ', byCode ? badge('Code', 'ok') : badge('AI', 'violet'));
   if (mode === 'choice' && !(Array.isArray(f.enum) && f.enum.length)) box.append(notice('Add the allowed answers below, or choose another way.', 'warn'));
   if (mode === 'lookup') {
@@ -357,7 +357,7 @@ function proposalIds(p) {
 }
 function chatDock(read) {
   const log = h('div', { class: 'chatlog' });
-  const input = h('textarea', { rows: 2, placeholder: read ? 'Chat edits steps, and this flow has none.' : 'Tell the assistant what to change…', disabled: read });
+  const input = h('textarea', { rows: 2, placeholder: read ? 'Chat edits steps, and this flow has none.' : 'Tell the AI helper what to change…', disabled: read });
   const send = h('button', { class: 'btn primary', disabled: read }, 'Send');
   function proposalView(msg) {
     const p = msg.proposal;
@@ -395,7 +395,7 @@ function chatDock(read) {
 }
 
 SECTIONS.workflows = {
-  title: 'Flows', sub: 'A flow is one thing the assistant can do for people, like filing a complaint or closing a case.',
+  title: 'Flows', sub: 'A flow is one thing the chat bot can do for people, like filing a complaint or closing a case.',
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
     if (route.q.w) return renderEditor(root, route.q.w);

@@ -473,9 +473,7 @@ async def _save(
             "generic",
             "list",
         ):
-            problems.append(
-                "How the answer is worded: choose the assistant or the code list."
-            )
+            problems.append("How the answer is worded: choose the AI or the code list.")
         if "slash_command" in changes:
             cmd = (changes["slash_command"] or "").strip().lstrip("/").lower()
             if cmd and not re.fullmatch(r"[a-z0-9_]{2,32}", cmd):
@@ -929,7 +927,7 @@ async def _ask(system: str, user_payload: dict, history: list[dict], extra: str 
         logger.error(f"studio chat: every AI provider failed: {e.errors}")
         raise HTTPException(
             status_code=503,
-            detail="The assistant is not available right now. Try again in a minute.",
+            detail="The AI helper is not available right now. Try again in a minute.",
         ) from e
     return res.choices[0].message.content or ""
 

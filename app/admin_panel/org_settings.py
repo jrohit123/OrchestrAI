@@ -33,7 +33,7 @@ GROUPS: list[dict[str, Any]] = [
     {
         "key": "sessions",
         "label": "Chat sessions",
-        "intro": "How long the assistant waits for people before it lets go.",
+        "intro": "How long the chat bot waits for people before it lets go.",
         "fields": [
             {
                 "section": "column",
@@ -54,14 +54,14 @@ GROUPS: list[dict[str, Any]] = [
                 "key": "confirm_stale_minutes",
                 "label": "Drop an unanswered “save this?” after",
                 "unit": "minutes",
-                "help": "The assistant showed a summary and asked for a yes. With no answer for this long it forgets it. Shorter on purpose: saving something stale is riskier.",
+                "help": "The chat bot showed a summary and asked for a yes. With no answer for this long it forgets it. Shorter on purpose: saving something stale is riskier.",
             },
             {
                 "section": "limits",
                 "key": "reprompt_max",
                 "label": "Ask again at most",
                 "unit": "times",
-                "help": "When the assistant keeps getting answers it cannot use, it starts over after this many tries.",
+                "help": "When the chat bot keeps getting answers it cannot use, it starts over after this many tries.",
             },
         ],
     },
@@ -89,7 +89,7 @@ GROUPS: list[dict[str, Any]] = [
     {
         "key": "retention",
         "label": "Keeping old records",
-        "intro": "Every night at 03:30 the assistant clears out leftovers nobody needs. Each one is copied to a safe place first, and can be put back by whoever looks after the database.",
+        "intro": "Every night at 03:30 the system clears out leftovers nobody needs. Each one is copied to a safe place first, and can be put back by whoever looks after the database.",
         "fields": [
             {
                 "section": "retention",

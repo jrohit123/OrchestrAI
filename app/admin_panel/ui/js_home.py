@@ -61,8 +61,8 @@ SECTIONS.overview = {
     if (k && k.unassigned) needs.push({ tone: 'warn', ic: 'usercheck', title: plural(k.unassigned, 'case') + (k.unassigned === 1 ? ' has' : ' have') + ' no one handling ' + (k.unassigned === 1 ? 'it' : 'them'), sub: 'They wait until someone takes them.', cta: 'See ' + (k.unassigned === 1 ? 'it' : 'them'), to: href('cases', '', { status: 'open', unassigned: '1' }) });
     if (k && k.overdue) needs.push({ tone: 'bad', ic: 'clock', title: plural(k.overdue, 'case') + (k.overdue === 1 ? ' is' : ' are') + ' past the target time', sub: 'The longest one is ' + (c.overdue[0] ? relDue(c.overdue[0].due_at) : 'late') + '.', cta: 'See ' + (k.overdue === 1 ? 'it' : 'them'), to: href('cases', '', { status: 'open', overdue: '1' }) });
     if (gaps.length) needs.push({ tone: 'info', ic: 'route', title: plural(gaps.length, 'kind') + ' of complaint ' + (gaps.length === 1 ? 'has' : 'have') + ' nobody to go to', sub: 'New cases of ' + (gaps.length === 1 ? 'this kind' : 'these kinds') + ' stay unassigned.', cta: 'Fix in Case rules', to: href('rules') });
-    if (rows24.some(r => r.had_error)) needs.push({ tone: 'bad', ic: 'chat', title: plural(rows24.filter(r => r.had_error).length, 'conversation') + ' failed since yesterday', sub: 'Something went wrong while the assistant was working.', cta: 'Open Conversations', to: href('conversations') });
-    if (silent > 0) needs.push({ tone: 'info', ic: 'send', title: silent + ' of ' + d.people.active + ' people cannot be messaged yet', sub: 'The assistant has no way to reach them.', cta: 'Open People', to: href('people') });
+    if (rows24.some(r => r.had_error)) needs.push({ tone: 'bad', ic: 'chat', title: plural(rows24.filter(r => r.had_error).length, 'conversation') + ' failed since yesterday', sub: 'Something went wrong while the chat bot was working.', cta: 'Open Conversations', to: href('conversations') });
+    if (silent > 0) needs.push({ tone: 'info', ic: 'send', title: silent + ' of ' + d.people.active + ' people cannot be messaged yet', sub: 'The chat bot has no way to reach them.', cta: 'Open People', to: href('people') });
     const more = needs.slice(3);
     const nbox = h('div', { class: 'card', style: { marginBottom: '16px' } }, h('div', { class: 'card-h' }, 'Needs you', h('span', { class: 'muted small' }, needs.length ? plural(Math.min(3, needs.length), 'thing') + (more.length ? ' of ' + needs.length : '') : '')),
       needs.length ? needs.slice(0, 3).map((n, i) => needRow(n, i === 0)) : h('div', { class: 'nr' }, h('span', { class: 'nr-i ok' }, icon('ok')), h('div', { class: 'nr-t' }, h('b', null, 'All clear'), h('span', { class: 'muted small' }, 'Nothing needs you right now.')), caps.cases ? h('a', { class: 'btn sm', href: href('cases') }, 'See all cases') : null),
@@ -83,7 +83,7 @@ SECTIONS.overview = {
       root.append(h('div', { class: 'kpis' }, d.stats.map(s => h('div', { class: 'kpi', style: { cursor: 'default', borderLeft: '4px solid ' + (s.color || 'var(--line-2)') } }, h('span', { class: 'l' }, s.label), h('span', { class: 'n' }, s.format === 'currency_inr' ? money(s.value) : num(s.value))))));
     }
 
-    // 3. the chart, and one line on whether the assistant is working
+    // 3. the chart, and one line on whether the chat bot is working
     const left = h('div', { class: 'stack' }), right = h('div', { class: 'stack' });
     if (c) {
       left.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Last 14 days', h('span', { class: 'row small muted' }, h('span', { style: { color: 'var(--brand)' } }, '■'), 'new', h('span', { style: { color: 'var(--ok)' } }, '■'), 'closed')),
@@ -95,7 +95,7 @@ SECTIONS.overview = {
     if (chats) {
       const kinds = rows24.map(chatKind), fail = kinds.filter(x => x === 'fail').length, open = kinds.filter(x => x === 'wait' || x === 'never').length;
       const tone = fail ? 'bad' : open ? 'warn' : 'ok';
-      right.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Is the assistant working?', h('span', { class: 'sub' }, 'since yesterday')),
+      right.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Is the chat bot working?', h('span', { class: 'sub' }, 'since yesterday')),
         h('div', { class: 'okline' }, h('span', { class: 'd ' + tone }), h('div', { class: 'grow' }, h('b', null, fail ? plural(fail, 'conversation') + ' failed' : open ? plural(open, 'conversation') + ' still waiting for a “yes”' : 'Yes, all good'),
           h('div', { class: 'muted small' }, fail || open ? plural(rows24.length, 'conversation') + ' since yesterday' : (rows24.length ? plural(rows24.length, 'conversation') + ', 0 problems' : 'No conversations since yesterday'))),
           fail || open ? h('a', { class: 'btn sm', href: href('conversations') }, 'View') : null)));

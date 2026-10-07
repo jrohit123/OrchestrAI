@@ -42,7 +42,7 @@ GROUPS: dict[str, tuple[str, str]] = {
     ),
     "draft": (
         "Requests in progress",
-        "What the assistant says about a request someone is part-way through.",
+        "What the chat bot says about a request someone is part-way through.",
     ),
     "photo": ("Photos", "When photos are sent with a request."),
     "approval": (
@@ -450,7 +450,7 @@ _MESSAGES = [
         "draft.reprompt_restart",
         "draft",
         "Starting fresh",
-        "The assistant kept failing to understand the details, so it starts over.",
+        "The chat bot kept failing to understand the details, so it starts over.",
         "🤔 I'm having trouble understanding the details for this request. Let's start fresh — please send your request again with all the details in one message.",
     ),
     Msg(

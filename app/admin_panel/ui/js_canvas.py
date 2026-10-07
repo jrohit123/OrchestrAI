@@ -143,7 +143,7 @@ function cvStepTile(s, i, k) {
     f.stops.length ? h('span', { class: 'nc-b nc-b-stop', title: 'Can stop the flow: ' + f.stops.slice(0, 3).join(' / ') }, icon('stop', 'xs')) : null,
     s.when ? h('span', { class: 'nc-b nc-b-if', title: 'Only if ' + condText(s.when) }, icon('branch', 'xs')) : null,
     f.wait ? h('span', { class: 'nc-b nc-b-wait', title: f.wait }, icon('pause', 'xs')) : null,
-    isAiStep(s) ? h('span', { class: 'nc-b nc-b-ai', title: 'The assistant (AI) is used in this step' }, icon('spark', 'xs')) : null];
+    isAiStep(s) ? h('span', { class: 'nc-b nc-b-ai', title: 'The AI is used in this step' }, icon('spark', 'xs')) : null];
   return h('div', { class: 'nd nc k-' + f.key + (f.blk ? ' blk' : '') + (parked ? ' parked' : '') + (CV.sel.has(id) ? ' sel' : ''), 'data-id': id, 'data-st': f.st || null, style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': (parked ? 'Parked, does not run: ' : '') + describeStep(s) },
     parked ? null : h('span', { class: 'nd-ord' }, i + 1), parked ? null : h('span', { class: 'nd-port in' }), parked ? null : h('span', { class: 'nd-port out' }),
     h('span', { class: 'nd-stb' }, f.st ? CV_ST[f.st] || '' : ''),
@@ -186,12 +186,12 @@ function cvReportNode() {
   if (CV.compact) {
     return h('div', { class: 'nd nc k-look' + (CV.sel.has('report') ? ' sel' : ''), 'data-id': 'report', style: { visibility: 'hidden' }, tabindex: 0, role: 'button', 'aria-label': 'A saved report' },
       h('span', { class: 'nd-ord' }, '1'), h('span', { class: 'nd-port in' }), h('span', { class: 'nd-port out' }),
-      h('div', { class: 'nc-sq', title: 'Looks things up with a saved query' }, icon('table'), list ? null : h('div', { class: 'nc-bdg' }, h('span', { class: 'nc-b nc-b-ai', title: 'The assistant words the answer' }, icon('spark', 'xs')))),
-      h('div', { class: 'nc-nm' }, 'A saved report'), h('div', { class: 'nc-sub' }, list ? 'Rows shown as stored' : 'Worded by the assistant'));
+      h('div', { class: 'nc-sq', title: 'Looks things up with a saved query' }, icon('table'), list ? null : h('div', { class: 'nc-bdg' }, h('span', { class: 'nc-b nc-b-ai', title: 'The AI words the answer' }, icon('spark', 'xs')))),
+      h('div', { class: 'nc-nm' }, 'A saved report'), h('div', { class: 'nc-sub' }, list ? 'Rows shown as stored' : 'Worded by the AI'));
   }
   return h('div', { class: 'nd k-look' + (CV.sel.has('report') ? ' sel' : ''), 'data-id': 'report', style: { visibility: 'hidden' }, tabindex: 0, role: 'button' },
     h('span', { class: 'nd-ord' }, '1'), h('span', { class: 'nd-port in' }), h('span', { class: 'nd-port out' }),
-    h('div', { class: 'nd-h' }, h('span', { class: 'nd-gi' }, icon('table')), h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, 'A saved report'), h('div', { class: 'nd-t' }, 'Looks things up with a saved query'), h('div', { class: 'nd-s' }, list ? 'Every row shown exactly as stored' : 'The assistant words the answer')),
+    h('div', { class: 'nd-h' }, h('span', { class: 'nd-gi' }, icon('table')), h('div', { class: 'grow' }, h('div', { class: 'nd-kind' }, 'A saved report'), h('div', { class: 'nd-t' }, 'Looks things up with a saved query'), h('div', { class: 'nd-s' }, list ? 'Every row shown exactly as stored' : 'The AI words the answer')),
       h('div', { class: 'nd-tags' }, list ? h('span', { class: 'tag tcode' }, 'Code') : h('span', { class: 'tag ai' }, '✦ AI'))));
 }
 function cvEndNode() {
