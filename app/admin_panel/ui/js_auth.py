@@ -17,7 +17,7 @@ const hasSection = key => !!(S.boot && S.boot.sections.some(s => s.key === key))
 const q1 = (sel, root) => (root || document).querySelector(sel);
 const firstName = n => String(n || '').split(/\s+/)[0] || '';
 
-const A = { view: 'signin', email: '', password: '', code: '', pw1: '', pw2: '', error: '', info: '', busy: false, org: null };
+const A = { view: 'signin', email: '', password: '', code: '', pw1: '', pw2: '', error: '', info: '', busy: false, org: null, stay: false };
 let heroNode = null, storyTimers = [], storyOn = false;
 
 function themeButton() { return h('button', { class: 'btn ghost sm lgn-theme', type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon', 'sm'), 'Light / dark'); }
@@ -101,8 +101,11 @@ function codeInput(focus) {
   return h('input', { type: 'text', class: 'lgn-code', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code', value: A.code, placeholder: '••••••', 'aria-label': '6-digit code', 'data-focus': focus ? '1' : null,
     oninput: e => { A.code = e.target.value.replace(/\D/g, '').slice(0, 6); e.target.value = A.code; } });
 }
+// An admin who signs in from an organisation's own address lands on the Organisations page, so she sees
+// which organisations her account may open. A session that only ended returns to where she was.
 function signedIn(account) {
   stopStory();
+  if (ORG && account.level !== 'super' && !A.stay) { location.href = '/admin'; return; }
   location.reload();
 }
 
@@ -203,7 +206,7 @@ function renderAuth() {
   mountAuth(AUTH_CARDS[A.view](), name);
 }
 async function showSignIn(message) {
-  Object.assign(A, { view: 'signin', password: '', code: '', pw1: '', pw2: '', error: '', info: message || '' });
+  Object.assign(A, { view: 'signin', password: '', code: '', pw1: '', pw2: '', error: '', info: message || '', stay: !!message });
   if (ORG && !A.org) { try { A.org = await authApi.get('/org/' + encodeURIComponent(ORG)); } catch (e) { /* the page works without the name */ } }
   renderAuth();
 }
@@ -217,9 +220,11 @@ function sessionEnded() {
 }
 async function signOut() {
   try { await authApi.post('/sign-out'); } catch (e) { /* the cookie ends on its own */ }
-  location.href = ORG ? '/admin/' + encodeURIComponent(ORG) : '/admin';
+  location.href = '/admin';
 }
 
+// a plain, labelled Sign out button in the menu (it is also in the account menu)
+const signOutButton = () => h('button', { type: 'button', title: 'Sign out', onclick: signOut }, icon('signout'), h('span', { class: 'tx' }, 'Sign out'));
 // the person's button at the bottom of the menu
 function accountChip() {
   const m = S.me, word = isSuper() ? 'Super admin' : 'Admin';

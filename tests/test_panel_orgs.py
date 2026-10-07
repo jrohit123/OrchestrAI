@@ -4,7 +4,7 @@ to open the dashboard and a way back.
 The first test needs no database. The second calls the dashboard in-process on the throwaway
 databases of test_migrate.py (see test_panel_login.py)."""
 
-from app.admin_panel.ui import js_auth, js_boot, js_super
+from app.admin_panel.ui import js_auth, js_boot, js_icons, js_super
 from tests.test_migrate import needs_pg
 from tests.test_panel_login import GOOD, run
 
@@ -23,6 +23,29 @@ def test_the_screens_give_an_admin_the_organisations_page_and_a_way_back():
     # and from inside an organisation there is a way back to the page, for both levels
     word = "isSuper() ? 'All organisations' : 'My organisations'"
     assert word in js_auth.JS and word in js_boot.JS
+
+
+def test_signing_out_and_in_always_leads_an_admin_to_her_organisations_page():
+    # Sign out goes to /admin, not back into the organisation the person was in
+    assert "location.href = '/admin';" in js_auth.JS
+    assert "location.href = ORG ?" not in js_auth.JS
+    # a fresh sign-in from an organisation's address sends an admin (not a super admin) to /admin ...
+    assert (
+        "if (ORG && account.level !== 'super' && !A.stay) { location.href = '/admin'; return; }"
+        in js_auth.JS
+    )
+    # ... but a session that only ended returns to the screen she was on
+    assert "stay: !!message" in js_auth.JS
+    assert "showSignIn('Your session ended. Please sign in again.')" in js_auth.JS
+
+
+def test_sign_out_is_a_labelled_button_in_every_menu():
+    button = "const signOutButton = () => h('button', { type: 'button', title: 'Sign out', onclick: signOut }, icon('signout'), h('span', { class: 'tx' }, 'Sign out'));"
+    assert button in js_auth.JS
+    # in the organisation's menu and in the super admin page's menu, right under the account
+    assert "accountChip(), signOutButton()," in js_boot.JS
+    assert "accountChip(), signOutButton()," in js_super.JS
+    assert '<symbol id="i-signout"' in js_icons.JS
 
 
 @needs_pg

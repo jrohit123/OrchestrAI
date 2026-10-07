@@ -7,7 +7,7 @@ WhatsApp) never use this sign-in.
 
 | | Super admin | Admin |
 |---|---|---|
-| Signs in at | `/admin` (or any organisation's address) | their organisation's address, like `/admin/godrej`; at `/admin` they see the Organisations page with only their own |
+| Signs in at | `/admin` (or any organisation's address) | their organisation's address, like `/admin/godrej`; they can also sign in at `/admin`. Either way, after signing in an admin lands on the Organisations page (only their own), and opens the dashboard from there; Sign out is a button in the menu and returns to `/admin` |
 | Sign-in | email + password | email + password |
 | Can open | every organisation, all screens | only the organisations listed on the account: Home, Cases (and Assign), People (and change a role) |
 | Can do | add people, give or take access, switch accounts off, edit flows, rules, roles, settings | assign a case, change a role (not their own), ask a super admin |

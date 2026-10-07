@@ -252,7 +252,7 @@ function superShell() {
   const side = h('aside', { class: 'side', id: 'side', 'aria-label': 'Main menu' },
     h('div', { class: 'sbrand' }, h('span', { class: 'logo' }, 'O'), h('div', null, h('b', null, 'OrchestrAI'), h('small', null, isSuper() ? 'Super admin' : 'Admin'))),
     nav, h('div', { class: 'grow' }),
-    h('div', { class: 'sidefoot' }, accountChip(),
+    h('div', { class: 'sidefoot' }, accountChip(), signOutButton(),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
   const top = h('header', { class: 'topbar' },

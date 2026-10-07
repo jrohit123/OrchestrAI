@@ -176,7 +176,7 @@ function buildShell(app) {
     h('div', { class: 'sbrand' }, logo, h('div', null, h('b', null, o.name), h('small', null, isSuper() ? 'Super admin view' : 'Admin'))),
     h('button', { class: 'jump', type: 'button', 'aria-label': 'Search or jump to', onclick: openCmd }, icon('search', 'sm'), h('span', null, 'Search or jump to…'), h('span', { class: 'kbd' }, 'Ctrl K')),
     nav, isSuper() ? null : adminHelpCard(), h('div', { class: 'grow' }),
-    h('div', { class: 'sidefoot' }, accountChip(),
+    h('div', { class: 'sidefoot' }, accountChip(), signOutButton(),
       h('button', { type: 'button', 'data-popkeep': '1', onclick: e => openWords(e.currentTarget, true) }, icon('help'), h('span', { class: 'tx' }, 'Help & words')),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
