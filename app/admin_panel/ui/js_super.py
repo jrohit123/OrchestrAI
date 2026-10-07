@@ -11,6 +11,7 @@ const AUDIT_WORDS = {
   signed_out_everywhere: 'Signed out everywhere', invite_again: 'Invitation sent again', ask: 'Asked the super admins',
 };
 const auditNote = r => r.detail && r.detail.trim().toLowerCase() !== (AUDIT_WORDS[r.action] || '').toLowerCase() ? r.detail : '';
+const tabsFor = () => isSuper() ? SUPER_TABS : SUPER_TABS.filter(t => t[0] === 'orgs');   // an admin has one page: the Organisations she can open
 const accountState = a => a.locked ? badge('Locked for a while', 'bad') : a.status === 'active' ? badge('Active', 'ok') : a.status === 'invited' ? badge('Has not signed up yet', 'info') : badge('Switched off');
 const orgNameOf = (orgs, key) => (orgs.find(o => o.key === key) || {}).name || key;
 const auditLine = r => h('div', { class: 'sa-line' }, h('div', { class: 't' }, h('b', null, r.who), ' · ', AUDIT_WORDS[r.action] || pretty(r.action), r.ok === false ? [' ', badge('failed', 'bad')] : null, auditNote(r) ? h('div', { class: 'muted small' }, auditNote(r).length > 180 ? auditNote(r).slice(0, 180) + '…' : auditNote(r)) : null), h('span', { class: 'muted small' }, ago(r.at)));
@@ -134,12 +135,15 @@ async function superOverview(root) {
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Recently', h('a', { class: 'small', href: '#/activity' }, 'See everything')), d.recent.length ? d.recent.map(auditLine) : h('div', { class: 'card-b muted' }, 'Nothing yet.')));
 }
 async function superOrgs(root) {
-  const d = await authApi.get('/orgs');
+  const d = await authApi.get(isSuper() ? '/orgs' : '/my-orgs');
+  const chan = o => (o.channel ? ({ telegram: 'Telegram', whatsapp: 'WhatsApp' }[o.channel] || pretty(o.channel)) : 'No chat channel') + (o.people != null ? ' · ' + plural(o.people, 'person', 'people') : '');
+  const admins = o => h('div', null, h('div', { class: 'muted small', style: { marginBottom: '6px' } }, 'Admins who can sign in'),
+    o.admins.length ? h('div', { class: 'sa-who' }, o.admins.map(a => h('span', { class: 'badge ' + (a.status === 'active' ? 'ok' : a.status === 'invited' ? 'info' : '') }, a.name + (a.status === 'invited' ? ' · invited' : a.status === 'off' ? ' · off' : '')))) : h('span', { class: 'muted' }, 'Nobody yet. Give someone access.'));
   root.append(d.orgs.length ? h('div', { class: 'sa-orgs' }, d.orgs.map(o => h('div', { class: 'card sa-org' }, h('div', { class: 'card-b' },
-    h('div', { class: 'top' }, h('span', { class: 'logo' }, o.name[0]), h('div', null, h('b', null, o.name), h('span', { class: 'muted small' }, (o.channel ? ({ telegram: 'Telegram', whatsapp: 'WhatsApp' }[o.channel] || pretty(o.channel)) : 'No chat channel') + (o.people != null ? ' · ' + plural(o.people, 'person', 'people') : '')))),
-    h('div', null, h('div', { class: 'muted small', style: { marginBottom: '6px' } }, 'Admins who can sign in'),
-      o.admins.length ? h('div', { class: 'sa-who' }, o.admins.map(a => h('span', { class: 'badge ' + (a.status === 'active' ? 'ok' : a.status === 'invited' ? 'info' : '') }, a.name + (a.status === 'invited' ? ' · invited' : a.status === 'off' ? ' · off' : '')))) : h('span', { class: 'muted' }, 'Nobody yet. Give someone access.')),
-    h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '/admin/' + encodeURIComponent(o.key) }, 'Open dashboard', icon('arrowr', 'sm')), h('button', { class: 'btn', type: 'button', onclick: () => giveAccessDialog({ orgs: d.orgs, orgKey: o.key, done: () => { lastSig = ''; superRoute(); } }) }, 'Give access…')))))) : empty('No organisations', ''));
+    h('div', { class: 'top' }, h('span', { class: 'logo' }, o.name[0]), h('div', null, h('b', null, o.name), h('span', { class: 'muted small' }, chan(o)))),
+    isSuper() ? admins(o) : null,
+    h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '/admin/' + encodeURIComponent(o.key) }, 'Open dashboard', icon('arrowr', 'sm')),
+      isSuper() ? h('button', { class: 'btn', type: 'button', onclick: () => giveAccessDialog({ orgs: d.orgs, orgKey: o.key, done: () => { lastSig = ''; superRoute(); } }) }, 'Give access…') : null))))) : empty('No organisations', ''));
 }
 function accountMenu(a, orgs, again, anchor) {
   const item = (ic, text, run, danger) => h('button', { class: 'mi', type: 'button', style: danger ? { color: 'var(--bad)' } : null, onclick: async () => {
@@ -225,7 +229,8 @@ async function superActivity(root, r) {
 const SUPER_SCREENS = { overview: superOverview, orgs: superOrgs, accounts: superAccounts, activity: superActivity };
 async function superRoute() {
   const r = parseRoute();
-  const key = SUPER_SCREENS[r.section] ? r.section : 'overview';
+  const allowed = tabsFor().map(t => t[0]);
+  const key = allowed.includes(r.section) ? r.section : allowed[0];
   const tab = SUPER_TABS.find(t => t[0] === key);
   const mine = ++S.renderId;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.key === key));
@@ -233,7 +238,7 @@ async function superRoute() {
   closePop(); setTopAction(null);
   setCrumbs([h('span', null, tab[1])]);
   document.title = tab[1] + ' · OrchestrAI';
-  const sub = { overview: 'Every organisation at a glance', orgs: 'Open any organisation’s dashboard, or give someone access to it', accounts: 'Who can sign in, and to what', activity: 'Every sign-in, every message from an admin, and every change of access' }[key];
+  const sub = { overview: 'Every organisation at a glance', orgs: isSuper() ? 'Open any organisation’s dashboard, or give someone access to it' : 'The organisations you can open', accounts: 'Who can sign in, and to what', activity: 'Every sign-in, every message from an admin, and every change of access' }[key];
   const loading = h('div', { class: 'empty' }, 'Loading…'), content = h('div');
   fill(document.getElementById('main'), h('div', { class: 'screen' }, h('div', { class: 'ph' }, h('div', null, h('h1', null, key === 'overview' ? greeting() + ', ' + firstName(S.me.name) : tab[1]), h('div', { class: 'sub' }, sub))), loading, content));
   try { await SUPER_SCREENS[key](content, r); }
@@ -243,9 +248,9 @@ async function superRoute() {
 }
 function superShell() {
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sections' }, h('div', { class: 'navlabel' }, 'OrchestrAI'),
-    SUPER_TABS.map(([k, label, ic]) => h('a', { href: '#/' + k, 'data-key': k }, icon(ic), h('span', { class: 'tx' }, label))));
+    tabsFor().map(([k, label, ic]) => h('a', { href: '#/' + k, 'data-key': k }, icon(ic), h('span', { class: 'tx' }, label))));
   const side = h('aside', { class: 'side', id: 'side', 'aria-label': 'Main menu' },
-    h('div', { class: 'sbrand' }, h('span', { class: 'logo' }, 'O'), h('div', null, h('b', null, 'OrchestrAI'), h('small', null, 'Super admin'))),
+    h('div', { class: 'sbrand' }, h('span', { class: 'logo' }, 'O'), h('div', null, h('b', null, 'OrchestrAI'), h('small', null, isSuper() ? 'Super admin' : 'Admin'))),
     nav, h('div', { class: 'grow' }),
     h('div', { class: 'sidefoot' }, accountChip(),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
@@ -257,18 +262,16 @@ function superShell() {
   return h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' })));
 }
 async function startSuperPage(me) {
-  if (me.level !== 'super') return startAdminLanding(me);
+  if (me.level !== 'super' && !me.orgs.length) return startAdminLanding(me);   // an admin with an organisation sees the Organisations page
   fill(document.getElementById('app'), superShell());
   window.addEventListener('hashchange', superRoute);
   await superRoute();
 }
-// someone who is not a super admin opened /admin: take them to their organisation, or let them choose
+// an admin whose account is not connected to an organisation yet
 function startAdminLanding(me) {
-  if (me.orgs.length === 1) { location.replace('/admin/' + encodeURIComponent(me.orgs[0].key)); return; }
   mountAuth(h('div', { class: 'lgn-card' },
-    h('h2', null, me.orgs.length ? 'Choose an organisation' : 'No organisation yet'),
-    h('p', { class: 'sub' }, me.orgs.length ? 'Signed in as ' + me.name + '.' : 'Your account is not connected to an organisation yet. Ask a super admin.'),
-    h('div', { class: 'stack' }, me.orgs.map(o => h('a', { class: 'btn', href: '/admin/' + encodeURIComponent(o.key) }, o.name, icon('arrowr', 'sm')))),
+    h('h2', null, 'No organisation yet'),
+    h('p', { class: 'sub' }, 'Your account is not connected to an organisation yet. Ask a super admin.'),
     h('div', { class: 'lgn-back' }, h('a', { href: '#', onclick: e => { e.preventDefault(); signOut(); } }, 'Sign out'))), 'OrchestrAI');
 }
 // signed in, but this account may not open this organisation

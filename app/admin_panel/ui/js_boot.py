@@ -182,7 +182,7 @@ function buildShell(app) {
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
-    isSuper() ? h('a', { class: 'btn ghost sm sa-back', href: '/admin' }, icon('chevl', 'sm'), 'All organisations') : null,
+    h('a', { class: 'btn ghost sm sa-back', href: '/admin' }, icon('chevl', 'sm'), isSuper() ? 'All organisations' : 'My organisations'),
     h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }), h('span', { id: 'topact' }));
   fill(app, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' }))));
   window.addEventListener('resize', applyRail);

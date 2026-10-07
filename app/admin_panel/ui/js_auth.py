@@ -103,7 +103,6 @@ function codeInput(focus) {
 }
 function signedIn(account) {
   stopStory();
-  if (!ORG && account.level !== 'super' && account.orgs.length === 1) { location.href = '/admin/' + encodeURIComponent(account.orgs[0].key); return; }
   location.reload();
 }
 
@@ -226,7 +225,7 @@ function accountChip() {
   const m = S.me, word = isSuper() ? 'Super admin' : 'Admin';
   return h('button', { class: 'acct', type: 'button', 'data-popkeep': '1', 'aria-label': 'Your account', onclick: e => openPop(e.currentTarget, h('div', { class: 'acctpop' },
     h('div', { class: 'me' }, h('b', null, m.name), h('small', null, m.email), h('div', { style: { marginTop: '6px' } }, badge(word, 'brand'))),
-    isSuper() && ORG ? h('a', { class: 'mi', href: '/admin' }, icon('globe'), 'All organisations') : null,
+    ORG ? h('a', { class: 'mi', href: '/admin' }, icon('globe'), isSuper() ? 'All organisations' : 'My organisations') : null,
     h('button', { class: 'mi', type: 'button', onclick: signOut }, icon('lock'), 'Sign out')), { up: true, width: 250 }) },
     avatar(m.name), h('span', { class: 'who tx' }, h('b', null, m.name), h('small', null, word)));
 }

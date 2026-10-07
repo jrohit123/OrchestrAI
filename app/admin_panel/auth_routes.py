@@ -411,15 +411,16 @@ async def forgot(body: FinishBody, request: Request):
 # ── super admins: organisations, accounts, activity ──────────────────────────
 
 
-@router.get("/orgs")
-async def orgs(_: Super):
+async def _org_cards(only: set[str] | None = None) -> list[dict]:
+    """Name, chat channel and number of people of each organisation (only those in `only`, if given)."""
     sources = await routing_pool().fetch(
         "SELECT source_key, messaging_channel FROM data_sources ORDER BY source_key"
     )
-    accounts = await auth_accounts.list_accounts()
-    out = []
+    cards = []
     for s in sources:
         key = s["source_key"]
+        if only is not None and key not in only:
+            continue
         people = None
         try:
             row = await fetch_one(
@@ -428,20 +429,37 @@ async def orgs(_: Super):
             people = row["n"]
         except Exception as e:
             logger.warning(f"could not count the people of '{key}': {e!r}")
-        out.append(
+        cards.append(
             {
                 "key": key,
                 "name": await org_name(key),
                 "channel": s["messaging_channel"],
                 "people": people,
-                "admins": [
-                    {"id": a["id"], "name": a["name"], "status": a["status"]}
-                    for a in accounts
-                    if a["level"] == "admin" and key in a["orgs"]
-                ],
             }
         )
-    return {"orgs": out}
+    return cards
+
+
+@router.get("/orgs")
+async def orgs(_: Super):
+    accounts = await auth_accounts.list_accounts()
+    cards = await _org_cards()
+    for card in cards:
+        card["admins"] = [
+            {"id": a["id"], "name": a["name"], "status": a["status"]}
+            for a in accounts
+            if a["level"] == "admin" and card["key"] in a["orgs"]
+        ]
+    return {"orgs": cards}
+
+
+@router.get("/my-orgs")
+async def my_orgs(account: Annotated[Account, Depends(require_account)]):
+    """The organisations this person may open: all of them for a super admin, only the ones on the
+    account for an admin. No names of admins: that is for super admins."""
+    return {
+        "orgs": await _org_cards(None if account.is_super else set(account.source_keys))
+    }
 
 
 @router.get("/accounts")
