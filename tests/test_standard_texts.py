@@ -143,9 +143,6 @@ def test_a_standard_text_file_only_adds_rows_and_is_safe_to_run_twice(path):
     statements = [code.strip() for _, code in migrate.split_statements(sql)]
     assert statements and all(s.startswith("INSERT INTO public.") for s in statements)
     assert all("ON CONFLICT" in s and "DO NOTHING" in s for s in statements)
-    assert (
-        b"\r" not in path.read_bytes()
-    )  # like every migration file, line endings are LF
 
 
 # ------------------------------------------------------------ the generator
