@@ -8,11 +8,13 @@ WhatsApp) never use this sign-in.
 | | Super admin | Admin |
 |---|---|---|
 | Signs in at | `/admin` (or any organisation's address) | their organisation's address, like `/admin/godrej` |
-| Sign-in | email + password + a 6-digit code sent by email, every time | email + password |
+| Sign-in | email + password | email + password |
 | Can open | every organisation, all screens | only the organisations listed on the account: Home, Cases (and Assign), People (and change a role) |
 | Can do | add people, give or take access, switch accounts off, edit flows, rules, roles, settings | assign a case, change a role (not their own), ask a super admin |
 
 Sign up is only for people a super admin already added. Nobody can create an account by themselves.
+The 6-digit code sent by email is asked once, at sign-up (it proves the address is theirs), and again
+only at "Forgot password". A normal sign-in is email and password, for super admins too.
 
 ## Where things live
 

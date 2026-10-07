@@ -42,7 +42,7 @@ LOCK_MINUTES = 15
 MIN_PASSWORD = 10
 MAX_PASSWORD = 200
 TOUCH_SECONDS = 60  # "last used" is written at most this often
-CODE_KINDS = ("signup", "reset", "signin")
+CODE_KINDS = ("signup", "reset")
 
 WRONG = "Wrong email or password. First time here? Choose Sign up."
 
@@ -85,12 +85,6 @@ def clean_email(text: str | None) -> str | None:
     if not email or len(email) > 254 or not _EMAIL.match(email):
         return None
     return email
-
-
-def mask_email(email: str) -> str:
-    """Enough to recognise your own address, not enough to learn someone else's."""
-    local, _, domain = email.partition("@")
-    return f"{local[:1]}•••@{domain}"
 
 
 # ── passwords ────────────────────────────────────────────────────────────────

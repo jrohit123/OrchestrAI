@@ -294,7 +294,6 @@ def test_small_helpers():
     assert auth.clean_email("  Anuja@Godrej.Test ") == "anuja@godrej.test"
     for bad in ("", "no-at-sign", "a@b", "a b@c.d", None, "x" * 300 + "@y.zz"):
         assert auth.clean_email(bad) is None
-    assert auth.mask_email("anuja@godrej.test") == "a•••@godrej.test"
     assert auth.clean_code(" 123 456 ") == "123456"
     assert auth.clean_code("12345") is None
     assert auth.clean_code("1234567") is None
@@ -440,40 +439,37 @@ def test_a_stranger_learns_nothing_from_the_sign_up_and_reset_pages(world, monke
 
 
 @needs_pg
-def test_a_super_admin_needs_an_emailed_code_each_time(world, monkeypatch):
+def test_a_super_admin_signs_in_with_email_and_password_like_everyone_else(
+    world, monkeypatch
+):
     async def scenario(p):
         await p.add_account("kartik@x.test", "Kartik", "super")
         async with p.client() as c:
             await p.sign_up(
                 c, "kartik@x.test"
-            )  # signing up proved the address: signed in
+            )  # the emailed code is asked once, at sign-up: signed in
             assert (await c.get("/admin/_auth/me")).json()["account"][
                 "level"
             ] == "super"
             await c.post("/admin/_auth/sign-out", json={})
-            await p.age_codes()
-            r = await p.sign_in(c, "kartik@x.test")
-            assert r.status_code == 200 and r.json()["step"] == "code"
-            assert r.json()["sent_to"] == "k•••@x.test"
-            assert (await c.get("/admin/_auth/me")).status_code == 401  # not in yet
-            code = p.last_code("kartik@x.test")
-            wrong = "000000" if code != "000000" else "111111"
-            r = await p.sign_in(c, "kartik@x.test", code=wrong)
-            assert r.status_code == 401 and "not right" in r.json()["detail"]
-            r = await p.sign_in(c, "kartik@x.test", GOOD + "x", code=code)
-            assert r.status_code == 401  # right code, wrong password
-            r = await p.sign_in(c, "kartik@x.test", code="12345")
-            assert r.status_code == 400  # not six digits
-            r = await p.sign_in(c, "kartik@x.test", code=code)
-            assert r.status_code == 200 and r.json()["account"]["level"] == "super"
-            await c.post("/admin/_auth/sign-out", json={})
-            # a used code does not work again; a new one is not sent twice in a minute
+            assert (await c.get("/admin/_auth/me")).status_code == 401
             sent = len(p.mails_to("kartik@x.test"))
+            # a later sign-in is the password and nothing else: in at once, no email sent
             r = await p.sign_in(c, "kartik@x.test")
-            assert r.json()["step"] == "code" and r.json()["wait"] > 0
+            assert r.status_code == 200 and r.json()["account"]["level"] == "super"
+            assert "step" not in r.json()
+            assert (await c.get("/admin/_auth/me")).status_code == 200
             assert len(p.mails_to("kartik@x.test")) == sent
-            r = await p.sign_in(c, "kartik@x.test", code=code)
+            await c.post("/admin/_auth/sign-out", json={})
+            # a wrong password is still refused, and a code field sent by an old page changes nothing
+            r = await p.sign_in(c, "kartik@x.test", GOOD + "x", code="123456")
             assert r.status_code == 401
+            assert (await c.get("/admin/_auth/me")).status_code == 401
+            r = await p.sign_in(c, "kartik@x.test", code="123456")
+            assert r.status_code == 200
+        actions = [r["action"] for r in await p.sql("SELECT action FROM panel_audit")]
+        assert actions.count("code_sent") == 1  # the sign-up code, and no other
+        assert actions.count("sign_in") == 2
 
     run(world, monkeypatch, scenario)
 
@@ -577,15 +573,7 @@ def test_an_admin_gets_home_cases_and_people_and_a_super_admin_gets_everything(
             assert (await a.get(base + "/lookups")).status_code == 200
             # a super admin: the whole menu and the same calls
             r = await p.sign_in(s, "kartik@x.test")
-            assert r.json()["step"] == "code"
-            await s.post(
-                "/admin/_auth/sign-in",
-                json={
-                    "email": "kartik@x.test",
-                    "password": GOOD,
-                    "code": p.last_code("kartik@x.test"),
-                },
-            )
+            assert r.status_code == 200
             boot = (await s.get(base + "/bootstrap")).json()
             keys = {x["key"] for x in boot["sections"]}
             assert {"workflows", "access", "settings", "people", "cases"} <= keys
@@ -618,11 +606,7 @@ def test_an_admin_gets_home_cases_and_people_and_a_super_admin_gets_everything(
 
 
 async def _sign_in_super(p, c, email="kartik@x.test"):
-    await p.sign_in(c, email)
-    r = await c.post(
-        "/admin/_auth/sign-in",
-        json={"email": email, "password": GOOD, "code": p.last_code(email)},
-    )
+    r = await p.sign_in(c, email)
     assert r.status_code == 200, r.text
 
 
@@ -996,7 +980,8 @@ def test_codes_are_replaced_counted_and_cleaned_up(world, monkeypatch):
             assert await auth.check_code(account, "reset", guess) == "wrong"
         assert await auth.check_code(account, "reset", second) == "too_many"
         # no code of that kind at all
-        assert await auth.check_code(account, "signin", "123456") == "none"
+        nobody = "00000000-0000-0000-0000-000000000000"
+        assert await auth.check_code(nobody, "reset", "123456") == "none"
         # what can never be used again is removed; accounts and the log stay
         await p.sql("UPDATE panel_keys SET expires_at = now() - interval '2 days'")
         await p.sql("INSERT INTO panel_audit (action) VALUES ('x')")

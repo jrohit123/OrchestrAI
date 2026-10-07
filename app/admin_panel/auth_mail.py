@@ -12,7 +12,6 @@ BRAND = "OrchestrAI"
 _PURPOSE = {
     "signup": ("Your sign-up code", "You asked to sign up for the dashboard."),
     "reset": ("Your password reset code", "You asked to choose a new password."),
-    "signin": ("Your sign-in code", "Someone, hopefully you, is signing in."),
 }
 
 

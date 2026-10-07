@@ -86,9 +86,6 @@ CSS = r"""
 .lgn-rules{display:grid;gap:5px;margin:2px 0 16px;font-size:13px;color:var(--muted)}
 .lgn-rules .ok{color:var(--ok)}
 .lgn-rules div{display:flex;gap:7px;align-items:center}
-.lgn-resend{font-size:13px;color:var(--muted);margin-top:4px}
-.lgn-resend button{border:0;background:none;color:var(--brand);padding:0;font:inherit;cursor:pointer}
-.lgn-resend button:disabled{color:var(--faint);cursor:default}
 @media (max-width:920px){.lgn{grid-template-columns:minmax(0,1fr)}.lgn-hero{display:none}.lgn-mini{display:flex}.lgn-main{padding-top:56px}}
 @media (prefers-reduced-motion:reduce){.lgn *,.lgn *::before{animation:none!important;transition:none!important}}
 

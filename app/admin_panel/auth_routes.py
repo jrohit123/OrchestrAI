@@ -1,9 +1,9 @@
 """The sign-in endpoints, under /admin/_auth, and what a super admin does with accounts.
 
 Sign up is only for people a super admin has invited (an account that is "invited"). A person
-types their email, gets a 6-digit code by email, and chooses a password. An admin then signs in with
-email and password; a super admin also types a code sent by email each time. A code request always
-gets the same answer, whether or not the address is known."""
+types their email, gets a 6-digit code by email, and chooses a password. Every later sign-in, admin
+or super admin, is email and password only; a code is asked for again only at "Forgot password".
+A code request always gets the same answer, whether or not the address is known."""
 
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ from app.admin_panel.auth import (
     clear_session_cookie,
     find_by_email,
     issue_code,
-    mask_email,
     need_panel_header,
     note_signed_in,
     register_failure,
@@ -133,7 +132,6 @@ async def me(account: Annotated[Account, Depends(require_account)]):
 class SignInBody(BaseModel):
     email: str = Field(max_length=300)
     password: str = Field(max_length=1000)
-    code: str | None = Field(default=None, max_length=40)
 
 
 @router.post("/sign-in")
@@ -191,39 +189,6 @@ async def sign_in(body: SignInBody, request: Request, response: Response):
             status_code=403,
             detail="This account is switched off. Ask a super admin to switch it on.",
         )
-    if found["level"] == "super":
-        code = clean_code(body.code)
-        if body.code and code is None:
-            raise HTTPException(
-                status_code=400, detail="Type the 6 digits from the email."
-            )
-        if code is None:
-            return await _send_signin_code(found, email, request)
-        outcome = await check_code(account_id, "signin", code)
-        if outcome != "ok":
-            locked = False
-            if outcome == "wrong":
-                locked = await register_failure(account_id)
-            await audit(
-                "sign_in_failed",
-                request=request,
-                account_id=account_id,
-                email=email,
-                ok=False,
-                detail=f"Code: {outcome}",
-            )
-            if locked:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Too many wrong tries. This account is locked for {auth.LOCK_MINUTES} minutes.",
-                )
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "wrong": "That code is not right.",
-                    "too_many": "Too many wrong codes. Ask for a new one.",
-                }.get(outcome, "That code has expired. Ask for a new one."),
-            )
     await note_signed_in(account_id)
     token = await start_session(account_id, request)
     set_session_cookie(response, request, token)
@@ -243,27 +208,6 @@ async def sign_in(body: SignInBody, request: Request, response: Response):
         status=found["status"],
     )
     return {"ok": True, "account": await me_of(account)}
-
-
-async def _send_signin_code(found: dict, email: str, request: Request) -> dict:
-    code, wait = await issue_code(str(found["id"]), "signin")
-    if code is not None:
-        sent = await auth_mail.send_code(
-            email, found["name"], "signin", code, CODE_MINUTES
-        )
-        if not sent:
-            raise HTTPException(
-                status_code=502,
-                detail="We could not send the code by email just now. Try again in a minute.",
-            )
-        await audit(
-            "code_sent",
-            request=request,
-            account_id=str(found["id"]),
-            email=email,
-            detail="Sign-in code emailed",
-        )
-    return {"step": "code", "sent_to": mask_email(email), "wait": wait}
 
 
 @router.post("/sign-out")

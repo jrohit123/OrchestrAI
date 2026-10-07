@@ -17,8 +17,8 @@ const hasSection = key => !!(S.boot && S.boot.sections.some(s => s.key === key))
 const q1 = (sel, root) => (root || document).querySelector(sel);
 const firstName = n => String(n || '').split(/\s+/)[0] || '';
 
-const A = { view: 'signin', email: '', password: '', code: '', pw1: '', pw2: '', error: '', info: '', sentTo: '', until: 0, busy: false, org: null };
-let heroNode = null, storyTimers = [], storyOn = false, resendTimer = null;
+const A = { view: 'signin', email: '', password: '', code: '', pw1: '', pw2: '', error: '', info: '', busy: false, org: null };
+let heroNode = null, storyTimers = [], storyOn = false;
 
 function themeButton() { return h('button', { class: 'btn ghost sm lgn-theme', type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon', 'sm'), 'Light / dark'); }
 
@@ -113,7 +113,6 @@ function signInCard() {
   return h('form', { class: 'lgn-card', novalidate: true, onsubmit: e => { e.preventDefault(); submitAuth(go, 'Signing in…', async () => {
     A.error = ''; A.info = '';
     const r = await authApi.post('/sign-in', { email: A.email, password: A.password });
-    if (r.step === 'code') { Object.assign(A, { view: 'code', code: '', sentTo: r.sent_to, until: Date.now() + (r.wait || 0) * 1000 }); renderAuth(); return; }
     signedIn(r.account);
   }); } },
     h('h2', null, 'Welcome back'),
@@ -125,37 +124,6 @@ function signInCard() {
     go,
     h('div', { class: 'lgn-secure' }, icon('lock', 'sm'), 'Protected sign-in. Every sign-in is recorded.'),
     h('div', { class: 'lgn-swap' }, 'First time here? ', authLink('Sign up', 'signup1')));
-}
-function codeCard() {
-  const go = goButton('Verify and continue');
-  const resend = h('button', { type: 'button' });
-  const tick = () => {
-    if (!resend.isConnected) return;
-    const left = Math.ceil((A.until - Date.now()) / 1000);
-    resend.disabled = left > 0; resend.textContent = left > 0 ? 'Send a new code in ' + left + 's' : 'Send a new code';
-    if (left > 0) { clearTimeout(resendTimer); resendTimer = setTimeout(tick, 1000); }
-  };
-  setTimeout(tick, 0);
-  resend.addEventListener('click', async () => {
-    resend.disabled = true;
-    try {
-      const r = await authApi.post('/sign-in', { email: A.email, password: A.password });
-      A.until = Date.now() + (r.wait || 60) * 1000; A.error = ''; A.info = r.wait ? '' : 'A new code is on its way.'; renderAuth();
-    } catch (e) { A.error = e.message; renderAuth(); }
-  });
-  return h('form', { class: 'lgn-card', onsubmit: e => { e.preventDefault(); submitAuth(go, 'Checking…', async () => {
-    const r = await authApi.post('/sign-in', { email: A.email, password: A.password, code: A.code });
-    signedIn(r.account);
-  }); } },
-    h('div', { class: 'lgn-steps' }, h('i', { class: 'on' }), h('i', { class: 'on' })),
-    h('div', { class: 'lgn-hd' }, icon('shield')),
-    h('h2', null, 'One more step'),
-    h('p', { class: 'sub' }, 'We sent a 6-digit code to ' + A.sentTo + '. Type it here. It works for 10 minutes.'),
-    authInfo(), authError(),
-    field('6-digit code', codeInput(true)),
-    go,
-    h('div', { class: 'lgn-resend' }, resend),
-    h('div', { class: 'lgn-back' }, authLink('← Back to sign in', 'signin')));
 }
 function signUp1Card() {
   const go = goButton('Send me a code');
@@ -222,7 +190,7 @@ function forgot2Card() {
     go,
     h('div', { class: 'lgn-back' }, authLink('← Back to sign in', 'signin')));
 }
-const AUTH_CARDS = { signin: signInCard, code: codeCard, signup1: signUp1Card, signup2: signUp2Card, forgot1: forgot1Card, forgot2: forgot2Card };
+const AUTH_CARDS = { signin: signInCard, signup1: signUp1Card, signup2: signUp2Card, forgot1: forgot1Card, forgot2: forgot2Card };
 // the page around a card: the story on the left (a plain banner on a phone), the card on the right
 function mountAuth(card, name) {
   const mini = h('div', { class: 'lgn-mini' }, h('span', { class: 'lgn-mark' }, icon('spark')), h('div', null, h('b', null, name), h('small', null, 'Your chat bot, under your control.')));
@@ -231,7 +199,6 @@ function mountAuth(card, name) {
   const target = q1('[data-focus]'); if (target) target.focus();
 }
 function renderAuth() {
-  clearTimeout(resendTimer);
   const name = A.org ? A.org.name : 'OrchestrAI';
   document.title = 'Sign in · ' + name;
   mountAuth(AUTH_CARDS[A.view](), name);

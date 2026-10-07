@@ -58,7 +58,7 @@ function addSuperDialog(done) {
   const email = h('input', { type: 'text', placeholder: 'name@example.com', maxlength: 300 });
   modal({
     title: 'Add a super admin',
-    body: h('div', { class: 'stack' }, notice('A super admin can open every organisation and change everything, including who else can sign in. Only add someone you trust fully.', 'warn'), field('Name', name), field('Email', email, 'We email an invitation. They choose their own password and confirm every sign-in with a code we email.')),
+    body: h('div', { class: 'stack' }, notice('A super admin can open every organisation and change everything, including who else can sign in. Only add someone you trust fully.', 'warn'), field('Name', name), field('Email', email, 'We email an invitation. They sign up with a code we email, then choose their own password.')),
     actions: [{ label: 'Cancel' }, { label: 'Add super admin', primary: true, run: async () => {
       if (name.value.trim().length < 2) throw new Error('Write the name.');
       const r = await authApi.post('/super-admins', { email: email.value.trim(), name: name.value.trim() });
