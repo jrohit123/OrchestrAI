@@ -27,6 +27,7 @@ MIGRATION = (
 )
 KEY = "otp.cooldown"  # "⏳ Please wait {wait_seconds}s before requesting another code."
 MSG = MESSAGES[KEY]
+SEED = MIGRATION.with_name("core-0011_standard_texts.sql")
 URL = "/admin/alpha/api/v2/messages"
 
 
@@ -235,7 +236,7 @@ def _ctx(**caps):
     )
 
 
-async def _client(world, monkeypatch, ctx, with_events=False):
+async def _client(world, monkeypatch, ctx, with_events=False, seeded=False):
     pool = await asyncpg.create_pool(world.dsn["alpha"], min_size=1, max_size=3)
     async with pool.acquire() as conn:
         await conn.execute(
@@ -243,6 +244,8 @@ async def _client(world, monkeypatch, ctx, with_events=False):
             "(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text)"
         )
         await conn.execute(MIGRATION.read_text(encoding="utf-8"))
+        if seeded:  # the standard wording stored in the database (migration core-0011)
+            await conn.execute(SEED.read_text(encoding="utf-8"))
         if with_events:
             await conn.execute(
                 "CREATE TABLE admin_events (org_id uuid, actor_label text, area text, action text, "
@@ -354,7 +357,7 @@ def test_the_screen_lists_every_message_and_a_save_shows_up_and_applies_at_once(
     assert out["history_after"] == [(1, False)]  # kept, switched off
     assert out["log"] == [
         f"Changed the message “{MSG.name}”",
-        f"Went back to the built-in wording of “{MSG.name}”",
+        f"Went back to the standard wording of “{MSG.name}”",
     ]
 
 
@@ -409,3 +412,133 @@ def test_a_database_without_the_tables_still_lists_the_built_in_wording_but_save
     )
     assert put.status_code == 409 and "core-0009" in put.json()["detail"]
     assert hist.status_code == 409
+
+
+# ------------------------------------------------------------ with the standard wording stored (core-0011)
+
+
+@needs_pg
+def test_with_the_standard_wording_stored_every_message_says_what_it_always_said(
+    world, monkeypatch
+):
+    async def scenario():
+        conn = await _db(world)
+        try:
+            await conn.execute(SEED.read_text(encoding="utf-8"))
+            _read_from(monkeypatch, conn)
+            stored = await conn.fetchval(
+                "SELECT count(*) FROM system_messages WHERE scope = 'global' AND is_active"
+            )
+            said = {
+                m.key: await say("alpha", m.key, **m.example) for m in MESSAGES.values()
+            }
+            # and it really is read from the database, not from the code
+            await conn.execute(
+                "UPDATE system_messages SET body = 'From the database {wait_seconds}' WHERE key = $1",
+                KEY,
+            )
+            cs.invalidate()
+            return stored, said, await say("alpha", KEY, wait_seconds=9)
+        finally:
+            await conn.close()
+
+    stored, said, from_db = asyncio.run(scenario())
+    assert stored == len(MESSAGES)
+    for m in MESSAGES.values():
+        assert said[m.key] == cs.fill(m.text, m.example), m.key
+    assert from_db == "From the database 9"
+
+
+@needs_pg
+def test_the_screen_calls_stored_wording_standard_and_going_back_goes_to_it(
+    world, monkeypatch
+):
+    async def scenario():
+        client, pool = await _client(
+            world, monkeypatch, _ctx(texts=True, events=True), True, seeded=True
+        )
+        try:
+            out = {}
+
+            async def mine():
+                found = (await client.get(URL)).json()
+                return next(
+                    m for g in found["groups"] for m in g["messages"] if m["key"] == KEY
+                )
+
+            listing = (await client.get(URL)).json()
+            every = [m for g in listing["groups"] for m in g["messages"]]
+            out["sources"] = {m["source"] for m in every}
+            out["same"] = all(m["text"] == m["standard"] == m["default"] for m in every)
+            out["put"] = (
+                await client.put(
+                    f"{URL}/{KEY}", json={"text": "Hold on {wait_seconds}s."}
+                )
+            ).json()
+            now = await mine()
+            out["own"] = (now["source"], now["version"], now["standard"] == MSG.text)
+            out["says"] = await say("alpha", KEY, wait_seconds=9)
+            # saving the standard wording is going back to it
+            out["back"] = (
+                await client.put(f"{URL}/{KEY}", json={"text": MSG.text})
+            ).json()
+            out["after"] = (
+                (await mine())["source"],
+                await say("alpha", KEY, wait_seconds=9),
+            )
+            # a later migration changes the standard wording: that is what people get, and what
+            # "the same as the standard" means from then on
+            await pool.execute(
+                "UPDATE system_messages SET body = $1 WHERE key = $2 AND scope = 'global'",
+                "Hmm {wait_seconds}",
+                KEY,
+            )
+            cs.invalidate()
+            changed = await mine()
+            out["changed"] = (
+                changed["source"],
+                changed["text"],
+                changed["default"] == MSG.text,
+            )
+            out["says_now"] = await say("alpha", KEY, wait_seconds=9)
+            out["same_as_standard"] = (
+                await client.put(f"{URL}/{KEY}", json={"text": "Hmm {wait_seconds}"})
+            ).json()
+            out["code_text"] = (
+                await client.put(f"{URL}/{KEY}", json={"text": MSG.text})
+            ).json()
+            out["gone"] = (await client.delete(f"{URL}/{KEY}")).json()
+            out["end"] = await say("alpha", KEY, wait_seconds=9)
+            out["log"] = [
+                r["summary"]
+                for r in await pool.fetch(
+                    "SELECT summary FROM admin_events ORDER BY created_at"
+                )
+            ]
+            return out
+        finally:
+            await client.aclose()
+            await pool.close()
+
+    out = asyncio.run(scenario())
+    assert out["sources"] == {"shared"} and out["same"]
+    assert out["put"] == {"ok": True, "changed": True, "version": 1}
+    assert out["own"] == ("own", 1, True)
+    assert out["says"] == "Hold on 9s."
+    assert out["back"] == {"ok": True, "changed": True, "version": 0}
+    assert out["after"] == (
+        "shared",
+        "⏳ Please wait 9s before requesting another code.",
+    )
+    assert out["changed"] == ("shared", "Hmm {wait_seconds}", True)
+    assert out["says_now"] == "Hmm 9"
+    assert out["same_as_standard"] == {"ok": True, "changed": False, "version": None}
+    assert out["code_text"] == {"ok": True, "changed": True, "version": 2}
+    assert out["gone"] == {"ok": True, "changed": True}
+    assert out["end"] == "Hmm 9"
+    assert out["log"] == [
+        f"Changed the message “{MSG.name}”",
+        f"Went back to the standard wording of “{MSG.name}”",
+        f"Changed the message “{MSG.name}”",
+        f"Went back to the standard wording of “{MSG.name}”",
+    ]

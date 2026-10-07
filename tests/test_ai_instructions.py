@@ -28,6 +28,10 @@ MIGRATION = (
 )
 ORG = {"name": "Godrej Emerald", "industry": "Housing Society", "slug": "godrej"}
 ORG_ID = "00000000-0000-0000-0000-000000000001"
+SEED_CORE = MIGRATION.with_name("core-0011_standard_texts.sql")
+SEED_HOUSING = (
+    MIGRATION.parent.parent / "features" / "housing" / "housing-0003_industry_text.sql"
+)
 URL = "/admin/alpha/api/v2/instructions"
 BUILT_IN = prompt_loader.built_in(ORG)
 
@@ -247,7 +251,7 @@ def _ctx(**caps):
     )
 
 
-async def _client(world, monkeypatch, ctx, with_events=False):
+async def _client(world, monkeypatch, ctx, with_events=False, seeded=False):
     pool = await asyncpg.create_pool(world.dsn["alpha"], min_size=1, max_size=3)
     async with pool.acquire() as conn:
         await conn.execute(
@@ -255,6 +259,11 @@ async def _client(world, monkeypatch, ctx, with_events=False):
             "industry text, slug text)"
         )
         await conn.execute(MIGRATION.read_text(encoding="utf-8"))
+        if (
+            seeded
+        ):  # the standard texts stored in the database (core-0011, housing-0003)
+            await conn.execute(SEED_CORE.read_text(encoding="utf-8"))
+            await conn.execute(SEED_HOUSING.read_text(encoding="utf-8"))
         await conn.execute(
             "INSERT INTO orgs (id, name, industry, slug) VALUES ($1, $2, $3, $4)",
             ORG_ID,
@@ -374,7 +383,7 @@ def test_the_screen_shows_the_layers_and_a_save_applies_at_once(world, monkeypat
     assert out["assembled_back"] == out["assembled_before"]
     assert out["log"] == [
         "Changed the AI notes: Notes for Godrej Emerald",
-        "Went back to the built-in AI notes: Notes for Godrej Emerald",
+        "Went back to the standard text: Notes for Godrej Emerald",
     ]
 
 
@@ -425,3 +434,238 @@ def test_a_database_without_the_tables_still_shows_the_built_in_text_but_saves_n
     assert all(x["source"] == "built_in" for x in listing["layers"])
     assert put.status_code == 409 and "core-0009" in put.json()["detail"]
     assert hist.status_code == 409
+
+
+# ------------------------------------------------------------ with the standard texts stored (core-0011, housing-0003)
+
+
+def test_the_reply_style_is_a_text_of_its_own_and_not_one_of_the_layers():
+    assert prompt_loader.REPLY_STYLE_KEY in ai.EXTRAS
+    assert prompt_loader.REPLY_STYLE_KEY not in ai.LAYERS
+    assert prompt_loader.REPLY_STYLE_KEY not in [
+        k for k, _, _ in prompt_loader._layers(ORG)
+    ]
+    assert (
+        BUILT_IN[prompt_loader.REPLY_STYLE_KEY] == prompt_loader.reply_style_built_in()
+    )
+    assert (
+        ai._name(prompt_loader.REPLY_STYLE_KEY, ORG)
+        == "How lists and amounts are worded"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        (
+            "Format {workflow_name} nicely",
+            "{raw_data}",
+        ),  # the results would never reach the AI
+        ("{raw_data} and {nope}", "{nope} is not something this text knows"),
+        ("{raw_data", "is not closed"),
+        ("{raw_data!r}", "Only plain names"),
+        ("{raw_data.x}", "is not something this text knows"),
+    ],
+)
+def test_a_reply_style_that_would_not_fill_in_is_refused_in_plain_words(text, words):
+    found = ai.check(
+        prompt_loader.REPLY_STYLE_KEY, text, BUILT_IN[prompt_loader.REPLY_STYLE_KEY]
+    )
+    assert not found["ok"] and any(words in p for p in found["problems"]), found
+
+
+def test_a_reply_style_that_leaves_out_a_name_is_only_a_warning():
+    found = ai.check(
+        prompt_loader.REPLY_STYLE_KEY, "Amounts like Rs.1,45,000. {raw_data}", ""
+    )
+    assert found["ok"] and len(found["warnings"]) == 2
+    both = "{workflow_name} {glossary_json} {raw_data}"
+    assert ai.check(prompt_loader.REPLY_STYLE_KEY, both, "") == {
+        "ok": True, "problems": [], "warnings": [], "characters": len(both), "lines": 1,
+    }  # fmt: skip
+
+
+@needs_pg
+def test_with_the_standard_texts_stored_the_ai_reads_exactly_what_it_read_before(
+    world, monkeypatch
+):
+    async def scenario():
+        conn = await _db(world)
+        try:
+            await conn.execute(SEED_CORE.read_text(encoding="utf-8"))
+            await conn.execute(SEED_HOUSING.read_text(encoding="utf-8"))
+            _read_from(monkeypatch, conn)
+            prompt = await prompt_loader.load_domain_prompt(ORG, "alpha")
+            style = await prompt_loader.reply_style("alpha")
+            # and it really is read from the database, not from the files
+            await conn.execute(
+                "UPDATE prompts SET body = 'STORED' WHERE key = 'agent.industry' AND scope = 'pack'"
+            )
+            await conn.execute(
+                "UPDATE prompts SET body = 'STYLE {raw_data}' WHERE key = 'agent.reply_style'"
+            )
+            cs.invalidate()
+            return (
+                prompt,
+                style,
+                await prompt_loader.load_domain_prompt(ORG, "alpha"),
+                await prompt_loader.reply_style("alpha"),
+            )
+        finally:
+            await conn.close()
+
+    prompt, style, prompt_db, style_db = asyncio.run(scenario())
+    assert prompt == prompt_loader.load_prompt(ORG)  # word for word the same
+    assert style == prompt_loader.reply_style_built_in()
+    assert prompt_db == BUILT_IN["agent.shared"] + "\n\nSTORED"
+    assert style_db == "STYLE {raw_data}"
+
+
+@needs_pg
+def test_the_screen_shows_stored_texts_as_standard_and_the_reply_style_can_be_changed(
+    world, monkeypatch
+):
+    style_key = prompt_loader.REPLY_STYLE_KEY
+
+    async def scenario():
+        client, pool = await _client(
+            world, monkeypatch, _ctx(prompts=True, events=True), True, seeded=True
+        )
+        try:
+            out = {}
+            listing = (await client.get(URL)).json()
+            out["layers"] = [
+                (x["key"], x["source"], x["text"] == x["standard"])
+                for x in listing["layers"]
+            ]
+            out["extras"] = [
+                (
+                    x["key"],
+                    x["name"],
+                    x["source"],
+                    x["text"] == x["standard"],
+                    sorted(x["values"]),
+                )
+                for x in listing["extras"]
+            ]
+            before = (await client.get(f"{URL}/assembled")).json()["text"]
+            out["assembled"] = before == prompt_loader.load_prompt(ORG)
+            check = lambda text: client.post(
+                f"{URL}/{style_key}/check", json={"text": text}
+            )
+            out["no_results"] = (await check("Format {workflow_name}")).json()[
+                "problems"
+            ]
+            out["fine"] = (await check("Amounts like Rs.1,45,000. {raw_data}")).json()
+            out["refused"] = (
+                await client.put(
+                    f"{URL}/{style_key}", json={"text": "Nothing to fill in"}
+                )
+            ).status_code
+            out["put"] = (
+                await client.put(
+                    f"{URL}/{style_key}",
+                    json={"text": "Amounts like Rs.1,45,000. {raw_data}"},
+                )
+            ).json()
+            style_now = next(
+                x
+                for x in (await client.get(URL)).json()["extras"]
+                if x["key"] == style_key
+            )
+            out["now"] = (style_now["source"], style_now["version"], style_now["text"])
+            out["variables"] = await pool.fetchval(
+                "SELECT variables::text FROM prompts WHERE key = $1 AND scope = 'tenant'",
+                style_key,
+            )
+            out["reads"] = await prompt_loader.reply_style("alpha")
+            out["assembled_same"] = (await client.get(f"{URL}/assembled")).json()[
+                "text"
+            ] == before
+            out["gone"] = (await client.delete(f"{URL}/{style_key}")).json()
+            out["back"] = await prompt_loader.reply_style("alpha")
+            out["log"] = [
+                r["summary"]
+                for r in await pool.fetch(
+                    "SELECT summary FROM admin_events ORDER BY created_at"
+                )
+            ]
+            return out
+        finally:
+            await client.aclose()
+            await pool.close()
+
+    out = asyncio.run(scenario())
+    assert out["layers"] == [
+        ("agent.shared", "built_in", True),
+        ("agent.industry", "industry", True),
+        ("agent.client", "built_in", True),
+    ]
+    assert out["extras"] == [
+        (style_key, "How lists and amounts are worded", "shared", True,
+         ["glossary_json", "raw_data", "workflow_name"]),
+    ]  # fmt: skip
+    assert out["assembled"]
+    assert any("{raw_data}" in p for p in out["no_results"])
+    # allowed, with warnings: it is much shorter than the standard text and leaves two names out
+    assert out["fine"]["ok"] and len(out["fine"]["warnings"]) == 3
+    assert out["refused"] == 400
+    assert out["put"] == {"ok": True, "changed": True, "version": 1}
+    assert out["now"] == ("own", 1, "Amounts like Rs.1,45,000. {raw_data}")
+    assert out["variables"] == '["glossary_json", "raw_data", "workflow_name"]'
+    assert out["reads"] == "Amounts like Rs.1,45,000. {raw_data}"
+    assert out[
+        "assembled_same"
+    ]  # the reply style is not part of what the AI reads as its notes
+    assert out["gone"] == {"ok": True, "changed": True}
+    assert out["back"] == prompt_loader.reply_style_built_in()
+    assert out["log"] == [
+        "Changed the AI notes: How lists and amounts are worded",
+        "Went back to the standard text: How lists and amounts are worded",
+    ]
+
+
+@needs_pg
+def test_going_back_goes_to_the_standard_text_stored_in_the_database(
+    world, monkeypatch
+):
+    async def scenario():
+        client, pool = await _client(
+            world, monkeypatch, _ctx(prompts=True), seeded=True
+        )
+        try:
+            out = {}
+            # a later migration changes the housing text: that is the standard from then on
+            await pool.execute(
+                "UPDATE prompts SET body = 'NEW HOUSING TEXT' WHERE key = 'agent.industry' AND scope = 'pack'"
+            )
+            cs.invalidate()
+            out["says"] = (await client.get(f"{URL}/assembled")).json()["text"]
+            out["same"] = (
+                await client.put(
+                    f"{URL}/agent.industry", json={"text": "NEW HOUSING TEXT"}
+                )
+            ).json()
+            out["old_text"] = (
+                await client.put(
+                    f"{URL}/agent.industry", json={"text": BUILT_IN["agent.industry"]}
+                )
+            ).json()
+            out["own"] = (await client.get(f"{URL}/assembled")).json()["text"]
+            await client.delete(f"{URL}/agent.industry")
+            out["back"] = (await client.get(f"{URL}/assembled")).json()["text"]
+            return out
+        finally:
+            await client.aclose()
+            await pool.close()
+
+    out = asyncio.run(scenario())
+    assert out["says"] == BUILT_IN["agent.shared"] + "\n\nNEW HOUSING TEXT"
+    assert out["same"] == {"ok": True, "changed": False, "version": None}
+    assert out["old_text"] == {
+        "ok": True,
+        "changed": True,
+        "version": 1,
+    }  # differs from the standard
+    assert out["own"] == BUILT_IN["agent.shared"] + "\n\n" + BUILT_IN["agent.industry"]
+    assert out["back"] == BUILT_IN["agent.shared"] + "\n\nNEW HOUSING TEXT"

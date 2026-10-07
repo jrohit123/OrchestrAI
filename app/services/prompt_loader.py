@@ -13,6 +13,11 @@ from app.services import config_store
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
+# The text that tells the AI how to word a list of results. It is not one of the three layers of the
+# system prompt: it is used on its own, when the AI words a report (see agent._llm_format_report).
+REPLY_STYLE_KEY = "agent.reply_style"
+_REPLY_STYLE_FILE = "response_formatting.txt"
+
 
 def industry_of(org_row: dict) -> str:
     """The organisation's industry as the prompt files and the saved texts name it
@@ -40,8 +45,24 @@ def _layers(org_row: dict) -> list[tuple[str, str | None, str | None]]:
 
 
 def built_in(org_row: dict) -> dict[str, str]:
-    """The text each layer has in the prompt files, by key ('' when the layer has no file)."""
-    return {key: text or "" for key, _, text in _layers(org_row)}
+    """The text each layer has in the prompt files, by key ('' when the layer has no file), and the
+    reply style, which is kept on its own."""
+    return {key: text or "" for key, _, text in _layers(org_row)} | {
+        REPLY_STYLE_KEY: reply_style_built_in()
+    }
+
+
+def reply_style_built_in() -> str:
+    """The reply style in the prompt files ('' when the file is missing)."""
+    return _read(PROMPTS_DIR / _REPLY_STYLE_FILE) or ""
+
+
+async def reply_style(source_key: str | None) -> str:
+    """How a list of results is worded: the client's own text, else the standard one stored in its
+    database, else the prompt file. It has {workflow_name}, {glossary_json} and {raw_data} in it."""
+    return await config_store.prompt(
+        source_key, REPLY_STYLE_KEY, reply_style_built_in()
+    )
 
 
 def load_prompt(org_row: dict) -> str:

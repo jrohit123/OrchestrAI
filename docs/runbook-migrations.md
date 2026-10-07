@@ -30,10 +30,17 @@ separate deploy that comes **after** this run, so the tables it needs are alread
 | `housing-0001_remove_unused_labels` | Godrej only: removes two permission labels nothing uses |
 | `housing-0002_one_step_blocks` | Godrej only: every building block does one step. The 8 blocks that had several steps are cut into 25 one-step blocks, the 4 case flows that used them (File a complaint, Add an update, Close with a note, Pass on) run the small blocks in the same order with the same inputs, and the old blocks are switched off and marked "(replaced)". Nothing is deleted, and each changed flow keeps its old version in its History. It stops and changes nothing if a block was edited after the file was written. On a practice copy, 17 rehearsals (137 trace lines) gave the same result before and after |
 
+| `core-0011_standard_texts` | stores the standard wording of all 73 messages and the standard reply style in `system_messages` / `prompts` (scope `global`, version 1). It is exactly what the code has always said, so the chat bot says and reads the same words; the dashboard calls them "Standard" and a client's own version still wins. On a practice copy of both clients, the notes the AI reads, the reply style and all 73 messages were identical (same hashes) before and after |
+| `housing-0003_industry_text` | Godrej only: stores the housing society text the AI is told (`app/prompts/housing_society.txt`) as the industry's standard text (`prompts`, key `agent.industry`, scope `pack`). Same words as before |
+| `jewellery-0001_industry_text` | Baanganga only: the same for the jewellery text |
+
 **What people may notice afterwards:** Baanganga's dashboard gets an Activity log (its
 `admin_events` table now exists). Baanganga drafts start clean. The AI is no longer told about
 two unused Godrej labels. On Godrej, Flows > Building blocks lists 25 new small blocks, and the 8 big
-ones say "(replaced)" and are switched off; the case flows work the same. Nothing else. The new
+ones say "(replaced)" and are switched off; the case flows work the same. After `core-0011`,
+`housing-0003` and `jewellery-0001`: the Messages screen calls every message "Standard" instead of
+"Built-in", and the AI notes screen shows the industry text as "Industry text" and a new part, "How
+lists and amounts are worded". The bot says and reads exactly what it did. Nothing else. The new
 tables stay empty until the app is deployed.
 
 ## Before you start

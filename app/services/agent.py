@@ -18,13 +18,18 @@ from app.logging_config import get_context_logger
 from app.services import config_store, field_reader, sql_guard
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
-from app.services.prompt_loader import PROMPTS_DIR, _read, load_domain_prompt
+from app.services.prompt_loader import (
+    PROMPTS_DIR,
+    _read,
+    load_domain_prompt,
+    reply_style,
+    reply_style_built_in,
+)
 from app.services.query_engine import SENSITIVE_COLS, check_entity_records_access
 from app.services.report_format import format_list
 
 logger = get_context_logger(__name__)
 
-_RESPONSE_FORMATTING_PROMPT = _read(PROMPTS_DIR / "response_formatting.txt")
 _CRITICAL_TABLES_BLOCK_TEMPLATE = _read(PROMPTS_DIR / "critical_tables_block.txt")
 _AGENT_SYSTEM_WRAPPER_TEMPLATE = _read(PROMPTS_DIR / "agent_system_wrapper.txt")
 
@@ -1234,9 +1239,12 @@ async def _is_party_report(user: dict, intent_key: str) -> bool:
         return False
 
 
-async def _llm_format_report(wf: dict, raw_result: str) -> str:
+async def _llm_format_report(
+    wf: dict, raw_result: str, source_key: str | None = None
+) -> str:
     """The older way: a language model words the rows of a report. Used for reports whose
-    response_format is not 'list'."""
+    response_format is not 'list'. How it is worded is the reply style: the client's own text if it
+    wrote one, else the standard text (see prompt_loader.reply_style)."""
     glossary = wf.get("business_glossary") or {}
     if isinstance(glossary, str):
         try:
@@ -1244,11 +1252,20 @@ async def _llm_format_report(wf: dict, raw_result: str) -> str:
         except (json.JSONDecodeError, TypeError):
             glossary = {}
 
-    format_prompt = _RESPONSE_FORMATTING_PROMPT.format(
-        workflow_name=wf["name"],
-        glossary_json=json.dumps(glossary),
-        raw_data=raw_result,
-    )
+    values = {
+        "workflow_name": wf["name"],
+        "glossary_json": json.dumps(glossary),
+        "raw_data": raw_result,
+    }
+    try:
+        format_prompt = config_store.fill(await reply_style(source_key), values)
+    except (
+        ValueError
+    ):  # a saved text that cannot be filled in: use the one in the prompt file
+        logger.warning(
+            "the saved reply style cannot be filled in; using the built-in text"
+        )
+        format_prompt = config_store.fill(reply_style_built_in(), values)
 
     try:
         format_response = await _llm_chat(
@@ -2237,7 +2254,7 @@ async def _run_report_by_code(
     if (wf.get("response_format") or "") == "list":
         text = format_list(wf["name"], raw)
     else:
-        text = await _llm_format_report(wf, raw)
+        text = await _llm_format_report(wf, raw, user["source_key"])
     await close_draft(
         user["org_id"], user["user_id"], "done", source_key=user["source_key"]
     )
@@ -2590,7 +2607,7 @@ async def run_agent(
             if (wf.get("response_format") or "") == "list":
                 formatted = format_list(wf["name"], raw_result)
             else:
-                formatted = await _llm_format_report(wf, raw_result)
+                formatted = await _llm_format_report(wf, raw_result, user["source_key"])
 
             # Final safety check: never return empty string
             if not formatted:

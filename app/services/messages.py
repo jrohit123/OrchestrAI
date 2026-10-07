@@ -6,7 +6,9 @@ an organisation write its own wording. A message nobody changed is sent exactly 
 so is any message of an organisation whose database has no saved wording, or cannot be reached
 (see config_store.py).
 
-To add one: add it to MESSAGES, then call `await say(source_key, "group.name", value=...)`. The tests
+To add one: add it to MESSAGES, add a migration that stores its standard wording (python -m tools.seed_texts
+messages --keys group.name; tests/test_standard_texts.py fails until you do), then call
+`await say(source_key, "group.name", value=...)`. The tests
 check that every key used in the code is in this list and that the values passed are the ones the
 wording uses.
 """

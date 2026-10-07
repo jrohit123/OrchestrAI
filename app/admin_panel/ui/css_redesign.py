@@ -91,6 +91,7 @@ CSS += r"""
 CSS += r"""
 /* ───── Chat bot: AI notes ───── */
 .promptbox.an-short{min-height:190px;font-family:inherit;font-size:14px;line-height:1.55}
+.promptbox.an-mid{min-height:300px}
 .an-notes:empty{display:none}
 .an-ideas{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13px;display:grid;gap:3px}
 .an-adv{margin-top:6px}

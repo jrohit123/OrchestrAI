@@ -1,11 +1,13 @@
-"""The Messages screen: every text the assistant sends by itself (app/services/messages.py), with the
+"""The Messages screen: every text the chat bot sends by itself (app/services/messages.py), with the
 organisation's own wording where it wrote one.
 
-A saved wording is a new version of one row in system_messages (scope 'tenant'); older versions stay,
-so the history only grows and "restore" is just saving an old wording again. Going back to the
-built-in wording switches the saved versions off instead of deleting them. The assistant reads the
-newest active version (config_store.message), so a save applies at once on the copy of the app that
-saved it, and within a minute on any other.
+The wording in use is the strongest of: the organisation's own (scope 'tenant'), the standard
+wording stored in its database (scope 'global'), the one built into the code. The dashboard changes
+only the first. A saved wording is a new version of one row in system_messages (scope 'tenant');
+older versions stay, so the history only grows and "restore" is just saving an old wording again.
+Going back to the standard wording switches the saved versions off instead of deleting them. The
+chat bot reads the newest active version (config_store.message), so a save applies at once on the
+copy of the app that saved it, and within a minute on any other.
 """
 
 import string
@@ -27,6 +29,11 @@ LOCALE = "en-IN"  # every text is English for now; the table already has a local
 MAX_LENGTH = 3000  # WhatsApp refuses a message of about 4000 characters
 
 _OWN = "scope = 'tenant' AND scope_ref = ''"
+# the standard wording stored in the database ($1 = the key, $2 = the locale)
+_STANDARD = (
+    "SELECT body FROM system_messages WHERE key = $1 AND locale = $2 AND scope = 'global' "
+    "AND scope_ref = '' AND is_active ORDER BY version DESC LIMIT 1"
+)
 
 
 def _message(key: str) -> Msg:
@@ -97,15 +104,23 @@ async def newest_own(conn, key: str):
     )
 
 
+async def standard_text(conn, msg: Msg) -> str:
+    """The wording without the organisation's own version: the standard one stored in the database,
+    else the one built into the code."""
+    row = await conn.fetchrow(_STANDARD, msg.key, LOCALE)
+    return row["body"] if row else msg.text
+
+
 async def save_version(
     conn, msg: Msg, text: str, note: str | None, actor: str
 ) -> int | None:
     """Save `text` as the newest version. Returns its number, or None when nothing changed
-    (the text is what is already in use). Saving the built-in wording goes back to it."""
+    (the text is what is already in use). Saving the standard wording goes back to it."""
     current = await newest_own(conn, msg.key)
-    if text == (current["body"] if current else msg.text):
+    standard = await standard_text(conn, msg)
+    if text == (current["body"] if current else standard):
         return None
-    if text == msg.text:
+    if text == standard:
         await reset_to_built_in(conn, msg.key)
         return 0
     version = await conn.fetchval(
@@ -129,7 +144,7 @@ async def save_version(
 
 
 async def reset_to_built_in(conn, key: str) -> int:
-    """Switch off every saved version of one message, so the built-in wording is used again.
+    """Switch off every saved version of one message, so the standard wording is used again.
     Nothing is deleted. Returns how many were switched off."""
     return await conn.fetchval(
         "WITH off AS (UPDATE system_messages SET is_active = false "
@@ -152,37 +167,45 @@ class TextBody(BaseModel):
 @router.get("/messages")
 async def list_messages(ctx: CtxDep):
     ready = bool(ctx.caps.get("texts"))
-    saved: dict[str, dict] = {}
+    saved: dict[tuple[str, str], dict] = {}
     if ready:
-        # the wording in use: the organisation's own, else a shared one if someone wrote one
+        # the newest wording of each message that is in the database: the organisation's own and
+        # the standard one
         found = rows(
             await fetch_all(
-                "SELECT DISTINCT ON (key) key, scope, version, body, created_at, created_by "
+                "SELECT DISTINCT ON (key, scope) key, scope, version, body, created_at, created_by "
                 "FROM system_messages WHERE locale = $1 AND scope_ref = '' "
                 "AND scope IN ('tenant', 'global') AND is_active "
-                "ORDER BY key, CASE scope WHEN 'tenant' THEN 0 ELSE 1 END, version DESC",
+                "ORDER BY key, scope, version DESC",
                 LOCALE,
                 source_key=ctx.source_key,
             )
         )
-        saved = {r["key"]: r for r in found}
+        saved = {(r["key"], r["scope"]): r for r in found}
     groups = []
     for group_key, (label, about) in GROUPS.items():
         items = []
         for m in MESSAGES.values():
             if m.group != group_key:
                 continue
-            s = saved.get(m.key)
+            own = saved.get((m.key, "tenant"))
+            standard = saved.get((m.key, "global"))
+            s = own or standard
+            if own:
+                source = "own"
+            elif standard:
+                source = "shared"
+            else:
+                source = "built_in"
             items.append(
                 {
                     "key": m.key,
                     "name": m.name,
                     "when": m.when,
                     "default": m.text,
+                    "standard": standard["body"] if standard else m.text,
                     "text": s["body"] if s else m.text,
-                    "source": ("own" if s["scope"] == "tenant" else "shared")
-                    if s
-                    else "built_in",
+                    "source": source,
                     "version": s["version"] if s else None,
                     "updated_at": s["created_at"] if s else None,
                     "updated_by": s["created_by"] if s else None,
@@ -240,6 +263,7 @@ async def save_text(key: str, body: TextBody, ctx: CtxDep):
         raise HTTPException(400, " ".join(found["problems"]))
     async with tx(ctx) as conn:
         was = await newest_own(conn, key)
+        standard = await standard_text(conn, msg)
         version = await save_version(conn, msg, text, body.note, ctx.actor)
         if version is not None:
             await log_event(
@@ -248,10 +272,10 @@ async def save_text(key: str, body: TextBody, ctx: CtxDep):
                 "text",
                 f"Changed the message “{msg.name}”"
                 if version
-                else f"Went back to the built-in wording of “{msg.name}”",
+                else f"Went back to the standard wording of “{msg.name}”",
                 target_type="system_messages",
                 target_id=key,
-                before={"text": was["body"] if was else msg.text},
+                before={"text": was["body"] if was else standard},
                 after={"text": text},
                 conn=conn,
             )
@@ -265,17 +289,18 @@ async def use_built_in(key: str, ctx: CtxDep):
     msg = _message(key)
     async with tx(ctx) as conn:
         was = await newest_own(conn, key)
+        standard = await standard_text(conn, msg)
         n = await reset_to_built_in(conn, key)
         if n:
             await log_event(
                 ctx,
                 "messages",
                 "text",
-                f"Went back to the built-in wording of “{msg.name}”",
+                f"Went back to the standard wording of “{msg.name}”",
                 target_type="system_messages",
                 target_id=key,
                 before={"text": was["body"] if was else None},
-                after={"text": msg.text},
+                after={"text": standard},
                 conn=conn,
             )
     config_store.invalidate(ctx.source_key)

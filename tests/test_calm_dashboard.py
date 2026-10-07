@@ -166,13 +166,18 @@ def test_the_chat_bot_section_says_what_it_is():
     ]  # old links work
     for part in [
         "Tell the chat bot about your place",
-        "Advanced: the shared rules and the industry text",
+        "Advanced: the shared rules, the industry text and the reply style",
         "See everything the AI reads",
         "Clear notes",
         "Nothing written yet",
         "What the AI reads",
+        "Words you can use: ",  # the reply style lists the names it fills in
+        "Back to the standard text",
+        "Back to standard wording",
     ]:
         assert part in APP_JS, part
+    for old in ["Use built-in wording", "Use built-in text"]:
+        assert old not in APP_JS, old  # the wording that is stored is called standard
 
 
 def test_each_thing_has_one_name_chat_bot_ai_and_ai_helper():

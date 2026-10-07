@@ -17,14 +17,14 @@ function chatRich(text) {
   return out;
 }
 const flat = s => String(s).replace(/\s*\n\s*/g, ' ');
-const sourceBadge = m => m.source === 'own' ? badge('Edited', 'brand') : m.source === 'shared' ? badge('Shared') : badge('Built-in');
+const sourceBadge = m => m.source === 'own' ? badge('Edited', 'brand') : badge('Standard');
 
 function messageEditor(m, ready, reload) {
   const ta = h('textarea', { class: 'textarea msgtext', rows: 7, spellcheck: 'true', 'aria-label': 'Text of this message' });
   ta.value = m.text; ta.readOnly = !ready;
   const notes = h('div', { class: 'stack s8' }), bubble = h('div', { class: 'tgb' }, '…');
   const save = h('button', { class: 'btn primary', type: 'button', disabled: true }, 'Save');
-  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || m.source !== 'own' }, 'Use built-in wording');
+  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || m.source !== 'own' }, 'Back to standard wording');
   const hist = h('button', { class: 'btn ghost', type: 'button', 'data-popkeep': true, disabled: !ready }, icon('hist', 'sm'), 'History');
   let seq = 0, verdict = { ok: true, problems: [], warnings: [], preview: null };
   const dirty = () => ta.value.trim() !== m.text.trim();
@@ -47,13 +47,13 @@ function messageEditor(m, ready, reload) {
     save.disabled = true;
     try {
       const r = await api.put('/messages/' + encKey(m.key), { text: ta.value });
-      toast(!r.changed ? 'Nothing to save' : r.version ? 'Saved as version ' + r.version : 'Back to the built-in wording', 'ok');
+      toast(!r.changed ? 'Nothing to save' : r.version ? 'Saved as version ' + r.version : 'Back to the standard wording', 'ok');
       await reload();
     } catch (e) { toast(e.message, 'bad'); paint(); }
   };
   builtIn.onclick = async () => {
-    if (!await confirmBox('Go back to the built-in wording of “' + m.name + '”? Your own versions stay in the history.', { ok: 'Use built-in wording' })) return;
-    try { await api.del('/messages/' + encKey(m.key)); toast('Back to the built-in wording', 'ok'); await reload(); }
+    if (!await confirmBox('Go back to the standard wording of “' + m.name + '”? Your own versions stay in the history.', { ok: 'Back to standard wording' })) return;
+    try { await api.del('/messages/' + encKey(m.key)); toast('Back to the standard wording', 'ok'); await reload(); }
     catch (e) { toast(e.message, 'bad'); }
   };
   hist.onclick = async ev => {
@@ -81,7 +81,7 @@ function messageEditor(m, ready, reload) {
         h('div', { class: 'phone' }, h('div', { class: 'pbar' }, h('span', { class: 'logo sm' }, S.boot.org.name[0]), 'Chat bot'), h('div', { class: 'pbody' }, bubble)),
         h('div', { class: 'hint' }, 'Sample values are filled in. *bold* and _italic_ show as they do in the chat.')),
       h('div', { class: 'row' }, save, builtIn, hist,
-        h('span', { class: 'muted small' }, m.source === 'own' ? 'Version ' + m.version + (m.updated_by ? ' · by ' + m.updated_by : '') : m.source === 'shared' ? 'A shared wording is in use.' : 'Says what it always said.'))));
+        h('span', { class: 'muted small' }, m.source === 'own' ? 'Version ' + m.version + (m.updated_by ? ' · by ' + m.updated_by : '') : 'The standard wording is in use.'))));
 }
 
 async function renderMessages(root) {
@@ -154,16 +154,18 @@ function diffRows(a, b) {
   if (skipped) rows.push(h('div', { class: 'dl gap' }, skipped + ' unchanged line' + (skipped === 1 ? '' : 's')));
   return { rows, changed: d.some(r => r.t !== 'same') };
 }
-const instructionBadge = L => L.source === 'own' ? badge('Edited · version ' + L.version, 'brand') : L.source === 'industry' ? badge('Industry text') : L.source === 'shared' ? badge('Shared text') : L.can_be_empty && !String(L.text).trim() ? badge('Nothing written yet') : badge('Built-in');
+const instructionBadge = L => L.source === 'own' ? badge('Edited · version ' + L.version, 'brand') : L.source === 'industry' ? badge('Industry text') : L.source === 'shared' ? badge('Standard text') : L.can_be_empty && !String(L.text).trim() ? badge('Nothing written yet') : badge('Built-in');
 
-// own = the organisation's own notes: plain words, a short box, Clear notes instead of Use built-in text
-function instructionEditor(L, ready, reload, own) {
-  const ta = h('textarea', { class: 'textarea promptbox' + (own ? ' an-short' : ''), spellcheck: own ? 'true' : 'false', 'aria-label': (own ? 'Notes for the AI: ' : 'Text of ') + L.name });
+// kind: 'notes' = the organisation's own notes (plain words, a short box, Clear notes), 'style' = how lists
+// and amounts are worded, 'part' = a part that comes with the product (Back to the standard text)
+function instructionEditor(L, ready, reload, kind) {
+  const own = kind === 'notes', style = kind === 'style';
+  const ta = h('textarea', { class: 'textarea promptbox' + (own ? ' an-short' : style ? ' an-mid' : ''), spellcheck: own ? 'true' : 'false', 'aria-label': (own ? 'Notes for the AI: ' : 'Text of ') + L.name });
   ta.value = L.text; ta.readOnly = !ready; ta.dataset.saved = L.text.trim();
   if (L.can_be_empty) ta.placeholder = 'Write your notes here, one idea per line.';
   const counts = h('span', { class: 'muted small' }), notes = h('div', { class: 'stack s8 an-notes' });
   const save = h('button', { class: 'btn primary', type: 'button', disabled: true }, 'Save');
-  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || L.source !== 'own' }, own ? 'Clear notes' : 'Use built-in text');
+  const builtIn = h('button', { class: 'btn', type: 'button', disabled: !ready || L.source !== 'own' }, own ? 'Clear notes' : 'Back to the standard text');
   const hist = h('button', { class: 'btn ghost', type: 'button', 'data-popkeep': true, disabled: !ready }, icon('hist', 'sm'), 'History');
   const reads = own ? h('button', { class: 'btn ghost', type: 'button' }, icon('spark', 'sm'), 'See everything the AI reads') : null;
   let seq = 0, verdict = { ok: true, problems: [], warnings: [], characters: L.text.length, lines: L.text.split('\n').length };
@@ -184,15 +186,15 @@ function instructionEditor(L, ready, reload, own) {
     save.disabled = true;
     try {
       const r = await api.put('/instructions/' + encKey(L.key), { text: ta.value });
-      toast(!r.changed ? 'Nothing to save' : r.version ? 'Saved as version ' + r.version : 'Back to the built-in text', 'ok');
+      toast(!r.changed ? 'Nothing to save' : r.version ? 'Saved as version ' + r.version : 'Back to the standard text', 'ok');
       ta.dataset.saved = ta.value.trim();
       await reload();
     } catch (e) { toast(e.message, 'bad'); paint(); }
   };
   builtIn.onclick = async () => {
-    const question = own ? 'Clear these notes? The chat bot goes back to having none. Earlier versions stay in the history.' : 'Go back to the built-in text of “' + L.name + '”? Your own versions stay in the history.';
-    if (!await confirmBox(question, { ok: own ? 'Clear notes' : 'Use built-in text' })) return;
-    try { await api.del('/instructions/' + encKey(L.key)); toast(own ? 'Notes cleared' : 'Back to the built-in text', 'ok'); ta.dataset.saved = ta.value.trim(); await reload(); }
+    const question = own ? 'Clear these notes? The chat bot goes back to having none. Earlier versions stay in the history.' : 'Go back to the standard text of “' + L.name + '”? Your own versions stay in the history.';
+    if (!await confirmBox(question, { ok: own ? 'Clear notes' : 'Back to the standard text' })) return;
+    try { await api.del('/instructions/' + encKey(L.key)); toast(own ? 'Notes cleared' : 'Back to the standard text', 'ok'); ta.dataset.saved = ta.value.trim(); await reload(); }
     catch (e) { toast(e.message, 'bad'); }
   };
   if (reads) reads.onclick = async () => {
@@ -216,7 +218,7 @@ function instructionEditor(L, ready, reload, own) {
             h('div', { class: 'muted small' }, '− only in version ' + v.version + ' · + only in what is in use now'),
             x.changed ? h('div', { class: 'difflist' }, x.rows) : h('div', { class: 'muted' }, 'They are the same.')), actions: [{ label: 'Close' }] }); } }, 'Compare'),
           h('button', { class: 'btn sm', type: 'button', onclick: () => { closePop(); ta.value = v.text; ta.dispatchEvent(new Event('input')); ta.focus(); } }, 'Use this text'))))
-        : [h('div', { class: 'muted small', style: { padding: '8px 10px' } }, own ? 'No saved versions yet. You have not written any notes.' : 'No saved versions yet. This is the built-in text.')];
+        : [h('div', { class: 'muted small', style: { padding: '8px 10px' } }, own ? 'No saved versions yet. You have not written any notes.' : 'No saved versions yet. This is the standard text.')];
       openPop(anchor, [h('div', { class: 'ml' }, 'Earlier versions'), ...rows], { width: 420 });
     } catch (e) { toast(e.message, 'bad'); }
   };
@@ -226,6 +228,7 @@ function instructionEditor(L, ready, reload, own) {
       own ? h('div', { class: 'stack s8' },
         h('div', null, h('b', null, 'Tell the chat bot about your place. '), 'Its AI reads these notes before every message, right after the shared rules. Things worth writing:'),
         h('ul', { class: 'an-ideas' }, h('li', null, 'Different names people use for the same thing, like two names for one building.'), h('li', null, 'Rules of your place the chat bot should respect.'), h('li', null, 'How it should sound, formal or friendly.')))
+        : style ? h('div', { class: 'stack s8' }, h('div', { class: 'muted small' }, L.about), h('div', { class: 'muted small' }, 'Words you can use: ' + Object.keys(L.values || {}).map(n => '{' + n + '}').join(', ') + '.'))
         : h('div', { class: 'muted small' }, L.about),
       h('div', { class: 'field' }, ta, h('div', { class: 'hint' }, counts)),
       notes,
@@ -235,13 +238,13 @@ function instructionEditor(L, ready, reload, own) {
 }
 
 async function renderInstructions(root) {
-  const mainBox = h('div'), advBox = h('div');
+  const mainBox = h('div'), advBox = h('div'), styleBox = h('div');
   const unsaved = box => { const t = box.querySelector('.promptbox'); return !!t && t.value.trim() !== (t.dataset.saved || ''); };
-  const reload = async () => { IV.data = await api.get('/instructions'); if (!unsaved(mainBox)) drawMain(); if (!unsaved(advBox)) drawAdv(); };
+  const reload = async () => { IV.data = await api.get('/instructions'); if (!unsaved(mainBox)) drawMain(); if (!unsaved(advBox)) drawAdv(); if (!unsaved(styleBox)) drawStyle(); };
   // the organisation's own notes: the one part meant to be changed
   const drawMain = () => {
     const own = IV.data.layers.find(x => x.key === 'agent.client');
-    fill(mainBox, own ? instructionEditor(own, IV.data.ready, reload, true) : null);
+    fill(mainBox, own ? instructionEditor(own, IV.data.ready, reload, 'notes') : null);
   };
   // the parts that come built in with the product, tucked away
   const drawAdv = () => {
@@ -264,16 +267,21 @@ async function renderInstructions(root) {
       h('div', { class: 'grow' }, h('b', null, 'Today’s facts ', badge('automatic')), h('div', { class: 'muted small' }, 'The date, the person’s role and what they may do, the flows they can start, the tables it may read. Filled in by the system, not written by anyone.'))));
     fill(advBox, h('div', { class: 'aiwrap' },
       h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'The parts, in the order the AI reads them'), h('div', { class: 'card-b lyrs' }, stack)),
-      instructionEditor(L, d.ready, reload, false)));
+      instructionEditor(L, d.ready, reload, 'part')));
+  };
+  // how lists and amounts are worded: a text of its own, not one of the parts above
+  const drawStyle = () => {
+    const x = (IV.data.extras || [])[0];
+    fill(styleBox, x ? instructionEditor(x, IV.data.ready, reload, 'style') : null);
   };
   IV.data = await api.get('/instructions');
   fill(root, [
     IV.data.ready ? null : notice('This database has not been updated for editable AI notes yet (migration core-0009). You can read the built-in text, but not change it.', 'warn'),
     h('div', { class: 'stack' }, mainBox,
-      h('details', { class: 'an-adv' }, h('summary', null, 'Advanced: the shared rules and the industry text'),
-        h('div', { class: 'muted small an-advnote' }, 'Built in with the product, the same starting point for every client of the same kind. Change them with care.'), advBox)),
+      h('details', { class: 'an-adv' }, h('summary', null, 'Advanced: the shared rules, the industry text and the reply style'),
+        h('div', { class: 'muted small an-advnote' }, 'These come with the product and are the same starting point for every client of the same kind. Change them with care.'), advBox, styleBox)),
   ]);
-  drawMain(); drawAdv();
+  drawMain(); drawAdv(); drawStyle();
 }
 
 SECTIONS.assistant = {

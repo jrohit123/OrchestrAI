@@ -1,20 +1,25 @@
-"""The AI instructions screen: the written text the assistant follows, in three layers that are put
+"""The AI notes screen: the written text the chat bot's AI follows, in three layers that are put
 one after the other (see app/services/prompt_loader.py):
 
   1. agent.shared    how to behave, ask and answer; the same starting point for every client
   2. agent.industry  words and habits of this kind of business
   3. agent.client    local facts about this one organisation
 
-What the assistant is also told on every turn (today's date, the person's role, the flows they may
-start, the tables it may read) is filled in by the system and is not written here.
+and, on its own, the reply style (agent.reply_style): how the AI words a list of results.
 
-A saved text is a new version of one row in `prompts` (scope 'tenant'); older versions stay, so the
-history only grows and "go back" is just saving an old text again. Going back to the built-in text
-(the prompt files in the code) switches the saved versions off instead of deleting them. The
-assistant reads the newest active version (config_store.prompt), so a save applies at once on the
-copy of the app that saved it, and within a minute on any other.
+What the AI is also told on every turn (today's date, the person's role, the flows they may start,
+the tables it may read) is filled in by the system and is not written here.
+
+The text in use is the strongest of these: the organisation's own (scope 'tenant'), its industry's
+(scope 'pack'), the standard one stored in its database (scope 'global'), the one built into the
+code. The dashboard changes only the first. A saved text is a new version of one row in `prompts`
+(scope 'tenant'); older versions stay, so the history only grows and "go back" is just saving an
+old text again. Going back to the standard text switches the saved versions off instead of deleting
+them. The AI reads the newest active version (config_store.prompt), so a save applies at once on
+the copy of the app that saved it, and within a minute on any other.
 """
 
+import string
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -30,10 +35,18 @@ router = APIRouter(
 
 MAX_LENGTH = 100_000
 SHORT_AFTER = (
-    0.3  # a new text this much shorter than the built-in one is worth a warning
+    0.3  # a new text this much shorter than the standard one is worth a warning
 )
 
 _OWN = "scope = 'tenant' AND scope_ref = ''"
+# The text without the organisation's own version: its industry's, else the shared one that is
+# stored in the database ($1 = the key, $2 = the industry).
+_STANDARD = (
+    "SELECT body FROM prompts WHERE key = $1 AND is_active AND ("
+    "(scope = 'pack' AND scope_ref = $2 AND key = 'agent.industry') "
+    "OR (scope = 'global' AND scope_ref = '')) "
+    "ORDER BY CASE scope WHEN 'pack' THEN 0 ELSE 1 END, version DESC LIMIT 1"
+)
 
 # key -> (name, what it is). {industry} and {org} are filled in with this organisation's words.
 LAYERS: dict[str, tuple[str, str]] = {
@@ -57,24 +70,85 @@ CAN_BE_EMPTY = {
     "agent.client"
 }  # a client with no notes is normal; the other two must say something
 
+# Texts that are not one of the layers: the AI is given them on their own, not in the order it reads
+# the layers, so the screen shows them apart.
+REPLY_STYLE = prompt_loader.REPLY_STYLE_KEY
+EXTRAS: dict[str, tuple[str, str]] = {
+    REPLY_STYLE: (
+        "How lists and amounts are worded",
+        (
+            "How the AI words a list of results, like a stock list or a list of cases: amounts, "
+            "bold text, how long a line may be. Keep {raw_data}: it is where the results go."
+        ),
+    ),
+}
+# what the reply style may use: name -> what it is (the same names agent._llm_format_report fills in)
+REPLY_VALUES = {
+    "workflow_name": "the name of the flow",
+    "glossary_json": "the flow's own words",
+    "raw_data": "the results to word",
+}
+
 
 def _layer(key: str) -> tuple[str, str]:
-    if key not in LAYERS:
-        raise HTTPException(404, "There is no such set of instructions.")
-    return LAYERS[key]
+    if key in LAYERS:
+        return LAYERS[key]
+    if key in EXTRAS:
+        return EXTRAS[key]
+    raise HTTPException(404, "There is no such set of instructions.")
 
 
 def _name(key: str, org: dict) -> str:
-    """The layer's name in this organisation's words, e.g. "About housing society"."""
+    """The text's name in this organisation's words, e.g. "About housing society"."""
     industry = (org.get("industry") or "this kind of business").lower()
-    return LAYERS[key][0].format(
+    return _layer(key)[0].format(
         industry=industry.replace("_", " ").replace("-", " "),
         org=org.get("name") or "this organisation",
     )
 
 
-def check(key: str, text: str, built_in: str) -> dict[str, Any]:
-    """What is wrong with this text, in plain words. `problems` stop a save; `warnings` do not."""
+def _check_reply_style(text: str, problems: list[str], warnings: list[str]) -> None:
+    """The reply style is filled in with {names}: refuse what would not fill in, and a text that
+    leaves out the results (the AI would have nothing to word)."""
+    used: set[str] = set()
+    bad = False
+    try:
+        for _, field, spec, conversion in string.Formatter().parse(text):
+            if field is None:
+                continue
+            if spec or conversion:
+                problems.append("Only plain names go between { and }, like {raw_data}.")
+                bad = True
+            elif field not in REPLY_VALUES:
+                known = ", ".join("{" + n + "}" for n in REPLY_VALUES)
+                problems.append(
+                    f"{{{field}}} is not something this text knows. You can use: {known}."
+                )
+                bad = True
+            else:
+                used.add(field)
+    except ValueError:
+        problems.append(
+            "A { or } is not closed. Write { and } only around a name, like {raw_data}."
+        )
+        return
+    if bad:
+        return
+    if "raw_data" not in used:
+        problems.append(
+            "The text has to keep {raw_data}: it is where the results go, and without it the AI "
+            "is never given them."
+        )
+    for name in ("workflow_name", "glossary_json"):
+        if name not in used:
+            warnings.append(
+                f"This text does not use {{{name}}} ({REPLY_VALUES[name]}), so the AI will not see it."
+            )
+
+
+def check(key: str, text: str, standard: str) -> dict[str, Any]:
+    """What is wrong with this text, in plain words. `problems` stop a save; `warnings` do not.
+    `standard` is the text without the organisation's own version."""
     problems: list[str] = []
     warnings: list[str] = []
     if "\x00" in text:
@@ -85,13 +159,15 @@ def check(key: str, text: str, built_in: str) -> dict[str, Any]:
         )
     if not text.strip() and key not in CAN_BE_EMPTY:
         problems.append(
-            "This text cannot be empty. Use the built-in text to go back to the original."
+            "This text cannot be empty. Use the standard text to go back to the original."
         )
-    if text.strip() and len(built_in) > 500 and len(text) < len(built_in) * SHORT_AFTER:
+    if text.strip() and len(standard) > 500 and len(text) < len(standard) * SHORT_AFTER:
         warnings.append(
-            f"This is much shorter than the built-in text ({len(text):,} against "
-            f"{len(built_in):,} characters). The chat bot will lose guidance it has today."
+            f"This is much shorter than the standard text ({len(text):,} against "
+            f"{len(standard):,} characters). The chat bot will lose guidance it has today."
         )
+    if key == REPLY_STYLE and text.strip():
+        _check_reply_style(text, problems, warnings)
     return {
         "ok": not problems,
         "problems": problems,
@@ -113,15 +189,22 @@ async def newest_own(conn, key: str):
     )
 
 
+async def standard_text(conn, key: str, pack: str, built_in: str) -> str:
+    """What the text is without the organisation's own version: its industry's or the shared one
+    stored in the database, else the one built into the code."""
+    row = await conn.fetchrow(_STANDARD, key, pack)
+    return row["body"] if row else built_in
+
+
 async def save_version(
-    conn, key: str, text: str, built_in: str, note: str | None, actor: str
+    conn, key: str, text: str, standard: str, note: str | None, actor: str
 ) -> int | None:
-    """Save `text` as the newest version. Returns its number, 0 when it went back to the
-    built-in text, or None when nothing changed (the text is what is already in use)."""
+    """Save `text` as the newest version. Returns its number, 0 when it went back to the standard
+    text, or None when nothing changed (the text is what is already in use)."""
     current = await newest_own(conn, key)
-    if text == (current["body"] if current else built_in):
+    if text == (current["body"] if current else standard):
         return None
-    if text == built_in:  # the same words as the built-in text: just use that again
+    if text == standard:  # the same words as the standard text: just use that again
         await reset_to_built_in(conn, key)
         return 0
     version = await conn.fetchval(
@@ -134,7 +217,7 @@ async def save_version(
         key,
         version,
         text,
-        dump([]),
+        dump(sorted(REPLY_VALUES) if key == REPLY_STYLE else []),
         note,
         actor,
     )
@@ -142,8 +225,8 @@ async def save_version(
 
 
 async def reset_to_built_in(conn, key: str) -> int:
-    """Switch off every saved version of one layer, so the built-in text is used again. Nothing
-    is deleted. Returns how many were switched off."""
+    """Switch off every saved version of one text, so the standard text is used again. Nothing is
+    deleted. Returns how many were switched off."""
     return await conn.fetchval(
         "WITH off AS (UPDATE prompts SET is_active = false "
         f"WHERE key = $1 AND {_OWN} AND is_active RETURNING 1) SELECT count(*) FROM off",
@@ -171,57 +254,80 @@ async def _org(ctx) -> dict:
     return dict(org)
 
 
+async def _standard(ctx, org: dict, key: str) -> str:
+    """The text without the organisation's own version, read outside a transaction."""
+    built_in = prompt_loader.built_in(org).get(key, "")
+    if not ctx.caps.get("prompts"):
+        return built_in
+    row = await fetch_one(
+        _STANDARD, key, prompt_loader.industry_of(org), source_key=ctx.source_key
+    )
+    return row["body"] if row else built_in
+
+
 @router.get("/instructions")
 async def list_instructions(ctx: CtxDep):
     org = await _org(ctx)
     ready = bool(ctx.caps.get("prompts"))
     pack = prompt_loader.industry_of(org)
     built_in = prompt_loader.built_in(org)
-    saved: dict[str, dict] = {}
+    found: dict[tuple[str, str], dict] = {}
     if ready:
-        found = rows(
+        got = rows(
             await fetch_all(
-                "SELECT DISTINCT ON (key) key, scope, version, body, created_at, created_by "
+                "SELECT DISTINCT ON (key, scope) key, scope, version, body, created_at, created_by "
                 "FROM prompts WHERE is_active AND key = ANY($1) AND ("
                 "(scope = 'tenant' AND scope_ref = '') "
                 "OR (scope = 'pack' AND scope_ref = $2 AND key = 'agent.industry') "
                 "OR (scope = 'global' AND scope_ref = '')) "
-                "ORDER BY key, CASE scope WHEN 'tenant' THEN 0 WHEN 'pack' THEN 1 ELSE 2 END, "
-                "version DESC",
-                list(LAYERS),
+                "ORDER BY key, scope, version DESC",
+                [*LAYERS, *EXTRAS],
                 pack or "",
                 source_key=ctx.source_key,
             )
         )
-        saved = {r["key"]: r for r in found}
-    layers = []
-    for key, (_, about) in LAYERS.items():
-        s = saved.get(key)
-        source = (
-            {"tenant": "own", "pack": "industry", "global": "shared"}[s["scope"]]
-            if s
-            else "built_in"
-        )
-        layers.append(
-            {
-                "key": key,
-                "name": _name(key, org),
-                "about": about,
-                "text": s["body"] if s else built_in.get(key, ""),
-                "built_in": built_in.get(key, ""),
-                "source": source,
-                "version": s["version"] if s else None,
-                "updated_at": s["created_at"] if s else None,
-                "updated_by": s["created_by"] if s else None,
-                "can_be_empty": key in CAN_BE_EMPTY,
-            }
-        )
-    return {"ready": ready, "layers": layers}
+        found = {(r["key"], r["scope"]): r for r in got}
+
+    def item(key: str, about: str) -> dict:
+        own = found.get((key, "tenant"))
+        pack_row = found.get((key, "pack"))
+        standard = pack_row or found.get((key, "global"))
+        used = own or standard
+        if own:
+            source = "own"
+        elif pack_row:
+            source = "industry"
+        elif standard:
+            source = "shared"
+        else:
+            source = "built_in"
+        return {
+            "key": key,
+            "name": _name(key, org),
+            "about": about,
+            "text": used["body"] if used else built_in.get(key, ""),
+            "built_in": built_in.get(key, ""),
+            "standard": standard["body"] if standard else built_in.get(key, ""),
+            "source": source,
+            "version": used["version"] if used else None,
+            "updated_at": used["created_at"] if used else None,
+            "updated_by": used["created_by"] if used else None,
+            "can_be_empty": key in CAN_BE_EMPTY,
+        }
+
+    return {
+        "ready": ready,
+        "layers": [item(key, about) for key, (_, about) in LAYERS.items()],
+        "extras": [
+            item(key, about) | {"values": REPLY_VALUES}
+            for key, (_, about) in EXTRAS.items()
+        ],
+    }
 
 
 @router.get("/instructions/assembled")
 async def assembled(ctx: CtxDep):
-    """The layers put together, exactly as the assistant receives them."""
+    """The layers put together, exactly as the chat bot's AI receives them."""
     org = await _org(ctx)
     text = await prompt_loader.load_domain_prompt(org, ctx.source_key)
     return {"text": text, "characters": len(text), "lines": len(text.splitlines())}
@@ -231,7 +337,7 @@ async def assembled(ctx: CtxDep):
 async def check_text(key: str, body: TextBody, ctx: CtxDep):
     _layer(key)
     org = await _org(ctx)
-    return check(key, body.text, prompt_loader.built_in(org).get(key, ""))
+    return check(key, body.text, await _standard(ctx, org, key))
 
 
 @router.get("/instructions/{key}/history")
@@ -267,14 +373,14 @@ async def save_text(key: str, body: TextBody, ctx: CtxDep):
     _layer(key)
     org = await _org(ctx)
     name = _name(key, org)
-    built_in = prompt_loader.built_in(org).get(key, "")
+    standard = await _standard(ctx, org, key)
     text = body.text.strip()
-    found = check(key, text, built_in)
+    found = check(key, text, standard)
     if found["problems"]:
         raise HTTPException(400, " ".join(found["problems"]))
     async with tx(ctx) as conn:
         was = await newest_own(conn, key)
-        version = await save_version(conn, key, text, built_in, body.note, ctx.actor)
+        version = await save_version(conn, key, text, standard, body.note, ctx.actor)
         if version is not None:
             await log_event(
                 ctx,
@@ -282,10 +388,10 @@ async def save_text(key: str, body: TextBody, ctx: CtxDep):
                 "text",
                 f"Changed the AI notes: {name}"
                 if version
-                else f"Went back to the built-in AI notes: {name}",
+                else f"Went back to the standard text: {name}",
                 target_type="prompts",
                 target_id=key,
-                before={"characters": len(was["body"] if was else built_in)},
+                before={"characters": len(was["body"] if was else standard)},
                 after={"characters": len(text), "version": version},
                 conn=conn,
             )
@@ -305,7 +411,7 @@ async def use_built_in(key: str, ctx: CtxDep):
                 ctx,
                 "instructions",
                 "text",
-                f"Went back to the built-in AI notes: {name}",
+                f"Went back to the standard text: {name}",
                 target_type="prompts",
                 target_id=key,
                 conn=conn,
