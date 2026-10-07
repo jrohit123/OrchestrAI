@@ -139,7 +139,7 @@ function openCmd() {
   async function search(q) {
     const mine = ++seq, low = q.trim().toLowerCase();
     items = screens().filter(x => !low || x.t.toLowerCase().includes(low));
-    if (low) {
+    if (low && isSuper()) {
       try { if (!ST.catalog) await ensureStudio(); } catch (e) { /* the screens still work */ }
       items = items.concat((ST.flows || []).filter(w => (w.name + ' ' + w.intent_key).toLowerCase().includes(low)).slice(0, 5).map(w => ({ g: 'Flows', t: w.name, s: w.kind === 'block' ? 'Building block' : '', run: () => openWorkflow(w.id) })));
     }
@@ -173,15 +173,16 @@ function buildShell(app) {
   const extra = S.boot.sections.filter(s => !placed.has(s.key));
   if (extra.length) nav.append(...extra.map(link));
   const side = h('aside', { class: 'side', id: 'side', 'aria-label': 'Main menu' },
-    h('div', { class: 'sbrand' }, logo, h('div', null, h('b', null, o.name), h('small', null, 'Admin'))),
+    h('div', { class: 'sbrand' }, logo, h('div', null, h('b', null, o.name), h('small', null, isSuper() ? 'Super admin view' : 'Admin'))),
     h('button', { class: 'jump', type: 'button', 'aria-label': 'Search or jump to', onclick: openCmd }, icon('search', 'sm'), h('span', null, 'Search or jump to…'), h('span', { class: 'kbd' }, 'Ctrl K')),
-    nav, h('div', { class: 'grow' }),
-    h('div', { class: 'sidefoot' },
+    nav, isSuper() ? null : adminHelpCard(), h('div', { class: 'grow' }),
+    h('div', { class: 'sidefoot' }, accountChip(),
       h('button', { type: 'button', 'data-popkeep': '1', onclick: e => openWords(e.currentTarget, true) }, icon('help'), h('span', { class: 'tx' }, 'Help & words')),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
       h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
+    isSuper() ? h('a', { class: 'btn ghost sm sa-back', href: '/admin' }, icon('chevl', 'sm'), 'All organisations') : null,
     h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }), h('span', { id: 'topact' }));
   fill(app, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' }))));
   window.addEventListener('resize', applyRail);
@@ -189,6 +190,13 @@ function buildShell(app) {
 async function boot() {
   S.renderId = 0;
   const app = document.getElementById('app');
+  let me;
+  try { me = await authMe(); }
+  catch (e) { fill(app, h('div', { class: 'boot' }, 'The dashboard could not start: ' + e.message)); return; }
+  if (!me) { await showSignIn(); return; }
+  S.me = me;
+  if (!ORG) { await startSuperPage(me); return; }
+  if (!(isSuper() || me.orgs.some(o => o.key === ORG))) { showNoAccess(me); return; }
   try { S.boot = await api.get('/bootstrap'); }
   catch (e) { fill(app, h('div', { class: 'boot' }, 'The dashboard could not start: ' + e.message)); return; }
   buildShell(app);

@@ -57,6 +57,33 @@ function timelineItem(a) {
   return h('div', { class: 'tl ' + a.activity_type }, h('span', { class: 'dot' }),
     h('div', null, h('div', null, h('b', null, text)), h('div', { class: 'when' }, (a.actor_name || p.by || 'System') + ' · ' + fmtDT(a.created_at)), extra ? h('div', { class: 'quote' }, extra) : null));
 }
+// Assign: the dashboard asks the organisation's own flow (set under Settings > case buttons) to hand the case over
+function assignDialog(c) {
+  let pick = null;
+  const who = personPicker({ placeholder: 'Start typing a name', reachable: true, onChange: p => { pick = p; } });
+  const note = h('textarea', { rows: 3, maxlength: 500, placeholder: 'A note for them (optional)' });
+  modal({
+    title: 'Assign ' + c.case_number,
+    body: h('div', { class: 'stack' }, h('div', { class: 'muted small' }, c.title),
+      field('Give it to', who.el, 'Only people the chat bot can message are listed, so they hear about it.'), field('Note', note)),
+    actions: [{ label: 'Cancel' }, { label: 'Assign', primary: true, run: async () => {
+      if (!pick) throw new Error('Choose who gets the case.');
+      const r = await api.post('/cases/' + c.id + '/assign', { user_id: pick.id, note: note.value.trim() || undefined });
+      toast(r.message, 'ok');
+      refreshHints(true);
+      if (drawer && drawerKey === 'case:' + c.id) showCase(c.id);
+      lastSig = ''; onRoute();
+    } }],
+  });
+}
+function assignCard(c, as) {
+  if (!as.on) return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Hand it to someone'),
+    h('div', { class: 'card-b muted' }, 'Assigning from here is switched off, because the “' + as.name + '” flow is off. ' + (isSuper() ? 'Switch it on under Flows.' : 'Ask a super admin to switch it on.')));
+  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, c.assigned_to_id ? 'Hand it to someone else' : 'Give it to someone'),
+    h('div', { class: 'card-b row between' }, h('span', { class: 'muted' }, c.assignee_name ? 'It is with ' + c.assignee_name + ' now.' : 'Nobody has it yet.'),
+      h('button', { class: 'btn primary', type: 'button', onclick: () => assignDialog(c) }, icon('usercheck', 'sm'), c.assigned_to_id ? 'Assign to someone else' : 'Assign')));
+}
+const canAssign = () => !!(S.boot.buttons && S.boot.buttons.assign && S.boot.buttons.assign.on);
 async function showCase(id) {
   drawerKey = 'case:' + id;
   const dr = openDrawer('Loading…', h('div', { class: 'empty' }, 'Loading…'));
@@ -75,7 +102,7 @@ async function showCase(id) {
       closed ? [h('dt', null, 'Closed'), h('dd', null, fmtDT(c.closed_at))] : null,
       Object.entries(c.custom_fields || {}).map(([k, v]) => [h('dt', null, pretty(k)), h('dd', null, typeof v === 'object' ? JSON.stringify(v) : String(v))]));
     const body = [h('div', { class: 'card' }, h('div', { class: 'card-b' }, facts))];
-    if (S.boot.caps.case_model) {
+    if (S.boot.caps.case_model && isSuper()) {
       const r = d.routing;
       let inner;
       if (!c.category_id) inner = h('span', { class: 'muted' }, 'This case has no kind of complaint yet, so no case rule can apply.');
@@ -93,14 +120,16 @@ async function showCase(id) {
     if (c.description) body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What was reported'), h('div', { class: 'card-b' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, c.description))));
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Timeline'),
       h('div', { class: 'card-b' }, d.timeline.length ? h('div', { class: 'timeline' }, d.timeline.map(timelineItem)) : h('span', { class: 'muted' }, 'Nothing has happened on this case yet.'))));
-    body.push(h('div', { class: 'muted small' }, 'To assign, update or close a case, use its flow in ' + chatWord() + '. The dashboard only shows cases.'));
+    const as = S.boot.buttons && S.boot.buttons.assign;
+    if (as && !closed) body.push(assignCard(c, as));
+    body.push(h('div', { class: 'muted small' }, as ? 'To update or close a case, use its flow in ' + chatWord() + '.' : 'To assign, update or close a case, use its flow in ' + chatWord() + '. The dashboard only shows cases.'));
     clear(dr.bodyEl); add(dr.bodyEl, body);
   } catch (e) { if (drawer === dr) { clear(dr.bodyEl); dr.bodyEl.append(notice(e.message, 'bad')); dr.titleEl.textContent = 'Case'; } }
 }
 // Cases: only the daily work. Search, Open / Closed and one Filters button; how cases are sent and timed is set up under Case rules.
 SECTIONS.cases = {
   title: 'Cases', sub: 'Everything people have reported, and where it stands',
-  actions: () => S.boot.caps.case_model ? h('a', { class: 'btn ghost', href: href('rules') }, 'How cases are handled', icon('arrowr', 'sm')) : null,
+  actions: () => S.boot.caps.case_model && hasSection('rules') ? h('a', { class: 'btn ghost', href: href('rules') }, 'How cases are handled', icon('arrowr', 'sm')) : null,
   async render(root, route) {
     const mine = S.renderId;
     const lk = S.boot.caps.case_category ? await getLookups() : { categories: [] };
@@ -162,7 +191,7 @@ SECTIONS.cases = {
             { label: 'Case', cls: 'wide', render: c => h('div', { class: 'cs' }, h('b', null, c.case_number), ' ', c.title,
               h('div', { class: 'muted small' }, [c.priority ? [dot(c.priority), pretty(c.priority)] : null, c.category_label ? (c.category_parent_label ? c.category_parent_label + ' › ' : '') + c.category_label : null, c.location, c.complainant_name ? 'raised by ' + c.complainant_name : null].filter(Boolean).flatMap((x, i) => [i ? ' · ' : null, x]))) },
             { label: 'Status', render: c => statusBadge(c.status) },
-            { label: 'Who has it', render: c => c.assignee_name ? person(null, c.assignee_name) : badge('Not assigned', 'warn') },
+            { label: 'Who has it', render: c => c.assignee_name ? person(null, c.assignee_name) : h('span', { class: 'row' }, badge('Not assigned', 'warn'), canAssign() && !closed.includes(c.status) ? h('button', { class: 'btn sm', type: 'button', onclick: e => { e.stopPropagation(); assignDialog(c); } }, 'Assign') : null) },
             { label: 'Due', render: c => closed.includes(c.status) ? h('span', { class: 'muted' }, 'closed ' + fmtD(c.closed_at)) : h('span', { style: c.is_overdue ? { color: 'var(--bad)', fontWeight: 600 } : null }, relDue(c.due_at)) },
           ], d.rows, { onRow: c => go('cases', '', { ...q, case: c.id }), emptyTitle: 'No cases match', emptyText: 'Try removing a filter.' }),
           pager(d.total, d.page, d.page_size, p => update({ page: p })));

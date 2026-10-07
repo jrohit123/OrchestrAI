@@ -4,6 +4,7 @@ pickers use, system status, and the response-time table."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.admin_panel.case_buttons import assign_state
 from app.admin_panel.cases import get_enums
 from app.admin_panel.common import (
     CASE_MODEL_PARTS,
@@ -25,7 +26,14 @@ router = APIRouter(
 )
 
 
-def _sections(caps: dict[str, bool]) -> list[dict]:
+ADMIN_SECTIONS = {
+    "overview",
+    "cases",
+    "people",
+}  # what an admin (not a super admin) sees
+
+
+def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     """Which screens this org gets. Driven by what its database can do, not by org name.
     The page puts Home, Cases, Conversations and People under "Every day" and the rest under
     "Set up": how cases are sent and timed, roles and seats, what the chat bot says, settings."""
@@ -69,6 +77,8 @@ def _sections(caps: dict[str, bool]) -> list[dict]:
             {"key": "history", "label": "History of changes"},
         ]
     sections.append(settings)
+    if level != "super":
+        sections = [s for s in sections if s["key"] in ADMIN_SECTIONS]
     return sections
 
 
@@ -91,7 +101,13 @@ async def bootstrap(ctx: CtxDep):
         },
         "caps": ctx.caps,
         "enums": {**enums, "closed": ctx.closed_values},
-        "sections": _sections(ctx.caps),
+        "sections": _sections(ctx.caps, ctx.level),
+        "me": {
+            "name": ctx.account_name,
+            "email": ctx.account_email,
+            "level": ctx.level,
+        },
+        "buttons": {"assign": await assign_state(ctx)},
     }
 
 

@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from app.admin_panel import meta
-from app.admin_panel.ui import APP_CSS, APP_JS
+from app.admin_panel.ui import APP_CSS, APP_JS, js_home
 from app.main import app
 from app.services import step_catalog
 
@@ -102,7 +102,9 @@ def test_a_step_has_its_own_menu_button_and_the_technical_view_is_tucked_away():
 
 def test_home_shows_what_needs_you_and_four_numbers():
     assert "needRow" in APP_JS and "smaller thing" in APP_JS
-    assert APP_JS.count("kpiTile('") == 4
+    assert (
+        js_home.JS.count("kpiTile('") == 4
+    )  # the Home screen's own four (the super admin page has its own)
     assert "Getting set up" in APP_JS and "setchip" in APP_CSS
 
 

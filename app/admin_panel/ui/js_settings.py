@@ -87,7 +87,6 @@ function settingsBrowserCard() {
     chooseTheme(k); seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
   } }, l)));
   return setCard('you', 'This browser',
-    setRow('Your name', 'Written next to every change you make, so the change log shows who did it. It is a label, not a login.', h('input', { type: 'text', value: getName(), placeholder: 'e.g. Kartik', onchange: e => { setName(e.target.value.trim()); toast('Saved on this browser', 'ok'); } })),
     setRow('Appearance', 'Only changes how this browser looks.', seg));
 }
 async function settingsSupportCard() {

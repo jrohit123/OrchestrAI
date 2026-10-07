@@ -26,7 +26,10 @@ from app.admin_panel.common import (
     rows,
     tx,
 )
-from app.db import fetch_all, fetch_one
+from app.db import fetch_all, fetch_one, routing_pool
+from app.logging_config import get_context_logger
+
+logger = get_context_logger(__name__)
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -98,6 +101,31 @@ def _person_columns(ctx: Ctx) -> str:
 _CFG = "WITH cfg AS (SELECT $2::text[] AS closed) "
 
 
+async def _dashboard_access(ctx: Ctx, emails: list[str | None]) -> dict[str, dict]:
+    """Which of these people can sign in to the dashboard, read from the sign-in accounts (they
+    live in the routing database). A courtesy: a problem gives nothing here and never an error."""
+    wanted = sorted({e.strip().lower() for e in emails if e})
+    if not wanted:
+        return {}
+    try:
+        found = await routing_pool().fetch(
+            "SELECT id, email, level, status, source_keys FROM panel_accounts "
+            "WHERE email = ANY($1::text[])",
+            wanted,
+        )
+    except Exception as e:
+        logger.warning(f"dashboard access not read: {e!r}")
+        return {}
+    out: dict[str, dict] = {}
+    for r in found:
+        if r["level"] == "admin" and ctx.source_key not in (r["source_keys"] or ()):
+            continue
+        out[r["email"]] = {"level": r["level"], "status": r["status"]}
+        if ctx.level == "super":
+            out[r["email"]]["account_id"] = str(r["id"])
+    return out
+
+
 def _shape_person(p: dict) -> dict:
     p["seats"] = jb(p["seats"], [])
     p["homes"] = jb(p["homes"], [])
@@ -153,8 +181,12 @@ async def list_people(
         *params,
         source_key=ctx.source_key,
     )
+    people = [_shape_person(p) for p in rows(found)]
+    access = await _dashboard_access(ctx, [p["email"] for p in people])
+    for p in people:
+        p["dashboard"] = access.get((p["email"] or "").lower())
     return {
-        "rows": [_shape_person(p) for p in rows(found)],
+        "rows": people,
         "total": total["n"],
         "page": page,
         "page_size": page_size,
@@ -174,6 +206,9 @@ async def person_detail(ctx: CtxDep, user_id: UUID):
     if not row:
         raise HTTPException(status_code=404, detail="Person not found")
     person = _shape_person(dict(row))
+    person["dashboard"] = (await _dashboard_access(ctx, [person["email"]])).get(
+        (person["email"] or "").lower()
+    )
 
     homes: list[dict] = []
     if ctx.caps.get("residents"):
@@ -246,15 +281,29 @@ async def update_person(ctx: CtxDep, user_id: UUID, body: PersonPatch):
         raise HTTPException(status_code=400, detail="Nothing to change.")
     if "role_id" in changes and changes["role_id"] is None:
         raise HTTPException(status_code=400, detail="Pick a role.")
+    if ctx.level != "super" and set(changes) - {"role_id"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Only a super admin can switch a person on or off. You can change a role.",
+        )
     async with tx(ctx) as conn:
         before = await conn.fetchrow(
-            "SELECT u.name, u.role_id, u.is_active, r.name AS role FROM users u "
+            "SELECT u.name, u.email, u.role_id, u.is_active, r.name AS role FROM users u "
             "LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = $1 AND u.org_id = $2",
             user_id,
             ctx.org_id,
         )
         if not before:
             raise HTTPException(status_code=404, detail="Person not found")
+        if (
+            ctx.level != "super"
+            and ctx.account_email
+            and (before["email"] or "").lower() == ctx.account_email.lower()
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="You cannot change your own role. Ask a super admin.",
+            )
         notes = []
         if "role_id" in changes:
             role = await conn.fetchrow(

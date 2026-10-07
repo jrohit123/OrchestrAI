@@ -32,6 +32,17 @@ def render_page(org_slug: str) -> str:
     return _SHELL.format(version=VERSION, org=html.escape(org_slug, quote=True))
 
 
+@router.get("/admin", response_class=HTMLResponse)
+async def super_page():
+    """The page for super admins (and for anyone who signs in here without an organisation in the
+    address): it shows the sign-in, then the list of organisations. It holds no data."""
+    return HTMLResponse(
+        content=render_page(""),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @router.get("/admin/{org_slug}", response_class=HTMLResponse)
 async def admin_page(org_slug: str):
     """The dashboard. The address segment is the organisation's key in the routing database, so a

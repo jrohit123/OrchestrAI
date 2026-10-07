@@ -79,13 +79,9 @@ function errorText(data, res) {
   if (d && typeof d === 'object') return d.error ? d.error + (d.problems ? ' ' + d.problems.join('; ') : '') : JSON.stringify(d);
   return 'Something went wrong (' + res.status + ').';
 }
-const getName = () => { try { return localStorage.getItem('panel.name') || ''; } catch (e) { return ''; } };
-const setName = v => { try { localStorage.setItem('panel.name', v); } catch (e) { /* private mode */ } };
 async function request(url, opts) {
   opts = opts || {};
-  const headers = { Accept: 'application/json' };
-  const who = getName();
-  if (who) headers['X-Admin-Name'] = encodeURIComponent(who);
+  const headers = { Accept: 'application/json', 'X-Panel': '1' };   // a header only this page sends: a call from another site would lack it
   let body = opts.body;
   if (body !== undefined && !(body instanceof FormData)) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(body); }
   let res;
@@ -93,7 +89,10 @@ async function request(url, opts) {
   catch (e) { throw new ApiError('Cannot reach the server. Check your connection and try again.', 0); }
   let data = null;
   if ((res.headers.get('content-type') || '').includes('json')) data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(errorText(data, res), res.status, data);
+  if (!res.ok) {
+    if (res.status === 401 && !opts.quiet401) sessionEnded();   // not signed in any more: back to the sign-in page
+    throw new ApiError(errorText(data, res), res.status, data);
+  }
   return data;
 }
 function qs(q) {

@@ -568,6 +568,19 @@ async def _tick_cleanup():
     await _tick("cleanup", run_cleanup)
 
 
+async def _tidy_panel_keys():
+    """Remove dashboard sign-in codes and sessions that can never be used again (nothing else)."""
+    from app.admin_panel.auth import tidy_keys
+
+    removed = await tidy_keys()
+    if removed:
+        logger.info(f"sign-in: removed {removed} codes and sessions that had ended")
+
+
+async def _tick_panel_keys():
+    await _tick("panel_keys", _tidy_panel_keys)
+
+
 def start_scheduler():
     scheduler.add_job(
         _tick_scheduled_reports,
@@ -590,9 +603,17 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        _tick_panel_keys,
+        trigger=CronTrigger(hour=3, minute=40, timezone="Asia/Kolkata"),
+        id="panel_keys",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
     logger.info(
-        "Started — universal runner + case reminders every minute, cleanup daily at 03:30"
+        "Started — universal runner + case reminders every minute, cleanup daily at 03:30, "
+        "sign-in keys at 03:40"
     )
 
 

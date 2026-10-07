@@ -18,14 +18,15 @@ import re
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any
-from urllib.parse import unquote
 
 import asyncpg
 from fastapi import Depends, HTTPException, Request
 from fastapi.routing import APIRoute
 
+from app.admin_panel.access_rules import admin_may
+from app.admin_panel.auth import Account, require_account
 from app.db import fetch_all, fetch_one, get_all_source_keys, get_pool
 from app.logging_config import get_context_logger
 
@@ -130,6 +131,18 @@ class Ctx:
     caps: dict[str, bool]
     actor: str  # who to write in the change log
     closed_values: list[str]  # case statuses that mean "finished"
+    level: str = "super"  # who is asking: 'super' or 'admin' (a Ctx built by hand is a super admin)
+    account_id: str = ""
+    account_email: str = ""
+    account_name: str = ""
+    settings: dict = field(default_factory=dict)  # orgs.settings, read once per call
+
+    def need_super(self, what: str = "do that") -> None:
+        """Refuse when the person asking is an admin, not a super admin."""
+        if self.level != "super":
+            raise HTTPException(
+                status_code=403, detail=f"Only a super admin can {what}."
+            )
 
     def need(self, *caps: str) -> None:
         """Refuse politely when this org's database cannot do what was asked."""
@@ -141,10 +154,20 @@ class Ctx:
                 )
 
 
-async def get_ctx(org_slug: str, request: Request) -> Ctx:
-    """FastAPI dependency. The URL's org segment IS the source_key (see admin.py)."""
+async def get_ctx(
+    org_slug: str, request: Request, who: Annotated[Account, Depends(require_account)]
+) -> Ctx:
+    """FastAPI dependency, and the one place every dashboard data call passes: the person must be
+    signed in (require_account), allowed to open this organisation, and, if an admin, allowed to
+    make this call (access_rules.py). The URL's org segment IS the source_key (see pages.py)."""
     if org_slug not in await get_all_source_keys():
         raise HTTPException(status_code=404, detail=f"Unknown org '{org_slug}'")
+    if not who.may_open(org_slug):
+        raise HTTPException(
+            status_code=403, detail="Your account cannot open this organisation."
+        )
+    if not who.is_super and not admin_may(request):
+        raise HTTPException(status_code=403, detail="Only a super admin can do that.")
     org = await fetch_one(
         "SELECT id, name, settings FROM orgs WHERE is_active = true LIMIT 1",
         source_key=org_slug,
@@ -154,14 +177,18 @@ async def get_ctx(org_slug: str, request: Request) -> Ctx:
     settings = jb(org["settings"], {})
     # same setting, same default, that the case reminder job already uses
     closed = (settings.get("case_reminders") or {}).get("closed_values") or ["closed"]
-    name = unquote(request.headers.get("X-Admin-Name") or "").strip()[:60]
     return Ctx(
         source_key=org_slug,
         org_id=str(org["id"]),
         org_name=org["name"],
         caps=await get_caps(org_slug),
-        actor=f"dashboard · {name}" if name else "dashboard",
+        actor=f"dashboard · {who.name}" + (" (super admin)" if who.is_super else ""),
         closed_values=list(closed),
+        level=who.level,
+        account_id=who.id,
+        account_email=who.email,
+        account_name=who.name,
+        settings=settings,
     )
 
 

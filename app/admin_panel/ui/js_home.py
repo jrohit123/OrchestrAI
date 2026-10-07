@@ -47,9 +47,9 @@ SECTIONS.overview = {
     const since = new Date(Date.now() - 24 * 3600 * 1000);
     const [d, cats, targets, chats] = await Promise.all([
       api.get('/overview'),
-      caps.case_model ? soft(api.get('/categories')) : null,
-      caps.targets ? soft(api.get('/targets')) : null,
-      caps.audit ? soft(api.get('/chats', { date_from: isoDay(since), page_size: 50 })) : null,
+      caps.case_model && isSuper() ? soft(api.get('/categories')) : null,
+      caps.targets && isSuper() ? soft(api.get('/targets')) : null,
+      caps.audit && isSuper() ? soft(api.get('/chats', { date_from: isoDay(since), page_size: 50 })) : null,
     ]);
     clear(root);
     const c = d.cases, k = c && c.kpis, rows24 = chats ? chats.rows.filter(r => new Date(r.last_at) >= since) : [];
@@ -110,7 +110,7 @@ SECTIONS.overview = {
     steps.push([d.workflows.active > 0, 'Switch on a flow', null, d.workflows.active ? null : ['Open Flows', href('workflows')]]);
     const done = steps.filter(s => s[0]).length;
     if (HOME_HEAD && HOME_HEAD.isConnected) {
-      fill(HOME_HEAD, steps.length >= 3 && done < steps.length ? h('button', { class: 'badge brand setchip', type: 'button', 'data-popkeep': '1', title: 'What is left to set up', onclick: e => openPop(e.currentTarget, h('div', { class: 'stack s8', style: { padding: '8px' } }, h('b', null, 'Getting set up · ' + done + ' of ' + steps.length), h('div', { class: 'progress' }, h('i', { style: { width: Math.round(done / steps.length * 100) + '%' } })),
+      fill(HOME_HEAD, isSuper() && steps.length >= 3 && done < steps.length ? h('button', { class: 'badge brand setchip', type: 'button', 'data-popkeep': '1', title: 'What is left to set up', onclick: e => openPop(e.currentTarget, h('div', { class: 'stack s8', style: { padding: '8px' } }, h('b', null, 'Getting set up · ' + done + ' of ' + steps.length), h('div', { class: 'progress' }, h('i', { style: { width: Math.round(done / steps.length * 100) + '%' } })),
         steps.map(([ok, title, note, link]) => h('div', { class: 'check' + (ok ? ' done' : '') }, h('span', { class: 'cb' }, ok ? icon('check', 'xs') : null), h('div', null, h('b', null, title), note ? h('div', { class: 'muted small' }, note) : null, link ? h('a', { class: 'small', href: link[1] }, link[0] + ' →') : null)))), { align: 'right', width: 340 }) }, 'Getting set up · ' + done + ' of ' + steps.length) : null,
         h('button', { class: 'btn ghost sm icon', type: 'button', 'aria-label': 'Refresh', 'data-tip': 'Refresh', onclick: () => { lastSig = ''; onRoute(); } }, icon('refresh', 'sm')));
     }

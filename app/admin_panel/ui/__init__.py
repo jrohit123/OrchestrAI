@@ -6,6 +6,7 @@ import hashlib
 from app.admin_panel.ui import (
     css,
     js_assistant,
+    js_auth,
     js_boot,
     js_canvas,
     js_canvas_panels,
@@ -22,6 +23,7 @@ from app.admin_panel.ui import (
     js_stepwin,
     js_studio,
     js_studio_form,
+    js_super,
 )
 
 APP_CSS = css.CSS
@@ -48,6 +50,8 @@ APP_JS = (
             js_rest,
             js_settings,
             js_assistant,
+            js_auth,
+            js_super,
             js_boot,
         )
     )

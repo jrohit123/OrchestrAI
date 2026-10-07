@@ -6,6 +6,9 @@ from fastapi import APIRouter
 from app.admin_panel import (
     activity,
     ai_instructions,
+    ask,
+    auth_routes,
+    case_buttons,
     cases,
     message_texts,
     meta,
@@ -22,9 +25,12 @@ from app.admin_panel import (
 router = APIRouter()
 for _module in (
     pages,
+    auth_routes,
     meta,
     overview,
     cases,
+    case_buttons,
+    ask,
     people,
     roles,
     routing,

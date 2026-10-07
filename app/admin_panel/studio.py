@@ -202,36 +202,12 @@ async def try_it(body: TryBody, ctx: CtxDep):
     """Run the steps as a rehearsal: everything that only looks things up runs for real, and
     everything that would save or send something is skipped and described. The result is what
     each step did, step by step. Nothing is saved and nobody is messaged."""
-    from app.services.party_access import add_party_permissions
+    from app.admin_panel.acting import chat_user
     from app.services.step_interpreter import run_workflow_steps
 
-    who = await fetch_one(
-        "SELECT u.id, u.name, u.email, u.phone, u.is_active, u.role_id, r.name AS role, "
-        "r.permissions, r.readable_tables, r.readable_entity_types, o.name AS org_name "
-        "FROM users u JOIN roles r ON r.id = u.role_id JOIN orgs o ON o.id = u.org_id "
-        "WHERE u.id = $1 AND u.org_id = $2",
-        body.as_user,
-        ctx.org_id,
-        source_key=ctx.source_key,
-    )
-    if not who:
+    user = await chat_user(ctx, user_id=body.as_user)
+    if not user:
         raise HTTPException(status_code=404, detail="That person was not found")
-    user = {
-        "user_id": str(who["id"]),
-        "user_name": who["name"],
-        "email": who["email"],
-        "phone": who["phone"],
-        "is_active": who["is_active"],
-        "role_id": str(who["role_id"]),
-        "role": who["role"],
-        "permissions": list(who["permissions"] or []),
-        "readable_tables": list(who["readable_tables"] or []),
-        "readable_entity_types": list(who["readable_entity_types"] or []),
-        "org_id": str(ctx.org_id),
-        "org_name": who["org_name"],
-        "source_key": ctx.source_key,
-    }
-    user = await add_party_permissions(user)
     workflow = {
         "intent_key": body.intent_key or "try_it",
         "name": body.name or "This workflow",
@@ -243,7 +219,7 @@ async def try_it(body: TryBody, ctx: CtxDep):
     fields = {k: v for k, v in body.fields.items() if v not in (None, "")}
     try:
         result = await run_workflow_steps(
-            workflow, fields, user, who["phone"] or "", dry_run=True
+            workflow, fields, user, user["phone"] or "", dry_run=True
         )
     except Exception as e:
         logger.warning(f"try-it failed: {e}")

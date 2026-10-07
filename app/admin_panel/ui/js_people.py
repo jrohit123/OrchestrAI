@@ -50,22 +50,25 @@ async function showPerson(id) {
     if (drawer !== dr) return;
     const p = d.person, body = [];
     const reload = () => showPerson(id);
+    const mineRow = !isSuper() && S.me && p.email && p.email.toLowerCase() === S.me.email.toLowerCase();   // an admin cannot change their own role
     fill(dr.titleEl, p.name, h('div', { class: 'row', style: { marginTop: '6px' } }, badge(p.role || 'No role', 'brand'), p.is_active ? badge('Active', 'ok') : badge('Inactive'), p.reachable ? badge('Can be messaged', 'info') : badge('Cannot be messaged yet', 'warn')));
     // account
     const role = sel([['', 'No role'], ...lk.roles.map(r => [r.id, r.name])], p.role_id || '');
+    if (mineRow) role.disabled = true;
     const saveRole = h('button', { class: 'btn sm primary', disabled: true, onclick: async e => { e.target.disabled = true; try { await api.patch('/people/' + id, { role_id: role.value }); toast('Role saved', 'ok'); reload(); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; } } }, 'Save role');
     role.addEventListener('change', () => { saveRole.disabled = !role.value || role.value === (p.role_id || ''); });
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Account'), h('div', { class: 'card-b stack' },
-      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Role'), role, saveRole, h('a', { class: 'small', href: href('access', '', { role: p.role_id || '' }) }, 'What can this role do?')),
-      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Active'), switchEl(p.is_active, async v => { await api.patch('/people/' + id, { is_active: v }); toast(v ? 'Switched on' : 'Switched off', 'ok'); reload(); }),
+      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Role'), role, saveRole, hasSection('access') ? h('a', { class: 'small', href: href('access', '', { role: p.role_id || '' }) }, 'What can this role do?') : (mineRow ? h('span', { class: 'muted small' }, 'Ask a super admin to change your own role.') : null)),
+      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Active'), isSuper() ? switchEl(p.is_active, async v => { await api.patch('/people/' + id, { is_active: v }); toast(v ? 'Switched on' : 'Switched off', 'ok'); reload(); }) : badge(p.is_active ? 'Active' : 'Inactive', p.is_active ? 'ok' : ''),
         h('span', { class: 'muted small' }, 'Inactive people cannot use the chat bot and cannot be given cases.')),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Email'), p.email || '—'),
+      dashboardAccess(p, reload),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Messaging'), p.reachable ? 'Linked (' + (p.phone_hint || '') + ')' : h('span', null, h('b', null, 'Not on ' + chatWord() + ' yet. '), 'Ask them to send their email address to the chat bot once. It links them straight away. ',
         h('button', { class: 'btn sm', type: 'button', style: { marginTop: '6px' }, onclick: () => navigator.clipboard && navigator.clipboard.writeText('Hi ' + p.name.split(' ')[0] + ', you can now use the ' + S.boot.org.name + ' chat bot. Open its chat on ' + chatWord() + ' and send it your email address (' + (p.email || '') + ') once. It will link you to your account.').then(() => toast('Message copied. Send it to ' + p.name.split(' ')[0] + '.', 'ok')) }, icon('copy', 'sm'), 'Copy the message to send'))),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Added'), fmtD(p.created_at)),
-      d.chats && d.chats.turns ? h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Chats'), plural(d.chats.turns, 'message'), ' · last ' + ago(d.chats.last_at), h('a', { class: 'btn sm', href: href('conversations', '', { user: id }) }, 'View chats →')) : null)));
+      d.chats && d.chats.turns ? h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Chats'), plural(d.chats.turns, 'message'), ' · last ' + ago(d.chats.last_at), hasSection('conversations') ? h('a', { class: 'btn sm', href: href('conversations', '', { user: id }) }, 'View chats →') : null) : null)));
     // homes
-    if (S.boot.caps.residents && d.homes.length) {
+    if (S.boot.caps.residents && d.homes.length && isSuper()) {
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Home'), h('div', { class: 'card-b stack' }, d.homes.map(x => {
         const type = sel((lk.enums.resident_types || [x.residential_status]).map(v => [v, pretty(v)]), x.residential_status);
         const stat = sel((lk.enums.resident_statuses || [x.status]).map(v => [v, pretty(v)]), x.status);
@@ -82,14 +85,14 @@ async function showPerson(id) {
       }))));
     }
     // seats
-    if (S.boot.caps.seats) {
+    if (S.boot.caps.seats && isSuper()) {
       const cur = d.seat_history.filter(s => s.status === 'active'), past = d.seat_history.filter(s => s.status !== 'active');
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Seats', h('a', { class: 'small', href: href('access', 'seats') }, 'Manage seats')), h('div', { class: 'card-b stack' },
         cur.length ? h('div', { class: 'chips' }, cur.map(s => badge(s.seat, 'brand'))) : h('span', { class: 'muted' }, 'Holds no seat right now.'),
         past.length ? h('div', { class: 'muted small' }, 'Held before: ' + past.map(s => s.seat + ' (' + fmtD(s.start_date) + ' – ' + fmtD(s.end_date) + ')').join(', ')) : null)));
     }
     // special access
-    if (S.boot.caps.grants) {
+    if (S.boot.caps.grants && isSuper()) {
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Special access', h('button', { class: 'btn sm', onclick: () => grantModal(lk, { subject_type: 'user', subject_id: id, name: p.name }, reload) }, 'Give access')),
         d.grants.length ? grantTable(d.grants, reload, true) : h('div', { class: 'card-b muted' }, 'None. They can do what their role allows.')));
     }
@@ -185,7 +188,7 @@ async function renderPeopleTab(root, route) {
   const mine = S.renderId;
   const lk = await getLookups();
   const q = { ...route.q }; delete q.person; q.page = Number(q.page || 1);
-  setTopAction({ label: 'Add person', run: () => addPersonModal(lk) });
+  setTopAction(isSuper() ? { label: 'Add person', run: () => addPersonModal(lk) } : { label: 'Ask for a new person', icon: 'send', run: () => askDialog('Please add a new person.\nName: \nEmail: \nRole: ') });
   const bar = h('div', { class: 'filters' }), chips = h('div', { class: 'chips', style: { marginBottom: '12px' } }), out = h('div', { class: 'card' });
   root.append(bar, chips, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
@@ -193,7 +196,7 @@ async function renderPeopleTab(root, route) {
   search.addEventListener('input', debounce(() => update({ q: search.value }), 300));
   const roleChips = h('div', { class: 'chips' });
   const filtersBtn = h('button', { class: 'btn', type: 'button', 'data-popkeep': '1', onclick: e => openFilters(e.currentTarget) });
-  add(bar, [search, roleChips, filtersBtn, h('span', { class: 'sp' }), h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs'))]);
+  add(bar, [search, roleChips, filtersBtn, h('span', { class: 'sp' }), hasSection('access') ? h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs')) : null]);
   const extra = () => ['status', 'reachable', 'seat'].filter(k => q[k]).length;
   function openFilters(anchor) {
     openPop(anchor, h('div', { class: 'stack s8', style: { padding: '10px' } },
@@ -227,6 +230,7 @@ async function renderPeopleTab(root, route) {
         S.boot.caps.residents || S.boot.caps.seats ? { label: 'Home or seat', render: p => (p.homes.length || p.seats.length) ? h('div', null, p.homes.slice(0, 2).map(x => h('div', { class: 'small' }, homeText(x), x.status !== 'active' ? ' ' : '', x.status !== 'active' ? badge(pretty(x.status), 'warn') : null)),
           p.seats.length ? h('div', { class: 'chips' }, p.seats.map(s => badge(s.name))) : null) : h('span', { class: 'muted' }, '—') } : null,
         { label: 'On ' + chatWord(), render: p => p.reachable ? badge('Yes', 'ok') : badge('Not yet', 'warn') },
+        { label: 'Dashboard', render: p => !p.dashboard ? h('span', { class: 'muted' }, '—') : p.dashboard.level === 'super' ? badge('Super admin', 'brand') : p.dashboard.status === 'active' ? badge('Admin', 'ok') : p.dashboard.status === 'invited' ? badge('Invited', 'info') : badge('Off') },
       ].filter(Boolean), d.rows, { onRow: p => go('people', '', { ...q, person: p.id }), emptyTitle: 'No one matches', emptyText: 'Try removing a filter.' }),
       pager(d.total, d.page, d.page_size, p => update({ page: p })));
     } catch (e) { fill(out, notice(e.message, 'bad')); }
