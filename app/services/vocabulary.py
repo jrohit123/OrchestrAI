@@ -2,7 +2,7 @@
 vocabulary.py — Per-org deterministic keyword vocabulary for control-flow
 matching (confirm/cancel/self-reference) that must never depend on an LLM.
 
-These are NOT LLM prompt text — they're exact/token string matches used by
+These are NOT LLM prompt text — they're exact string matches used by
 webhook.py's cancel gate and pending-action confirm/cancel checks, and by
 step_interpreter's self-assignment shortcut. They have to resolve
 deterministically before any LLM call happens, so they can't live in a
@@ -17,14 +17,16 @@ case_reminders, so this needs no new table and no migration:
         "cancel_words": ["no", "nahi", "cancel", ...],
         "cancel_tokens": ["cancel", "/cancel", "stop", ...],
         "self_reference_words": ["myself", "me", "mujhe", ...],
-        "retry_words": ["retry", "phir se", ...]
+        "retry_words": ["retry", "phir se", ...],
+        "filler_words": ["please", "thanks", "ji", "save it", ...]
     }}
 
 An org with no vocabulary configured for a given key gets an empty set for
 that key — the deterministic shortcut simply never matches for it (no
 crash, no guessed English/Hindi words); the message just falls through to
 the normal LLM agent turn instead. See migrations/seed_vocabulary.sql for
-the one-time data seed that gives existing orgs their current behaviour.
+the one-time data seed that gives existing orgs their current behaviour, and
+migrations/core/core-0012_filler_words.sql for the filler words.
 """
 
 import re
@@ -38,26 +40,59 @@ _VOCAB_KEYS = (
     "cancel_tokens",
     "self_reference_words",
     "retry_words",
+    "filler_words",
 )
 
+# Punctuation that may sit around a word: "Yes!", "ok.", "(yes)". A slash is NOT in the list, so
+# "/cancel" stays one word.
+_EDGE = "\"'`\u00b4\u2018\u2019\u201c\u201d.,;:!?\u00a1\u00bf\u2026()[]{}<>*_~|\\-\u2013\u2014"
+# Marks that change how an emoji looks but not what it says (skin colour, variation selector, joiner)
+_EMOJI_NOISE = re.compile("[\ufe0f\u200d\U0001f3fb-\U0001f3ff]")
 
-def matches_vocab(text: str, words: frozenset) -> bool:
+
+def _tokens(text: str) -> tuple[str, ...]:
+    """The words of a message, lower case, without the punctuation around them."""
+    text = _EMOJI_NOISE.sub("", (text or "").lower())
+    return tuple(chunk for chunk in (c.strip(_EDGE) for c in text.split()) if chunk)
+
+
+def matches_vocab(
+    text: str, words: frozenset, fillers: frozenset = frozenset()
+) -> bool:
     """
-    True if `text` STARTS WITH one of `words` as a whole token — e.g. "yes"
-    matches "yes save it" and "yes, please" but not "yesterday". Deliberately
-    NOT plain `text in words` (exact equality): that broke live — a real
-    user replying "yes save it" to a pending confirmation didn't exactly
-    equal "yes", failed the deterministic shortcut, fell through to the
-    general LLM agent turn, and got stuck re-asking the same confirmation
-    instead of ever executing. Still fully deterministic (no LLM call) —
-    just tolerant of the word not being the ENTIRE message, which is how
-    people actually type confirmations/cancellations/retries.
+    True when the WHOLE message is made of `words` (a word or a phrase such as "go ahead"), at least
+    one of them, with `fillers` (polite words such as "please", "thanks", "ji", "save it") allowed
+    around them and punctuation ignored. So "yes", "Yes!", "ok thanks", "yes save it", "haan ji" and
+    "yes yes" match, but "yes but make it 5000", "ok no wait", "no problem, go ahead" and
+    "yesterday" do not: those say more than yes or no, and go to the agent as a correction.
+
+    Deterministic (no LLM call), and tolerant of the polite words people really type. The lists
+    come from the organisation (orgs.settings.vocabulary); there is no default list in the code.
     """
     if not words:
         return False
-    text = text.strip().lower()
-    pattern = r"^(?:" + "|".join(re.escape(w) for w in words) + r")\b"
-    return bool(re.match(pattern, text))
+    tokens = _tokens(text)
+    if not tokens:
+        return False
+    main = {t for t in (_tokens(w) for w in words) if t}
+    extra = {t for t in (_tokens(f) for f in fillers) if t} - main
+    if not main:
+        return False
+    # walk the message left to right; a state is (position reached, a word from `words` was used)
+    seen = {(0, False)}
+    todo = [(0, False)]
+    while todo:
+        i, used = todo.pop()
+        if i == len(tokens):
+            if used:
+                return True
+            continue
+        for phrase, is_word in [(p, True) for p in main] + [(p, False) for p in extra]:
+            end = i + len(phrase)
+            if tokens[i:end] == phrase and (end, used or is_word) not in seen:
+                seen.add((end, used or is_word))
+                todo.append((end, used or is_word))
+    return False
 
 
 _cache: dict[str, dict] = {}  # org_id -> {key: frozenset}
@@ -66,7 +101,7 @@ _cache: dict[str, dict] = {}  # org_id -> {key: frozenset}
 async def get_vocabulary(org_id: str, source_key: str) -> dict:
     """
     Returns {"confirm_words", "cancel_words", "cancel_tokens",
-    "self_reference_words"} -> frozenset, entirely from
+    "self_reference_words", "retry_words", "filler_words"} -> frozenset, entirely from
     orgs.settings->'vocabulary' for this org. A key with nothing configured
     resolves to an empty frozenset, not a guessed default.
 

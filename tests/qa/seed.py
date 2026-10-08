@@ -22,6 +22,7 @@ VOCAB = {
     "cancel_tokens": ["cancel", "/cancel", "stop"],
     "self_reference_words": ["me", "myself", "mujhe"],
     "retry_words": ["retry", "resend"],
+    "filler_words": ["please", "pls", "thanks", "thank you", "ji", "save it"],
 }
 
 # workflows used by many tests; every step is a real primitive of step_interpreter

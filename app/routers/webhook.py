@@ -618,12 +618,13 @@ async def _handle_message(
                         role=current_role.title() if current_role else "—",
                     )
 
+                fillers = vocab.get("filler_words", frozenset())
                 confirmed = (
-                    matches_vocab(stripped, vocab["confirm_words"])
+                    matches_vocab(stripped, vocab["confirm_words"], fillers)
                     or stripped.lower() == "yes"
                 )
                 cancelled = matches_vocab(
-                    stripped, vocab["cancel_words"]
+                    stripped, vocab["cancel_words"], fillers
                 ) or stripped.lower() in ("no", "cancel")
 
                 if cancelled:
@@ -789,8 +790,7 @@ async def _handle_message(
                 # org (resolve_identity above returned None), so there is no
                 # org_id yet to look up a vocabulary override for. This is
                 # platform-level linking protocol text, not business content.
-                # Tolerant prefix match ("retry please") for the same reason
-                # vocabulary.matches_vocab is — people don't type bare
+                # Tolerant prefix match ("retry please"): people don't type bare
                 # keywords into chat.
                 if text.strip().lower().startswith("retry"):
                     await delete_session(link_session_id)
@@ -1156,12 +1156,12 @@ async def _handle_message(
 
     # Cancel gate — works at EVERY stage, not just awaiting_confirmation
     # This is the user's escape hatch and must never depend on LLM cooperation
-    _t = text.strip().lower().rstrip("!.?")
-    _tokens = set(re.findall(r"[a-z/]+", _t))
-
-    if _t in vocab["cancel_tokens"] or (
-        _tokens & {"cancel", "/cancel"} and len(_tokens) <= 3
-    ):
+    # A real cancel is the WHOLE message: a cancel word or token, with at most polite words around it
+    # ("cancel", "please cancel", "forget it"). "cancel invoice INV-1" is a request about an invoice, and
+    # "don't cancel" is the opposite of a cancel: both go on to the agent. The words are the
+    # organisation's own (orgs.settings.vocabulary).
+    fillers = vocab.get("filler_words", frozenset())
+    if matches_vocab(text, vocab["cancel_tokens"], fillers):
         had_draft = bool(session.get("pending_action"))
         if not had_draft:
             from app.services.draft_store import get_active_draft
@@ -1334,7 +1334,6 @@ async def _handle_message(
     async def _send_action_pdf(exec_result: dict):
         if not exec_result.get("pdf_bytes"):
             return
-        import re
 
         from app.services.messaging import send_document
 
@@ -1354,7 +1353,7 @@ async def _handle_message(
     # 8. Pending action confirmation
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
         intent = pending_action.get("intent_key") or "agent"
-        if matches_vocab(text, vocab["confirm_words"]):
+        if matches_vocab(text, vocab["confirm_words"], fillers):
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
@@ -1418,7 +1417,7 @@ async def _handle_message(
                 await _audit_turn(user, session_id, intent, text, failed, "error")
             return
 
-        if matches_vocab(text, vocab["cancel_words"]):
+        if matches_vocab(text, vocab["cancel_words"], fillers):
             await _clear_stuck_draft(
                 user, session, session_id, session_ttl, reason="cancelled"
             )

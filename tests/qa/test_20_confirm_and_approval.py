@@ -108,10 +108,6 @@ def test_C09_a_hindi_confirmation_word_from_the_organisations_list_confirms():
 
 
 @needs_qa
-@bug(
-    "QA-024",
-    "'cancel <something>' is taken by the cancel gate: the draft and the chat history are wiped",
-)
 def test_C07_cancel_followed_by_a_thing_is_not_swallowed_by_the_cancel_gate():
     async def scenario(w):
         await w.login("member")

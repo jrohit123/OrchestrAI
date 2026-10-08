@@ -5,8 +5,8 @@ Each test fails before its fix and passes after it. They run on throwaway databa
 
 import json
 
-from tests.qa.harness import _patch, needs_qa, qa_run
-from tests.qa.qa_helpers import phone_of
+from tests.qa.harness import _patch, llm_message, needs_qa, qa_run
+from tests.qa.qa_helpers import notes, open_drafts, phone_of
 
 # ───────────────────────────── P0-1 · the open doors (QA-015, QA-002) ─────────────────────────────
 
@@ -158,5 +158,87 @@ def test_H05e_a_reminder_that_reached_one_person_is_not_repeated_to_that_person(
             await run_case_reminders()
         mine = [t for t in w.texts_to(phone_of(w, "member")) if "P-1" in t]
         assert len(mine) == 1 and await reminded(w, "P-1")
+
+    qa_run(scenario)
+
+
+# ───────────────────────────── P0-6 · "yes, but…" and "cancel invoice" (QA-007, QA-024) ─────────────────────────────
+
+
+@needs_qa
+def test_C10_yes_but_does_not_save_the_old_values():
+    async def scenario(w):
+        await w.login("member")
+        await w.make_pending("member", "qa_note", {"title": "old-title"})
+        w.llm.queue(llm_message(content="What should the title be?"))
+        await w.say(phone_of(w, "member"), "yes but call it new-title")
+        assert await notes(w, "old-title") == 0, "the old values were saved"
+        assert await open_drafts(w, "member") == 1, "the draft was thrown away"
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_C12_yes_with_a_polite_word_still_saves():
+    async def scenario(w):
+        await w.login("member")
+        await w.make_pending("member", "qa_note", {"title": "polite"})
+        await w.say(phone_of(w, "member"), "yes save it")
+        assert await notes(w, "polite") == 1
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_C14_no_problem_go_ahead_does_not_cancel_the_draft():
+    async def scenario(w):
+        await w.login("member")
+        await w.make_pending("member", "qa_note", {"title": "keep-me"})
+        w.llm.queue(llm_message(content="Shall I save it?"))
+        await w.say(phone_of(w, "member"), "no problem, go ahead")
+        assert await open_drafts(w, "member") == 1, (
+            "a message with 'no' in it cancelled the draft"
+        )
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_C15_dont_cancel_does_not_cancel_the_draft():
+    async def scenario(w):
+        await w.login("member")
+        await w.make_pending("member", "qa_note", {"title": "dont"})
+        w.llm.queue(llm_message(content="OK, I will keep it."))
+        await w.say(phone_of(w, "member"), "don't cancel")
+        assert await open_drafts(w, "member") == 1, "'don't cancel' cancelled the draft"
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_C16_please_cancel_cancels_the_draft():
+    async def scenario(w):
+        await w.login("member")
+        await w.make_pending("member", "qa_note", {"title": "bye"})
+        await w.say(phone_of(w, "member"), "please cancel")
+        assert await open_drafts(w, "member") == 0
+        assert await notes(w, "bye") == 0
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_C17_a_strangers_account_is_not_created_by_a_yes_that_changes_something():
+    """The same rule for the account details a stranger on Telegram is asked to confirm."""
+
+    async def scenario(w):
+        from app.services.vocabulary import get_vocabulary, matches_vocab
+
+        vocab = await get_vocabulary(w.ids.org_id, w.key)
+        fillers = vocab["filler_words"]
+        assert matches_vocab("yes please", vocab["confirm_words"], fillers)
+        assert not matches_vocab(
+            "yes but my email is other@example.test", vocab["confirm_words"], fillers
+        )
 
     qa_run(scenario)

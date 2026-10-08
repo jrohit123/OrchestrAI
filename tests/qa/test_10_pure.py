@@ -170,36 +170,85 @@ def test_D_property_an_unknown_operator_never_lets_a_step_run(op, value):
 
 CONFIRM = frozenset(VOCAB["confirm_words"])
 CANCEL = frozenset(VOCAB["cancel_words"])
+CANCEL_TOKENS = frozenset(VOCAB["cancel_tokens"])
+FILLERS = frozenset(VOCAB["filler_words"])
 
 
-@pytest.mark.parametrize("text", ["yes", "Yes!", "ok", "yes please", "haan"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "yes",
+        "Yes!",
+        "Yes.",
+        "(yes)",
+        "ok",
+        "okay",
+        "sure",
+        "yes please",
+        "haan",
+        "yes save it",
+        "ok thanks",
+        "haan ji",
+        "ji haan",
+        "yes yes",
+        "theek hai",
+    ],
+)
 def test_C_plain_confirmations_confirm(text):
-    assert matches_vocab(text.rstrip("!"), CONFIRM)
+    assert matches_vocab(text, CONFIRM, FILLERS)
 
 
 def test_C_a_word_that_only_starts_like_yes_is_not_yes():
-    assert not matches_vocab("yesterday", CONFIRM)
-    assert not matches_vocab("", CONFIRM)
+    assert not matches_vocab("yesterday", CONFIRM, FILLERS)
+    assert not matches_vocab("", CONFIRM, FILLERS)
 
 
-@bug("QA-007", "'yes but ...' is a yes: the old values are saved")
 def test_C03_yes_but_make_it_5000_is_not_a_plain_confirmation():
-    assert not matches_vocab("yes but make it 5000", CONFIRM)
+    assert not matches_vocab("yes but make it 5000", CONFIRM, FILLERS)
 
 
-@bug("QA-007", "'no problem, go ahead' is read as a cancel")
 def test_C04_no_problem_go_ahead_is_not_a_cancellation():
-    assert not matches_vocab("no problem, go ahead", CANCEL)
+    assert not matches_vocab("no problem, go ahead", CANCEL, FILLERS)
 
 
-@bug("QA-007", "'no, wait' cancels the draft without asking")
 def test_C05_no_wait_is_not_a_silent_cancel():
-    assert not matches_vocab("no, wait", CANCEL)
+    assert not matches_vocab("no, wait", CANCEL, FILLERS)
 
 
-@bug("QA-007", "'ok no wait' confirms")
 def test_C06_ok_no_wait_is_not_a_confirmation():
-    assert not matches_vocab("ok no wait", CONFIRM)
+    assert not matches_vocab("ok no wait", CONFIRM, FILLERS)
+
+
+@pytest.mark.parametrize(
+    "text", ["no", "No.", "nahi", "nope", "stop", "please cancel", "no thanks"]
+)
+def test_C_plain_cancellations_cancel(text):
+    assert matches_vocab(text, CANCEL, FILLERS)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "cancel invoice INV-1",
+        "don't cancel",
+        "no issue",
+        "nahi, doosra case",
+        "yes no",
+        "no yes",
+    ],
+)
+def test_C_a_cancel_word_inside_a_longer_message_is_not_a_cancel(text):
+    assert not matches_vocab(text, CANCEL_TOKENS, FILLERS)
+    assert not matches_vocab(text, CANCEL, FILLERS)
+
+
+def test_C_the_words_come_from_the_organisation_and_not_from_the_code():
+    assert not matches_vocab("yes", frozenset())
+    assert not matches_vocab("yes please", CONFIRM)  # without its polite words
+    assert matches_vocab("yes please", CONFIRM, frozenset({"please"}))
+    assert matches_vocab(
+        "\U0001f44d\U0001f3fd", frozenset({"\U0001f44d"})
+    )  # an emoji works too
 
 
 # ───────────────────────────── H. schedules ─────────────────────────────
