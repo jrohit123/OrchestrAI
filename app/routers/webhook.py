@@ -190,6 +190,27 @@ async def _channel_source_key(phone: str) -> str | None:
         return None
 
 
+async def _self_registration_roles(source_key: str) -> list[str]:
+    """The role names (lower case) a stranger may take when she registers herself in the chat:
+    orgs.settings -> self_registration.roles, the organisation's own list. When it names none,
+    nobody can register themselves: a new person is added by an admin and then links this chat
+    with the email the admin entered."""
+    row = await fetch_one(
+        "SELECT settings FROM orgs WHERE is_active = true LIMIT 1",
+        source_key=source_key,
+    )
+    settings = row["settings"] if row else None
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except ValueError:
+            settings = {}
+    roles = ((settings or {}).get("self_registration") or {}).get("roles")
+    if not isinstance(roles, list):
+        return []
+    return [r.strip().lower() for r in roles if isinstance(r, str) and r.strip()]
+
+
 async def _handle_email_submission(
     phone: str, email: str, link_session_id: str
 ) -> None:
@@ -248,6 +269,12 @@ async def _handle_email_submission(
                 phone, await say(candidate["source_key"], "otp.email_failed")
             )
     else:
+        source_key = await _channel_source_key(phone)
+        if source_key and not await _self_registration_roles(source_key):
+            # this organisation does not let people register themselves in the chat
+            await delete_session(link_session_id)
+            await send_text(phone, await say(source_key, "onboarding.closed"))
+            return
         await set_session(
             link_session_id,
             {
@@ -621,7 +648,9 @@ async def _handle_message(
                     return
                 roles = await fetch_all(
                     "SELECT id, name FROM roles WHERE org_id = ("
-                    "SELECT id FROM orgs WHERE is_active = true LIMIT 1) ORDER BY name",
+                    "SELECT id FROM orgs WHERE is_active = true LIMIT 1) "
+                    "AND lower(name) = ANY($1::text[]) ORDER BY name",
+                    await _self_registration_roles(NEW_USER_ORG_SOURCE_KEY),
                     source_key=NEW_USER_ORG_SOURCE_KEY,
                 )
                 if not roles:
@@ -848,6 +877,20 @@ async def _handle_message(
                             ),
                         )
                         return
+
+                still_allowed = await fetch_one(
+                    "SELECT 1 AS ok FROM roles WHERE id = $1 AND lower(name) = ANY($2::text[])",
+                    pending_link["role_id"],
+                    await _self_registration_roles(NEW_USER_ORG_SOURCE_KEY),
+                    source_key=NEW_USER_ORG_SOURCE_KEY,
+                )
+                if not still_allowed:
+                    await send_text(
+                        phone,
+                        await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.unavailable"),
+                    )
+                    await delete_session(link_session_id)
+                    return
 
                 new_email = pending_link.get("new_user_email")
                 new_row = await fetch_one(

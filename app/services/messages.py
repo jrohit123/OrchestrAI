@@ -140,6 +140,13 @@ _MESSAGES = [
         "❌ Registration isn't available right now. Please contact your admin.",
     ),
     Msg(
+        "onboarding.closed",
+        "onboarding",
+        "Sign-up by chat is closed",
+        "They gave an email that matches no account, and this organisation does not let people register themselves in the chat.",
+        "No account found for that email, and sign-up by chat is not open. Please ask your admin to add you, then send your email here again.",
+    ),
+    Msg(
         "onboarding.not_a_name",
         "onboarding",
         "That is not a name",

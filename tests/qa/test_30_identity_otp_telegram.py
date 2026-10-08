@@ -4,8 +4,10 @@ A case that fails today is `xfail(strict=True)` tagged with its bug ID; each has
 """
 
 import asyncio
+import json
 import logging
 import random
+import re
 from types import SimpleNamespace
 
 import asyncpg
@@ -114,12 +116,20 @@ async def register_as(
     return dict(row) if row else None
 
 
+async def allow_self_registration(w, roles):
+    """The organisation's own list of roles a stranger may take (orgs.settings -> self_registration.roles)."""
+    await w.run(
+        "UPDATE orgs SET settings = settings || $1::jsonb",
+        json.dumps({"self_registration": {"roles": roles}}),
+    )
+
+
 @needs_qa
 def test_B_control_a_stranger_can_register_as_a_member():
     async def scenario(w):
-        # roles are listed by name: admin, approver, member, staff -> 3 is member
+        await allow_self_registration(w, ["member"])
         row = await register_as(
-            w, "tg:555", "carol@example.test", "Carol Newcomer", "3"
+            w, "tg:555", "carol@example.test", "Carol Newcomer", "1"
         )
         assert row and row["role"] == "member" and row["phone"] == "tg:555", row
 
@@ -127,18 +137,85 @@ def test_B_control_a_stranger_can_register_as_a_member():
 
 
 @needs_qa
-@bug(
-    "QA-001",
-    "every role of the organisation is offered, including admin, and no admin approves the account",
-)
 def test_B03_a_stranger_on_telegram_cannot_register_themselves_as_admin():
     async def scenario(w):
+        await allow_self_registration(w, ["member", "staff"])
+        # the first role on the list is what "1" picks: admin is not on it, so it is not even offered
         row = await register_as(
             w, "tg:555", "mallory@example.test", "Mallory Stranger", "1"
         )
         assert row is None or row["role"] != "admin", (
             f"a stranger now holds the role {row['role']!r}"
         )
+        offered = "\n".join(w.texts_to("tg:555")).lower()
+        assert not re.search(r"(?m)^\s*\d+\.\s*admin", offered), offered
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_B03b_with_no_list_of_roles_nobody_can_register_themselves():
+    async def scenario(w):
+        await w.say("tg:555", "dave@example.test")
+        said = " ".join(w.texts_to("tg:555")).lower()
+        assert "not open" in said and "ask your admin" in said, said
+        assert not await w.one(
+            "SELECT 1 AS x FROM users WHERE lower(email) = 'dave@example.test'"
+        )
+        # and she is not left half way through a sign-up: the next message does not ask for a name
+        before = len(w.texts_to("tg:555"))
+        await w.say("tg:555", "Dave Stranger")
+        assert not await w.one("SELECT 1 AS x FROM users WHERE name = 'Dave Stranger'")
+        assert len(w.texts_to("tg:555")) > before
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_B03c_a_role_that_is_not_on_the_list_cannot_be_taken_even_from_an_old_or_forged_chat():
+    async def scenario(w):
+        from app.redis_client import set_session
+
+        await allow_self_registration(w, ["member"])
+        # a chat state that says "admin" (the list changed meanwhile, or the state was tampered with)
+        await set_session(
+            "tglink:tg:555",
+            {
+                "state": "awaiting_new_user_confirm",
+                "name": "Mallory Stranger",
+                "new_user_email": "mallory@example.test",
+                "role_id": str(w.ids.role["admin"]),
+                "role_name": "admin",
+                "role_options": [{"id": str(w.ids.role["admin"]), "name": "admin"}],
+            },
+            ttl=300,
+        )
+        await w.say("tg:555", "yes")
+        assert not await w.one(
+            "SELECT 1 AS x FROM users WHERE lower(email) = 'mallory@example.test'"
+        ), "the account was made"
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_B03d_the_list_of_roles_is_read_safely_whatever_was_typed_into_the_setting():
+    async def scenario(w):
+        from app.routers import webhook
+
+        for value, expected in (
+            (["Member", " staff ", "", 5, None], ["member", "staff"]),
+            ("member", []),
+            ({"a": 1}, []),
+            (None, []),
+        ):
+            await w.run(
+                "UPDATE orgs SET settings = jsonb_set(settings, '{self_registration}', $1::jsonb)",
+                json.dumps({"roles": value}),
+            )
+            assert await webhook._self_registration_roles(w.key) == expected, value
+        await w.run("UPDATE orgs SET settings = settings - 'self_registration'")
+        assert await webhook._self_registration_roles(w.key) == []
 
     qa_run(scenario)
 
