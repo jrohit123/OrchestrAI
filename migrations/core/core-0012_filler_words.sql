@@ -12,6 +12,6 @@ UPDATE public.orgs
            COALESCE(settings, '{}'::jsonb),
            '{vocabulary}',
            COALESCE(settings -> 'vocabulary', '{}'::jsonb)
-               || '{"filler_words": ["please", "pls", "plz", "thanks", "thank you", "thx", "ji", "sir", "madam", "mam", "save it"]}'::jsonb
+               || '{"filler_words": ["please", "pls", "plz", "thanks", "thank you", "thx", "ji", "sir", "madam", "mam", "save it", "do it", "now", "kar do", "kardo", "karo"]}'::jsonb
        )
  WHERE NOT (COALESCE(settings -> 'vocabulary', '{}'::jsonb) ? 'filler_words');
