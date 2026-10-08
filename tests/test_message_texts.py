@@ -27,7 +27,18 @@ MIGRATION = (
 )
 KEY = "otp.cooldown"  # "⏳ Please wait {wait_seconds}s before requesting another code."
 MSG = MESSAGES[KEY]
-SEED = MIGRATION.with_name("core-0011_standard_texts.sql")
+SEED_FILES = sorted(
+    p
+    for p in MIGRATION.parent.glob("core-*.sql")
+    if "INSERT INTO public.system_messages" in p.read_text(encoding="utf-8")
+)
+
+
+def seed_sql() -> str:
+    """The standard wording as every client gets it: core-0011 and every later file that adds a message."""
+    return "\n".join(p.read_text(encoding="utf-8") for p in SEED_FILES)
+
+
 URL = "/admin/alpha/api/v2/messages"
 
 
@@ -244,8 +255,8 @@ async def _client(world, monkeypatch, ctx, with_events=False, seeded=False):
             "(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text)"
         )
         await conn.execute(MIGRATION.read_text(encoding="utf-8"))
-        if seeded:  # the standard wording stored in the database (migration core-0011)
-            await conn.execute(SEED.read_text(encoding="utf-8"))
+        if seeded:  # the standard wording stored in the database (migrations core-0011 and the later ones that add a message)
+            await conn.execute(seed_sql())
         if with_events:
             await conn.execute(
                 "CREATE TABLE admin_events (org_id uuid, actor_label text, area text, action text, "
@@ -424,7 +435,7 @@ def test_with_the_standard_wording_stored_every_message_says_what_it_always_said
     async def scenario():
         conn = await _db(world)
         try:
-            await conn.execute(SEED.read_text(encoding="utf-8"))
+            await conn.execute(seed_sql())
             _read_from(monkeypatch, conn)
             stored = await conn.fetchval(
                 "SELECT count(*) FROM system_messages WHERE scope = 'global' AND is_active"

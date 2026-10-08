@@ -53,7 +53,6 @@ def test_C_control_one_yes_runs_the_action_once():
 
 
 @needs_qa
-@bug("QA-003", "two 'yes' at once both read the draft and both run every step")
 def test_C01_two_yes_at_once_run_the_action_once():
     async def scenario(w):
         await w.login("member")
@@ -64,6 +63,9 @@ def test_C01_two_yes_at_once_run_the_action_once():
             webhook, "get_session", 0.05
         )  # a real Redis answer takes a few milliseconds
         phone = phone_of(w, "member")
+        # the second yes arrives after the first one was saved: there is nothing left to confirm, so it is
+        # an ordinary message and the chat bot answers it
+        w.llm.queue(llm_message(content="There is nothing waiting for a yes."))
         await asyncio.gather(w.say(phone, "yes"), w.say(phone, "yes"))
         assert await notes(w, "double-yes") == 1
 
@@ -122,7 +124,6 @@ def test_C07_cancel_followed_by_a_thing_is_not_swallowed_by_the_cancel_gate():
 
 
 @needs_qa
-@bug("QA-021", "the second message's write replaces the first one's history")
 def test_C11_two_quick_messages_both_stay_in_the_conversation():
     async def scenario(w):
         from app.redis_client import get_session
@@ -227,10 +228,6 @@ def test_D27_the_approval_gate_asks_the_approver_and_tells_the_requester_it_was_
 
 
 @needs_qa
-@bug(
-    "QA-004",
-    "two taps on Approve both pass the 'pending' check and both run the action",
-)
 def test_D20_two_taps_on_approve_run_the_action_once():
     async def scenario(w):
         approval = await start_big_request(w, "tapped-twice")

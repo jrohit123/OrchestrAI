@@ -133,6 +133,7 @@ def test_the_migration_tool_accepts_the_files(folder, prefix):
     "path",
     [
         MIGRATIONS / "core" / "core-0011_standard_texts.sql",
+        MIGRATIONS / "core" / "core-0013_busy_text.sql",
         MIGRATIONS / "features" / "housing" / "housing-0003_industry_text.sql",
         MIGRATIONS / "features" / "jewellery" / "jewellery-0001_industry_text.sql",
     ],

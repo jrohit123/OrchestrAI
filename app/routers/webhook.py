@@ -1,9 +1,13 @@
+import asyncio
 import contextvars
 import hashlib
 import hmac
 import json
 import os
 import re
+import time
+import uuid
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Request, Response
@@ -419,6 +423,125 @@ async def _attach_held_photos(user: dict, phone: str, hint: bool = False) -> Non
 _turn_user: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "turn_user", default=None
 )
+# the phone whose turn this very task already holds (a message that waited for a code is handled again
+# from inside its own turn: it must not wait for itself)
+_turn_held: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "turn_held", default=None
+)
+
+
+async def _take_the_turn(
+    redis, key: str, token: str, lock_seconds: int, wait_seconds: int
+) -> str:
+    """ "got" once this person's turn is ours, "busy" when the wait ran out, "skipped" when Redis
+    cannot be used (then nobody is made to wait: being answered matters more than the order)."""
+    try:
+        deadline = time.monotonic() + wait_seconds
+        pause = min(0.25, max(0.02, wait_seconds / 50))
+        while True:
+            if await redis.set(key, token, nx=True, px=lock_seconds * 1000):
+                return "got"
+            if time.monotonic() >= deadline:
+                return "busy"
+            await asyncio.sleep(pause)
+    except Exception as e:
+        logger.warning(f"could not take the turn (going on without): {e}")
+        return "skipped"
+
+
+@asynccontextmanager
+async def _one_turn_at_a_time(phone: str, conf: dict | None):
+    """Yields True when this message may be handled now, False when the person's previous message
+    is still being answered and the wait ran out.
+
+    Two messages from one person used to be handled at once: two "yes" both read the draft and both
+    ran it, and two quick messages each read the chat's copy, waited for the model, and wrote it
+    back, so the second erased the first. Now a person's messages go through one at a time, in the
+    order they arrived. The lock lives in Redis (shared by every copy of the app) and runs out by
+    itself, so a crash cannot block someone for ever. How long a message waits, and how long a
+    turn may hold the lock, are the organisation's settings (turn_wait_seconds, turn_lock_seconds)."""
+    if _turn_held.get() == phone:
+        yield True  # already inside this person's turn
+        return
+    redis = get_redis()
+    if redis is None:
+        yield True
+        return
+    key = f"turn_lock:{phone}"
+    token = uuid.uuid4().hex
+    state = await _take_the_turn(
+        redis,
+        key,
+        token,
+        config_store.limit_of(conf, "turn_lock_seconds"),
+        config_store.limit_of(conf, "turn_wait_seconds"),
+    )
+    if state == "busy":
+        yield False
+        return
+    mark = _turn_held.set(phone)
+    try:
+        yield True
+    finally:
+        _turn_held.reset(mark)
+        if state == "got":
+            try:
+                if (
+                    await redis.get(key) == token
+                ):  # only our own lock, never a newer one
+                    await redis.delete(key)
+            except Exception as e:
+                logger.warning(
+                    f"could not give the turn back (it runs out by itself): {e}"
+                )
+
+
+async def _claim_confirmation(user: dict, pending: dict) -> tuple[bool, str | None]:
+    """The first "yes" to a card claims it; a second one for the same card (a retry, a double tap)
+    finds it claimed and must not run it again. (claimed, key to give back if saving fails.)
+    Fails open when Redis cannot be used."""
+    redis = get_redis()
+    if redis is None:
+        return True, None
+    stamp = (
+        pending.get("created_at")
+        or hashlib.sha1(
+            json.dumps(
+                pending.get("fields") or {}, sort_keys=True, default=str
+            ).encode()
+        ).hexdigest()
+    )
+    key = f"confirm_claim:{user['user_id']}:{pending.get('intent_key')}:{stamp}"
+    try:
+        conf = await config_store.org_settings(user["source_key"], user["org_id"])
+        seconds = config_store.limit_of(conf, "confirm_stale_minutes") * 60
+        if await redis.set(key, "1", nx=True, ex=seconds):
+            return True, key
+        return False, None
+    except Exception as e:
+        logger.warning(f"could not claim the confirmation (going on without): {e}")
+        return True, None
+
+
+async def _turn_numbers(phone: str) -> tuple[dict | None, dict | None]:
+    """(the person, their organisation's settings) for the numbers that govern the turn. Never
+    raises: an unknown person, or a database that cannot be reached, gets the built-in numbers."""
+    try:
+        user = await resolve_identity(phone)
+        if not user:
+            return None, None
+        return user, await config_store.org_settings(user["source_key"], user["org_id"])
+    except Exception as e:
+        logger.debug(f"no settings for the turn of {phone}: {e}")
+        return None, None
+
+
+async def _tell_busy(phone: str, user: dict | None) -> None:
+    try:
+        source_key = user["source_key"] if user else await _channel_source_key(phone)
+        await send_text(phone, await say(source_key, "draft.busy"))
+    except Exception as e:
+        logger.warning(f"could not tell {phone} to wait: {e}")
 
 
 async def handle_message(
@@ -427,11 +550,19 @@ async def handle_message(
     msg_type: str = "text",
     attachments: list[str] | None = None,
 ):
-    """One incoming message. Photos and text can come in any order, so once the turn is done
-    any photo that is waiting is attached to the request the turn just opened."""
+    """One incoming message. A person's messages are handled one at a time (see
+    _one_turn_at_a_time). Photos and text can come in any order, so once the turn is done any photo
+    that is waiting is attached to the request the turn just opened."""
     _turn_user.set(None)
+    user, conf = (
+        (None, None) if _turn_held.get() == phone else await _turn_numbers(phone)
+    )
     try:
-        await _handle_message(phone, text, msg_type, attachments)
+        async with _one_turn_at_a_time(phone, conf) as has_turn:
+            if not has_turn:
+                await _tell_busy(phone, user)
+                return
+            await _handle_message(phone, text, msg_type, attachments)
     finally:
         user = _turn_user.get()
         if user is not None and not (attachments and not text.strip()):
@@ -1354,10 +1485,22 @@ async def _handle_message(
     if pending_action and pending_action.get("stage") == "awaiting_confirmation":
         intent = pending_action.get("intent_key") or "agent"
         if matches_vocab(text, vocab["confirm_words"], fillers):
+            claimed, claim_key = await _claim_confirmation(user, pending_action)
+            if not claimed:
+                # the same card was already confirmed (a retry or a double tap): do not run it twice
+                logger.warning(
+                    f"a second yes for the same request ({intent}) was ignored"
+                )
+                return
             try:
                 result = await execute_pending_action(pending_action, user, phone=phone)
             except Exception as e:
                 logger.error(f"execute_pending_action error: {e}", exc_info=True)
+                if claim_key:  # nothing was saved: the person may say yes again
+                    try:
+                        await get_redis().delete(claim_key)
+                    except Exception:
+                        logger.debug("could not give the claim back")
                 oops = await say(user["source_key"], "error.document")
                 await send_text(phone, oops)
                 await _audit_turn(

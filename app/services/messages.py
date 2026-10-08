@@ -664,6 +664,13 @@ _MESSAGES = [
         "❌ Something went wrong creating the document. Please try again.",
     ),
     Msg(
+        "draft.busy",
+        "draft",
+        "Still busy with the last message",
+        "A second message arrives while the person's previous one is still being answered, and the wait ran out.",
+        "⏳ One moment, I'm still working on your last message. Please send this again in a few seconds.",
+    ),
+    Msg(
         "action.completed",
         "draft",
         "Done (no message of its own)",

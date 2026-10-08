@@ -58,6 +58,20 @@ GROUPS: list[dict[str, Any]] = [
             },
             {
                 "section": "limits",
+                "key": "turn_wait_seconds",
+                "label": "A second message waits for the first for",
+                "unit": "seconds",
+                "help": "Someone sends another message before the chat bot has answered the last one. It waits this long for the first to finish, then asks them to send it again.",
+            },
+            {
+                "section": "limits",
+                "key": "turn_lock_seconds",
+                "label": "Stop waiting on a stuck answer after",
+                "unit": "seconds",
+                "help": "A safety net: if an answer never finishes (a crash), the next message is let through after this long.",
+            },
+            {
+                "section": "limits",
                 "key": "reprompt_max",
                 "label": "Ask again at most",
                 "unit": "times",

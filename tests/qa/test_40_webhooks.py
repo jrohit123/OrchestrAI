@@ -10,7 +10,7 @@ import uuid
 import httpx
 import pytest
 
-from tests.qa.harness import _patch, needs_qa, qa_run
+from tests.qa.harness import TELEGRAM_TEST_SECRET, _patch, needs_qa, qa_run
 from tests.qa.qa_helpers import phone_of
 
 
@@ -295,7 +295,10 @@ def tg_update(chat: int, text: str, key: str = "message") -> dict:
     }
 
 
-async def tg_raw(client: httpx.AsyncClient, update: dict, secret: str | None = None):
+async def tg_raw(
+    client: httpx.AsyncClient, update: dict, secret: str | None = TELEGRAM_TEST_SECRET
+):
+    """Post a Telegram update the way Telegram does: with the webhook secret (secret=None sends none)."""
     headers = {"Content-Type": "application/json"}
     if secret is not None:
         headers["X-Telegram-Bot-Api-Secret-Token"] = secret
