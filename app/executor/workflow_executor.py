@@ -182,7 +182,7 @@ async def handle_approval_response(
             nxt.get("role"), org_id, user["source_key"]
         )
 
-        next_row = await execute(
+        next_row = await fetch_one(
             """
             INSERT INTO pending_approvals
             (org_id, requester_id, approver_role, intent_key, context, status, gate_id, level)
@@ -198,7 +198,7 @@ async def handle_approval_response(
             nxt.get("level"),
             source_key=user["source_key"],
         )
-        next_approval_id = next_row[0]["id"]
+        next_approval_id = next_row["id"]
 
         await send_text(phone, await say(user["source_key"], "approval.escalated"))
         if next_approver:

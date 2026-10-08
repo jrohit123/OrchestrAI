@@ -26,14 +26,9 @@ def bug(ident: str, why: str = ""):
 
 
 async def start_big_request(
-    w, title: str, amount: int = 60000, who: str = "staff", fixed: bool = True
+    w, title: str, amount: int = 60000, who: str = "staff"
 ) -> str:
-    """The requester says yes to a request that needs approval; returns the id of the approval that was created.
-
-    `fixed=True` applies the QA-032 work-around (see QAWorld.use_returning_fix) so that the approval is asked for and
-    the test can get to the bug it is about."""
-    if fixed:
-        w.use_returning_fix()
+    """The requester says yes to a request that needs approval; returns the id of the approval that was created."""
     await w.login(who)
     await w.make_pending(who, "qa_note_big", {"title": title, "amount": amount})
     await w.say(phone_of(w, who), "yes")
@@ -218,10 +213,6 @@ def test_D_control_an_approval_is_asked_for_and_one_tap_runs_the_action_once():
 
 
 @needs_qa
-@bug(
-    "QA-032",
-    "the approval gate crashes after it saves the approval: db.execute returns a status string, the code reads rows from it",
-)
 def test_D27_the_approval_gate_asks_the_approver_and_tells_the_requester_it_was_sent():
     async def scenario(w):
         await w.login("staff")
@@ -310,7 +301,6 @@ def test_D17_a_request_with_no_approver_is_not_reported_as_sent(how):
             "UPDATE users SET is_active = false WHERE phone = $1",
             phone_of(w, "approver"),
         )
-        w.use_returning_fix()
         await w.login("staff")
         await w.make_pending(
             "staff", "qa_note_big", {"title": "no-approver", "amount": 60000}

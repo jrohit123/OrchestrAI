@@ -32,7 +32,7 @@ needed to actually use this.
 import json
 import re
 
-from app.db import execute, fetch_all, fetch_one
+from app.db import fetch_all, fetch_one
 from app.logging_config import bind_context, get_context_logger
 from app.services.case_ops import CASE_PRIMITIVES
 from app.services.json_utils import parse_jsonb as _parse_jsonb
@@ -920,7 +920,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
         approver.get("role_name") if approver else "approver"
     )
 
-    approval_row = await execute(
+    approval_row = await fetch_one(
         """
         INSERT INTO pending_approvals
         (org_id, requester_id, approver_role, intent_key, context, status, gate_id, level)
@@ -936,7 +936,7 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
         first["level"],
         source_key=ctx["source_key"],
     )
-    approval_id = approval_row[0]["id"]
+    approval_id = approval_row["id"]
 
     if approver:
         from app.services.messages import say

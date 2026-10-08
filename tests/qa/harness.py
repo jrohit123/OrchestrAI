@@ -328,26 +328,6 @@ class QAWorld:
             await set_session(session_id, session, ttl=480 * 60)
         return user
 
-    def use_returning_fix(self) -> None:
-        """Make `execute(... RETURNING ...)` hand back rows, the way the approval code expects (QA-032).
-
-        db.execute returns asyncpg's status text ("INSERT 0 1"), and the approval code then does
-        `approval_row[0]["id"]`, which raises TypeError. A test about some OTHER approval bug calls this so the
-        approval gets as far as the bug under test; the test for QA-032 itself does not call it."""
-        from app import db
-        from app.executor import workflow_executor
-        from app.services import step_interpreter
-
-        original = db.execute
-
-        async def execute_returning(query, *args, source_key):
-            if "RETURNING" in query.upper():
-                return await db.fetch_all(query, *args, source_key=source_key)
-            return await original(query, *args, source_key=source_key)
-
-        _patch(self, step_interpreter, "execute", execute_returning)
-        _patch(self, workflow_executor, "execute", execute_returning)
-
     def slow_after(self, obj, name: str, delay: float, when=None) -> None:
         """Wrap the async function obj.name so that, after it has answered, it waits `delay` seconds.
 
