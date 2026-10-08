@@ -1,5 +1,5 @@
 """Styles for signing in (the sign-in, sign-up and forgot-password pages), the account menu, the
-super admin page and the admin's help card. New class names only (lgn-*, acct, sa-*, pr-help)."""
+super admin page and the admin's help card. New class names only (lgn-*, lost, acct, sa-*, pr-help)."""
 
 CSS = r"""
 /* ───── the sign-in pages ───── */
@@ -137,4 +137,9 @@ table.logt td:nth-child(6){order:6;margin-left:auto}
 .sa-pick{display:grid;gap:6px}
 .sa-pick .opt{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);cursor:pointer;text-align:left;width:100%}
 .sa-pick .opt:hover,.sa-pick .opt.on{border-color:var(--brand);background:var(--brand-soft)}
+/* the page for an address that names no organisation */
+.lost{min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg)}
+.lost .lgn-card{max-width:520px;display:grid;gap:14px}
+.lost h1{font-size:24px;letter-spacing:-.02em}
+.lost p{color:var(--ink-2)}
 """

@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 
 from app.admin_panel import router as admin_panel_router
 from app.admin_panel.auth import require_super
+from app.admin_panel.pages import PANEL_HEADERS
 from app.db import close_db, get_pool, init_db
 from app.logging_config import bind_context, get_context_logger, setup_logging
 from app.redis_client import close_redis, get_redis, init_redis
@@ -45,6 +46,16 @@ async def add_correlation_id(request: Request, call_next):
 
     response = await call_next(request)
     response.headers["X-Request-ID"] = correlation_id
+    return response
+
+
+@app.middleware("http")
+async def add_panel_headers(request: Request, call_next):
+    """The dashboard's safety headers (see PANEL_HEADERS) on everything under /admin."""
+    response = await call_next(request)
+    if request.url.path.startswith("/admin"):
+        for name, value in PANEL_HEADERS.items():
+            response.headers.setdefault(name, value)
     return response
 
 
