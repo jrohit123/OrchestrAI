@@ -315,10 +315,6 @@ def test_D22_the_reminder_comes_just_after_the_threshold_and_not_before():
 
 
 @needs_qa
-@bug(
-    "QA-011",
-    "a failed send ends the whole pass: the first case is repeated every minute and the next case never gets its reminder",
-)
 def test_H05_one_reminder_that_cannot_be_sent_does_not_block_or_repeat_the_others():
     async def scenario(w):
         from app.scheduler.jobs import run_case_reminders
@@ -344,10 +340,6 @@ def test_H05_one_reminder_that_cannot_be_sent_does_not_block_or_repeat_the_other
 
 
 @needs_qa
-@bug(
-    "QA-011",
-    "a template with an unknown placeholder raises KeyError, which ends the pass for every case",
-)
 def test_H05b_a_bad_message_template_does_not_stop_the_pass():
     async def scenario(w):
         from app.scheduler.jobs import run_case_reminders

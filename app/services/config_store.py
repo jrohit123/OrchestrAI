@@ -47,6 +47,11 @@ LIMITS: dict[str, tuple[int, int, int]] = {
     ),  # an unanswered "yes to save?" is dropped after this
     "reprompt_max": (3, 1, 10),  # how often the assistant re-asks before starting over
     "photo_max": (5, 1, 20),  # photos kept on one request
+    "reminder_max_failures": (
+        3,
+        1,
+        20,
+    ),  # passes in which nobody could be reached before a case reminder is given up
     "photo_hold_minutes": (
         15,
         1,

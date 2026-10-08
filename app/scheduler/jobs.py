@@ -16,6 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.db import execute, fetch_all, fetch_one, routing_pool
 from app.logging_config import get_context_logger
 from app.scheduler.locks import run_if_free
+from app.services import config_store
 from app.services.cleanup import run_cleanup
 from app.services.messaging import send_text
 
@@ -285,6 +286,46 @@ async def run_case_reminders():
                 )
 
 
+# A case whose reminder could not reach anybody is tried again on the next pass, but not for ever.
+# case -> passes in which nobody could be reached (the limit is a setting: reminder_max_failures)
+_reminder_failures: dict[tuple, int] = {}
+_bad_templates_logged: set[tuple[str, str]] = set()
+
+
+class _BlankValues(dict):
+    """Values missing from a message template read as empty, and are remembered."""
+
+    def __init__(self, values: dict):
+        super().__init__(values)
+        self.missing: set[str] = set()
+
+    def __missing__(self, key):
+        self.missing.add(key)
+        return ""
+
+
+def _fill_reminder(template: str, vals: dict, label: str) -> str:
+    """The reminder text with the case's values in it. A template with an unknown {name} or a stray
+    brace must never stop the pass: the unknown part is left empty and the template is named in the
+    log, once."""
+    values = _BlankValues(vals)
+    problem = ""
+    try:
+        text = template.format_map(values)
+        if values.missing:
+            problem = (
+                f"uses values that do not exist: {', '.join(sorted(values.missing))}"
+            )
+    except (ValueError, IndexError, KeyError, AttributeError) as e:
+        text, problem = template, f"cannot be filled in ({e})"
+    if problem and (label, template) not in _bad_templates_logged:
+        _bad_templates_logged.add((label, template))
+        logger.error(
+            f"the case reminder message '{label}' {problem}; it is sent with those parts empty"
+        )
+    return text
+
+
 async def _run_case_notification_pass(
     org_id: str,
     cfg: dict,
@@ -363,52 +404,109 @@ async def _run_case_notification_pass(
     """
     due = await fetch_all(sql, org_id, closed_values, source_key=source_key)
 
+    from app.services.telegram import TelegramRateLimitedError
+
+    max_failures = config_store.limit_of(
+        await config_store.org_settings(source_key, org_id), "reminder_max_failures"
+    )
+    live = {(source_key, table, sent_column, str(r["row_id"])) for r in due}
+    for stale in [
+        k
+        for k in _reminder_failures
+        if k[:3] == (source_key, table, sent_column) and k not in live
+    ]:
+        _reminder_failures.pop(stale, None)  # the case was closed or reminded meanwhile
+
     for row in due:
-        assignee = (
-            await fetch_one(
-                "SELECT phone FROM users WHERE id = $1",
-                row["assignee_id"],
-                source_key=source_key,
-            )
-            if row["assignee_id"]
-            else None
-        )
-        complainant = (
-            await fetch_one(
-                "SELECT phone FROM users WHERE id = $1",
-                row["complainant_id"],
-                source_key=source_key,
-            )
-            if row["complainant_id"]
-            else None
-        )
-
+        case_key = (source_key, table, sent_column, str(row["row_id"]))
         vals = dict(row)
-        assignee_tmpl = cfg.get(assignee_tmpl_key)
-        complainant_tmpl = cfg.get(complainant_tmpl_key)
+        sent_any = failed = paused = False
+        targets: list[tuple[str, str, str]] = []  # (phone, which message, its text)
+        try:
+            assignee = (
+                await fetch_one(
+                    "SELECT phone FROM users WHERE id = $1",
+                    row["assignee_id"],
+                    source_key=source_key,
+                )
+                if row["assignee_id"]
+                else None
+            )
+            complainant = (
+                await fetch_one(
+                    "SELECT phone FROM users WHERE id = $1",
+                    row["complainant_id"],
+                    source_key=source_key,
+                )
+                if row["complainant_id"]
+                else None
+            )
+            assignee_tmpl = cfg.get(assignee_tmpl_key)
+            complainant_tmpl = cfg.get(complainant_tmpl_key)
+            if assignee and assignee["phone"] and assignee_tmpl:
+                targets.append((assignee["phone"], assignee_tmpl_key, assignee_tmpl))
+            # Self-assigned case: assignee == complainant. Don't send the same
+            # person two near-identical messages — they already got the
+            # assignee-role one above.
+            same_person = (
+                assignee and complainant and assignee["phone"] == complainant["phone"]
+            )
+            if (
+                complainant
+                and complainant["phone"]
+                and complainant_tmpl
+                and not same_person
+            ):
+                targets.append(
+                    (complainant["phone"], complainant_tmpl_key, complainant_tmpl)
+                )
+        except Exception as e:
+            logger.error(
+                f"case reminder: could not look up the people of case {row['case_number']}: {e}"
+            )
+            failed = True
 
-        if assignee and assignee["phone"] and assignee_tmpl:
-            await send_text(assignee["phone"], assignee_tmpl.format(**vals))
+        # Each person is told in a try of its own: one who cannot be reached must not stop the others,
+        # and must not make the ones already told hear it again on the next pass.
+        for phone, label, template in targets:
+            try:
+                await send_text(phone, _fill_reminder(template, vals, label))
+                sent_any = True
+            except TelegramRateLimitedError as e:
+                logger.warning(
+                    f"case reminders paused: Telegram is limiting the bot (retry after {e.retry_after}s)"
+                )
+                paused = True
+                break
+            except Exception as e:
+                failed = True
+                logger.warning(
+                    f"case reminder for case {row['case_number']} could not be sent: {e}"
+                )
 
-        # Self-assigned case: assignee == complainant. Don't send the same
-        # person two near-identical messages — they already got the
-        # assignee-role one above.
-        same_person = (
-            assignee and complainant and assignee["phone"] == complainant["phone"]
-        )
-        if (
-            complainant
-            and complainant["phone"]
-            and complainant_tmpl
-            and not same_person
-        ):
-            await send_text(complainant["phone"], complainant_tmpl.format(**vals))
-
-        await execute(
-            f"UPDATE {table} SET {sent_column} = now() WHERE id = $1",
-            row["row_id"],
-            source_key=source_key,
-        )
+        if paused and not sent_any:
+            return  # nothing counted against the case; the next pass starts here again
+        if failed and not sent_any and not paused:
+            count = _reminder_failures.get(case_key, 0) + 1
+            if count < max_failures:
+                _reminder_failures[case_key] = count
+                continue  # nobody reached: try again on the next pass
+            logger.error(
+                f"case reminder for case {row['case_number']} could not be sent in {count} passes; giving up on it"
+            )
+        _reminder_failures.pop(case_key, None)
+        try:
+            await execute(
+                f"UPDATE {table} SET {sent_column} = now() WHERE id = $1",
+                row["row_id"],
+                source_key=source_key,
+            )
+        except Exception as e:
+            logger.error(
+                f"case reminder: could not mark case {row['case_number']} as sent: {e}"
+            )
+        if paused:
+            return
 
 
 # ── Schedule management helpers ───────────────────────────────────────────────

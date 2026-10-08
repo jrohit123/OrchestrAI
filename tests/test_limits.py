@@ -19,6 +19,7 @@ BUILT_IN = {
     "reprompt_max": 3,
     "photo_max": 5,
     "photo_hold_minutes": 15,
+    "reminder_max_failures": 3,  # new with the case-reminder fix (QA-011)
 }
 
 

@@ -87,6 +87,20 @@ GROUPS: list[dict[str, Any]] = [
         ],
     },
     {
+        "key": "reminders",
+        "label": "Case reminders",
+        "intro": "The reminders the chat bot sends about cases that are taking long.",
+        "fields": [
+            {
+                "section": "limits",
+                "key": "reminder_max_failures",
+                "label": "Give up on a reminder after",
+                "unit": "failed tries",
+                "help": "If nobody on a case can be reached (for example the person blocked the chat bot), it tries again every minute. After this many tries it stops, writes it in the log, and goes on with the other cases.",
+            },
+        ],
+    },
+    {
         "key": "retention",
         "label": "Keeping old records",
         "intro": "Every night at 03:30 the system clears out leftovers nobody needs. Each one is copied to a safe place first, and can be put back by whoever looks after the database.",
