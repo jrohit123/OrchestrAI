@@ -99,6 +99,30 @@ async def verify_webhook(request: Request):
     return Response(content="Forbidden", status_code=403)
 
 
+def _log_failed_deliveries(body: dict) -> None:
+    """WhatsApp accepts a message and tells us LATER, in a separate "statuses" report, whether it could
+    be delivered. After 24 hours without a message from the person it never is (Meta error 131047), and
+    until now we threw the report away, so a failed delivery looked like "completed successfully".
+    A failed report is now written to the log as an ERROR with Meta's error code, the message id and
+    only the last 4 digits of the recipient. Nothing else changes. Never raises."""
+    try:
+        for entry in body.get("entry") or []:
+            for change in entry.get("changes") or []:
+                for status in (change.get("value") or {}).get("statuses") or []:
+                    if status.get("status") != "failed":
+                        continue
+                    error = (status.get("errors") or [{}])[0]
+                    logger.error(
+                        "WhatsApp could not deliver a message: "
+                        f"code={error.get('code')} title={error.get('title')!r} "
+                        f"message_id={status.get('id')} to=...{str(status.get('recipient_id') or '')[-4:]}"
+                    )
+    except (
+        Exception
+    ) as e:  # a strange report must never stop the webhook from answering
+        logger.warning(f"could not read a WhatsApp delivery report: {e}")
+
+
 # ── INBOUND MESSAGES (POST) ───────────────────────────
 @router.post("/webhook/whatsapp")
 async def receive_message(request: Request):
@@ -108,6 +132,7 @@ async def receive_message(request: Request):
         return Response(status_code=403)
 
     body = json.loads(raw)
+    _log_failed_deliveries(body)
 
     try:
         entry = body["entry"][0]

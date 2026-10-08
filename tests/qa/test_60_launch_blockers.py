@@ -4,6 +4,7 @@ Each test fails before its fix and passes after it. They run on throwaway databa
 """
 
 import json
+import logging
 from pathlib import Path
 
 from tests.qa.harness import _patch, llm_message, needs_qa, qa_run
@@ -511,5 +512,99 @@ def test_G_running_the_hidden_column_settings_twice_changes_nothing():
         await _apply_hidden_column_settings(w)
         twice = await w.one("SELECT settings::text AS s FROM orgs")
         assert once["s"] == twice["s"]
+
+    qa_run(scenario)
+
+
+# ───────────────────────────── P0-7 · WhatsApp failures become visible (QA-012) ─────────────────────────────
+
+
+def _status_report(status: str, recipient: str = "919812345678", errors=None) -> dict:
+    report = {
+        "id": "wamid.FAILED1",
+        "status": status,
+        "timestamp": "1",
+        "recipient_id": recipient,
+    }
+    if errors:
+        report["errors"] = errors
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "1",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "statuses": [report],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@needs_qa
+def test_L_a_failed_delivery_report_is_logged_as_an_error(caplog):
+    async def scenario(w):
+        payload = _status_report(
+            "failed",
+            errors=[
+                {
+                    "code": 131047,
+                    "title": "Re-engagement message",
+                    "message": "More than 24 hours have passed",
+                }
+            ],
+        )
+        with caplog.at_level(logging.ERROR):
+            response = await w.wa_post(payload)
+        assert response.status_code == 200
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(
+            "131047" in m and "wamid.FAILED1" in m and "5678" in m for m in errors
+        ), errors
+        assert not any("919812345678" in m for m in errors), (
+            "the whole phone number was written to the log"
+        )
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_L_delivered_and_read_reports_are_not_errors(caplog):
+    async def scenario(w):
+        with caplog.at_level(logging.ERROR):
+            for status in ("sent", "delivered", "read"):
+                assert (await w.wa_post(_status_report(status))).status_code == 200
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_L_a_strange_report_does_not_stop_the_webhook(caplog):
+    async def scenario(w):
+        weird = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "statuses": [
+                                    {"status": "failed", "errors": "not a list"},
+                                    "x",
+                                    None,
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        assert (await w.wa_post(weird)).status_code == 200
 
     qa_run(scenario)
