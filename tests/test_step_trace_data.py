@@ -211,9 +211,19 @@ def test_the_message_of_a_step_is_the_same_text_the_real_step_sends(monkeypatch)
     async def send_text(to, text):
         sent.append((to, text))
 
-    from app.services import messaging
+    async def send_buttons(to, body, buttons):
+        # a WhatsApp person who wrote today gets the text with a "Got it" button
+        sent.append((to, body))
+
+    async def door_open(*args, **kwargs):
+        # (a person who did not write in the last 24 hours gets it by email: see reach.py)
+        return True
+
+    from app.services import messaging, reach
 
     monkeypatch.setattr(messaging, "send_text", send_text)
+    monkeypatch.setattr(messaging, "send_buttons", send_buttons)
+    monkeypatch.setattr(reach, "door_open", door_open)
     params = {"to": "$person.phone", "message_template": "Hello {case_no}"}
     ctx = rehearsal(person={"phone": "+919800001234"})
     ctx["dry_run"] = False
