@@ -357,6 +357,7 @@ KW = dict(
     org_id="11111111-1111-1111-1111-111111111111",
     org_scoped_tables={"users", "cases"},
     hidden_columns={"phone", "email", "id"},
+    private_columns={"phone", "email"},  # personal data: not anywhere in a query
 )
 
 
@@ -381,20 +382,14 @@ def test_G02_select_star_is_allowed_by_the_guard_and_left_to_the_caller_to_strip
     assert not refused("SELECT * FROM users")
 
 
-@bug("QA-008", "to_jsonb(u) returns the whole row, hidden columns included")
 def test_G03_a_whole_row_function_is_refused():
     assert refused("SELECT to_jsonb(u) FROM users u")
 
 
-@bug("QA-008", "row_to_json(users) returns the whole row")
 def test_G04_row_to_json_is_refused():
     assert refused("SELECT row_to_json(users) FROM users")
 
 
-@bug(
-    "QA-008",
-    "a yes/no question about a hidden column is allowed, so a number can be guessed digit by digit",
-)
 def test_G05_a_filter_on_a_hidden_column_is_refused():
     assert refused("SELECT name FROM users WHERE phone LIKE '+9190%'")
 
@@ -436,10 +431,6 @@ def test_G10_ways_of_writing_a_hidden_column_are_all_refused(sql):
     assert refused(sql), f"the guard let this through: {sql!r}"
 
 
-@bug(
-    "QA-008",
-    "an equality test on a hidden column is allowed: anyone can look a person up by phone number",
-)
 def test_G10b_looking_a_person_up_by_a_hidden_column_is_refused():
     assert refused("SELECT name FROM users WHERE phone = '+919000000001'")
 
@@ -459,3 +450,102 @@ def test_G_the_organisation_filter_is_always_built_in():
     out = prepared("SELECT name FROM users")
     assert "11111111-1111-1111-1111-111111111111" in out or "org_id" in out.lower()
     assert re.search(r"limit\s+\d+", out, re.IGNORECASE)
+
+
+# ───────────────────────────── P0-3 · personal data and whole rows (QA-008, QA-033) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT c.title FROM cases c JOIN users u ON u.phone = c.title",
+        "SELECT name FROM users ORDER BY phone",
+        "SELECT name FROM users GROUP BY name, email",
+        "SELECT name FROM users GROUP BY name HAVING max(phone) > '1'",
+        "SELECT name FROM users WHERE email IS NOT NULL",
+        "SELECT count(*) FROM users WHERE users.phone LIKE '9%'",
+        "SELECT name AS phone FROM users",
+        "SELECT name FROM users WHERE (users).phone = 'x'",
+    ],
+)
+def test_G13_personal_data_is_refused_in_a_join_a_sort_a_group_a_having_and_a_filter(
+    sql,
+):
+    assert refused(sql), sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT u FROM users u",
+        "SELECT users FROM users",
+        "SELECT to_json(u.*) FROM users u",
+        "SELECT row_to_json(u) FROM users u",
+        "SELECT jsonb_agg(u) FROM users u",
+        "SELECT json_agg(users) FROM users",
+        "SELECT (u.*)::text FROM users u",
+        "SELECT array_agg(u) FROM users u",
+        "WITH x AS (SELECT * FROM users) SELECT to_jsonb(x) FROM x",
+        "SELECT to_jsonb(q) FROM (SELECT * FROM users) q",
+    ],
+)
+def test_G14_a_whole_row_in_any_form_is_refused(sql):
+    assert refused(sql), sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT name FROM users WHERE name ILIKE '%asha%'",
+        "SELECT count(*) FROM users",
+        (
+            "SELECT c.case_number, c.title, u.name FROM cases c JOIN users u ON c.assigned_to_id = u.id "
+            "WHERE c.org_id = '11111111-1111-1111-1111-111111111111'"
+        ),
+        "SELECT u.* FROM users u",
+        "SELECT * FROM cases",
+        "SELECT status, count(*) FROM cases GROUP BY status ORDER BY count(*) DESC",
+        "SELECT coalesce((SELECT count(*) FROM cases), 0) AS n",
+        "SELECT name FROM users u JOIN cases c ON c.assigned_to_id = u.id",
+    ],
+)
+def test_G15_the_ordinary_questions_still_work(sql):
+    assert not refused(sql), sql
+
+
+RESIDENT_KW = dict(
+    allowed_tables={"residents"},
+    org_id="11111111-1111-1111-1111-111111111111",
+    org_scoped_tables={"residents"},
+    hidden_columns={"phone", "email"},
+    private_columns={
+        "brokers_name"
+    },  # the organisation's own list (orgs.settings -> ai_sql)
+    private_patterns=("*mobile*",),
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT first_owner_mobile FROM residents",
+        "SELECT name FROM residents WHERE first_owner_mobile LIKE '9%'",
+        "SELECT brokers_name FROM residents",
+        "SELECT name FROM residents ORDER BY brokers_name",
+        "SELECT tenant_mobile FROM residents",
+    ],
+)
+def test_G16_a_column_the_organisation_listed_is_refused_by_name_and_by_pattern(sql):
+    with pytest.raises(sql_guard.GuardError):
+        sql_guard.prepare(sql, **RESIDENT_KW)
+
+
+def test_G17_the_ordinary_columns_of_the_same_table_are_still_available():
+    out, _ = sql_guard.prepare("SELECT name, flat_no FROM residents", **RESIDENT_KW)
+    assert "flat_no" in out
+
+
+def test_G18_the_pattern_matcher_is_case_blind_and_ignores_empty_patterns():
+    is_private = sql_guard.private_matcher(["Brokers_Name"], ["*Mobile*", "", "  "])
+    assert is_private("BROKERS_NAME") and is_private("First_Owner_MOBILE")
+    assert not is_private("name") and not is_private("")

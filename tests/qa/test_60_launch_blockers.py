@@ -4,6 +4,7 @@ Each test fails before its fix and passes after it. They run on throwaway databa
 """
 
 import json
+from pathlib import Path
 
 from tests.qa.harness import _patch, llm_message, needs_qa, qa_run
 from tests.qa.qa_helpers import notes, open_drafts, phone_of
@@ -407,5 +408,108 @@ def test_C21_a_second_yes_for_a_card_that_was_already_claimed_is_not_run_again()
         assert await notes(w, "claimed-once") == 0, (
             "a second yes ran a card that was already being saved"
         )
+
+    qa_run(scenario)
+
+
+# ───────────────────────────── P0-3 · the bot must not leak personal data (QA-008, QA-033) ─────────────────────────────
+
+MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+HIDDEN_COLUMNS_SQL = [
+    "core/core-0014_hidden_columns.sql",
+    "features/housing/housing-0005_hidden_columns.sql",
+]
+
+
+async def _apply_hidden_column_settings(w):
+    for name in HIDDEN_COLUMNS_SQL:
+        await w.run((MIGRATIONS / name).read_text(encoding="utf-8"))
+
+
+async def _admin_who_reads(w, tables):
+    user = await w.user("admin")
+    user["readable_tables"] = list(tables)
+    return user
+
+
+async def _ask(w, user, sql: str) -> str:
+    from app.services import agent
+
+    return await agent._execute_tool(
+        "query_database", {"sql": sql, "params": []}, user, user["phone"]
+    )
+
+
+@needs_qa
+def test_G_owner_cannot_read_resident_mobile_numbers():
+    async def scenario(w):
+        await _apply_hidden_column_settings(w)
+        await w.run(
+            "INSERT INTO residents (org_id, wing, flat_no, residential_status, brokers_name, first_owner_name, "
+            "first_owner_mobile, name) VALUES ($1, 'A', 'A-101', 'tenant', 'Test Broker', 'Test Owner', "
+            "'+919000099999', 'Test Resident')",
+            w.ids.org_id,
+        )
+        user = await _admin_who_reads(w, ["residents"])
+        assert "Query blocked" in await _ask(
+            w, user, "SELECT first_owner_mobile FROM residents"
+        )
+        assert "Query blocked" in await _ask(
+            w,
+            user,
+            "SELECT name FROM residents WHERE first_owner_mobile = '+919000099999'",
+        )
+        assert "Query blocked" in await _ask(
+            w, user, "SELECT brokers_name FROM residents"
+        )
+        everything = await _ask(w, user, "SELECT * FROM residents")
+        assert "Test Resident" in everything, everything[
+            :300
+        ]  # the ordinary columns still answer
+        assert "+919000099999" not in everything and "Test Broker" not in everything, (
+            everything[:300]
+        )
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_G_the_hidden_column_settings_never_overwrite_the_organisations_own_lists_and_never_replace_the_minimum():
+    async def scenario(w):
+        await w.run(
+            "UPDATE orgs SET settings = settings || $1::jsonb",
+            json.dumps(
+                {"ai_sql": {"enabled": True, "hidden_column_patterns": ["*custom*"]}}
+            ),
+        )
+        await _apply_hidden_column_settings(w)
+        row = await w.one("SELECT settings -> 'ai_sql' AS cfg FROM orgs")
+        cfg = json.loads(row["cfg"]) if isinstance(row["cfg"], str) else row["cfg"]
+        assert cfg["hidden_column_patterns"] == ["*custom*"], (
+            "the organisation's own list was overwritten"
+        )
+        assert cfg["enabled"] is True
+        assert cfg["hidden_columns"] == [
+            "first_owner_mobile",
+            "brokers_name",
+        ]  # the missing list was added
+        user = await _admin_who_reads(w, ["users"])
+        # their list does not cover phone numbers, the built-in minimum still does
+        assert "Query blocked" in await _ask(w, user, "SELECT phone FROM users")
+        assert "Query blocked" in await _ask(
+            w, user, "SELECT name FROM users WHERE phone = '+919000000002'"
+        )
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_G_running_the_hidden_column_settings_twice_changes_nothing():
+    async def scenario(w):
+        await _apply_hidden_column_settings(w)
+        once = await w.one("SELECT settings::text AS s FROM orgs")
+        await _apply_hidden_column_settings(w)
+        twice = await w.one("SELECT settings::text AS s FROM orgs")
+        assert once["s"] == twice["s"]
 
     qa_run(scenario)

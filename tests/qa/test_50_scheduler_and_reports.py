@@ -382,10 +382,6 @@ def test_G_control_the_ai_sql_tool_answers_a_plain_question_and_blocks_a_hidden_
 
 
 @needs_qa
-@bug(
-    "QA-008",
-    "a whole-row function returns phone and email inside one JSON value, and the caller only strips columns by name",
-)
 @pytest.mark.parametrize(
     "sql",
     [
@@ -403,10 +399,6 @@ def test_G03_the_ai_sql_tool_never_returns_a_phone_number_or_an_e_mail(sql):
 
 
 @needs_qa
-@bug(
-    "QA-008",
-    "an equality filter on a hidden column is allowed, so a person can be looked up by phone number",
-)
 def test_G05_the_ai_sql_tool_cannot_find_a_person_by_phone_number():
     async def scenario(w):
         user = await sql_user(w, ["users", "cases"])

@@ -12,6 +12,11 @@ What prepare() guarantees about the SQL it returns:
   * no table function, no table from another schema
   * no dangerous function (pg_*, set_config, dblink, nextval, ...)
   * no hidden column (ids, phone, email, ...) in anything it returns
+  * no private column (personal data: phone, email, mobile numbers, ...) anywhere in the query, not
+    in a filter, join, sort or group either: a yes/no question about it would let a number be found
+    out one digit at a time
+  * no whole row: to_jsonb(u), row_to_json(users), json_agg(u), SELECT u FROM users u, or a * inside
+    a function would carry every column, hidden ones included, in one value
   * every table that has an org_id column is replaced by that table filtered to this
     organisation, so the filter no longer depends on the model writing it
   * at most MAX_ROWS rows
@@ -20,6 +25,7 @@ The caller still runs it in a read-only transaction with a time limit (db.fetch_
 so even a mistake here cannot change data or run for long.
 """
 
+import fnmatch
 import logging
 import time
 
@@ -120,6 +126,57 @@ def _own_columns(projection):
                     stack.append(c)
 
 
+def private_matcher(names=(), patterns=()):
+    """A function that says whether a column name is private: one of `names`, or matching one of the
+    `patterns` (shell-style, for example *phone* or password*). Not case sensitive."""
+    exact = {str(n).lower() for n in names or ()}
+    globs = [str(p).lower() for p in patterns or () if str(p).strip()]
+
+    def is_private(name: str) -> bool:
+        low = (name or "").lower()
+        return low in exact or any(fnmatch.fnmatchcase(low, g) for g in globs)
+
+    return is_private
+
+
+def _check_private(tree, is_private) -> None:
+    """Personal data may not appear anywhere in the query."""
+    for ident in tree.find_all(exp.Identifier):
+        if is_private(ident.name):
+            raise GuardError(
+                f"the column '{ident.name}' holds personal data and cannot be used in a query, "
+                "not even to filter or sort. Leave it out."
+            )
+
+
+def _check_whole_rows(tree, row_names: set[str]) -> None:
+    """A whole row carries every column, hidden ones too, in one value."""
+    message = (
+        "a whole row cannot be used ({what}): it carries columns that cannot be shown. "
+        "Name the columns you need."
+    )
+    for col in tree.find_all(exp.Column):
+        if (
+            not col.table
+            and not isinstance(col.this, exp.Star)
+            and col.name.lower() in row_names
+        ):
+            raise GuardError(message.format(what=f"'{col.name}' on its own"))
+    for star in tree.find_all(exp.Star):
+        parent = star.parent
+        if isinstance(parent, exp.Count):
+            continue  # count(*)
+        if isinstance(parent, exp.Select) and star in parent.expressions:
+            continue  # SELECT *
+        if (
+            isinstance(parent, exp.Column)
+            and isinstance(parent.parent, exp.Select)
+            and parent in parent.parent.expressions
+        ):
+            continue  # SELECT u.*
+        raise GuardError(message.format(what="a * used inside an expression"))
+
+
 def prepare(
     sql: str,
     *,
@@ -127,9 +184,17 @@ def prepare(
     org_id: str,
     org_scoped_tables,
     hidden_columns,
+    private_columns=(),
+    private_patterns=(),
     max_rows: int = MAX_ROWS,
 ):
-    """Return (safe_sql, tables_read) or raise GuardError."""
+    """Return (safe_sql, tables_read) or raise GuardError.
+
+    hidden_columns   never in what the query returns (ids and the like); they may still be used to
+                     join and filter, because every query needs org_id and the ids
+    private_columns  personal data, by name, and private_patterns by shell-style pattern
+                     (*phone*): not anywhere in the query at all
+    """
     try:
         statements = [s for s in sqlglot.parse(sql, read="postgres") if s is not None]
     except sqlglot.errors.SqlglotError as e:
@@ -154,6 +219,18 @@ def prepare(
         "user"
     }  # a bare USER returns the database login
     cte_names = {str(c.alias_or_name).lower() for c in tree.find_all(exp.CTE)}
+
+    # personal data and whole rows: the rules that need no knowledge of the schema
+    _check_private(tree, private_matcher(private_columns, private_patterns))
+    row_names = set(cte_names)
+    for t in tree.find_all(exp.Table):
+        row_names.add((t.name or "").lower())
+        if t.alias:
+            row_names.add(t.alias.lower())
+    for sub in tree.find_all(exp.Subquery):
+        if sub.alias:
+            row_names.add(sub.alias.lower())
+    _check_whole_rows(tree, row_names - {""})
 
     # every table it reads
     used: set[str] = set()
@@ -248,6 +325,49 @@ async def org_scoped_tables(source_key: str) -> set[str]:
     return found
 
 
+async def _ai_sql_settings(user: dict) -> dict:
+    """orgs.settings -> 'ai_sql' of the person's organisation (cached for 30 seconds)."""
+    key = f"{user['source_key']}:{user['org_id']}"
+    hit = _policy_cache.get(key)
+    if hit and time.monotonic() - hit[0] < 30:
+        return hit[1]
+    row = await fetch_one(
+        "SELECT settings FROM orgs WHERE id = $1",
+        user["org_id"],
+        source_key=user["source_key"],
+    )
+    settings = row["settings"] if row else None
+    if isinstance(settings, str):
+        import json
+
+        try:
+            settings = json.loads(settings)
+        except ValueError:
+            settings = {}
+    cfg = (settings or {}).get("ai_sql") or {}
+    _policy_cache[key] = (time.monotonic(), cfg)
+    return cfg
+
+
+async def private_columns_for(user: dict) -> tuple[frozenset[str], tuple[str, ...]]:
+    """The personal-data columns this organisation lists: (names, patterns).
+
+    orgs.settings -> 'ai_sql' = {"hidden_columns": ["brokers_name"],
+                                 "hidden_column_patterns": ["*phone*", "*mobile*", "*email*"]}
+    They are added to the few the code always hides (query_engine.PRIVATE_COLS), never instead of them."""
+    cfg = await _ai_sql_settings(user)
+
+    def texts(key):
+        value = cfg.get(key)
+        return (
+            [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+        )
+
+    return frozenset(n.lower() for n in texts("hidden_columns")), tuple(
+        p.lower() for p in texts("hidden_column_patterns")
+    )
+
+
 async def ai_sql_allowed(user: dict) -> tuple[bool, str]:
     """The per-organisation switch for AI-written SQL.
 
@@ -255,26 +375,7 @@ async def ai_sql_allowed(user: dict) -> tuple[bool, str]:
                                 {"roles": ["admin", "committee"]}  only those roles may use it
     Nothing configured means it stays on, as before.
     """
-    key = f"{user['source_key']}:{user['org_id']}"
-    hit = _policy_cache.get(key)
-    if hit and time.monotonic() - hit[0] < 30:
-        cfg = hit[1]
-    else:
-        row = await fetch_one(
-            "SELECT settings FROM orgs WHERE id = $1",
-            user["org_id"],
-            source_key=user["source_key"],
-        )
-        settings = row["settings"] if row else None
-        if isinstance(settings, str):
-            import json
-
-            try:
-                settings = json.loads(settings)
-            except ValueError:
-                settings = {}
-        cfg = (settings or {}).get("ai_sql") or {}
-        _policy_cache[key] = (time.monotonic(), cfg)
+    cfg = await _ai_sql_settings(user)
     if cfg.get("enabled") is False:
         return False, (
             "free-form questions are switched off for this organisation. "

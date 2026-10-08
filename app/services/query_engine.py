@@ -48,6 +48,12 @@ SENSITIVE_COLS = {
 }
 
 
+# Personal data: never returned AND never used anywhere in a query the AI writes (see sql_guard). The
+# organisation adds its own columns and patterns in orgs.settings -> ai_sql; this is only the minimum
+# that is always hidden, so a missing setting can never expose a phone number or an e-mail address.
+PRIVATE_COLS = {"phone", "email", "otp_hash"}
+
+
 def _safe(sql: str) -> tuple[bool, str]:
     upper = sql.upper()
     for p in _DANGEROUS:

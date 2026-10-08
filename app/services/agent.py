@@ -25,7 +25,11 @@ from app.services.prompt_loader import (
     reply_style,
     reply_style_built_in,
 )
-from app.services.query_engine import SENSITIVE_COLS, check_entity_records_access
+from app.services.query_engine import (
+    PRIVATE_COLS,
+    SENSITIVE_COLS,
+    check_entity_records_access,
+)
 from app.services.report_format import format_list
 
 logger = get_context_logger(__name__)
@@ -1336,6 +1340,9 @@ async def _execute_tool(
             return "ERROR: internal error resolving org — please try again"
         sql = re.sub(r":org_id\b", f"'{user['org_id']}'::uuid", sql)
 
+        private_names, private_patterns = await sql_guard.private_columns_for(user)
+        private_names = private_names | PRIVATE_COLS
+        is_private = sql_guard.private_matcher(private_names, private_patterns)
         try:
             sql, referenced_tables = sql_guard.prepare(
                 sql,
@@ -1343,6 +1350,8 @@ async def _execute_tool(
                 org_id=str(user["org_id"]),
                 org_scoped_tables=await sql_guard.org_scoped_tables(user["source_key"]),
                 hidden_columns=SENSITIVE_COLS,
+                private_columns=private_names,
+                private_patterns=private_patterns,
             )
         except sql_guard.GuardError as e:
             logger.warning(
@@ -1406,6 +1415,7 @@ async def _execute_tool(
                     k: v
                     for k, v in dict(r).items()
                     if k not in SENSITIVE_COLS
+                    and not is_private(k)
                     and not (
                         isinstance(v, str)
                         and len(v) > 30
