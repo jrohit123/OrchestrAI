@@ -23,7 +23,7 @@ from app.redis_client import (
     set_auth_token,
     set_session,
 )
-from app.services import config_store
+from app.services import config_store, reach
 from app.services.action_executor import execute_pending_action
 from app.services.agent import run_agent
 from app.services.identity import resolve_identity
@@ -133,6 +133,9 @@ async def receive_message(request: Request):
 
     body = json.loads(raw)
     _log_failed_deliveries(body)
+    await reach.handle_failed_reports(
+        body
+    )  # a send WhatsApp refused: keep it and email it
 
     try:
         entry = body["entry"][0]
@@ -158,6 +161,9 @@ async def receive_message(request: Request):
         # ── Normalize: WhatsApp omits +, DB stores with + ──
         if phone and not phone.startswith("+"):
             phone = "+" + phone
+
+        # The person wrote to the bot, of whatever kind: WhatsApp's 24-hour door is open again.
+        await reach.record_inbound(phone)
 
         # ── Extract text ──
         if msg_type == "text":
@@ -596,6 +602,17 @@ async def _tell_busy(phone: str, user: dict | None) -> None:
         logger.warning(f"could not tell {phone} to wait: {e}")
 
 
+async def _send_kept_messages(phone: str) -> None:
+    """The person just wrote, so WhatsApp's door is open: send what was kept for them."""
+    user = _turn_user.get()
+    if user is None or phone.startswith("tg:"):
+        return
+    try:
+        await reach.deliver_waiting(phone, user["source_key"], user["org_id"])
+    except Exception as e:
+        logger.warning(f"could not send the kept messages to {phone}: {e}")
+
+
 async def handle_message(
     phone: str,
     text: str,
@@ -615,6 +632,7 @@ async def handle_message(
                 await _tell_busy(phone, user)
                 return
             await _handle_message(phone, text, msg_type, attachments)
+            await _send_kept_messages(phone)
     finally:
         user = _turn_user.get()
         if user is not None and not (attachments and not text.strip()):
@@ -1104,6 +1122,21 @@ async def _handle_message(
     user = await add_party_permissions(user)
 
     _turn_user.set(user)
+
+    # A message that only opens the door: a tap on the "Got it" button, or the ready message the emailed
+    # link prepares. The kept messages are sent after this turn (see handle_message).
+    door = (
+        None
+        if phone.startswith("tg:")
+        else await reach.door_message(user["source_key"], text, msg_type)
+    )
+    if door:
+        if door == "ready" and not await reach.has_waiting(phone):
+            await send_text(
+                phone, await say(user["source_key"], "hold.nothing_waiting")
+            )
+        return
+
     if attachments:
         await _take_photos(user, phone, attachments, quiet=bool(text.strip()))
         if not text.strip():

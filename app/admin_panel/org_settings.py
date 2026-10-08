@@ -115,6 +115,34 @@ GROUPS: list[dict[str, Any]] = [
         ],
     },
     {
+        "key": "hold",
+        "label": "Messages WhatsApp cannot deliver",
+        "intro": "WhatsApp only lets the chat bot start a message to someone who wrote to it in the last 24 hours. When that is not so, the message is emailed to them and kept until they write to the chat bot.",
+        "fields": [
+            {
+                "section": "limits",
+                "key": "hold_days",
+                "label": "Keep a message for",
+                "unit": "days",
+                "help": "A message that could not be delivered waits this long for the person to write. Then it is dropped (they already have it by email).",
+            },
+            {
+                "section": "limits",
+                "key": "hold_max",
+                "label": "Keep at most",
+                "unit": "messages per person",
+                "help": "Beyond this the oldest kept message is dropped.",
+            },
+            {
+                "section": "limits",
+                "key": "door_margin_minutes",
+                "label": "Count the 24 hours with a spare of",
+                "unit": "minutes",
+                "help": "WhatsApp's 24 hours start when the person's message reaches WhatsApp, not us. This spare keeps us from trying right at the edge.",
+            },
+        ],
+    },
+    {
         "key": "retention",
         "label": "Keeping old records",
         "intro": "Every night at 03:30 the system clears out leftovers nobody needs. Each one is copied to a safe place first, and can be put back by whoever looks after the database.",

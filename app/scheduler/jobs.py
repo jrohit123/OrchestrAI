@@ -16,7 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.db import execute, fetch_all, fetch_one, routing_pool
 from app.logging_config import get_context_logger
 from app.scheduler.locks import run_if_free
-from app.services import config_store
+from app.services import config_store, reach
 from app.services.cleanup import run_cleanup
 from app.services.messaging import send_text
 
@@ -111,7 +111,7 @@ async def run_scheduled_reports():
         try:
             due = await fetch_all(
                 """
-                SELECT sr.*, u.name as user_name, u.role_id,
+                SELECT sr.*, u.name as user_name, u.role_id, u.email as user_email,
                        o.name as org_name, o.gst_rate,
                        r.permissions, r.name as role_name
                 FROM scheduled_reports sr
@@ -167,13 +167,30 @@ async def run_scheduled_reports():
                 "role_id": str(row["role_id"]),
                 "permissions": list(row["permissions"] or []),
                 "phone": phone,
-                "email": row.get("email") or "",
+                "email": row.get("email") or row.get("user_email") or "",
                 "org_active": True,
                 "is_active": True,
                 "source_key": row.get("source_key", "platform"),
             }
 
-            if delivery == "email":
+            # A WhatsApp report goes only to someone who wrote to the chat bot in the last 24 hours;
+            # otherwise WhatsApp accepts it and never delivers it. Then it goes by email instead, with
+            # the way to get the next ones on WhatsApp (see reach.py).
+            closed = False
+            if delivery in ("whatsapp", "both") and reach.is_whatsapp(phone):
+                org_settings = await config_store.org_settings(
+                    row.get("source_key"), row["org_id"]
+                )
+                closed = reach.feature_on(org_settings) and not await reach.door_open(
+                    phone, row.get("source_key"), row["org_id"], settings=org_settings
+                )
+            if closed:
+                user["force_send_via"] = "email"
+                user["email_note_html"] = await reach.footer_html(
+                    row.get("source_key"), org_settings
+                )
+                effective_query = query_text + " — email only"
+            elif delivery == "email":
                 effective_query = query_text + " — email only"
             elif delivery == "both":
                 effective_query = query_text + " — send to both whatsapp and email"
@@ -188,9 +205,16 @@ async def run_scheduled_reports():
                 pending_action=None,
             )
 
-            if delivery in ("whatsapp", "both"):
+            if delivery in ("whatsapp", "both") and not user.get("_report_emailed"):
                 header = f"🕐 *Scheduled: {label}*\n\n"
-                await send_text(phone, header + reply)
+                await reach.deliver_text(
+                    phone,
+                    header + reply,
+                    source_key=row.get("source_key"),
+                    org_id=row["org_id"],
+                    org_name=row.get("org_name") or "",
+                    replace=report_id,
+                )
 
             next_run = compute_next_run(dict(row), from_dt=now)
             await execute(

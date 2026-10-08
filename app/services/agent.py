@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from app.config import required
 from app.db import execute, fetch_all, fetch_all_readonly, fetch_one
 from app.logging_config import get_context_logger
-from app.services import config_store, field_reader, sql_guard
+from app.services import config_store, field_reader, reach, sql_guard
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.llm_router import chat_completion as _llm_chat
 from app.services.prompt_loader import (
@@ -1522,7 +1522,7 @@ async def _execute_tool(
         subtitle = tool_input.get("subtitle", "")
         doc_type = tool_input.get("doc_type", "report")
         extra_context = tool_input.get("extra_context", {})
-        send_via = tool_input.get("send_via", "whatsapp")
+        send_via = user.get("force_send_via") or tool_input.get("send_via", "whatsapp")
         forward_to = tool_input.get("forward_to")  # phone of another user to send to
         forward_name = tool_input.get("forward_to_name")  # their name for caption
 
@@ -1623,14 +1623,26 @@ async def _execute_tool(
             # Forward to another user (instead of or in addition to current user)
             if forward_to:
                 sender_name = user.get("user_name", "A colleague")
-                await send_document(
-                    to=forward_to,
-                    pdf_bytes=pdf_bytes,
-                    filename=safe_filename,
-                    caption=f"📨 *From {sender_name}:* 📄 {title}",
+                # WhatsApp only delivers a file the bot starts to someone who wrote to it in the last 24
+                # hours; otherwise it goes by email (see reach.py)
+                outcome = await reach.deliver_document(
+                    forward_to,
+                    pdf_bytes,
+                    safe_filename,
+                    f"📨 *From {sender_name}:* 📄 {title}",
+                    source_key=user["source_key"],
+                    org_id=user["org_id"],
+                    org_name=org_name,
+                    sender=user,
+                    title=title,
                 )
+                if outcome.get(
+                    "note"
+                ):  # the person asking is told it did not go on WhatsApp
+                    user.setdefault("_reach_notes", []).append(outcome["note"])
                 results.append(
-                    f"{_channel_label(forward_to)} → {forward_name or forward_to}"
+                    outcome["label"]
+                    or f"{_channel_label(forward_to)} → {forward_name or forward_to}"
                 )
 
             # Email delivery
@@ -1643,12 +1655,13 @@ async def _execute_tool(
                         to_email=user_email,
                         to_name=user.get("user_name", "User"),
                         subject=f"📄 {title} — {org_name}",
-                        body=f"Please find attached: <b>{title}</b>",
+                        body=f"Please find attached: <b>{title}</b>{user.get('email_note_html') or ''}",
                         pdf_bytes=pdf_bytes,
                         filename=safe_filename,
                         org_name=org_name,
                     )
                     if email_sent:
+                        user["_report_emailed"] = True
                         results.append(f"Email ({user_email})")
                     else:
                         results.append("Email (failed to send)")
@@ -1669,7 +1682,7 @@ async def _execute_tool(
         rows = tool_input.get("rows", [])
         title = tool_input.get("title", "Export")
         subtitle = tool_input.get("subtitle", "")
-        send_via = tool_input.get("send_via", "whatsapp")
+        send_via = user.get("force_send_via") or tool_input.get("send_via", "whatsapp")
         forward_to = tool_input.get("forward_to")
         forward_name = tool_input.get("forward_to_name")
 
@@ -1700,15 +1713,25 @@ async def _execute_tool(
 
             if forward_to:
                 sender_name = user.get("user_name", "A colleague")
-                await send_document(
-                    to=forward_to,
-                    pdf_bytes=excel_bytes,
-                    filename=safe_filename,
-                    caption=f"📨 *From {sender_name}:* 📊 {title}",
+                outcome = await reach.deliver_document(
+                    forward_to,
+                    excel_bytes,
+                    safe_filename,
+                    f"📨 *From {sender_name}:* 📊 {title}",
+                    source_key=user["source_key"],
+                    org_id=user["org_id"],
+                    org_name=user.get("org_name") or "",
+                    sender=user,
+                    title=title,
                     mime_type=xlsx_mime,
                 )
+                if outcome.get(
+                    "note"
+                ):  # the person asking is told it did not go on WhatsApp
+                    user.setdefault("_reach_notes", []).append(outcome["note"])
                 results.append(
-                    f"{_channel_label(forward_to)} → {forward_name or forward_to}"
+                    outcome["label"]
+                    or f"{_channel_label(forward_to)} → {forward_name or forward_to}"
                 )
 
             if send_via in ("email", "both"):
@@ -1726,12 +1749,13 @@ async def _execute_tool(
                         to_email=user_email,
                         to_name=user.get("user_name", "User"),
                         subject=f"📊 {title} — {org_name}",
-                        body=f"Please find attached: <b>{title}</b>",
+                        body=f"Please find attached: <b>{title}</b>{user.get('email_note_html') or ''}",
                         pdf_bytes=excel_bytes,
                         filename=safe_filename,
                         org_name=org_name,
                     )
                     if email_sent:
+                        user["_report_emailed"] = True
                         results.append(f"Email ({user_email})")
                     else:
                         results.append("Email (failed to send)")
@@ -3499,7 +3523,12 @@ async def run_agent(
                     # message was a redundant second message on top of the actual
                     # file for every single send.
                     history_to_save = _serialize_history(messages)
-                    return "", history_to_save, session_patch
+                    # (a file that could not go on WhatsApp to someone else says so; see reach.py)
+                    return (
+                        "\n".join(user.pop("_reach_notes", [])),
+                        history_to_save,
+                        session_patch,
+                    )
                 elif isinstance(result, str) and result.startswith(
                     "ERROR generating PDF:"
                 ):
@@ -3517,7 +3546,11 @@ async def run_agent(
             if tool_call.function.name == "generate_excel":
                 if isinstance(result, str) and result.startswith("EXCEL_SENT:"):
                     history_to_save = _serialize_history(messages)
-                    return "", history_to_save, session_patch
+                    return (
+                        "\n".join(user.pop("_reach_notes", [])),
+                        history_to_save,
+                        session_patch,
+                    )
                 elif isinstance(result, str) and result.startswith(
                     "ERROR generating Excel:"
                 ):

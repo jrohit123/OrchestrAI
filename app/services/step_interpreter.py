@@ -1464,13 +1464,26 @@ async def _op_notify_user(params: dict, ctx: dict) -> dict:
     `message_template` (from DB-stored step params) supports {field}
     placeholders drawn from fields/computed/generated/case context.
     """
-    from app.services.messaging import send_text
+    from app.services import reach
 
     to_phone = _resolve_path(ctx, params["to"])
     if not to_phone:
         return ctx  # no phone on file — skip silently, don't fail the workflow
 
-    await send_text(to_phone, _notify_message(params, ctx))
+    # WhatsApp only delivers a message the bot starts if the person wrote to it in the last 24
+    # hours. When they did not, reach keeps the message, emails it, and says so here, so the
+    # person who ran the flow is not told "Done" about a message nobody received.
+    user = ctx.get("user") or {}
+    outcome = await reach.deliver_text(
+        to_phone,
+        _notify_message(params, ctx),
+        source_key=ctx.get("source_key"),
+        org_id=ctx.get("org_id"),
+        org_name=user.get("org_name") or "",
+        sender=user,
+    )
+    if outcome.get("note"):
+        ctx.setdefault("_notes", []).append(outcome["note"])
     return ctx
 
 
@@ -2161,6 +2174,11 @@ async def _execute_steps(
         else:
             message = f"✅ {workflow.get('name', 'Action')} completed successfully."
 
+    notes = [
+        n for n in ctx.get("_notes", []) if n
+    ]  # what a step wants the person who asked to know
+    if notes:
+        message = message + "\n\n" + "\n".join(notes)
     ctx["_final_message"] = message
 
     # Send WhatsApp notification if notify.whatsapp wasn't in steps

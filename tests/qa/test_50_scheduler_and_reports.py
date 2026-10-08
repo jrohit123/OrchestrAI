@@ -62,8 +62,13 @@ async def add_report(
     minute=0,
     day_of_month=None,
     day_of_week=None,
+    open_door=True,
 ):
     user = await w.user(who)
+    if open_door:  # the person wrote to the chat bot today, so WhatsApp lets it write back (see test_70)
+        from app.services import reach
+
+        await reach.record_inbound(user["phone"])
     await w.run(
         """INSERT INTO scheduled_reports (org_id, user_id, phone, query_text, report_label, schedule_type, hour, minute, day_of_month, day_of_week, delivery, next_run_at, source_key)
            VALUES ($1, $2, $3, 'open cases by category', 'Open cases', $4, $5, $6, $7, $8, 'whatsapp', $9, $10)""",

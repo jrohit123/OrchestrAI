@@ -22,6 +22,9 @@ BUILT_IN = {
     "reminder_max_failures": 3,  # new with the case-reminder fix (QA-011)
     "turn_wait_seconds": 15,  # new with the one-message-at-a-time fix (QA-003, QA-021)
     "turn_lock_seconds": 90,
+    "hold_days": 3,  # new with the WhatsApp 24-hour fix (QA-012)
+    "hold_max": 5,
+    "door_margin_minutes": 60,
 }
 
 

@@ -67,6 +67,21 @@ LIMITS: dict[str, tuple[int, int, int]] = {
         1,
         120,
     ),  # a photo sent first waits this long for its request
+    "hold_days": (
+        3,
+        1,
+        30,
+    ),  # a message WhatsApp could not deliver is kept this long for the person to collect
+    "hold_max": (
+        5,
+        1,
+        20,
+    ),  # at most this many messages are kept for one person (the oldest go first)
+    "door_margin_minutes": (
+        60,
+        1,
+        600,
+    ),  # WhatsApp's 24 hours are counted with this much to spare
 }
 RETENTION: dict[str, tuple[int, int, int]] = {
     "drafts_days": (7, 1, 3650),  # finished drafts
