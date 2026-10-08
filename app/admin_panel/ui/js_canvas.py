@@ -124,11 +124,12 @@ function stepSub(s, f) {
     return pretty(tail.replace(/(^|_)(phone|id)$/, '') || parts[0]).toLowerCase();   // reporter_id -> reporter, valid stays valid
   };
   const table = p.table ? tableWords(p) : '';
+  const plain = k => pretty(String(k).replace(/(^|_)id$/, '')).toLowerCase() || 'id';   // assigned_to_id -> assigned to
   switch (s.op) {
-    case 'resolve_entity': return table + (p.match_column ? ' · by ' + pretty(p.match_column).toLowerCase() : p.match_columns ? ' · several columns' : '');
-    case 'db.update_row': { const keys = Object.keys(p.set || {}); return table + (keys.length ? ' · ' + keys.slice(0, 2).map(k => pretty(k).toLowerCase()).join(', ') : ''); }
+    case 'resolve_entity': return table + (p.match_column ? ' · by ' + plain(p.match_column) : p.match_columns ? ' · several columns' : '');
+    case 'db.update_row': { const keys = Object.keys(p.set || {}); return table + (keys.length ? ' · ' + keys.slice(0, 2).map(plain).join(', ') : ''); }
     case 'notify.user': return p.to ? 'to ' + (last(p.to) || '…') : '';
-    case 'derive_field': return p.field ? pretty(p.field).toLowerCase() : '';
+    case 'derive_field': return p.field ? plain(p.field) : '';
     case 'require_permission': return (p.any_of || []).join(' or ');
     default: return table;
   }

@@ -531,6 +531,10 @@ def _step_sub(step: dict) -> str:
         ({"op": "resolve_entity", "params": {"table": "sheet:PurchaseOrders", "match_column": "name"}}, "purchase orders · by name"),
         # the ordinary tables read as before
         ({"op": "db.update_row", "params": {"table": "cases", "set": {"status": "closed"}}}, "cases · status"),
+        # a column that links to something says what, not "id"
+        ({"op": "db.update_row", "params": {"table": "cases", "set": {"assigned_to_id": "$x", "category_id": "$y"}}}, "cases · assigned to, category"),
+        ({"op": "resolve_entity", "params": {"table": "users", "match_column": "user_id"}}, "users · by user"),
+        ({"op": "db.update_row", "params": {"table": "cases", "set": {"valid": "yes"}}}, "cases · valid"),
     ],
 )  # fmt: skip
 def test_the_words_under_a_step_are_plain(step, expected):
