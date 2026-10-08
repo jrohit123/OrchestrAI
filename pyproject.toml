@@ -25,3 +25,8 @@ ignore = [
               # sites should be made timezone-aware is a real review, not a
               # mechanical fix.
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# tests/qa builds throwaway worlds on purpose: it swallows clean-up errors, builds dicts with dict(),
+# and uses naive dates for "it is 10:00 in India on 31 January".
+"tests/qa/*" = ["S110", "C408", "DTZ001"]

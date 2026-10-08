@@ -5,6 +5,9 @@ Register this webhook with Telegram once after deploy:
     curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
          -d "url=https://<your-app>/webhook/telegram" \
          -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+
+The secret is REQUIRED. Without it anyone could post a forged update as any chat number, so every
+update is refused (503) until TELEGRAM_WEBHOOK_SECRET is set.
 """
 
 import hmac
@@ -22,13 +25,25 @@ router = APIRouter()
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
 
+def warn_if_secret_missing() -> None:
+    """Said once at start-up, so a missing secret shows in the logs before the first person writes."""
+    if not TELEGRAM_WEBHOOK_SECRET:
+        logger.error(
+            "TELEGRAM_WEBHOOK_SECRET is not set: every Telegram update will be refused until it is set "
+            "and the webhook is registered again with the same secret_token."
+        )
+
+
 @router.post("/webhook/telegram")
 async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str = Header(None),
 ):
-    # Verify secret token if configured
-    if TELEGRAM_WEBHOOK_SECRET and not hmac.compare_digest(
+    # Fail closed: with no secret configured anyone could post a forged update as any chat number.
+    if not TELEGRAM_WEBHOOK_SECRET:
+        logger.warning("Telegram update refused: TELEGRAM_WEBHOOK_SECRET is not set")
+        return Response(status_code=503)
+    if not hmac.compare_digest(
         x_telegram_bot_api_secret_token or "", TELEGRAM_WEBHOOK_SECRET
     ):
         return Response(status_code=403)

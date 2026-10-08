@@ -1,14 +1,17 @@
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from openai import AsyncOpenAI
 
 from app.admin_panel import router as admin_panel_router
+from app.admin_panel.auth import require_super
 from app.db import close_db, get_pool, init_db
 from app.logging_config import bind_context, get_context_logger, setup_logging
 from app.redis_client import close_redis, get_redis, init_redis
 from app.routers.telegram_webhook import router as telegram_router
+from app.routers.telegram_webhook import warn_if_secret_missing
 from app.routers.webhook import router as webhook_router
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 
@@ -18,6 +21,7 @@ logger = get_context_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    warn_if_secret_missing()
     await init_db()
     await init_redis()
     start_scheduler()
@@ -55,43 +59,8 @@ def root():
     return {"status": "OrchestrAI running"}
 
 
-@app.get("/debug/schema/{source_key}")
-async def debug_schema(source_key: str):
-    """Debug: show what tables are visible for a given source_key."""
-    try:
-        from app.db import fetch_all
-
-        rows = await fetch_all(
-            """
-            SELECT table_name, column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-            ORDER BY table_name, ordinal_position
-        """,
-            source_key=source_key,
-        )
-        tables: dict = {}
-        for r in rows:
-            tables.setdefault(r["table_name"], []).append(r["column_name"])
-        return {"source_key": source_key, "tables": tables}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/debug/clear-schema-cache")
-async def clear_schema_cache():
-    """Force-clear the in-memory schema cache so next request re-reads from DB."""
-    from app.services.agent import invalidate_schema_cache
-
-    invalidate_schema_cache()
-    return {"cleared": True}
-
-
-@app.get("/health")
-async def health():
-    """Health check with dependency status."""
-    status = {"status": "ok", "dependencies": {}}
-
+async def _check_app_parts(status: dict) -> None:
+    """Database, Redis and the scheduler: what the app itself needs. No AI service is called."""
     # Check database
     try:
         from app.db import get_default_source_key
@@ -103,7 +72,7 @@ async def health():
         status["dependencies"]["database"] = "ok"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        status["dependencies"]["database"] = f"error: {e!s}"
+        status["dependencies"]["database"] = "error"
         status["status"] = "degraded"
 
     # Check Redis
@@ -117,9 +86,27 @@ async def health():
             status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Redis health check failed: {e}")
-        status["dependencies"]["redis"] = f"error: {e!s}"
+        status["dependencies"]["redis"] = "error"
         status["status"] = "degraded"
 
+    # Check scheduler
+    try:
+        from app.scheduler.jobs import scheduler
+
+        if scheduler and scheduler.running:
+            status["dependencies"]["scheduler"] = "ok"
+        else:
+            status["dependencies"]["scheduler"] = "not_running"
+            status["status"] = "degraded"
+    except Exception as e:
+        logger.error(f"Scheduler health check failed: {e}")
+        status["dependencies"]["scheduler"] = "error"
+        status["status"] = "degraded"
+
+
+async def _check_model_parts(status: dict) -> None:
+    """The AI services and the state of the model ladder. These calls cost money, so only
+    /health/deep (super admin) makes them."""
     # Check OpenAI API
     try:
         client = AsyncOpenAI()
@@ -153,20 +140,6 @@ async def health():
         logger.error(f"Cerebras health check failed: {e}")
         status["dependencies"]["cerebras"] = f"error: {e!s}"
 
-    # Check scheduler
-    try:
-        from app.scheduler.jobs import scheduler
-
-        if scheduler and scheduler.running:
-            status["dependencies"]["scheduler"] = "ok"
-        else:
-            status["dependencies"]["scheduler"] = "not_running"
-            status["status"] = "degraded"
-    except Exception as e:
-        logger.error(f"Scheduler health check failed: {e}")
-        status["dependencies"]["scheduler"] = f"error: {e!s}"
-        status["status"] = "degraded"
-
     # Check LLM ladder state
     try:
         import time as _t
@@ -188,4 +161,20 @@ async def health():
         logger.error(f"LLM ladder health check failed: {e}")
         status["dependencies"]["llm_ladder"] = f"error: {e!s}"
 
+
+@app.get("/health")
+async def health():
+    """Quick, free and open: the app, its database, Redis and its scheduler. It makes no call to
+    any AI service (those cost money on every visit and anyone can open this page)."""
+    status = {"status": "ok", "dependencies": {}}
+    await _check_app_parts(status)
+    return status
+
+
+@app.get("/health/deep")
+async def health_deep(_account: Annotated[object, Depends(require_super)]):
+    """The same, plus the AI services and the model ladder. Only a signed-in super admin may ask."""
+    status = {"status": "ok", "dependencies": {}}
+    await _check_app_parts(status)
+    await _check_model_parts(status)
     return status
