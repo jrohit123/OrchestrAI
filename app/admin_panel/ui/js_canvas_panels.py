@@ -279,6 +279,15 @@ function drawEditor() {
   ui.undo = h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Undo the last change', 'data-tip': 'Undo the last change (Ctrl+Z)', onclick: undo }, icon('undo', 'sm'));
   ui.dirty = h('span', { class: 'badge warn' }, 'Unsaved');
   const power = h('span', null, d.is_active ? 'On' : 'Off');
+  // the on/off switch: it says what changes, and Undo puts it back the same way
+  const flowName = EW.work.name || d.name;
+  const flipActive = async (v, undone) => {
+    await api.post('/workflows/' + d.id + '/active', { is_active: v });
+    d.is_active = v; power.textContent = v ? 'On' : 'Off';
+    flowSwitch.querySelector('input').checked = v;
+    toast(switchNote({ ...EW.work, name: flowName, used_in: d.used_in }, v), 'ok', undone ? null : { label: 'Undo', run: () => flipActive(!v, true).catch(x => toast(x.message, 'bad')) });
+  };
+  const flowSwitch = switchEl(d.is_active, v => flipActive(v, false), false, flowName);
   CV.banner = h('div', { class: 'cvprob' });
   const wg = svgEl('g', {});
   const marker = (id, cls) => svgEl('marker', { id, viewBox: '0 0 10 10', refX: '8.5', refY: '5', markerWidth: '8', markerHeight: '8', orient: 'auto' }, svgEl('path', { d: 'M1 1 L9 5 L1 9z', class: cls }));
@@ -309,7 +318,7 @@ function drawEditor() {
     h('div', { class: 'titlechip' },
       h('a', { class: 'btn sm ghost icon', href: '#/workflows', 'aria-label': 'Back to all flows' }, icon('chevl', 'sm')), ui.name,
       badge(KIND_LABEL[EW.work.kind] || pretty(EW.work.kind || 'workflow'), EW.work.kind === 'block' ? 'teal' : 'violet'), ui.dirty,
-      h('label', { class: 'row small flat', style: { gap: '6px' } }, switchEl(d.is_active, async v => { await api.post('/workflows/' + d.id + '/active', { is_active: v }); d.is_active = v; power.textContent = v ? 'On' : 'Off'; }), power)),
+      h('label', { class: 'row small flat', style: { gap: '6px' } }, flowSwitch, power)),
     h('div', { class: 'actbar' }, ui.undo,
       h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore (this is version ' + d.version + ')', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { CV.panel = 'try'; renderInspector(); } }, icon('play', 'sm'), lbl('Try it')),

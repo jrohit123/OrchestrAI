@@ -1,6 +1,8 @@
 """Start-up facts for the page (which sections exist, allowed values), the lookup lists the
 pickers use, system status, and the response-time table."""
 
+import json
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -82,6 +84,35 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     return sections
 
 
+async def _labels(ctx) -> dict[str, str]:
+    """The organisation's own word for a stored value, from orgs.settings -> labels, for example
+    {"not_residing": "Moved out"}. The dashboard shows these instead of the stored value made readable.
+    They are a courtesy: a missing or odd setting, or a database without settings, gives nothing."""
+    try:
+        row = await fetch_one(
+            "SELECT settings FROM orgs WHERE id = $1",
+            ctx.org_id,
+            source_key=ctx.source_key,
+        )
+    except Exception as e:
+        logger.warning(f"labels not read: {e!r}")
+        return {}
+    settings = row["settings"] if row else None
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except ValueError:
+            return {}
+    found = settings.get("labels") if isinstance(settings, dict) else None
+    if not isinstance(found, dict):
+        return {}
+    return {
+        str(k): v.strip()
+        for k, v in list(found.items())[:200]
+        if isinstance(v, str) and v.strip() and len(v.strip()) <= 80
+    }
+
+
 @router.get("/bootstrap")
 async def bootstrap(ctx: CtxDep):
     org = await fetch_one(
@@ -108,6 +139,7 @@ async def bootstrap(ctx: CtxDep):
             "level": ctx.level,
         },
         "buttons": {"assign": await assign_state(ctx)},
+        "labels": await _labels(ctx),
     }
 
 

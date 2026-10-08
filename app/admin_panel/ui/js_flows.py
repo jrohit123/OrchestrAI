@@ -30,7 +30,12 @@ async function renderFlows(root, route) {
     try { await api.del('/workflows/' + w.id); toast('Deleted', 'ok'); again(); } catch (x) { toast(x.message, 'bad'); }
   } }, icon('trash', 'sm'), 'Delete');
   const power = w => {
-    const sw = switchEl(w.is_active, async v => { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; draw(); });
+    const flip = async (v, undone) => {
+      await api.post('/workflows/' + w.id + '/active', { is_active: v });
+      w.is_active = v; draw();
+      toast(switchNote(w, v), 'ok', undone ? null : { label: 'Undo', run: () => flip(!v, true).catch(x => toast(x.message, 'bad')) });
+    };
+    const sw = switchEl(w.is_active, v => flip(v, false), false, w.name);
     sw.addEventListener('click', e => e.stopPropagation());
     return sw;
   };
@@ -45,9 +50,10 @@ async function renderFlows(root, route) {
         : h('div', { class: 'row small' }, badge('Not used yet', 'warn'), h('span', { class: 'muted' }, 'Safe to switch off and delete.')))
       : who;
     const go_ = () => openWorkflow(w.id);
-    return h('article', { class: 'card fcard' + (w.is_active ? '' : ' off'), tabindex: 0, role: 'link', 'aria-label': 'Open ' + w.name, onclick: go_, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) go_(); } },
+    // the name is the link (the keyboard and screen readers use it); a click anywhere else on the card opens it too
+    return h('article', { class: 'card fcard' + (w.is_active ? '' : ' off'), onclick: e => { if (!e.target.closest('a,button,input,label')) go_(); } },
       h('div', { class: 'row between flat', style: { alignItems: 'flex-start' } },
-        h('div', { class: 'grow' }, h('div', { class: 'bold' }, w.name), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
+        h('div', { class: 'grow' }, h('h2', { class: 'fname' }, h('a', { href: '#/workflows?w=' + w.id }, w.name)), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
         h('label', { class: 'row small flat', style: { gap: '6px' } }, w.is_active ? 'On' : 'Off', power(w))),
       meta,
       h('div', { class: 'row small muted between' },
@@ -129,7 +135,7 @@ async function renderFlows(root, route) {
       h('div', { class: 'srch', style: { minWidth: '260px' } }, icon('search', 'sm'), search_()),
       h('div', { class: 'row' }, view)),
     body);
-  function search_() { return h('input', { class: 'input', type: 'search', placeholder: 'Search flows…', value: FV.text, oninput: debounce(e => { FV.text = e.target.value.trim().toLowerCase(); draw(); }, 200) }); }
+  function search_() { return h('input', { class: 'input', type: 'search', placeholder: 'Search flows…', 'aria-label': 'Search flows', value: FV.text, oninput: debounce(e => { FV.text = e.target.value.trim().toLowerCase(); draw(); }, 200) }); }
   drawStrip(); draw();
 }
 

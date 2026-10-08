@@ -12,7 +12,21 @@ const AI_OPS = ['ai_price_interpret'];
 const isAiStep = s => AI_OPS.includes(s.op);
 const OPERATORS = [['equals', 'is'], ['not_equals', 'is not'], ['in', 'is one of'], ['not_in', 'is not one of'], ['exists_true', 'has a value'], ['exists_false', 'is empty'], ['gt', 'is more than'], ['gte', 'is at least'], ['lt', 'is less than'], ['lte', 'is at most']];
 
-const tlabel = t => t ? pretty(String(t).replace(/^sheet:/, '')).toLowerCase() : 'record';
+const tlabel = t => t ? pretty(String(t).replace(/^sheet:/, '').replace(/([a-z])([A-Z])/g, '$1 $2')).toLowerCase() : 'record';
+// The generic records table ("entity_records") keeps many kinds side by side; the kind is named in the step's own values
+// (entity_type). Say "expense records" for it, never the table's name.
+const entityKind = p => {
+  for (const k of ['values', 'match_columns', 'set', 'where', 'filters']) {
+    const v = p[k];
+    if (v && typeof v === 'object' && typeof v.entity_type === 'string' && v.entity_type && !v.entity_type.startsWith('$')) return v.entity_type;
+  }
+  return typeof p.entity_type === 'string' ? p.entity_type : '';
+};
+const tableWords = p => {
+  if (p.table !== 'entity_records') return tlabel(p.table);
+  const kind = entityKind(p);
+  return kind ? pretty(kind).toLowerCase() + ' records' : 'records';
+};
 const clone = o => JSON.parse(JSON.stringify(o === undefined ? null : o));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // The forms leave empty optional settings behind (an empty "inputs" box, a blank list). They are
@@ -31,7 +45,7 @@ function fieldLabel(k) {
   const spec = EW && EW.work.entity_schema && EW.work.entity_schema[k];
   return (spec && spec.label) ? spec.label.toLowerCase() : pretty(k).toLowerCase();
 }
-const single = t => tlabel(t).replace(/ies$/, 'y').replace(/([^s])s$/, '$1');
+const single = (t, p) => (p && t === 'entity_records' ? tableWords(p) : tlabel(t)).replace(/ies$/, 'y').replace(/([^s])s$/, '$1');
 function vlabel(v) {
   if (v === null) return 'nothing';
   if (v === undefined || v === '') return '…';
@@ -68,15 +82,15 @@ function describeStep(s) {
   const p = s.params || {}, t = tlabel(p.table);
   const flow = ST.byKey[p.workflow];
   const by = {
-    resolve_entity: () => !isBlank(p.match_columns) ? 'Find the ' + single(p.table) + ' where ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' is ') : 'Find the ' + single(p.table) + ' whose ' + pretty(p.match_column || 'name').toLowerCase() + ' is ' + vlabel(p.name_from),
-    conflict_check: () => 'Stop if a ' + single(p.table) + ' already has ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' = '),
+    resolve_entity: () => !isBlank(p.match_columns) ? 'Find the ' + single(p.table, p) + ' where ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' is ') : 'Find the ' + single(p.table, p) + ' whose ' + pretty(p.match_column || 'name').toLowerCase() + ' is ' + vlabel(p.name_from),
+    conflict_check: () => 'Stop if a ' + single(p.table, p) + ' already has ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' = '),
     require_permission: () => 'Check the person is allowed' + ((p.any_of || []).length ? ' (' + p.any_of.join(' or ') + ')' : p.map ? ' (by ' + vlabel(p.from) + ')' : ''),
     derive_field: () => 'Work out ' + pretty(p.field || 'a value').toLowerCase(),
     compute: () => 'Calculate totals',
-    'db.insert_row': () => 'Save a new ' + single(p.table) + ': ' + pairsText(p.values, 3),
-    'db.update_row': () => 'Change the ' + single(p.table) + ': ' + pairsText(p.set, 3),
-    'db.upsert_row': () => 'Save or change a ' + single(p.table) + ': ' + pairsText(p.values, 3),
-    'db.delete_row': () => 'Remove a ' + single(p.table),
+    'db.insert_row': () => 'Save a new ' + single(p.table, p) + ': ' + pairsText(p.values, 3),
+    'db.update_row': () => 'Change the ' + single(p.table, p) + ': ' + pairsText(p.set, 3),
+    'db.upsert_row': () => 'Save or change a ' + single(p.table, p) + ': ' + pairsText(p.values, 3),
+    'db.delete_row': () => 'Remove a ' + single(p.table, p),
     'notify.user': () => 'Message ' + vlabel(p.to) + (p.message_template ? ': “' + p.message_template.replace(/\s+/g, ' ').slice(0, 70) + (p.message_template.length > 70 ? '…' : '') + '”' : ''),
     'notify.whatsapp': () => 'Send the confirmation',
     'pdf.generate': () => 'Make the PDF',

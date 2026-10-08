@@ -42,14 +42,14 @@ function errorBox(e, retry) {
 function setCrumbs(parts) {
   const el = document.getElementById('crumbs');
   if (!el) return;
-  fill(el, parts.flatMap((p, i) => [i ? h('span', { class: 'sep' }, '/') : null, p]));
+  fill(el, parts.flatMap((p, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true' }, '/') : null, p]));
 }
 function applyRail() { document.body.classList.toggle('rail', !!S.userRail || !!S.editing || (innerWidth <= 1000 && innerWidth > 700)); }
 
 // the one main button of a screen, in the top bar: { label, run, icon? }, or nothing
 function setTopAction(a) {
   const slot = document.getElementById('topact');
-  if (slot) fill(slot, a ? h('button', { class: 'btn primary', type: 'button', onclick: a.run }, icon(a.icon || 'plus', 'sm'), h('span', { class: 'tx' }, a.label)) : null);
+  if (slot) fill(slot, a ? h('button', { class: 'btn primary', type: 'button', 'aria-label': a.label, onclick: a.run }, icon(a.icon || 'plus', 'sm'), h('span', { class: 'tx' }, a.label)) : null);
 }
 async function renderSection(sec, r) {
   const mine = ++S.renderId;
@@ -184,7 +184,10 @@ function buildShell(app) {
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
     h('a', { class: 'btn ghost sm sa-back', href: '/admin' }, icon('chevl', 'sm'), isSuper() ? 'All organisations' : 'My organisations'),
     h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }), h('span', { id: 'topact' }));
-  fill(app, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main' }))));
+  // first thing a keyboard user reaches: skip the menu (15 more stops) and go to the page. It is a link to #main, but the address
+  // bar is the page's own router, so the click moves the focus instead of changing the address.
+  const skip = h('a', { class: 'skip', href: '#main', onclick: e => { e.preventDefault(); const m = document.getElementById('main'); m.focus(); m.scrollIntoView(); } }, 'Skip to main content');
+  fill(app, skip, h('div', { class: 'app' }, side, h('div', { class: 'col' }, top, h('main', { class: 'main', id: 'main', tabindex: -1 }))));
   window.addEventListener('resize', applyRail);
 }
 async function boot() {
@@ -199,6 +202,7 @@ async function boot() {
   if (!(isSuper() || me.orgs.some(o => o.key === ORG))) { showNoAccess(me); return; }
   try { S.boot = await api.get('/bootstrap'); }
   catch (e) { fill(app, h('div', { class: 'boot' }, 'The dashboard could not start: ' + e.message)); return; }
+  Object.assign(VALUE_LABELS, S.boot.labels || {});
   buildShell(app);
   window.addEventListener('hashchange', onRoute);
   refreshHints(true);

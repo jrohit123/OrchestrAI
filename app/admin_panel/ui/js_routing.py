@@ -56,8 +56,8 @@ async function renderRulesTab(root) {
   const [r, cats, lk] = await Promise.all([api.get('/rules'), api.get('/categories'), getLookups(true)]);
   const again = () => { clear(root); renderRulesTab(root); };
   // "who would get it?"
-  const tCat = sel(catOptions(lk, null), '');
-  const tPrio = sel([['', 'Any priority'], ...(S.boot.enums.priorities || []).map(p => [p, pretty(p)])], '');
+  const tCat = sel(catOptions(lk, null), '', { 'aria-label': 'Kind of complaint' });
+  const tPrio = sel([['', 'Any priority'], ...(S.boot.enums.priorities || []).map(p => [p, pretty(p)])], '', { 'aria-label': 'Priority' });
   const tCond = kvEditor({}, r.context_keys);
   const result = h('div', { class: 'quote', hidden: true });
   root.append(h('div', { class: 'card', style: { marginBottom: '14px' } }, h('div', { class: 'card-h' }, 'Try it: who would get a case like this?'),
@@ -72,7 +72,7 @@ async function renderRulesTab(root) {
   root.append(h('div', { class: 'muted', style: { marginBottom: '12px' } }, 'Rules are checked from the most specific to the most general. The first one that fits decides.'));
   if (!r.rows.length) root.append(h('div', { class: 'card' }, empty('No rules yet', 'Without a rule, new cases stay unassigned until someone assigns them.')));
   root.append(h('div', { class: 'stack' }, r.rows.map(x => h('div', { class: 'card rule' + (x.is_active ? '' : ' off') },
-    h('div', { class: 'row between' }, h('b', null, x.name), h('span', { class: 'row' }, h('span', { class: 'muted small' }, 'Specificity ' + x.score), h('label', { class: 'row small' }, 'On', switchEl(x.is_active, async v => { await api.post('/rules/' + x.id + '/active', { is_active: v }); x.is_active = v; again(); })))),
+    h('div', { class: 'row between' }, h('b', null, x.name), h('span', { class: 'row' }, h('span', { class: 'muted small' }, 'Specificity ' + x.score), h('label', { class: 'row small' }, 'On', switchEl(x.is_active, async v => { await api.post('/rules/' + x.id + '/active', { is_active: v }); x.is_active = v; again(); }, false, 'Rule on: ' + x.name)))),
     ruleSentence(x), x.target_minutes ? h('div', { class: 'muted small' }, 'Response target ' + minutes(x.target_minutes)) : null,
     h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => ruleModal(lk, x, r.context_keys, again) }, 'Edit'),
       h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmBox('Delete the rule “' + x.name + '”?', { ok: 'Delete', danger: true })) return; try { await api.del('/rules/' + x.id); toast('Deleted', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Delete'))))));

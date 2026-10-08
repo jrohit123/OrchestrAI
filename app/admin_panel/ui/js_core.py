@@ -44,7 +44,10 @@ const df = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', ye
 const asDate = v => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) ? new Date(v + 'T00:00:00') : new Date(v);
 const fmtDT = v => v ? dtf.format(asDate(v)) : '—';
 const fmtD = v => v ? df.format(asDate(v)) : '—';
-const pretty = s => s == null || s === '' ? '' : String(s).replace(/[_.]+/g, ' ').replace(/^./, c => c.toUpperCase());
+// The organisation's own words for stored values (orgs.settings -> labels, sent with the start-up data), for example
+// not_residing -> "Moved out". A value with no word of its own is made readable: not_residing -> "Not residing".
+const VALUE_LABELS = Object.create(null);
+const pretty = s => s == null || s === '' ? '' : (VALUE_LABELS[String(s)] || String(s).replace(/[_.]+/g, ' ').replace(/^./, c => c.toUpperCase()));
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'));
 function span(ms) {
   const m = Math.round(Math.abs(ms) / 60000);
@@ -125,7 +128,7 @@ function avatar(name) {
   let hue = 0;
   for (const c of String(name || '?')) hue = (hue * 31 + c.charCodeAt(0)) % 360;
   const initials = String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
-  return h('span', { class: 'avatar', style: { background: 'hsl(' + hue + ',45%,42%)' } }, initials || '?');
+  return h('span', { class: 'avatar', style: { background: 'hsl(' + hue + ',45%,32%)' } }, initials || '?');
 }
 function person(id, name, opts) {
   if (!name) return h('span', { class: 'muted' }, (opts && opts.none) || '—');
@@ -135,14 +138,29 @@ function person(id, name, opts) {
 }
 function empty(title, text) { return h('div', { class: 'empty' }, h('b', null, title), text || ''); }
 function notice(text, tone) { return h('div', { class: 'notice' + (tone ? ' ' + tone : '') }, text); }
-function field(label, control, hint) { return h('div', { class: 'field' }, h('label', null, label), control, hint ? h('div', { class: 'hint' }, hint) : null); }
+// A label is tied to its box (so a screen reader says "Email, edit box" and a click on the label goes to the box).
+// `control` is the box itself, or a wrapper that holds one (such as the person picker).
+let fieldSeq = 0;
+const boxOf = c => (c instanceof Element ? (c.matches('input,select,textarea') ? c : c.querySelector('input:not([type=hidden]),select,textarea')) : null);
+function field(label, control, hint) {
+  const box = boxOf(control), lab = h('label', null, label), note = hint ? h('div', { class: 'hint' }, hint) : null;
+  if (box) {
+    if (!box.id) box.id = 'f-' + (++fieldSeq);
+    lab.setAttribute('for', box.id);
+    if (note) { note.id = box.id + '-hint'; box.setAttribute('aria-describedby', note.id); }
+  }
+  return h('div', { class: 'field' }, lab, control, note);
+}
+// a box that has no visible label of its own (a search box, a date, a number in a table) gets its name from here
+const named = (box, name) => { box.setAttribute('aria-label', name); return box; };
 function sel(options, value, props) {
   const el = h('select', props, options.map(o => Array.isArray(o) ? h('option', { value: o[0] }, o[1]) : h('option', { value: o.value }, o.label)));
   el.value = value === undefined || value === null ? '' : String(value);
   return el;
 }
-function switchEl(checked, onChange, disabled) {
-  const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled });
+// `name` says what the switch is for ("File a complaint"); the switch itself says on or off
+function switchEl(checked, onChange, disabled, name) {
+  const input = h('input', { type: 'checkbox', role: 'switch', 'aria-label': name || null, checked: !!checked, disabled: !!disabled });
   input.addEventListener('change', async () => {
     input.disabled = true;
     try { await onChange(input.checked); }
@@ -178,16 +196,43 @@ function pager(total, page, size, onPage) {
 const copyBtn = text => h('button', { class: 'btn sm ghost', onclick: () => navigator.clipboard && navigator.clipboard.writeText(text).then(() => toast('Copied', 'ok')) }, 'Copy');
 
 // ───────────────────────── toasts, modals, drawer ─────────────────────────
-function toast(msg, tone, act) {         // act = { label, run }: one button inside the message, such as Undo
+// How long a message stays: an ordinary one a few seconds; one with Undo long enough to read it, find the button
+// and decide; an error until someone closes it (it may be the only thing that says what went wrong).
+const TOAST_MS = { plain: 3500, undo: 15000 };
+// The place the messages appear. It is on the page from the start: a screen reader only reads what is added to a
+// place it already knows about. role=status makes it say "Saved", "Deleted" and the like out loud.
+function toastBox() {
   let box = document.querySelector('.toasts');
-  if (!box) { box = h('div', { class: 'toasts' }); document.body.append(box); }
-  const t = h('div', { class: 'toast' + (tone ? ' ' + tone : '') + (act ? ' has-act' : '') }, msg);
+  if (!box) { box = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' }); document.body.append(box); }
+  return box;
+}
+function toast(msg, tone, act) {         // act = { label, run }: one button inside the message, such as Undo
+  const box = toastBox(), bad = tone === 'bad';
+  if (bad) box.querySelectorAll('.toast.bad').forEach(o => { if (o.dataset.msg === String(msg)) o.remove(); });   // the same error twice shows once
+  const t = h('div', { class: 'toast' + (tone ? ' ' + tone : '') + (act ? ' has-act' : ''), role: bad ? 'alert' : null, 'data-msg': String(msg) }, h('span', { class: 'tmsg' }, msg));
   if (act) {                                               // only the latest message keeps its button: Undo always means the latest change
     box.querySelectorAll('.toast.has-act').forEach(o => o.remove());
     t.append(h('button', { class: 'tact', type: 'button', onclick: () => { t.remove(); act.run(); } }, act.label));
   }
+  if (bad) {
+    t.append(h('button', { class: 'tclose', type: 'button', 'aria-label': 'Close this message', onclick: () => t.remove() }, '×'));
+    const errors = box.querySelectorAll('.toast.bad');     // a pile of errors helps nobody: keep the last four
+    if (errors.length >= 4) errors[0].remove();
+  }
   box.append(t);
-  setTimeout(() => t.remove(), act ? 9000 : tone === 'bad' ? 7000 : 3500);
+  if (!bad) setTimeout(() => t.remove(), act ? TOAST_MS.undo : TOAST_MS.plain);
+}
+toastBox();
+// What switching a flow or a building block on or off changes, in words (`w` carries its name, kind, /command and, for a block, who uses it)
+function switchNote(w, on) {
+  const name = '“' + (w.name || 'this flow') + '”';
+  if (w.kind === 'block') {
+    const n = (w.used_in || []).length;
+    return on ? 'Switched on ' + name + '. The flows that use it can run it again.'
+      : 'Switched off ' + name + '. ' + (n ? plural(n, 'flow') + ' that ' + (n === 1 ? 'uses' : 'use') + ' it will stop at that step.' : 'No flow uses it yet.');
+  }
+  const how = w.kind === 'case_action' ? 'its button on a case' : w.slash_command ? '/' + w.slash_command : 'it in the chat';
+  return on ? 'Switched on ' + name + '. People can use ' + how + ' again.' : 'Switched off ' + name + '. People can no longer use ' + how + '.';
 }
 const modalStack = [];
 function modal(o) {

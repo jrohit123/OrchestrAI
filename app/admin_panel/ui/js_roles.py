@@ -61,7 +61,7 @@ async function renderRoleEditor(root, route) {
       h('div', { class: 'card-b' }, isNew() ? h('div', { class: 'two' }, field('Start from', copy, 'Copies what that role can do. You can change anything after.'), field('Name of the role', name, 'People see this name next to theirs.')) : field('Name of the role', name),
         locked ? h('div', { class: 'notice', style: { marginTop: '12px' } }, icon('lock'), h('div', null, h('b', null, 'Built in. '), 'A database rule (' + pretty(r.built_in_by).toLowerCase() + ') moves people into and out of this role by its name. You can change what it can do, but not its name, and it cannot be deleted.')) : null));
     // 2. what they can do
-    const flowRow = f => h('div', { class: 'rl-perm' }, h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: x.flows.has(f.intent_key), onchange: e => { e.target.checked ? x.flows.add(f.intent_key) : x.flows.delete(f.intent_key); armGuard(); drawEdit(); } }), h('span')),
+    const flowRow = f => h('div', { class: 'rl-perm' }, h('label', { class: 'switch' }, h('input', { type: 'checkbox', role: 'switch', 'aria-label': f.name, checked: x.flows.has(f.intent_key), onchange: e => { e.target.checked ? x.flows.add(f.intent_key) : x.flows.delete(f.intent_key); armGuard(); drawEdit(); } }), h('span')),
       h('div', null, h('b', null, f.name), f.is_active ? null : [' ', badge('off')], f.description ? h('span', { class: 'muted small rl-desc' }, f.description) : null));
     const can = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What they can do', h('span', { class: 'muted small' }, 'Each line is a flow the chat bot offers them')),
       d.flows.length ? [d.flows.map(flowRow), x.flows.size ? null : h('div', { class: 'card-b muted small' }, 'This role cannot start anything yet.')] : empty('No flows yet', 'Make one on the Flows screen first.'));
@@ -72,14 +72,14 @@ async function renderRoleEditor(root, route) {
       by.length ? icon('lock', 'xs') : h('button', { class: 'x', type: 'button', 'aria-label': 'Remove ' + pretty(t), style: { fontSize: '16px', padding: '0 2px' }, onclick: () => { x.tables.delete(t); drawEdit(); } }, '×')); };
     const look = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What the chat bot may look up for them', h('span', { class: 'muted small' }, 'It never reads anything outside this list')),
       h('div', { class: 'card-b stack s8' }, chosen.length ? h('div', { class: 'chips' }, chosen.map(tableChip)) : h('span', { class: 'muted' }, 'Nothing yet.'),
-        spare.length ? sel([['', 'Add data…'], ...spare.map(t => [t, pretty(t)])], '', { onchange: e => { if (e.target.value) { x.tables.add(e.target.value); drawEdit(); } } }) : null,
+        spare.length ? sel([['', 'Add data…'], ...spare.map(t => [t, pretty(t)])], '', { 'aria-label': 'Add data the chat bot may look up', onchange: e => { if (e.target.value) { x.tables.add(e.target.value); drawEdit(); } } }) : null,
         r && r.entity_types.length ? h('div', { class: 'muted small' }, 'It also reads these kinds of records: ' + r.entity_types.join(', ') + '.') : null));
     // 4. approvals
     const max = h('input', { class: 'input', type: 'number', min: 0, step: 'any', value: x.max, placeholder: 'No limit', disabled: !x.approver, 'aria-label': 'Largest amount they can approve' });
     max.addEventListener('input', () => { x.max = max.value; paint(); });
     const approve = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Approvals'), h('div', { class: 'card-b stack s8' },
       h('div', { class: 'row between' }, h('span', null, h('b', null, 'Can approve things'), h('div', { class: 'muted small' }, 'Some flows wait for an approver, for example when an amount is large.')),
-        h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: x.approver, onchange: e => { x.approver = e.target.checked; if (!x.approver) x.max = ''; armGuard(); drawEdit(); } }), h('span'))),
+        h('label', { class: 'switch' }, h('input', { type: 'checkbox', role: 'switch', 'aria-label': 'Can approve things', checked: x.approver, onchange: e => { x.approver = e.target.checked; if (!x.approver) x.max = ''; armGuard(); drawEdit(); } }), h('span'))),
       h('div', { style: { maxWidth: '280px' } }, field('Largest amount they can approve (₹)', max, 'Leave empty for no limit.'))));
     // 5. people
     const people = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People with this role'), r && r.people.length

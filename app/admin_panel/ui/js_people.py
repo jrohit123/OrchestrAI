@@ -53,13 +53,13 @@ async function showPerson(id) {
     const mineRow = !isSuper() && S.me && p.email && p.email.toLowerCase() === S.me.email.toLowerCase();   // an admin cannot change their own role
     fill(dr.titleEl, p.name, h('div', { class: 'row', style: { marginTop: '6px' } }, badge(p.role || 'No role', 'brand'), p.is_active ? badge('Active', 'ok') : badge('Inactive'), p.reachable ? badge('Can be messaged', 'info') : badge('Cannot be messaged yet', 'warn')));
     // account
-    const role = sel([['', 'No role'], ...lk.roles.map(r => [r.id, r.name])], p.role_id || '');
+    const role = sel([['', 'No role'], ...lk.roles.map(r => [r.id, r.name])], p.role_id || '', { 'aria-label': 'Role' });
     if (mineRow) role.disabled = true;
     const saveRole = h('button', { class: 'btn sm primary', disabled: true, onclick: async e => { e.target.disabled = true; try { await api.patch('/people/' + id, { role_id: role.value }); toast('Role saved', 'ok'); reload(); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; } } }, 'Save role');
     role.addEventListener('change', () => { saveRole.disabled = !role.value || role.value === (p.role_id || ''); });
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Account'), h('div', { class: 'card-b stack' },
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Role'), role, saveRole, hasSection('access') ? h('a', { class: 'small', href: href('access', '', { role: p.role_id || '' }) }, 'What can this role do?') : (mineRow ? h('span', { class: 'muted small' }, 'Ask a super admin to change your own role.') : null)),
-      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Active'), isSuper() ? switchEl(p.is_active, async v => { await api.patch('/people/' + id, { is_active: v }); toast(v ? 'Switched on' : 'Switched off', 'ok'); reload(); }) : badge(p.is_active ? 'Active' : 'Inactive', p.is_active ? 'ok' : ''),
+      h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Active'), isSuper() ? switchEl(p.is_active, async v => { await api.patch('/people/' + id, { is_active: v }); toast(v ? 'Switched on' : 'Switched off', 'ok'); reload(); }, false, 'Active: ' + p.name) : badge(p.is_active ? 'Active' : 'Inactive', p.is_active ? 'ok' : ''),
         h('span', { class: 'muted small' }, 'Inactive people cannot use the chat bot and cannot be given cases.')),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Email'), p.email || '—'),
       dashboardAccess(p, reload),
@@ -70,10 +70,10 @@ async function showPerson(id) {
     // homes
     if (S.boot.caps.residents && d.homes.length && isSuper()) {
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Home'), h('div', { class: 'card-b stack' }, d.homes.map(x => {
-        const type = sel((lk.enums.resident_types || [x.residential_status]).map(v => [v, pretty(v)]), x.residential_status);
-        const stat = sel((lk.enums.resident_statuses || [x.status]).map(v => [v, pretty(v)]), x.status);
-        const wing = h('input', { type: 'text', value: x.wing || '', placeholder: 'Wing', style: { width: '90px' } });
-        const flat = h('input', { type: 'text', value: x.flat_no, placeholder: 'Flat', style: { width: '110px' } });
+        const type = sel((lk.enums.resident_types || [x.residential_status]).map(v => [v, pretty(v)]), x.residential_status, { 'aria-label': 'Kind of resident' });
+        const stat = sel((lk.enums.resident_statuses || [x.status]).map(v => [v, pretty(v)]), x.status, { 'aria-label': 'Status of the home' });
+        const wing = h('input', { type: 'text', value: x.wing || '', placeholder: 'Wing', 'aria-label': 'Wing', style: { width: '90px' } });
+        const flat = h('input', { type: 'text', value: x.flat_no, placeholder: 'Flat', 'aria-label': 'Flat', style: { width: '110px' } });
         return h('div', { class: 'stack', style: { paddingBottom: '10px', borderBottom: '1px solid var(--line)' } },
           h('div', { class: 'row' }, wing, flat, type, stat),
           h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: async e => {

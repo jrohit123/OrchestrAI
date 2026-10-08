@@ -117,12 +117,13 @@ function stepFacts(s, id) {
 function stepSub(s, f) {
   const p = s.params || {};
   if (f.blk) return 'Building block';
-  const last = v => {                                          // who a message goes to: the record it comes from, or the column without "phone"
+  const last = v => {                                          // who a message goes to: the person who asked, or the record it comes from (without "phone" or "id")
     if (typeof v !== 'string' || !v.startsWith('$')) return '';
-    const parts = v.slice(1).split('.'), tail = parts[parts.length - 1], who = tail.replace(/_?phone$/, '');
-    return pretty(who || parts[0]).toLowerCase();
+    const parts = v.slice(1).split('.'), tail = parts[parts.length - 1];
+    if (parts[0] === 'user') return 'the person who asked';
+    return pretty(tail.replace(/(^|_)(phone|id)$/, '') || parts[0]).toLowerCase();   // reporter_id -> reporter, valid stays valid
   };
-  const table = p.table ? tlabel(p.table) : '';
+  const table = p.table ? tableWords(p) : '';
   switch (s.op) {
     case 'resolve_entity': return table + (p.match_column ? ' · by ' + pretty(p.match_column).toLowerCase() : p.match_columns ? ' · several columns' : '');
     case 'db.update_row': { const keys = Object.keys(p.set || {}); return table + (keys.length ? ' · ' + keys.slice(0, 2).map(k => pretty(k).toLowerCase()).join(', ') : ''); }

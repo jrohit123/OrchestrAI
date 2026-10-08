@@ -17,7 +17,7 @@ function setRow(label, help, ...controls) { return h('div', { class: 'srow' }, h
 
 async function settingsOrgCard(info) {
   const lg = await api.get('/logo').catch(() => ({}));
-  const file = h('input', { type: 'file', accept: 'image/*' });
+  const file = h('input', { type: 'file', accept: 'image/*', 'aria-label': 'Choose a logo image' });
   const mark = h('span', { class: 'logo lg' }, lg.logo_url ? h('img', { src: lg.logo_url, alt: '' }) : (S.boot.org.name || '?')[0]);
   return setCard('org', 'Organisation',
     setRow('Name', 'Shown in the menu and on the PDFs your flows make.', h('b', null, info.org.name), S.boot.org.industry ? badge(pretty(S.boot.org.industry)) : null),
@@ -58,7 +58,7 @@ function numberRow(f) {
 }
 function settingsGroupCard(g, onSaved) {
   const rows = g.fields.map(numberRow);
-  const sw = g.key === 'retention' ? h('input', { type: 'checkbox', checked: g.enabled }) : null;
+  const sw = g.key === 'retention' ? h('input', { type: 'checkbox', role: 'switch', 'aria-label': 'Clear out leftovers every night', checked: g.enabled }) : null;
   const save = h('button', { class: 'btn primary', type: 'button', disabled: true }, 'Save');
   const refresh = () => {
     if (sw) rows.forEach(r => { r.disabled = !sw.checked; });

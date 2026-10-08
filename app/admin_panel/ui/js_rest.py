@@ -41,10 +41,10 @@ async function renderChats(root, route) {
   root.append(bar, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
   const first = await api.get('/chats', { user_id: q.user, page_size: 1 });
-  const who = sel([['', 'Everyone'], ...first.people.map(p => [p.id, p.name])], q.user || '', { onchange: e => update({ user: e.target.value }) });
-  const text = h('input', { type: 'search', placeholder: 'Search what was said…', value: q.q || '', style: { minWidth: '240px' } });
+  const who = sel([['', 'Everyone'], ...first.people.map(p => [p.id, p.name])], q.user || '', { 'aria-label': 'Person', onchange: e => update({ user: e.target.value }) });
+  const text = h('input', { type: 'search', placeholder: 'Search what was said…', 'aria-label': 'Search what was said', value: q.q || '', style: { minWidth: '240px' } });
   text.addEventListener('input', debounce(() => update({ q: text.value }), 300));
-  const from = h('input', { type: 'date', value: q.from || '', onchange: e => update({ from: e.target.value }) }), to = h('input', { type: 'date', value: q.to || '', onchange: e => update({ to: e.target.value }) });
+  const from = h('input', { type: 'date', 'aria-label': 'From date', value: q.from || '', onchange: e => update({ from: e.target.value }) }), to = h('input', { type: 'date', 'aria-label': 'To date', value: q.to || '', onchange: e => update({ to: e.target.value }) });
   bar.append(who, text, h('span', { class: 'row small muted' }, 'From', from, 'to', to));
   async function load() {
     if (mine !== S.renderId) return;
@@ -68,8 +68,8 @@ async function renderAll(root, route) {
   root.append(bar, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
   const first = await api.get('/activity', { page_size: 1 });
-  const who = sel([['', 'Everyone'], ...(first.users || []).map(u => [u.id, u.name])], q.user || '', { onchange: e => update({ user: e.target.value }) });
-  const text = h('input', { type: 'search', placeholder: 'Search…', value: q.q || '' });
+  const who = sel([['', 'Everyone'], ...(first.users || []).map(u => [u.id, u.name])], q.user || '', { 'aria-label': 'Person', onchange: e => update({ user: e.target.value }) });
+  const text = h('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search what the chat bot did', value: q.q || '' });
   text.addEventListener('input', debounce(() => update({ q: text.value }), 300));
   bar.append(who, text);
   async function load() {
@@ -97,8 +97,8 @@ async function renderChanges(root, route) {
   root.append(notice('Every change made from this dashboard is recorded here, with who made it.'), bar, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
   const first = await api.get('/events', { page_size: 1 });
-  const area = sel([['', 'Everything'], ...first.areas.map(a => [a, pretty(a)])], q.area || '', { onchange: e => update({ area: e.target.value }) });
-  const text = h('input', { type: 'search', placeholder: 'Search…', value: q.q || '' });
+  const area = sel([['', 'Everything'], ...first.areas.map(a => [a, pretty(a)])], q.area || '', { 'aria-label': 'Area', onchange: e => update({ area: e.target.value }) });
+  const text = h('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search the changes', value: q.q || '' });
   text.addEventListener('input', debounce(() => update({ q: text.value }), 300));
   bar.append(area, text);
   async function load() {
@@ -139,7 +139,7 @@ async function targetsCard() {
   // each box shows what its minutes mean ("≈ 8 h") underneath, and keeps it up to date as you type
   const nice = (input, out) => { const upd = () => { out.textContent = input.value !== '' ? '≈ ' + minutes(Number(input.value)) : ''; }; input.addEventListener('input', upd); upd(); return h('div', { class: 'tcell' }, input, out); };
   const inputs = rows.map(r => {
-    const tat = h('input', { type: 'number', min: 1, value: r.tat_minutes }), rem = h('input', { type: 'number', min: 0, value: r.reminder_threshold_minutes });
+    const tat = h('input', { type: 'number', min: 1, 'aria-label': pretty(r.priority) + ': target in minutes', value: r.tat_minutes }), rem = h('input', { type: 'number', min: 0, 'aria-label': pretty(r.priority) + ': remind after, in minutes', value: r.reminder_threshold_minutes });
     return { r, tat, rem, tatCell: nice(tat, h('span', { class: 'muted small' })), remCell: nice(rem, h('span', { class: 'muted small' })) };
   });
   const oddTimes = h('div');
