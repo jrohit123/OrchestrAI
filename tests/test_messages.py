@@ -397,10 +397,20 @@ def test_the_welcome_is_the_clients_own_when_it_wrote_one(chat, monkeypatch):
     assert chat.sent == ["Namaste! Send your email to begin."]
 
 
+def _self_registration(monkeypatch, roles):
+    """The roles the organisation lets a stranger take when she registers herself in the chat."""
+
+    async def listed(source_key):
+        return roles
+
+    monkeypatch.setattr(webhook, "_self_registration_roles", listed)
+
+
 def test_an_email_that_matches_no_account_is_told_so_in_the_clients_words(
     chat, monkeypatch
 ):
     _identity(monkeypatch, None)
+    _self_registration(monkeypatch, ["member"])  # this client lets people register
 
     async def nobody(email):
         return None
@@ -410,6 +420,25 @@ def test_an_email_that_matches_no_account_is_told_so_in_the_clients_words(
     asyncio.run(webhook._handle_message("tg:123", "it is asha@example.com"))
     assert chat.sent == ["No account for that email."]
     assert chat.sessions["tglink:tg:123"]["state"] == "awaiting_new_user_name"
+
+
+def test_when_the_client_does_not_let_people_register_in_the_chat_it_says_so_in_its_words(
+    chat, monkeypatch
+):
+    _identity(monkeypatch, None)
+    _self_registration(monkeypatch, [])  # nothing listed: closed
+
+    async def nobody(email):
+        return None
+
+    monkeypatch.setattr("app.services.identity.find_unlinked_user_by_email", nobody)
+    _saved(
+        monkeypatch, {"onboarding.closed": "Sign-up here is closed. Ask your admin."}
+    )
+    asyncio.run(webhook._handle_message("tg:123", "it is asha@example.com"))
+    assert chat.sent == ["Sign-up here is closed. Ask your admin."]
+    # she is not left half way through a sign-up: no question about her name follows
+    assert "tglink:tg:123" not in chat.sessions
 
 
 def test_an_unknown_whatsapp_number_is_told_it_is_not_registered(chat, monkeypatch):
