@@ -85,22 +85,29 @@ def test_every_text_the_feature_uses_is_on_the_messages_screen_with_the_values_i
     assert "{link}" not in MESSAGES["hold.email_footer_nolink"].text
 
 
-def test_the_three_numbers_have_a_box_on_the_settings_screen_and_the_built_in_values():
+def test_the_numbers_have_a_box_on_the_settings_screen_and_the_built_in_values():
     fields = {
         f["key"]: f
         for group in org_settings.GROUPS
         if group["key"] == "hold"
         for f in group["fields"]
     }
-    assert set(fields) == {"hold_days", "hold_max", "door_margin_minutes"}
+    assert set(fields) == {
+        "hold_days",
+        "hold_max",
+        "door_margin_minutes",
+        "template_hours",
+    }
     assert (
         cs.LIMITS["hold_days"],
         cs.LIMITS["hold_max"],
         cs.LIMITS["door_margin_minutes"],
+        cs.LIMITS["template_hours"],
     ) == (
         (3, 1, 30),
         (5, 1, 20),
         (60, 1, 600),
+        (24, 1, 168),
     )
     for field in fields.values():
         assert field["label"] and field["unit"] and field["help"]
