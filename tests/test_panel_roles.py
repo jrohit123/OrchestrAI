@@ -541,7 +541,7 @@ def test_a_role_that_is_not_there_cannot_be_given(world):
 
 
 @needs_pg
-def test_where_people_are_known_by_their_number_the_number_is_asked_for_and_tidied(
+def test_where_people_are_known_by_their_number_it_is_kept_tidied_and_may_be_left_out(
     world,
 ):
     async def work(conn):
@@ -550,15 +550,17 @@ def test_where_people_are_known_by_their_number_the_number_is_asked_for_and_tidi
             "ALTER TABLE users ALTER COLUMN channel SET DEFAULT 'whatsapp'"
         )
         common._channel_cache.clear()
-        e = await refused(
-            people.add_person(
-                ctx(),
-                people.PersonNew(
-                    name="Dev Rao", email="dev@example.com", role_id=ids["owner"]
-                ),
-            )
+        # no number: the person links themselves with their email, as on Telegram
+        left_out = await people.add_person(
+            ctx(),
+            people.PersonNew(
+                name="Kim Rao", email="kim@example.com", role_id=ids["owner"]
+            ),
         )
-        assert e.status_code == 400 and "country code" in e.detail
+        row = await conn.fetchrow(
+            "SELECT phone, channel FROM users WHERE id = $1", left_out["id"]
+        )
+        assert row["phone"] is None and row["channel"] == "whatsapp"
         e = await refused(
             people.add_person(
                 ctx(),

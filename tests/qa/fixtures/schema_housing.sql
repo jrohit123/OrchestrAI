@@ -207,7 +207,7 @@ CREATE FUNCTION public.route_targets(p_org uuid, p_user uuid, p_position uuid, p
      WHERE u.org_id = p_org
        AND u.is_active
        AND ((u.channel = 'telegram' AND u.phone LIKE 'tg:%')
-            OR (COALESCE(u.channel, '') <> 'telegram' AND u.phone IS NOT NULL))
+            OR (COALESCE(u.channel, '') <> 'telegram' AND COALESCE(u.phone, '') <> ''))
        AND (
             (p_user IS NOT NULL AND u.id = p_user)
          OR (p_position IS NOT NULL AND EXISTS (

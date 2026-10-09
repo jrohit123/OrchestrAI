@@ -169,14 +169,13 @@ function addPersonModal(lk) {
   const phone = byNumber ? h('input', { class: 'input', type: 'text', placeholder: '+91 98765 43210', maxlength: 40 }) : null;
   const role = sel([['', 'Choose a role…'], ...lk.roles.map(r => [r.id, roleLabel(r.name)])], '');
   modal({ title: 'Add person',
-    body: h('div', null, field('Name', name), field('Email', email, byNumber ? 'Needed to tell people apart.' : 'The chat bot links them to this account when they send it.'),
-      phone ? field('WhatsApp number', phone, 'With the country code, like +91 98765 43210. The chat bot knows them by this number.') : null,
+    body: h('div', null, field('Name', name), field('Email', email, byNumber ? 'Needed to tell people apart. The chat bot links them to this account when they send it.' : 'The chat bot links them to this account when they send it.'),
+      phone ? field('WhatsApp number (optional)', phone, 'With the country code, like +91 98765 43210. Leave it empty and they link themselves: they message the chat bot, send this email address and enter the code emailed to them.') : null,
       field('Role', role, h('span', null, 'Not sure? ', h('a', { href: href('access') }, 'See what each role can do'), '.'))),
     actions: [{ label: 'Cancel' }, { label: 'Add person', primary: true, run: async () => {
       if (name.value.trim().length < 2) throw new Error('Write the person’s name.');
       if (!email.value.trim()) throw new Error('Write their email address.');
       if (!role.value) throw new Error('Choose a role.');
-      if (phone && !phone.value.trim()) throw new Error('Write their WhatsApp number.');
       const r = await api.post('/people', { name: name.value.trim(), email: email.value.trim(), role_id: role.value, phone: phone ? phone.value.trim() : null });
       toast('Added ' + name.value.trim(), 'ok');
       getLookups(true).catch(() => {});

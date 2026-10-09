@@ -412,8 +412,13 @@ def test_an_email_that_matches_no_account_is_told_so_in_the_clients_words(
     _identity(monkeypatch, None)
     _self_registration(monkeypatch, ["member"])  # this client lets people register
 
-    async def nobody(email):
+    async def owner(phone):
+        return "godrej"  # and it is the client that owns this kind of chat
+
+    async def nobody(email, **kwargs):
         return None
+
+    monkeypatch.setattr(webhook, "_channel_source_key", owner)
 
     monkeypatch.setattr("app.services.identity.find_unlinked_user_by_email", nobody)
     _saved(monkeypatch, {"onboarding.no_account": "No account for that email."})
@@ -428,7 +433,7 @@ def test_when_the_client_does_not_let_people_register_in_the_chat_it_says_so_in_
     _identity(monkeypatch, None)
     _self_registration(monkeypatch, [])  # nothing listed: closed
 
-    async def nobody(email):
+    async def nobody(email, **kwargs):
         return None
 
     monkeypatch.setattr("app.services.identity.find_unlinked_user_by_email", nobody)
@@ -441,8 +446,22 @@ def test_when_the_client_does_not_let_people_register_in_the_chat_it_says_so_in_
     assert "tglink:tg:123" not in chat.sessions
 
 
-def test_an_unknown_whatsapp_number_is_told_it_is_not_registered(chat, monkeypatch):
+def test_an_unknown_whatsapp_number_is_asked_for_its_email(chat, monkeypatch):
     _identity(monkeypatch, None)
+    asyncio.run(webhook._handle_message("919999999999", "hi"))
+    assert chat.sent == [asyncio.run(say(None, "onboarding.welcome_whatsapp"))]
+    assert "WhatsApp number isn't linked" in chat.sent[0]
+
+
+def test_with_the_whatsapp_link_switched_off_an_unknown_number_is_told_it_is_not_registered(
+    chat, monkeypatch
+):
+    _identity(monkeypatch, None)
+
+    async def off(phone):
+        return False
+
+    monkeypatch.setattr(webhook, "_whatsapp_linking_on", off)
     asyncio.run(webhook._handle_message("919999999999", "hi"))
     assert chat.sent == [
         "👋 Your number isn't registered with OrchestrAI.\nContact your admin to get access."
@@ -457,7 +476,7 @@ def test_when_the_client_cannot_be_told_the_built_in_words_are_used(chat, monkey
 
     monkeypatch.setattr("app.db.get_source_key_for_channel", nobody)
     asyncio.run(webhook._handle_message("919999999999", "hi"))
-    assert chat.sent[0].startswith("👋 Your number isn't registered")
+    assert chat.sent[0].startswith("👋 Welcome to OrchestrAI!")
 
 
 def test_a_switched_off_account_is_told_so(chat, monkeypatch):

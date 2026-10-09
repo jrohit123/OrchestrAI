@@ -99,11 +99,25 @@ async def resolve_identity(phone: str) -> dict | None:
     return None
 
 
-async def find_unlinked_user_by_email(email: str) -> dict | None:
-    """Find a user row with this email that has no chat_id bound yet.
+def chat_channel(phone: str) -> str:
+    """Which kind of chat an identity comes from: a Telegram chat is "tg:<id>", a WhatsApp one its number."""
+    return "telegram" if str(phone).startswith("tg:") else "whatsapp"
+
+
+async def find_unlinked_user_by_email(
+    email: str, channel: str = "telegram", prefer_source_key: str | None = None
+) -> dict | None:
+    """Find the user row this email belongs to, for a chat on `channel` that wants to link to it: a row with
+    no chat bound yet, or one bound to the OTHER kind of chat (a person moving from Telegram to WhatsApp or
+    back). The emailed code is what proves the person owns the address. `prefer_source_key` (the client that
+    owns this channel) is looked at first, so a person who is in two clients links to the right one.
     Returns None only once every source has actually been checked; raises
     if a source was unreachable, for the same reason resolve_identity does."""
     source_keys = await get_all_source_keys()
+    if prefer_source_key in source_keys:
+        source_keys = [prefer_source_key] + [
+            k for k in source_keys if k != prefer_source_key
+        ]
     unreachable: list[str] = []
     for source_key in source_keys:
         try:
@@ -112,9 +126,13 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
                 SELECT u.id AS user_id, u.name AS user_name, u.email,
                        o.id AS org_id, o.name AS org_name
                 FROM users u JOIN orgs o ON o.id = u.org_id
-                WHERE LOWER(u.email) = LOWER($1) AND (u.phone IS NULL OR u.phone = '')
+                WHERE LOWER(u.email) = LOWER($1)
+                  AND (u.phone IS NULL OR u.phone = ''
+                       OR CASE WHEN $2 = 'whatsapp' THEN u.phone LIKE 'tg:%'
+                               ELSE u.phone NOT LIKE 'tg:%' END)
             """,
                 email,
+                channel,
                 source_key=source_key,
             )
             if row:
@@ -147,21 +165,36 @@ async def find_unlinked_user_by_email(email: str) -> dict | None:
     return None
 
 
+async def bind_chat_phone(user_id: str, phone: str, source_key: str) -> dict | None:
+    """Bind a chat (a Telegram "tg:<id>" or a WhatsApp number) to a user — call ONLY after OTP verification
+    succeeds. Free for a person with no chat yet, or bound to the other kind of chat; the person's `channel`
+    follows. Returns the person, or None when it could not be bound (already bound to this kind of chat, or
+    the number belongs to someone else in the organisation)."""
+    channel = chat_channel(phone)
+    try:
+        row = await fetch_one(
+            """
+            UPDATE users SET phone = $1, channel = $3
+            WHERE id = $2 AND (phone IS NULL OR phone = ''
+                               OR CASE WHEN $3 = 'whatsapp' THEN phone LIKE 'tg:%'
+                                       ELSE phone NOT LIKE 'tg:%' END)
+            RETURNING id
+        """,
+            phone,
+            user_id,
+            channel,
+            source_key=source_key,
+        )
+    except asyncpg.exceptions.UniqueViolationError:
+        logger.warning("bind_chat_phone: that chat already belongs to someone else")
+        return None
+    if row:
+        return await resolve_identity(phone)
+    return None
+
+
 async def bind_telegram_phone(
     user_id: str, chat_id: str, source_key: str
 ) -> dict | None:
-    """Bind chat_id to a user — call ONLY after OTP verification succeeds."""
-    tg_phone = f"tg:{chat_id}"
-    row = await fetch_one(
-        """
-        UPDATE users SET phone = $1
-        WHERE id = $2 AND (phone IS NULL OR phone = '')
-        RETURNING id
-    """,
-        tg_phone,
-        user_id,
-        source_key=source_key,
-    )
-    if row:
-        return await resolve_identity(tg_phone)
-    return None
+    """Bind a Telegram chat_id to a user — call ONLY after OTP verification succeeds."""
+    return await bind_chat_phone(user_id, f"tg:{chat_id}", source_key)

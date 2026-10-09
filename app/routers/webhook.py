@@ -221,6 +221,41 @@ async def _channel_source_key(phone: str) -> str | None:
         return None
 
 
+_WHATSAPP_WORDING = {
+    "onboarding.welcome": "onboarding.welcome_whatsapp",
+    "onboarding.code_sent": "onboarding.code_sent_whatsapp",
+    "onboarding.linked": "onboarding.linked_whatsapp",
+}
+
+
+def _onboarding_key(key: str, phone: str) -> str:
+    """The text for this kind of chat: the Telegram wording, or the WhatsApp one for a WhatsApp number."""
+    return key if phone.startswith("tg:") else _WHATSAPP_WORDING[key]
+
+
+async def _whatsapp_linking_on(phone: str) -> bool:
+    """Whether a WhatsApp number that is not in the system may link itself with an email and a code: on,
+    unless the client that owns WhatsApp switched it off (orgs.settings -> onboarding.whatsapp_link = false)."""
+    source_key = await _channel_source_key(phone)
+    if not source_key:
+        return True
+    try:
+        row = await fetch_one(
+            "SELECT settings FROM orgs WHERE is_active = true LIMIT 1",
+            source_key=source_key,
+        )
+        settings = row["settings"] if row else None
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+        return (
+            config_store.setting(settings, "onboarding.whatsapp_link", True)
+            is not False
+        )
+    except Exception as e:
+        logger.debug(f"could not read the whatsapp_link switch: {e}")
+        return True
+
+
 async def _self_registration_roles(source_key: str) -> list[str]:
     """The role names (lower case) a stranger may take when she registers herself in the chat:
     orgs.settings -> self_registration.roles, the organisation's own list. When it names none,
@@ -254,9 +289,13 @@ async def _handle_email_submission(
     registration might turn out to match an existing account instead of
     just being a typo fix.
     """
-    from app.services.identity import find_unlinked_user_by_email
+    from app.services.identity import chat_channel, find_unlinked_user_by_email
 
-    candidate = await find_unlinked_user_by_email(email)
+    candidate = await find_unlinked_user_by_email(
+        email,
+        channel=chat_channel(phone),
+        prefer_source_key=await _channel_source_key(phone),
+    )
     if candidate:
         result = await generate_and_send_otp(
             user_id=candidate["user_id"],
@@ -281,7 +320,7 @@ async def _handle_email_submission(
                 phone,
                 await say(
                     candidate["source_key"],
-                    "onboarding.code_sent",
+                    _onboarding_key("onboarding.code_sent", phone),
                     email=candidate["email"],
                     expiry_minutes=result["expiry_minutes"],
                 ),
@@ -301,8 +340,8 @@ async def _handle_email_submission(
             )
     else:
         source_key = await _channel_source_key(phone)
-        if source_key and not await _self_registration_roles(source_key):
-            # this organisation does not let people register themselves in the chat
+        if not source_key or not await _self_registration_roles(source_key):
+            # no client owns this kind of chat, or it does not let people register themselves in the chat
             await delete_session(link_session_id)
             await send_text(phone, await say(source_key, "onboarding.closed"))
             return
@@ -650,8 +689,7 @@ async def _handle_message(
     if not user:
         # Telegram linking flow — unregistered tg: user links via email + OTP,
         # or self-registers a brand-new account if no existing one matches.
-        if phone.startswith("tg:"):
-            chat_id = phone[3:]
+        if phone.startswith("tg:") or await _whatsapp_linking_on(phone):
             link_session_id = f"tglink:{phone}"
             pending_link = await get_session(link_session_id)
 
@@ -666,14 +704,22 @@ async def _handle_message(
             from app.db import get_source_key_for_channel
 
             try:
-                NEW_USER_ORG_SOURCE_KEY = await get_source_key_for_channel("telegram")
-            except RuntimeError as e:
-                logger.error(f"Cannot resolve org for Telegram self-registration: {e}")
-                await send_text(
-                    phone,
-                    await say(None, "onboarding.unavailable"),
+                NEW_USER_ORG_SOURCE_KEY = await get_source_key_for_channel(
+                    "telegram" if phone.startswith("tg:") else "whatsapp"
                 )
-                return
+            except RuntimeError as e:
+                # Linking an account an admin already added does not need this; only signing up as a brand-new
+                # person does, so only that part of the conversation stops.
+                NEW_USER_ORG_SOURCE_KEY = None
+                logger.warning(
+                    f"Cannot resolve the client for this chat's sign-up: {e}"
+                )
+                if str(pending_link.get("state") or "").startswith("awaiting_new_user"):
+                    await send_text(
+                        phone,
+                        await say(None, "onboarding.unavailable"),
+                    )
+                    return
 
             # Step 3: user is registering a brand-new account (no existing
             # unlinked user matched their email) — collecting name, then
@@ -939,12 +985,13 @@ async def _handle_message(
                 new_row = await fetch_one(
                     """
                     INSERT INTO users (org_id, role_id, name, email, channel, is_active)
-                    VALUES ((SELECT id FROM orgs WHERE is_active = true LIMIT 1), $1, $2, $3, 'telegram', true)
+                    VALUES ((SELECT id FROM orgs WHERE is_active = true LIMIT 1), $1, $2, $3, $4, true)
                     RETURNING id, (SELECT id FROM orgs WHERE is_active = true LIMIT 1) AS org_id
                 """,
                     pending_link["role_id"],
                     pending_link["name"],
                     new_email,
+                    "telegram" if phone.startswith("tg:") else "whatsapp",
                     source_key=NEW_USER_ORG_SOURCE_KEY,
                 )
                 if not new_row:
@@ -1040,11 +1087,11 @@ async def _handle_message(
                     pending_link["user_id"], candidates[0], pending_link["source_key"]
                 )
                 if result["valid"]:
-                    from app.services.identity import bind_telegram_phone
+                    from app.services.identity import bind_chat_phone
 
-                    linked_user = await bind_telegram_phone(
+                    linked_user = await bind_chat_phone(
                         user_id=pending_link["user_id"],
-                        chat_id=chat_id,
+                        phone=phone,
                         source_key=pending_link["source_key"],
                     )
                     await delete_session(link_session_id)
@@ -1071,7 +1118,7 @@ async def _handle_message(
                             phone,
                             await say(
                                 pending_link["source_key"],
-                                "onboarding.linked",
+                                _onboarding_key("onboarding.linked", phone),
                                 name=linked_user["user_name"],
                             ),
                         )
@@ -1103,7 +1150,10 @@ async def _handle_message(
 
             await send_text(
                 phone,
-                await say(NEW_USER_ORG_SOURCE_KEY, "onboarding.welcome"),
+                await say(
+                    NEW_USER_ORG_SOURCE_KEY,
+                    _onboarding_key("onboarding.welcome", phone),
+                ),
             )
             return
         await send_text(

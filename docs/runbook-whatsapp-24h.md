@@ -39,8 +39,8 @@ UPDATE orgs SET settings = jsonb_set(coalesce(settings,'{}'::jsonb), '{reach,ena
 UPDATE orgs SET settings = jsonb_set(coalesce(settings,'{}'::jsonb), '{reach,got_it_button}', 'false');
 ```
 
-Words: Messages screen, group **Messages WhatsApp could not deliver** (13 texts, standard wording in migration
-`core-0016_hold_texts`).
+Words: Messages screen, group **Messages WhatsApp could not deliver** (16 texts, standard wording in migration
+`core-0016_hold_texts`; until that migration is applied the chat bot uses the same words from the code).
 
 ## Good to know
 

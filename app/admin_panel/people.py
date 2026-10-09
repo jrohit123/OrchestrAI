@@ -39,7 +39,7 @@ router = APIRouter(
 # on this screen as it does when a routing rule picks someone.
 _REACHABLE = (
     "((u.channel = 'telegram' AND u.phone LIKE 'tg:%') "
-    "OR (COALESCE(u.channel, '') <> 'telegram' AND u.phone IS NOT NULL))"
+    "OR (COALESCE(u.channel, '') <> 'telegram' AND COALESCE(u.phone, '') <> ''))"
 )
 
 
@@ -363,10 +363,10 @@ class PersonNew(BaseModel):
 
 @router.post("/people")
 async def add_person(ctx: CtxDep, body: PersonNew):
-    """Add someone before they have ever written to the assistant. Where people are reached on
-    Telegram their chat is linked by their email the first time they write, so that is enough.
-    Where they are reached by number (WhatsApp) the number is what the assistant knows them by,
-    so it is asked for. Which of the two this organisation does is read from its database."""
+    """Add someone before they have ever written to the assistant. Their chat is linked by their email the
+    first time they write (with a code emailed to them), so the email is enough, on Telegram and on WhatsApp.
+    Where people are reached by number (WhatsApp) a number may be given as well; if it is, the assistant knows
+    them by it from the start. Which of the two this organisation does is read from its database."""
     name = " ".join(body.name.split())
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="Write the person's name.")
@@ -378,6 +378,7 @@ async def add_person(ctx: CtxDep, body: PersonNew):
     phone = (
         None
         if await people_channel(ctx.source_key) == "telegram"
+        or not (body.phone or "").strip()
         else clean_phone(body.phone)
     )
     role = await fetch_one(

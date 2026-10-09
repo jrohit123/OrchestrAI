@@ -102,7 +102,7 @@ async def overview(ctx: CtxDep):
     p = await fetch_one(
         "SELECT count(*) AS total, count(*) FILTER (WHERE is_active) AS active, "
         "count(*) FILTER (WHERE (channel = 'telegram' AND phone LIKE 'tg:%') "
-        "OR (COALESCE(channel, '') <> 'telegram' AND phone IS NOT NULL)) AS reachable "
+        "OR (COALESCE(channel, '') <> 'telegram' AND COALESCE(phone, '') <> '')) AS reachable "
         "FROM users WHERE org_id = $1",
         ctx.org_id,
         source_key=ctx.source_key,
