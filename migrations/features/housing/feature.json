@@ -11,6 +11,7 @@
     "priority_tat_rules",
     "residents",
     "routing_rules",
+    "routing_rule_people",
     "staff",
     "staff_attendance"
   ]

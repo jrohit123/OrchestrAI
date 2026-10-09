@@ -364,13 +364,21 @@ class Target(BaseModel):
     id: UUID
 
 
+class PersonOnRule(BaseModel):
+    user_id: UUID
+    level: Literal[1, 2]
+
+
 class RuleBody(BaseModel):
     name: str = Field(..., min_length=2, max_length=120)
     category_id: UUID | None = None
     intent_key: str | None = Field(None, max_length=120)
     match: dict[str, str | int | float | bool] = Field(default_factory=dict)
-    assign: Target
+    assign: Target | None = None
     backup: Target | None = None
+    # the team: people with a level. Level 1 first in the list owns the case; everyone else on the team is told.
+    # None leaves the team as it is (on an edit); a list, even an empty one, replaces it.
+    people: list[PersonOnRule] | None = None
     target_minutes: int | None = Field(None, ge=1, le=525600)
     is_active: bool = True
 
@@ -398,6 +406,55 @@ async def _target_columns(conn, ctx: Ctx, target: Target | None) -> tuple:
     )
 
 
+async def _write_team(conn, ctx: Ctx, rule_id, people: list[PersonOnRule]) -> None:
+    """Replace the people on a rule. The order given is the order they are asked (the first Level 1 owns the case)."""
+    ids = [p.user_id for p in people]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(
+            status_code=400, detail="A person can only be on a rule once."
+        )
+    if ids:
+        known = await conn.fetchval(
+            "SELECT count(*) FROM users WHERE org_id = $1 AND id = ANY($2::uuid[])",
+            ctx.org_id,
+            ids,
+        )
+        if known != len(ids):
+            raise HTTPException(
+                status_code=404, detail="Someone on the team no longer exists."
+            )
+    await conn.execute("DELETE FROM routing_rule_people WHERE rule_id = $1", rule_id)
+    for i, p in enumerate(people):
+        await conn.execute(
+            "INSERT INTO routing_rule_people (org_id, rule_id, user_id, level, sort_order) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            ctx.org_id,
+            rule_id,
+            p.user_id,
+            p.level,
+            i * 10,
+        )
+
+
+async def _check_someone_handles(conn, body: RuleBody, rule_id=None) -> None:
+    """A rule needs somebody: a person, a seat or a role to assign to, or at least one Level 1 person."""
+    if body.assign is not None:
+        return
+    if body.people is not None:
+        has = any(p.level == 1 for p in body.people)
+    elif rule_id is not None:
+        has = bool(
+            await conn.fetchval(
+                "SELECT 1 FROM routing_rule_people WHERE rule_id = $1 AND level = 1 LIMIT 1",
+                rule_id,
+            )
+        )
+    else:
+        has = False
+    if not has:
+        raise HTTPException(status_code=400, detail="Choose who handles it.")
+
+
 @router.get("/rules")
 async def list_rules(ctx: CtxDep):
     ctx.need("case_model")
@@ -408,7 +465,8 @@ async def list_rules(ctx: CtxDep):
                    k.key AS category_key, ru.match, ru.target_minutes, ru.is_active,
                    ru.sort_order, ru.created_at,
                    CASE WHEN ru.assign_user_id IS NOT NULL THEN 'user'
-                        WHEN ru.assign_position_id IS NOT NULL THEN 'seat' ELSE 'role' END AS assign_type,
+                        WHEN ru.assign_position_id IS NOT NULL THEN 'seat'
+                        WHEN ru.assign_role_id IS NOT NULL THEN 'role' END AS assign_type,
                    COALESCE(ru.assign_user_id, ru.assign_position_id, ru.assign_role_id) AS assign_id,
                    COALESCE(au.name, ap.name, ar.name) AS assign_name,
                    CASE WHEN ru.backup_user_id IS NOT NULL THEN 'user'
@@ -462,7 +520,28 @@ async def list_rules(ctx: CtxDep):
                 source_key=ctx.source_key,
             )
         }
+    team: dict = {}
+    try:  # a client without the table has no teams
+        for p in await fetch_all(
+            "SELECT p.rule_id, p.user_id, p.level, u.name, "
+            "cardinality(route_targets(p.org_id, p.user_id, NULL, NULL)) > 0 AS reachable "
+            "FROM routing_rule_people p JOIN users u ON u.id = p.user_id "
+            "WHERE p.org_id = $1 ORDER BY p.level, p.sort_order, u.name",
+            ctx.org_id,
+            source_key=ctx.source_key,
+        ):
+            team.setdefault(p["rule_id"], []).append(
+                {
+                    "user_id": p["user_id"],
+                    "name": p["name"],
+                    "level": p["level"],
+                    "reachable": p["reachable"],
+                }
+            )
+    except Exception:
+        team = {}
     for r in found:
+        r["people"] = team.get(r["id"], [])
         r["match"] = jb(r["match"], {})
         # same formula as route_case(), so this number explains the winner
         r["score"] = (
@@ -505,6 +584,7 @@ async def create_rule(ctx: CtxDep, body: RuleBody):
             )
             if not ok:
                 raise HTTPException(status_code=404, detail="Category not found.")
+        await _check_someone_handles(conn, body)
         a = await _target_columns(conn, ctx, body.assign)
         b = await _target_columns(conn, ctx, body.backup)
         order = await conn.fetchval(
@@ -528,6 +608,8 @@ async def create_rule(ctx: CtxDep, body: RuleBody):
             body.is_active,
             order,
         )
+        if body.people is not None:
+            await _write_team(conn, ctx, rule["id"], body.people)
         await log_event(
             ctx,
             "routing",
@@ -560,6 +642,7 @@ async def update_rule(ctx: CtxDep, rule_id: UUID, body: RuleBody):
             )
             if not ok:
                 raise HTTPException(status_code=404, detail="Category not found.")
+        await _check_someone_handles(conn, body, rule_id)
         a = await _target_columns(conn, ctx, body.assign)
         b = await _target_columns(conn, ctx, body.backup)
         await conn.execute(
@@ -577,6 +660,8 @@ async def update_rule(ctx: CtxDep, rule_id: UUID, body: RuleBody):
             body.target_minutes,
             body.is_active,
         )
+        if body.people is not None:
+            await _write_team(conn, ctx, rule_id, body.people)
         await log_event(
             ctx,
             "routing",

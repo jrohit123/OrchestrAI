@@ -7,14 +7,37 @@ function descendantsOf(lk, id) {
   while (grew) { grew = false; lk.categories.forEach(c => { if (c.parent_id && out.has(c.parent_id) && !out.has(c.id)) { out.add(c.id); grew = true; } }); }
   return out;
 }
+// The people on a rule: Level 1 (the first owns the case, the others are told at once) and Level 2 (supporting)
+function teamText(people) {
+  const part = level => people.filter(p => p.level === level).map((p, i) => h('span', { style: p.reachable ? null : { color: 'var(--bad)' }, title: p.reachable ? '' : 'Cannot be messaged right now' }, (i ? ', ' : '') + p.name + (level === 1 && i === 0 ? ' (owner)' : '') + (p.reachable ? '' : ' (cannot be messaged)')));
+  const one = part(1), two = part(2);
+  return h('span', null, h('b', null, 'Level 1: '), one.length ? one : 'nobody', two.length ? [h('span', { class: 'muted' }, ' · '), h('b', null, 'Level 2: '), two] : null);
+}
+function teamEditor(initial) {
+  const lists = { 1: h('div', { class: 'stack' }), 2: h('div', { class: 'stack' }) }, rows = { 1: [], 2: [] };
+  function add(level, person) {
+    const ctl = personPicker({ placeholder: 'Type a name…', initial: person ? { id: person.user_id, name: person.name } : null });
+    const item = { ctl };
+    const row = h('div', { class: 'row' }, ctl.el, h('button', { class: 'x', type: 'button', 'aria-label': 'Remove this person', onclick: () => { row.remove(); rows[level] = rows[level].filter(x => x !== item); } }, '×'));
+    rows[level].push(item); lists[level].append(row);
+  }
+  (initial || []).forEach(p => add(p.level, p));
+  if (!rows[1].length) add(1);
+  const block = (level, title, help) => h('div', { class: 'stack', style: { marginBottom: '10px' } }, h('div', null, h('b', null, title), ' ', h('span', { class: 'muted small' }, help)), lists[level], h('button', { class: 'btn sm', type: 'button', onclick: () => add(level) }, '+ Add a person'));
+  return {
+    el: h('div', null, block(1, 'Level 1', 'The first one owns the case. The others here are told at once.'), block(2, 'Level 2', 'Supporting people. Also told.')),
+    value() { return [1, 2].flatMap(level => rows[level].map(x => x.ctl.value).filter(Boolean).map(id => ({ user_id: id, level }))); },
+  };
+}
 function ruleSentence(r) {
   const who = (name, people, type) => h('span', null, h('b', null, name), ' ', h('span', { class: 'muted small' }, type === 'seat' ? '(seat)' : type === 'role' ? '(role)' : ''),
     people.length ? h('span', { class: 'muted small' }, ' — today: ' + people.join(', ')) : h('span', { style: { color: 'var(--bad)' } }, ' — nobody it points to can be messaged right now'));
   const conds = Object.entries(r.match || {});
   return h('div', { class: 'sentence' },
     'When ', h('b', null, r.category_label || 'any case'), conds.length ? [' and ', conds.map(([k, v]) => h('span', { class: 'chip' }, pretty(k) + ' = ' + v))] : null,
-    r.intent_key ? [' via ', h('b', null, r.intent_key)] : null, ' comes in → ', who(r.assign_name, r.assign_people.filter(Boolean), r.assign_type),
-    r.backup_name ? h('div', null, 'If they are unavailable → ', who(r.backup_name, r.backup_people.filter(Boolean), r.backup_type)) : null);
+    r.intent_key ? [' via ', h('b', null, r.intent_key)] : null, ' comes in → ',
+    (r.people && r.people.length) ? teamText(r.people) : (r.assign_name ? who(r.assign_name, r.assign_people.filter(Boolean), r.assign_type) : h('span', { style: { color: 'var(--bad)' } }, 'nobody is chosen')),
+    r.backup_name ? h('div', null, ((r.people && r.people.length) ? 'If none of them can be messaged → ' : 'If they are unavailable → '), who(r.backup_name, r.backup_people.filter(Boolean), r.backup_type)) : null);
 }
 function routeResultText(res) {
   if (!res) return h('div', null, h('b', null, 'No rule matches.'), ' A case like this stays unassigned until someone assigns it.');
@@ -32,6 +55,8 @@ async function ruleModal(lk, rule, contextKeys, done, preset) {
   const flow = sel([['', 'Any flow'], ...lk.workflows.filter(w => w.kind !== 'block').map(w => [w.intent_key, w.name])], base.intent_key || '');
   const assign = targetEditor(lk, rule ? { type: rule.assign_type, id: rule.assign_id, name: rule.assign_name } : null, false);
   const backup = targetEditor(lk, rule && rule.backup_type ? { type: rule.backup_type, id: rule.backup_id, name: rule.backup_name } : null, true);
+  const team = teamEditor(rule ? rule.people : []);
+  const hasTeam = !!(rule && rule.people && rule.people.length);
   const target = h('input', { type: 'number', min: 1, placeholder: 'minutes (optional)', value: rule && rule.target_minutes ? rule.target_minutes : '' });
   const active = h('input', { type: 'checkbox', checked: rule ? rule.is_active : true });
   modal({
@@ -39,14 +64,16 @@ async function ruleModal(lk, rule, contextKeys, done, preset) {
     body: h('div', null, field('Name', name, 'Only for you to recognise it.'),
       h('div', { class: 'two' }, field('When the case is about', cat, 'Sub-categories are included. The most specific rule wins.'), field('Coming from flow', flow)),
       field('Only if (optional)', conds.el, 'Extra conditions on the case’s own answers, for example tower = B. A rule with more conditions wins over a plainer one.'),
-      field('Gets handled by', assign.el), field('If they are unavailable, then', backup.el, 'Also becomes the “level 2” person who is kept in the loop.'),
+      field('Who handles it', team.el, 'Level 1 and Level 2 people are all put on the case and told. The first Level 1 person is its owner.'),
+      h('details', { open: !!rule && !hasTeam }, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Or point it at one person, a seat or a role instead'),
+        field('Gets handled by', assign.el), field('If nobody above can be messaged, then', backup.el, 'Also becomes the “level 2” person who is kept in the loop.')),
       field('Response target (optional)', target, 'Overrides the category’s and the priority’s response time for cases this rule picks up.'),
       h('label', { class: 'row' }, active, 'Rule is on')),
     actions: [{ label: 'Cancel' }, { label: 'Save rule', primary: true, run: async () => {
-      const a = assign.value(), b = backup.value();
-      if (!a) throw new Error('Choose who handles it.');
+      const a = assign.value() || null, b = backup.value(), people = team.value();
+      if (!a && !people.some(p => p.level === 1)) throw new Error('Choose who handles it: at least one Level 1 person.');
       if (b === false) throw new Error('Choose the backup, or set it to “Nobody”.');
-      const body = { name: name.value.trim(), category_id: cat.value || null, intent_key: flow.value || null, match: conds.value(), assign: a, backup: b, target_minutes: target.value ? Number(target.value) : null, is_active: active.checked };
+      const body = { name: name.value.trim(), category_id: cat.value || null, intent_key: flow.value || null, match: conds.value(), assign: a, backup: b, people, target_minutes: target.value ? Number(target.value) : null, is_active: active.checked };
       if (rule) await api.put('/rules/' + rule.id, body); else await api.post('/rules', body);
       toast('Rule saved', 'ok'); done();
     } }],
