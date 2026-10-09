@@ -27,7 +27,7 @@ from app.services import config_store, reach
 from app.services.action_executor import execute_pending_action
 from app.services.agent import run_agent
 from app.services.identity import resolve_identity
-from app.services.messages import say
+from app.services.messages import length_text, say
 from app.services.messaging import send_text
 from app.services.onboarding_parsing import extract_email, extract_otp_candidates
 from app.services.otp_service import generate_and_send_otp, verify_otp
@@ -1367,11 +1367,7 @@ async def _handle_message(
                 await set_auth_token(user["org_id"], phone, ttl_minutes)
                 pending_text = pre_session.get("pending_text", "")
                 await delete_session(sec_session_id)
-                hours = ttl_minutes // 60
-                mins = ttl_minutes % 60
-                ttl_str = f"{hours}h {mins}m" if mins else f"{hours}h"
-                if ttl_minutes < 60:
-                    ttl_str = f"{ttl_minutes} mins"
+                ttl_str = length_text(ttl_minutes)
                 await send_text(
                     phone,
                     await say(user["source_key"], "security.verified", ttl=ttl_str),
@@ -1405,11 +1401,7 @@ async def _handle_message(
                 {"state": "awaiting_security_otp", "pending_text": text},
                 ttl=180,
             )
-            hours = ttl_minutes // 60
-            mins = ttl_minutes % 60
-            ttl_str = f"{hours} hours" if not mins else f"{hours}h {mins}m"
-            if ttl_minutes < 60:
-                ttl_str = f"{ttl_minutes} minutes"
+            ttl_str = length_text(ttl_minutes)
             await send_text(
                 phone,
                 await say(

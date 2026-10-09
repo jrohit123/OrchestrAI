@@ -654,7 +654,7 @@ def test_a_right_code_says_how_long_the_session_lasts(chat, monkeypatch):
     monkeypatch.setattr(webhook, "verify_otp", accept)
     asyncio.run(webhook._handle_message("919999999999", "123456"))
     assert chat.sent == [
-        "✅ Identity verified!\n_Session active for 1h 30m. Processing your request..._"
+        "✅ Identity verified!\n_Session active for 1 hour 30 minutes. Processing your request..._"
     ]
 
 
@@ -777,3 +777,17 @@ def test_the_client_can_reword_why_a_code_was_refused(monkeypatch):
 
 def test_the_module_exports_what_the_screen_will_need():
     assert callable(messages.say) and messages.MESSAGES and messages.GROUPS
+
+
+def test_the_session_length_is_written_in_words_from_the_clients_own_number():
+    from app.services.messages import length_text
+
+    assert length_text(4320) == "3 days"
+    assert length_text(1440) == "1 day"
+    assert length_text(480) == "8 hours"
+    assert length_text(240) == "4 hours"
+    assert length_text(90) == "1 hour 30 minutes"
+    assert length_text(45) == "45 minutes"
+    assert length_text(1) == "1 minute"
+    assert length_text(1500) == "1 day 1 hour"
+    assert length_text(0) == "1 minute"

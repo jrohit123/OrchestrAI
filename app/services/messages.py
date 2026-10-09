@@ -865,6 +865,20 @@ _MESSAGES = [
 MESSAGES: dict[str, Msg] = {m.key: m for m in _MESSAGES}
 
 
+def length_text(minutes: int) -> str:
+    """A length of time in words people use: 4320 -> "3 days", 240 -> "4 hours", 90 -> "1 hour 30 minutes". The
+    number is the organisation's own (orgs.session_ttl_minutes); nothing here decides it."""
+    minutes = max(int(minutes or 0), 1)
+    days, rest = divmod(minutes, 1440)
+    hours, mins = divmod(rest, 60)
+    parts = [
+        f"{n} {word}{'' if n == 1 else 's'}"
+        for n, word in ((days, "day"), (hours, "hour"), (mins, "minute"))
+        if n
+    ]
+    return " ".join(parts)
+
+
 async def say(source_key: str | None, key: str, **values) -> str:
     """The text of message `key` for one organisation (its own wording if it wrote one, else the
     built-in one), with the {values} filled in. With no source_key the built-in wording is used."""
