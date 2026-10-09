@@ -646,7 +646,7 @@ async def _set_up_email(user: dict, phone: str, text: str) -> None:
         user_name=user["user_name"],
         org_name=user["org_name"],
         org_id=user["org_id"],
-        action_context={"type": "email_setup", "description": "confirming your email"},
+        action_context={"type": "email_setup", "description": "confirm your email"},
         source_key=source_key,
     )
     if result["sent"]:
