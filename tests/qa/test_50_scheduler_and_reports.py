@@ -233,6 +233,15 @@ CASE_REMINDERS = {
 
 
 async def reminders_world(w, **cfg):
+    from app.services import reach
+
+    for name in (
+        "admin",
+        "member",
+        "approver",
+        "staff",
+    ):  # they have written to the bot today: WhatsApp is open
+        await reach.record_inbound(getattr(w.ids, f"phone_{name}"))
     await w.run(
         "UPDATE orgs SET settings = settings || $1::jsonb",
         json.dumps({"case_reminders": {**CASE_REMINDERS, **cfg}}),

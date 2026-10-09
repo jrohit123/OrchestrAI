@@ -204,11 +204,21 @@ def test_A10_a_signed_json_list_gets_a_4xx_answer():
 
 
 @needs_qa
-@bug(
-    "QA-013",
-    "(b) a sticker, an image, a voice note or a template button reply gets no answer at all",
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "sticker",
+        "image",
+        "audio",
+        pytest.param(
+            "button",
+            marks=bug(
+                "QA-013",
+                "(b) a template button reply gets no answer at all (a sticker, an image and a voice note do now)",
+            ),
+        ),
+    ],
 )
-@pytest.mark.parametrize("kind", ["sticker", "image", "audio", "button"])
 def test_A12_a_message_that_is_not_plain_text_still_gets_an_answer(kind):
     async def scenario(w):
         await w.login("admin")
