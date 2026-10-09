@@ -18,6 +18,7 @@ BUILT_IN = {
     "confirm_stale_minutes": 10,
     "reprompt_max": 3,
     "photo_max": 5,
+    "photo_max_mb": 5,  # new with photos on WhatsApp
     "photo_hold_minutes": 15,
     "reminder_max_failures": 3,  # new with the case-reminder fix (QA-011)
     "turn_wait_seconds": 15,  # new with the one-message-at-a-time fix (QA-003, QA-021)

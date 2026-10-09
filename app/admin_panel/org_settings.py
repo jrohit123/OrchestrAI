@@ -98,6 +98,13 @@ GROUPS: list[dict[str, Any]] = [
                 "unit": "minutes",
                 "help": "A photo sent before saying what it is for waits this long for its request to start.",
             },
+            {
+                "section": "limits",
+                "key": "photo_max_mb",
+                "label": "Largest photo that is saved",
+                "unit": "MB",
+                "help": "A bigger photo is not saved and the person is asked to send a smaller one.",
+            },
         ],
     },
     {
@@ -167,6 +174,13 @@ GROUPS: list[dict[str, Any]] = [
                 "label": "Abandoned flow drafts",
                 "unit": "days",
                 "help": "Flows someone started building and gave up on. Cleared this long after the last change.",
+            },
+            {
+                "section": "retention",
+                "key": "photos_days",
+                "label": "Photos not put on a case",
+                "unit": "days",
+                "help": "Photos people sent that never reached a case. Cleared this long after they arrived.",
             },
             {
                 "section": "retention",

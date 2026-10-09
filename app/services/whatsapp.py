@@ -128,3 +128,58 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
             logger.error(f"send_list failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
+
+
+GRAPH_URL = "https://graph.facebook.com/v19.0"
+
+
+async def media_info(media_id: str) -> dict:
+    """What Meta says about a file somebody sent: its temporary address, type and size (bytes)."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(f"{GRAPH_URL}/{media_id}", headers=HEADERS)
+        if resp.status_code >= 400:
+            logger.error(f"media_info failed ({resp.status_code})")
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def download_media(url: str) -> bytes:
+    """The file itself, from the temporary address Meta gave. Meta keeps it for about 30 days only."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(
+            url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+        )
+        if resp.status_code >= 400:
+            logger.error(f"download_media failed ({resp.status_code})")
+        resp.raise_for_status()
+    return resp.content
+
+
+async def send_image(
+    to: str, data: bytes, mime_type: str = "image/jpeg", caption: str = ""
+):
+    """Upload a picture to WhatsApp and send it. Like any message the bot starts, it reaches the person
+    only if they wrote to the bot in the last 24 hours."""
+    async with httpx.AsyncClient() as client:
+        upload = await client.post(
+            MEDIA_URL,
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+            data={"messaging_product": "whatsapp"},
+            files={"file": ("photo", data, mime_type)},
+        )
+        if upload.status_code >= 400:
+            logger.error(f"upload_media failed ({upload.status_code}): {upload.text}")
+        upload.raise_for_status()
+        media_id = upload.json()["id"]
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {"id": media_id, "caption": caption[:1000]},
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            logger.error(f"send_image failed ({resp.status_code}): {resp.text}")
+        resp.raise_for_status()
+    return resp.json()

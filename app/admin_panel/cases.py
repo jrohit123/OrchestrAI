@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.admin_panel.common import (
     Ctx,
@@ -17,6 +17,7 @@ from app.admin_panel.common import (
     rows,
 )
 from app.db import fetch_all, fetch_one
+from app.services import photos
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -298,6 +299,34 @@ async def describe_route(ctx: Ctx, r) -> dict | None:
         "target_minutes": r["target_minutes"],
         "via": r["via"],
     }
+
+
+@router.get("/cases/{case_id}/photos/{photo_id}")
+async def case_photo(ctx: CtxDep, case_id: UUID, photo_id: UUID):
+    """A photo kept on this case (one a person sent on WhatsApp; see services/photos.py). Only for a signed-in
+    person who may see the case, and only a picture type a browser can show."""
+    ctx.need("cases")
+    try:
+        row = await fetch_one(
+            "SELECT data, mime_type FROM case_photos WHERE org_id = $1 AND case_id = $2 AND id = $3",
+            ctx.org_id,
+            case_id,
+            photo_id,
+            source_key=ctx.source_key,
+        )
+    except Exception:  # a client without the table has no photos
+        row = None
+    if not row or row["mime_type"] not in photos.ALLOWED_TYPES:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return Response(
+        content=bytes(row["data"]),
+        media_type=row["mime_type"],
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline",
+        },
+    )
 
 
 @router.get("/cases/{case_id}")

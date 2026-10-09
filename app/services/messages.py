@@ -94,6 +94,7 @@ VALUES: dict[str, tuple[str, str]] = {
         "the result message of the request",
         "Complaint CS-26-10-1 registered.",
     ),
+    "limit_mb": ("the largest photo that can be saved, in MB", "5"),
     "minutes": ("how many minutes", "15"),
     "name": ("the person's name", "Asha Rao"),
     "reason": (
@@ -559,6 +560,29 @@ _MESSAGES = [
         "📎 Photo added ({count} attached). Reply *yes* to save.",
         values={n: VALUES[n][0] for n in ["count"]},
         example={n: VALUES[n][1] for n in ["count"]},
+    ),
+    Msg(
+        "photo.failed",
+        "photo",
+        "Photo could not be saved",
+        "A photo was sent, but it could not be downloaded or saved.",
+        "⚠️ I couldn't save that photo. Please send it again, or tell me about it in words.",
+    ),
+    Msg(
+        "photo.too_big",
+        "photo",
+        "Photo too big",
+        "A photo was sent that is bigger than the organisation allows.",
+        "⚠️ That photo is too big to save (the limit is {limit_mb} MB). Please send a smaller one.",
+        values={n: VALUES[n][0] for n in ["limit_mb"]},
+        example={n: VALUES[n][1] for n in ["limit_mb"]},
+    ),
+    Msg(
+        "photo.unsupported",
+        "photo",
+        "That kind of message cannot be read",
+        "A voice note, video, document, location or contact was sent on WhatsApp.",
+        "I can only read text and photos here. Please type your message or send a photo.",
     ),
     Msg(
         "approval.not_found",

@@ -23,7 +23,7 @@ from app.redis_client import (
     set_auth_token,
     set_session,
 )
-from app.services import config_store, reach
+from app.services import config_store, photos, reach
 from app.services.action_executor import execute_pending_action
 from app.services.agent import run_agent
 from app.services.identity import resolve_identity
@@ -166,8 +166,20 @@ async def receive_message(request: Request):
         await reach.record_inbound(phone)
 
         # ── Extract text ──
+        attachments = None
+        unreadable = False
         if msg_type == "text":
             text = msg["text"]["body"]
+        elif msg_type == "image":
+            # a photo: WhatsApp hands over a reference; it is saved (see photos.py) once we know whose it is
+            image = msg.get("image") or {}
+            text = image.get("caption") or ""
+            if not image.get("id"):
+                return {"status": "ok"}
+            attachments = [f"{photos.WHATSAPP}{image['id']}"]
+        elif msg_type in _UNREADABLE_KINDS:
+            text = ""
+            unreadable = True
         elif msg_type == "interactive":
             inter = msg["interactive"]
             if inter.get("type") == "list_reply":
@@ -188,9 +200,24 @@ async def receive_message(request: Request):
             return {"status": "ok"}
 
         logger.debug(f"Deduplication key set: {msg_dedup_key}")
-        logger.info(f"Message from {phone}: {text}")
+        if unreadable:
+            # a voice note, video, document, location or contact: say so instead of staying silent
+            logger.info(f"Message from {phone}: ({msg_type})")
+            try:
+                await send_text(
+                    phone,
+                    await say(await _channel_source_key(phone), "photo.unsupported"),
+                )
+            except Exception as e:
+                logger.warning(f"could not answer an unreadable message: {e}")
+            return {"status": "ok"}
+        logger.info(
+            f"Message from {phone}: {text}" + (" (+photo)" if attachments else "")
+        )
         try:
-            await handle_message(phone=phone, text=text, msg_type=msg_type)
+            await handle_message(
+                phone=phone, text=text, msg_type=msg_type, attachments=attachments
+            )
         except Exception as e:
             logger.error(f"handle_message error: {e}", exc_info=True)
             try:
@@ -226,6 +253,10 @@ _WHATSAPP_WORDING = {
     "onboarding.code_sent": "onboarding.code_sent_whatsapp",
     "onboarding.linked": "onboarding.linked_whatsapp",
 }
+
+
+# kinds of WhatsApp message the chat bot cannot read (a reaction or a system note is not one of them)
+_UNREADABLE_KINDS = ("audio", "video", "document", "location", "contacts", "sticker")
 
 
 def _onboarding_key(key: str, phone: str) -> str:
@@ -461,6 +492,19 @@ async def _take_photos(
     """Attach photos sent in chat to the request being filled in (when its workflow takes photos).
     A photo sent first, before /complaint or /update, is kept for a few minutes and attached as
     soon as such a request is started."""
+    file_ids, problem = await photos.keep_whatsapp_photos(user, file_ids)
+    if problem:
+        conf = await config_store.org_settings(user["source_key"], user["org_id"])
+        await send_text(
+            phone,
+            await say(
+                user["source_key"],
+                problem,
+                limit_mb=config_store.limit_of(conf, "photo_max_mb"),
+            ),
+        )
+    if not file_ids:
+        return
     draft = await _photo_draft(user)
     if not draft:
         held = await get_session(_held_key(user, phone))

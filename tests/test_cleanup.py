@@ -70,6 +70,7 @@ def test_the_built_in_days_are_the_ones_the_job_was_agreed_with():
         "drafts_days": 7,
         "otp_days": 1,
         "workflow_drafts_days": 30,
+        "photos_days": 7,
         "archive_days": 180,
     }
 

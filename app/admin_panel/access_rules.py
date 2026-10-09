@@ -20,6 +20,7 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/logo"),
         ("GET", "/cases"),
         ("GET", "/cases/{case_id}"),
+        ("GET", "/cases/{case_id}/photos/{photo_id}"),
         ("POST", "/cases/{case_id}/assign"),
         ("GET", "/people"),
         ("GET", "/people/{user_id}"),

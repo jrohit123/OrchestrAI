@@ -63,6 +63,13 @@ RULES = (
         "status = 'abandoned' AND updated_at < {cut}",
         "abandoned workflow draft",
     ),
+    Rule(
+        "case_photos",
+        "photos_days",
+        "case_id IS NULL AND created_at < {cut}",
+        "photo that never reached a case",
+        leave_out=("data",),  # the picture itself is not copied into the safe copy
+    ),
 )
 
 # $1 is the organisation (NULL for rows that belong to none), $2 the number of days

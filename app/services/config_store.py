@@ -47,6 +47,7 @@ LIMITS: dict[str, tuple[int, int, int]] = {
     ),  # an unanswered "yes to save?" is dropped after this
     "reprompt_max": (3, 1, 10),  # how often the assistant re-asks before starting over
     "photo_max": (5, 1, 20),  # photos kept on one request
+    "photo_max_mb": (5, 1, 16),  # the largest photo that is saved, in megabytes
     "turn_wait_seconds": (
         15,
         1,
@@ -87,6 +88,7 @@ RETENTION: dict[str, tuple[int, int, int]] = {
     "drafts_days": (7, 1, 3650),  # finished drafts
     "otp_days": (1, 1, 365),  # expired one-time codes
     "workflow_drafts_days": (30, 1, 3650),  # abandoned workflow drafts
+    "photos_days": (7, 1, 3650),  # photos nobody attached to a case
     "archive_days": (180, 1, 3650),  # the copies kept of what was removed
 }
 

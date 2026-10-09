@@ -108,6 +108,21 @@ async def send_photo(to: str, file_id: str, caption: str = ""):
     return resp.json()
 
 
+async def send_photo_bytes(
+    to: str, data: bytes, mime_type: str = "image/jpeg", caption: str = ""
+):
+    """Send a picture we hold ourselves (not one already on Telegram)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{BASE_URL}/sendPhoto",
+            data={"chat_id": to, "caption": caption[:1000]},
+            files={"photo": ("photo", data, mime_type)},
+        )
+        _raise_if_rate_limited(resp)
+        resp.raise_for_status()
+    return resp.json()
+
+
 async def answer_callback(callback_id: str):
     """Tell Telegram a button tap was received, so the button stops spinning. Best effort."""
     try:

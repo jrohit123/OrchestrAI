@@ -103,6 +103,17 @@ async def send_photo(to: str, file_id: str, caption: str = ""):
     return None
 
 
+async def send_stored_photo(
+    to: str, data: bytes, mime_type: str = "image/jpeg", caption: str = ""
+):
+    """A picture we hold ourselves, to a Telegram or a WhatsApp person."""
+    if _is_telegram(to):
+        from app.services import telegram
+
+        return await telegram.send_photo_bytes(_tg_id(to), data, mime_type, caption)
+    return await whatsapp.send_image(to, data, mime_type, caption)
+
+
 async def send_document(
     to: str,
     pdf_bytes: bytes,

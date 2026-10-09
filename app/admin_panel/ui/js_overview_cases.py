@@ -39,10 +39,14 @@ function catOptions(lk, any, none) {
   (function walk(pid, depth) { (kids[pid] || []).forEach(c => { out.push([c.id, '  '.repeat(depth) + (depth ? '› ' : '') + c.label + (c.is_active ? '' : ' (hidden)')]); walk(c.id, depth + 1); }); })('', 0);
   return out;
 }
-function timelineItem(a) {
+function timelineItem(a, caseId) {
   const p = a.payload || {};
-  let text = null, extra = null;
+  let text = null, extra = null, picture = null;
   switch (a.activity_type) {
+    case 'evidence':
+      text = p.photo_id ? 'Added a photo' : 'Added a photo (kept on Telegram)';
+      if (p.photo_id && caseId) { const src = BASE + '/cases/' + caseId + '/photos/' + p.photo_id; picture = h('a', { href: src, target: '_blank', rel: 'noopener' }, h('img', { class: 'tl-photo', src, alt: 'Photo sent with the request', loading: 'lazy' })); }
+      break;
     case 'comment': text = 'Added an update'; extra = p.text; break;
     case 'assignment': text = 'Handed to ' + (p.to_name || 'someone') + (p.from_name ? ' (from ' + p.from_name + ')' : ''); extra = p.note; break;
     case 'status_change': case 'reopen': text = (a.activity_type === 'reopen' ? 'Reopened' : 'Status') + ' → ' + pretty(p.to || ''); extra = p.closing_note || p.note; break;
@@ -55,7 +59,7 @@ function timelineItem(a) {
     }
   }
   return h('div', { class: 'tl ' + a.activity_type }, h('span', { class: 'dot' }),
-    h('div', null, h('div', null, h('b', null, text)), h('div', { class: 'when' }, (a.actor_name || p.by || 'System') + ' · ' + fmtDT(a.created_at)), extra ? h('div', { class: 'quote' }, extra) : null));
+    h('div', null, h('div', null, h('b', null, text)), h('div', { class: 'when' }, (a.actor_name || p.by || 'System') + ' · ' + fmtDT(a.created_at)), extra ? h('div', { class: 'quote' }, extra) : null, picture));
 }
 // Assign: the dashboard asks the organisation's own flow (set under Settings > case buttons) to hand the case over
 function assignDialog(c) {
@@ -119,7 +123,7 @@ async function showCase(id) {
         person(p.user_id, p.name), h('span', { class: 'row' }, p.roles.map(r => badge(r.text, r.tone)), p.reachable ? null : badge('not on Telegram', 'warn'))))) : empty('Nobody yet', '')));
     if (c.description) body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What was reported'), h('div', { class: 'card-b' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, c.description))));
     body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Timeline'),
-      h('div', { class: 'card-b' }, d.timeline.length ? h('div', { class: 'timeline' }, d.timeline.map(timelineItem)) : h('span', { class: 'muted' }, 'Nothing has happened on this case yet.'))));
+      h('div', { class: 'card-b' }, d.timeline.length ? h('div', { class: 'timeline' }, d.timeline.map(a => timelineItem(a, c.id))) : h('span', { class: 'muted' }, 'Nothing has happened on this case yet.'))));
     const as = S.boot.buttons && S.boot.buttons.assign;
     if (as && !closed) body.push(assignCard(c, as));
     body.push(h('div', { class: 'muted small' }, as ? 'To update or close a case, use its flow in ' + chatWord() + '.' : 'To assign, update or close a case, use its flow in ' + chatWord() + '. The dashboard only shows cases.'));

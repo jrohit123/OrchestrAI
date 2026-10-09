@@ -331,7 +331,8 @@ async def _op_add_parties(params: dict, ctx: dict) -> dict:
 
 async def _op_attach_photos(params: dict, ctx: dict) -> dict:
     """
-    Keep the photos sent with the request on the case's timeline (Telegram file ids).
+    Keep the photos sent with the request on the case's timeline (a Telegram file id, or a photo saved in
+    case_photos when it came on WhatsApp).
     params: case_id (a $path), photos_from (default $fields._photos)
     """
     si = _si()
@@ -344,14 +345,24 @@ async def _op_attach_photos(params: dict, ctx: dict) -> dict:
     import json
 
     conf = await config_store.org_settings(ctx["source_key"], ctx["org_id"])
-    for file_id in photos[: config_store.limit_of(conf, "photo_max")]:
+    from app.services import photos as saved_photos
+
+    kept = photos[: config_store.limit_of(conf, "photo_max")]
+    await saved_photos.attach(ctx["source_key"], ctx["org_id"], case_id, kept)
+    for file_id in kept:
+        # a photo we saved ourselves (WhatsApp) is named by its own id; a Telegram one by Telegram's
+        payload = (
+            {"photo_id": saved_photos.stored_id(file_id)}
+            if saved_photos.is_stored(file_id)
+            else {"telegram_file_id": file_id}
+        )
         await execute(
             "INSERT INTO case_activity (org_id, case_id, activity_type, actor_user_id, payload) "
             "VALUES ($1, $2, 'evidence', $3, $4::jsonb)",
             ctx["org_id"],
             case_id,
             ctx["user"]["user_id"],
-            json.dumps({"telegram_file_id": file_id}),
+            json.dumps(payload),
             source_key=ctx["source_key"],
         )
     return ctx
@@ -438,7 +449,19 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
             : config_store.limit_of(conf, "photo_max")
         ]
 
-    from app.services import messaging
+    from app.services import messaging, reach
+    from app.services import photos as saved_photos
+
+    async def send_photo(phone: str, ref: str) -> None:
+        stored = (
+            await saved_photos.fetch(ctx["source_key"], ctx["org_id"], ref)
+            if saved_photos.is_stored(ref)
+            else None
+        )
+        if stored:
+            await messaging.send_stored_photo(phone, stored[0], stored[1], "")
+        else:
+            await messaging.send_photo(phone, ref, "")
 
     told = []
     for who in people.values():
@@ -455,6 +478,7 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
         local = {**values, "recipient_name": who["name"]}
         text = _fill(template, local)
         try:
+            went = True  # False when WhatsApp's 24-hour door is closed: the person is emailed instead
             if (
                 buttons
                 and who["phone"].startswith("tg:")
@@ -469,9 +493,22 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
                     ],
                 )
             else:
-                await messaging.send_text(who["phone"], text)
-            for file_id in photos:
-                await messaging.send_photo(who["phone"], file_id, "")
+                outcome = await reach.deliver_text(
+                    who["phone"],
+                    text,
+                    source_key=ctx["source_key"],
+                    org_id=ctx["org_id"],
+                    org_name=ctx["user"].get("org_name") or "",
+                    sender=ctx["user"],
+                )
+                if outcome.get(
+                    "note"
+                ):  # the person doing this is told it went by email
+                    ctx.setdefault("_notes", []).append(outcome["note"])
+                went = outcome["status"] == "sent"
+            if went:
+                for file_id in photos:
+                    await send_photo(who["phone"], file_id)
             told.append(who["name"])
         except (
             Exception

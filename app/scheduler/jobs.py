@@ -18,7 +18,6 @@ from app.logging_config import get_context_logger
 from app.scheduler.locks import run_if_free
 from app.services import config_store, reach
 from app.services.cleanup import run_cleanup
-from app.services.messaging import send_text
 
 logger = get_context_logger(__name__)
 
@@ -430,6 +429,15 @@ async def _run_case_notification_pass(
 
     from app.services.telegram import TelegramRateLimitedError
 
+    org_name = ""
+    try:
+        found = await fetch_one(
+            "SELECT name FROM orgs WHERE id = $1", org_id, source_key=source_key
+        )
+        org_name = (found or {}).get("name") or ""
+    except Exception as e:
+        logger.debug(f"case reminder: organisation name not read: {e}")
+
     max_failures = config_store.limit_of(
         await config_store.org_settings(source_key, org_id), "reminder_max_failures"
     )
@@ -494,7 +502,15 @@ async def _run_case_notification_pass(
         # and must not make the ones already told hear it again on the next pass.
         for phone, label, template in targets:
             try:
-                await send_text(phone, _fill_reminder(template, vals, label))
+                # a person on WhatsApp who has not written in 24 hours is emailed it (and it waits for them);
+                # that still counts as reached
+                await reach.deliver_text(
+                    phone,
+                    _fill_reminder(template, vals, label),
+                    source_key=source_key,
+                    org_id=org_id,
+                    org_name=org_name,
+                )
                 sent_any = True
             except TelegramRateLimitedError as e:
                 logger.warning(

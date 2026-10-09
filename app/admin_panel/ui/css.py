@@ -290,6 +290,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-line);bord
 .tl .dot{width:10px;height:10px;border-radius:50%;background:var(--brand);margin:5px 0 0 4px;font-size:0}
 .tl.comment .dot{background:var(--k-ai)}.tl.assignment .dot{background:var(--info)}.tl.status_change .dot,.tl.reopen .dot{background:var(--ok)}
 .tl .when{color:var(--muted);font-size:12px}
+.tl-photo{display:block;margin-top:6px;max-width:220px;max-height:180px;border-radius:9px;border:1px solid var(--line)}
 .thread{display:grid;gap:12px;padding:4px 2px;max-height:68vh;overflow:auto;align-content:start}
 .msg{display:grid;gap:3px;max-width:80%}
 .msg.them{justify-self:end}.msg.bot{justify-self:start}

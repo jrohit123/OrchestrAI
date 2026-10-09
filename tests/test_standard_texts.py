@@ -137,6 +137,7 @@ def test_the_migration_tool_accepts_the_files(folder, prefix):
         MIGRATIONS / "core" / "core-0015_closed_signup_text.sql",
         MIGRATIONS / "core" / "core-0016_hold_texts.sql",
         MIGRATIONS / "core" / "core-0017_whatsapp_link_texts.sql",
+        MIGRATIONS / "core" / "core-0018_photo_texts.sql",
         MIGRATIONS / "features" / "housing" / "housing-0003_industry_text.sql",
         MIGRATIONS / "features" / "jewellery" / "jewellery-0001_industry_text.sql",
     ],

@@ -454,6 +454,20 @@ CREATE TABLE public.audit_log (
 -- Name: case_activity; Type: TABLE; Schema: public; Owner: -
 --
 
+CREATE TABLE public.case_photos (
+    id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY,
+    org_id uuid NOT NULL,
+    case_id uuid,
+    user_id uuid,
+    source text DEFAULT 'whatsapp'::text NOT NULL,
+    source_ref text,
+    mime_type text NOT NULL,
+    size_bytes integer NOT NULL,
+    data bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
 CREATE TABLE public.case_activity (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,

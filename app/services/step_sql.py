@@ -309,7 +309,7 @@ def sql_for_step(step: dict) -> list[dict]:
                     "this organisation",
                     _value_note(p.get("case_id")),
                     "the person doing it",
-                    "the photo’s Telegram id",
+                    "the photo (its Telegram id, or our saved copy)",
                 ],
             )
         ]
