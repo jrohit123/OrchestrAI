@@ -175,7 +175,8 @@ async def _op_route(params: dict, ctx: dict) -> dict:
             into (default "route")
     Keeps $<into> = {assignee_id, assignee_name, assignee_phone, level2_ids, level2_names,
     target_minutes, rule_name, via} and sets the fields assigned_name and, when a time is known,
-    route_minutes. Finds nobody (and says so) when the category has no rule.
+    route_minutes. A case with no category is routed too: only a rule without a category (the catch-all)
+    can match it. Finds nobody (and says so) when nothing matches.
     """
     si = _si()
     into = params.get("into") or "route"
@@ -194,21 +195,20 @@ async def _op_route(params: dict, ctx: dict) -> dict:
         "via": None,
     }
     row = None
-    if category_id:
-        try:
-            row = await fetch_one(
-                "SELECT * FROM route_case($1::uuid, $2::uuid, '{}'::jsonb, $3, $4)",
-                ctx["org_id"],
-                str(category_id),
-                _top_key(ctx),
-                priority,
-                source_key=ctx["source_key"],
-            )
-        except (
-            asyncpg.exceptions.UndefinedFunctionError,
-            asyncpg.exceptions.UndefinedTableError,
-        ):
-            row = None
+    try:
+        row = await fetch_one(
+            "SELECT * FROM route_case($1::uuid, $2::uuid, '{}'::jsonb, $3, $4)",
+            ctx["org_id"],
+            str(category_id) if category_id else None,
+            _top_key(ctx),
+            priority,
+            source_key=ctx["source_key"],
+        )
+    except (
+        asyncpg.exceptions.UndefinedFunctionError,
+        asyncpg.exceptions.UndefinedTableError,
+    ):
+        row = None
     if row:
         ids = [x for x in [row["assignee_id"], *(row["level2_ids"] or [])] if x]
         people = {}
@@ -244,9 +244,12 @@ async def _op_route(params: dict, ctx: dict) -> dict:
         if route["level2_names"]:
             sentence += f", with {', '.join(route['level2_names'])} as level 2"
         _preview(ctx, sentence)
-    elif category_id:
+    else:
         _preview(
-            ctx, "No one is set up to handle this category yet, so it starts unassigned"
+            ctx,
+            "No one is set up to handle this category yet, so it starts unassigned"
+            if category_id
+            else "It has no category and no catch-all rule is set up, so it starts unassigned",
         )
     return ctx
 

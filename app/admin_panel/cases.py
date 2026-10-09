@@ -264,12 +264,12 @@ async def list_cases(
 async def _routing_preview(ctx: Ctx, case: dict) -> dict | None:
     """Who the routing rules would send this case to today. Read only: the database
     function does the matching, nothing is assigned."""
-    if not (ctx.caps.get("case_model") and case.get("category_id")):
+    if not ctx.caps.get("case_model"):
         return None
     r = await fetch_one(
         "SELECT * FROM route_case($1, $2, $3::jsonb, NULL, $4)",
         ctx.org_id,
-        case["category_id"],
+        case.get("category_id"),
         dump(case.get("custom_fields") or {}),
         case["priority"],
         source_key=ctx.source_key,

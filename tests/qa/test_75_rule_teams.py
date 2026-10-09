@@ -287,3 +287,80 @@ def test_a_rule_with_nobody_to_handle_it_is_refused_and_so_is_the_same_person_tw
         assert nope.value.status_code == 404
 
     qa_run(scenario)
+
+
+async def make_catch_all(w, people):
+    """A rule with no category: the catch-all. people: [(person name in the world, level)]."""
+    rule = uuid.uuid4()
+    await w.run(
+        "INSERT INTO routing_rules (id, org_id, name) VALUES ($1, $2, 'Anything else (catch-all)')",
+        rule,
+        w.ids.org_id,
+    )
+    ids = {}
+    for i, (who, level) in enumerate(people):
+        user = await w.user(who)
+        ids[who] = user["user_id"]
+        await w.run(
+            "INSERT INTO routing_rule_people (org_id, rule_id, user_id, level, sort_order) VALUES ($1, $2, $3, $4, $5)",
+            w.ids.org_id,
+            rule,
+            uuid.UUID(user["user_id"]),
+            level,
+            i * 10,
+        )
+    return rule, ids
+
+
+async def route_step(w, category_id):
+    """What the 'case.route' step of a new case finds, with or without a category."""
+    from app.services import case_ops
+
+    ctx = {
+        "org_id": str(w.ids.org_id),
+        "source_key": w.key,
+        "fields": {"category_id": category_id, "priority": None},
+    }
+    await case_ops._op_route({}, ctx)
+    return ctx
+
+
+@needs_qa
+def test_a_catch_all_rule_covers_a_case_with_no_category_and_a_category_with_no_rule():
+    async def scenario(w):
+        _rule, ids = await make_catch_all(
+            w, [("member", 1), ("approver", 1), ("staff", 1)]
+        )
+        lonely = uuid.uuid4()
+        await w.run(
+            "INSERT INTO case_categories (id, org_id, key, label) VALUES ($1, $2, 'lonely', 'Lonely')",
+            lonely,
+            w.ids.org_id,
+        )
+        for category in (None, str(lonely)):
+            got = (await route_step(w, category))["route"]
+            assert got["assignee_id"] == ids["member"] and got["via"] == "rule"
+            assert set(got["level2_ids"]) == names(ids, ["approver", "staff"])
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_a_category_with_its_own_rule_is_not_taken_by_the_catch_all():
+    async def scenario(w):
+        await make_catch_all(w, [("member", 1)])
+        cat, _rule, ids = await make_rule(w, [("staff", 1)])
+        got = (await route_step(w, str(cat)))["route"]
+        assert got["assignee_id"] == ids["staff"]
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_without_a_catch_all_a_case_with_no_category_starts_unassigned():
+    async def scenario(w):
+        ctx = await route_step(w, None)
+        assert ctx["route"]["assignee_id"] is None
+        assert ctx["fields"]["assigned_name"] == "not assigned yet"
+
+    qa_run(scenario)
