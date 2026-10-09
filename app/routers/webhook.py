@@ -177,6 +177,9 @@ async def receive_message(request: Request):
             if not image.get("id"):
                 return {"status": "ok"}
             attachments = [f"{photos.WHATSAPP}{image['id']}"]
+        elif msg_type == "button":
+            # a tap on the button of a template message ("Proceed"): the person has answered, so the door is open
+            text = (msg.get("button") or {}).get("text") or ""
         elif msg_type in _UNREADABLE_KINDS:
             text = ""
             unreadable = True

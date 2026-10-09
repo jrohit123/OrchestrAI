@@ -83,6 +83,11 @@ LIMITS: dict[str, tuple[int, int, int]] = {
         1,
         600,
     ),  # WhatsApp's 24 hours are counted with this much to spare
+    "template_hours": (
+        24,
+        1,
+        168,
+    ),  # a person is sent the approved template at most once in this many hours
 }
 RETENTION: dict[str, tuple[int, int, int]] = {
     "drafts_days": (7, 1, 3650),  # finished drafts

@@ -38,7 +38,7 @@ import httpx
 from app.db import fetch_one
 from app.logging_config import get_context_logger
 from app.redis_client import get_redis
-from app.services import config_store, mailer, messaging, otp_service
+from app.services import config_store, mailer, messaging, otp_service, whatsapp
 from app.services.messages import say
 
 logger = get_context_logger(__name__)
@@ -66,6 +66,15 @@ def is_whatsapp(phone) -> bool:
 def feature_on(settings: dict | None) -> bool:
     """orgs.settings -> reach.enabled; on unless an organisation switched it off."""
     return config_store.setting(settings, "reach.enabled", True) is not False
+
+
+def template_of(settings: dict | None) -> tuple[str, str] | None:
+    """The approved WhatsApp template this organisation uses to ask a person to open their WhatsApp again:
+    orgs.settings -> reach.template = {"name": "...", "language": "en"}. None when none is chosen."""
+    chosen = config_store.setting(settings, "reach.template", None)
+    if isinstance(chosen, dict) and str(chosen.get("name") or "").strip():
+        return str(chosen["name"]).strip(), str(chosen.get("language") or "en").strip()
+    return None
 
 
 def got_it_on(settings: dict | None) -> bool:
@@ -410,6 +419,36 @@ async def _remember_sent(
         logger.debug(f"reach: what was sent could not be noted: {e}")
 
 
+async def _send_template(to: str, settings: dict | None) -> bool:
+    """Ask the person, with the organisation's approved template, to tap its button so their WhatsApp opens
+    again (the kept message then arrives). At most once in template_hours per person. Whatever goes wrong, the
+    kept message and the email are not affected. Never raises."""
+    chosen = template_of(settings)
+    redis = get_redis()
+    if not chosen or redis is None:
+        return False
+    key = f"tpl:{to}"
+    try:
+        hours = config_store.limit_of(settings, "template_hours")
+        if not await redis.set(key, "1", ex=hours * 3600, nx=True):
+            return False  # one was sent lately
+    except Exception as e:
+        logger.warning(f"reach: could not note the template for {_last4(to)}: {e}")
+        return False
+    try:
+        await whatsapp.send_template(to, *chosen)
+        return True
+    except Exception as e:
+        logger.warning(
+            f"reach: the template could not be sent to {_last4(to)}: {type(e).__name__}"
+        )
+        try:
+            await redis.delete(key)  # nothing went, so the next message may try again
+        except Exception as e2:
+            logger.debug(f"reach: the template note could not be removed: {e2}")
+        return False
+
+
 async def hold(
     to: str,
     text: str,
@@ -459,9 +498,11 @@ async def hold(
             )
         except Exception as e:
             logger.warning(f"reach: the email for {_last4(to)} could not be sent: {e}")
+    asked = await _send_template(to, settings)
     logger.info(
         f"reach: WhatsApp is closed for {_last4(to)}: the message is kept"
         + (" and was emailed" if emailed else ", no email could be sent")
+        + (" and the template was sent" if asked else "")
     )
     note = None
     if sender:
@@ -638,10 +679,15 @@ async def deliver_waiting(phone: str, source_key: str, org_id) -> int:
 
 
 async def door_message(source_key: str, text: str, msg_type: str) -> str | None:
-    """ "got_it" for a tap on the Got it button, "ready" for the message the emailed link prepares
-    (its words are a message on the Messages screen), else None. Such a message only opens the door."""
+    """ "got_it" for a tap on the Got it button, "ready" for the message the emailed link prepares (its words are
+    a message on the Messages screen) or for a tap on a template's button, else None. Such a message only opens
+    the door."""
     if msg_type == "interactive" and text == GOT_IT:
         return "got_it"
+    if (
+        msg_type == "button"
+    ):  # a tap on the button of a template ("Proceed"): the person answered
+        return "ready"
     ready = (await say(source_key, "hold.ready_text")).strip().casefold()
     if ready and text.strip().casefold() == ready:
         return "ready"

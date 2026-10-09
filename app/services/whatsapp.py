@@ -183,3 +183,21 @@ async def send_image(
             logger.error(f"send_image failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
+
+
+async def send_template(to: str, name: str, language: str = "en"):
+    """An approved message template (made in Meta's WhatsApp Manager). It is the one kind of message WhatsApp lets
+    the bot start with a person who has not written in the last 24 hours. The templates we use have no blanks
+    to fill in and a quick-reply button; the person's tap on it comes back as a message of type "button"."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {"name": name, "language": {"code": language}},
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            logger.error(f"send_template failed ({resp.status_code}): {resp.text}")
+        resp.raise_for_status()
+    return resp.json()

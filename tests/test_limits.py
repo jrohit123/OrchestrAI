@@ -26,6 +26,7 @@ BUILT_IN = {
     "hold_days": 3,  # new with the WhatsApp 24-hour fix (QA-012)
     "hold_max": 5,
     "door_margin_minutes": 60,
+    "template_hours": 24,  # new with the WhatsApp template
 }
 
 

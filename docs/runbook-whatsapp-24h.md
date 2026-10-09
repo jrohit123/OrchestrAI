@@ -51,3 +51,12 @@ Words: Messages screen, group **Messages WhatsApp could not deliver** (16 texts,
   first try for a closed door; this stays as the backup.
 * To test: run the stock alert for someone who has not written to the bot for a day. The flow's answer says the
   WhatsApp is closed, they get the email, and tapping the link then sending the ready message delivers the alert.
+
+## The approved template (when one is chosen)
+
+`orgs.settings -> reach.template = {"name": "session_active", "language": "en"}` (Godrej has it; `housing-0009`). When a
+message has to wait because the person's WhatsApp is closed, the chat bot also sends that template (no blanks, one
+**Proceed** button). The person taps it, their WhatsApp opens again and the waiting message arrives (the tap comes back
+as a message of type `button`). At most once every `limits.template_hours` (24) per person. If Meta refuses the
+template, nothing else changes: the message is still kept and emailed, and the next message tries again. To stop using
+it, remove `reach.template` from the settings. The template's own words live in Meta's WhatsApp Manager, not here.

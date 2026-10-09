@@ -147,6 +147,13 @@ GROUPS: list[dict[str, Any]] = [
                 "unit": "minutes",
                 "help": "WhatsApp's 24 hours start when the person's message reaches WhatsApp, not us. This spare keeps us from trying right at the edge.",
             },
+            {
+                "section": "limits",
+                "key": "template_hours",
+                "label": "Send the WhatsApp template at most once every",
+                "unit": "hours",
+                "help": "Only used when a template is chosen for this organisation (orgs.settings, reach, template). The template asks the person to tap a button so their WhatsApp opens again.",
+            },
         ],
     },
     {
