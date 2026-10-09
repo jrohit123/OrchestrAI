@@ -574,6 +574,103 @@ _turn_held: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
+async def _set_up_email(user: dict, phone: str, text: str) -> None:
+    """A person an admin added with only a name and a number has no email yet. Their number is known, so no
+    sign-up: they are asked for their email, a code is sent to it, and when they send the code back the email is
+    saved on their account (it is where the code that renews their session goes, every few days)."""
+    source_key = user["source_key"]
+    session_id = f"emailsetup:{user['user_id']}"
+    pending = await get_session(session_id)
+    first_name = (user.get("user_name") or "").split(" ")[0]
+
+    if pending.get("state") == "awaiting_code":
+        if text.strip().lower().startswith("retry"):
+            await delete_session(session_id)
+            pending = {}
+        else:
+            candidates = extract_otp_candidates(text)
+            if not candidates:
+                await send_text(phone, await say(source_key, "otp.not_a_code"))
+                return
+            if len(candidates) > 1:
+                await send_text(phone, await say(source_key, "otp.many_numbers"))
+                return
+            result = await verify_otp(user["user_id"], candidates[0], source_key)
+            if not result["valid"]:
+                await send_text(
+                    phone,
+                    await say(source_key, "otp.rejected", reason=result["reason"]),
+                )
+                return
+            await fetch_one(
+                "UPDATE users SET email = $1 WHERE id = $2 AND COALESCE(email, '') = '' RETURNING id",
+                pending["email"],
+                user["user_id"],
+                source_key=source_key,
+            )
+            await delete_session(session_id)
+            org_row = await fetch_one(
+                "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
+                user["org_id"],
+                source_key=source_key,
+            )
+            await set_auth_token(
+                user["org_id"],
+                phone,
+                org_row["session_ttl_minutes"] if org_row else 480,
+            )
+            await send_text(
+                phone, await say(source_key, "onboarding.email_done", name=first_name)
+            )
+            return
+
+    email = extract_email(text)
+    if not email:
+        await send_text(
+            phone, await say(source_key, "onboarding.email_ask", name=first_name)
+        )
+        return
+    taken = await fetch_one(
+        "SELECT 1 AS used FROM users WHERE org_id = $1 AND lower(email) = lower($2) AND id <> $3",
+        user["org_id"],
+        email,
+        user["user_id"],
+        source_key=source_key,
+    )
+    if taken:
+        await send_text(phone, await say(source_key, "onboarding.email_taken"))
+        return
+    result = await generate_and_send_otp(
+        user_id=user["user_id"],
+        user_email=email,
+        user_name=user["user_name"],
+        org_name=user["org_name"],
+        org_id=user["org_id"],
+        action_context={"type": "email_setup", "description": "confirming your email"},
+        source_key=source_key,
+    )
+    if result["sent"]:
+        await set_session(
+            session_id, {"state": "awaiting_code", "email": email}, ttl=900
+        )
+        await send_text(
+            phone,
+            await say(
+                source_key,
+                "onboarding.email_code_sent",
+                email=email,
+                expiry_minutes=result["expiry_minutes"],
+            ),
+        )
+    elif result["reason"] == "cooldown":
+        await send_text(
+            phone,
+            await say(source_key, "otp.cooldown", wait_seconds=result["wait_seconds"]),
+        )
+    else:
+        await send_text(phone, await say(source_key, "otp.email_failed"))
+
+
 async def _take_the_turn(
     redis, key: str, token: str, lock_seconds: int, wait_seconds: int
 ) -> str:
@@ -1219,6 +1316,11 @@ async def _handle_message(
     user = await add_party_permissions(user)
 
     _turn_user.set(user)
+
+    # Added by an admin with a name and a number only: finish the set-up by asking for their email first
+    if not (user.get("email") or "").strip():
+        await _set_up_email(user, phone, text)
+        return
 
     # A message that only opens the door: a tap on the "Got it" button, or the ready message the emailed
     # link prepares. The kept messages are sent after this turn (see handle_message).

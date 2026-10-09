@@ -914,7 +914,7 @@ CREATE TABLE public.users (
     role_id uuid,
     name text NOT NULL,
     phone text,
-    email text NOT NULL,
+    email text,
     channel text DEFAULT 'telegram'::text,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now()
