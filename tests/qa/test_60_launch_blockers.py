@@ -413,17 +413,21 @@ def test_C21_a_second_yes_for_a_card_that_was_already_claimed_is_not_run_again()
     qa_run(scenario)
 
 
-# ───────────────────────────── P0-3 · the bot must not leak personal data (QA-008, QA-033) ─────────────────────────────
+# ───────────────────────────── P0-3 · phone numbers and emails are open to the chat bot (the owner's decision) ─────────────────────────────
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 HIDDEN_COLUMNS_SQL = [
     "core/core-0014_hidden_columns.sql",
     "features/housing/housing-0005_hidden_columns.sql",
 ]
+OPEN_SQL = [
+    "core/core-0021_open_phone_email.sql",
+    "features/housing/housing-0012_open_resident_mobiles.sql",
+]
 
 
-async def _apply_hidden_column_settings(w):
-    for name in HIDDEN_COLUMNS_SQL:
+async def _apply_hidden_column_settings(w, names=None):
+    for name in names or HIDDEN_COLUMNS_SQL:
         await w.run((MIGRATIONS / name).read_text(encoding="utf-8"))
 
 
@@ -442,40 +446,37 @@ async def _ask(w, user, sql: str) -> str:
 
 
 @needs_qa
-def test_G_owner_cannot_read_resident_mobile_numbers():
+def test_G_phone_numbers_and_emails_can_be_asked_for_but_secrets_stay_hidden():
     async def scenario(w):
         await _apply_hidden_column_settings(w)
+        await _apply_hidden_column_settings(w, OPEN_SQL)
         await w.run(
             "INSERT INTO residents (org_id, wing, flat_no, residential_status, brokers_name, first_owner_name, "
             "first_owner_mobile, name) VALUES ($1, 'A', 'A-101', 'tenant', 'Test Broker', 'Test Owner', "
             "'+919000099999', 'Test Resident')",
             w.ids.org_id,
         )
-        user = await _admin_who_reads(w, ["residents"])
-        assert "Query blocked" in await _ask(
-            w, user, "SELECT first_owner_mobile FROM residents"
-        )
-        assert "Query blocked" in await _ask(
+        user = await _admin_who_reads(w, ["residents", "users"])
+        got = await _ask(w, user, "SELECT first_owner_mobile FROM residents")
+        assert "+919000099999" in got, got[:300]
+        got = await _ask(
             w,
             user,
             "SELECT name FROM residents WHERE first_owner_mobile = '+919000099999'",
         )
-        assert "Query blocked" in await _ask(
+        assert "Test Resident" in got, got[:300]
+        assert "Test Broker" in await _ask(
             w, user, "SELECT brokers_name FROM residents"
         )
-        everything = await _ask(w, user, "SELECT * FROM residents")
-        assert "Test Resident" in everything, everything[
-            :300
-        ]  # the ordinary columns still answer
-        assert "+919000099999" not in everything and "Test Broker" not in everything, (
-            everything[:300]
-        )
+        people = await _ask(w, user, "SELECT name, phone, email FROM users")
+        assert "Query blocked" not in people and "@" in people, people[:300]
+        assert "Query blocked" in await _ask(w, user, "SELECT otp_hash FROM users")
 
     qa_run(scenario)
 
 
 @needs_qa
-def test_G_the_hidden_column_settings_never_overwrite_the_organisations_own_lists_and_never_replace_the_minimum():
+def test_G_opening_phone_numbers_keeps_the_organisations_own_list_and_the_secret_patterns():
     async def scenario(w):
         await w.run(
             "UPDATE orgs SET settings = settings || $1::jsonb",
@@ -484,22 +485,12 @@ def test_G_the_hidden_column_settings_never_overwrite_the_organisations_own_list
             ),
         )
         await _apply_hidden_column_settings(w)
+        await _apply_hidden_column_settings(w, OPEN_SQL)
         row = await w.one("SELECT settings -> 'ai_sql' AS cfg FROM orgs")
         cfg = json.loads(row["cfg"]) if isinstance(row["cfg"], str) else row["cfg"]
-        assert cfg["hidden_column_patterns"] == ["*custom*"], (
-            "the organisation's own list was overwritten"
-        )
         assert cfg["enabled"] is True
-        assert cfg["hidden_columns"] == [
-            "first_owner_mobile",
-            "brokers_name",
-        ]  # the missing list was added
-        user = await _admin_who_reads(w, ["users"])
-        # their list does not cover phone numbers, the built-in minimum still does
-        assert "Query blocked" in await _ask(w, user, "SELECT phone FROM users")
-        assert "Query blocked" in await _ask(
-            w, user, "SELECT name FROM users WHERE phone = '+919000000002'"
-        )
+        assert "hidden_columns" not in cfg  # the resident-mobile list is gone
+        assert cfg["hidden_column_patterns"] == ["password*", "*otp*"]
 
     qa_run(scenario)
 
@@ -507,9 +498,9 @@ def test_G_the_hidden_column_settings_never_overwrite_the_organisations_own_list
 @needs_qa
 def test_G_running_the_hidden_column_settings_twice_changes_nothing():
     async def scenario(w):
-        await _apply_hidden_column_settings(w)
+        await _apply_hidden_column_settings(w, HIDDEN_COLUMNS_SQL + OPEN_SQL)
         once = await w.one("SELECT settings::text AS s FROM orgs")
-        await _apply_hidden_column_settings(w)
+        await _apply_hidden_column_settings(w, HIDDEN_COLUMNS_SQL + OPEN_SQL)
         twice = await w.one("SELECT settings::text AS s FROM orgs")
         assert once["s"] == twice["s"]
 

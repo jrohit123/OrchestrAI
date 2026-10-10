@@ -382,7 +382,7 @@ def test_G01b_the_refusal_tells_the_ai_to_say_details_are_private_not_that_the_p
     with pytest.raises(sql_guard.GuardError) as why:
         sql_guard.prepare("SELECT name, phone FROM users", **KW)
     text = str(why.value)
-    assert "personal details are not shared in chat" in text
+    assert "kept private and is not shared in chat" in text
     assert "do not say the person" in text
 
 

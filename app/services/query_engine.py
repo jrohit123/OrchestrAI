@@ -43,15 +43,13 @@ SENSITIVE_COLS = {
     "workflow_id",
     "otp_hash",
     "config",
-    "phone",
-    "email",
 }
 
 
-# Personal data: never returned AND never used anywhere in a query the AI writes (see sql_guard). The
-# organisation adds its own columns and patterns in orgs.settings -> ai_sql; this is only the minimum
-# that is always hidden, so a missing setting can never expose a phone number or an e-mail address.
-PRIVATE_COLS = {"phone", "email", "otp_hash"}
+# Secrets: never returned AND never used anywhere in a query the AI writes (see sql_guard). Phone numbers and
+# emails are readable by the chat bot (the owner's decision); an organisation that wants a column hidden again
+# adds it, or a pattern like *phone*, in orgs.settings -> ai_sql. This is only the minimum that is always hidden.
+PRIVATE_COLS = {"otp_hash"}
 
 
 def _safe(sql: str) -> tuple[bool, str]:
