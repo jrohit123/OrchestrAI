@@ -378,6 +378,14 @@ def test_G01_a_hidden_column_is_refused():
     assert refused("SELECT phone FROM users")
 
 
+def test_G01b_the_refusal_tells_the_ai_to_say_details_are_private_not_that_the_person_is_missing():
+    with pytest.raises(sql_guard.GuardError) as why:
+        sql_guard.prepare("SELECT name, phone FROM users", **KW)
+    text = str(why.value)
+    assert "personal details are not shared in chat" in text
+    assert "do not say the person" in text
+
+
 def test_G02_select_star_is_allowed_by_the_guard_and_left_to_the_caller_to_strip():
     assert not refused("SELECT * FROM users")
 

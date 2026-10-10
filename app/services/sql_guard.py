@@ -145,7 +145,9 @@ def _check_private(tree, is_private) -> None:
         if is_private(ident.name):
             raise GuardError(
                 f"the column '{ident.name}' holds personal data and cannot be used in a query, "
-                "not even to filter or sort. Leave it out."
+                "not even to filter or sort. Leave it out. If the person asked for that detail itself, "
+                "do not search again and do not say the person or the detail is missing: tell them that "
+                "personal details are not shared in chat and are kept private."
             )
 
 
