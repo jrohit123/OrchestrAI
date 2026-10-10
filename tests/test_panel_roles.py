@@ -32,7 +32,7 @@ CREATE TABLE users (
 CREATE TABLE workflows (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL, intent_key text NOT NULL,
     name text NOT NULL, description text, steps jsonb DEFAULT '[]', entity_schema jsonb NOT NULL DEFAULT '{}',
-    gates jsonb NOT NULL DEFAULT '[]', is_active boolean DEFAULT true, created_at timestamptz DEFAULT now(),
+    gates jsonb NOT NULL DEFAULT '[]', sql_template text, is_active boolean DEFAULT true, created_at timestamptz DEFAULT now(),
     kind text NOT NULL DEFAULT 'workflow', UNIQUE (org_id, intent_key));
 CREATE TABLE access_grants (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL,

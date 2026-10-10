@@ -385,12 +385,12 @@ async def ask(w, user, sql: str) -> str:
 
 
 @needs_qa
-def test_G_control_the_ai_sql_tool_answers_a_plain_question_and_blocks_a_hidden_column():
+def test_G_control_the_ai_sql_tool_answers_a_plain_question_and_blocks_a_secret_column():
     async def scenario(w):
         user = await sql_user(w, ["users", "cases"])
         names = await ask(w, user, "SELECT name FROM users WHERE name LIKE 'Asha%'")
         assert "Asha Admin" in names
-        assert "Query blocked" in await ask(w, user, "SELECT phone FROM users")
+        assert "Query blocked" in await ask(w, user, "SELECT otp_hash FROM users")
 
     qa_run(scenario)
 
@@ -413,11 +413,13 @@ def test_G03_the_ai_sql_tool_never_returns_a_phone_number_or_an_e_mail(sql):
 
 
 @needs_qa
-def test_G05_the_ai_sql_tool_cannot_find_a_person_by_phone_number():
+def test_G05_the_ai_sql_tool_can_find_a_person_by_phone_number():
+    """The owner's decision: phone numbers and emails are open to the chat bot (see core-0021)."""
+
     async def scenario(w):
         user = await sql_user(w, ["users", "cases"])
         out = await ask(w, user, "SELECT name FROM users WHERE phone = '+919000000002'")
-        assert "Meera Member" not in out, out[:200]
+        assert "Meera Member" in out, out[:200]
 
     qa_run(scenario)
 

@@ -55,7 +55,7 @@ async def _flows(ctx: Ctx) -> list[dict]:
     found = rows(
         await fetch_all(
             "SELECT id, intent_key, name, description, is_active, entity_schema, steps, "
-            f"{kind} FROM workflows WHERE org_id = $1 ORDER BY created_at",
+            f"sql_template, {kind} FROM workflows WHERE org_id = $1 ORDER BY created_at",
             ctx.org_id,
             source_key=ctx.source_key,
         )
@@ -146,6 +146,16 @@ async def _tables_available(ctx: Ctx) -> list[str]:
     return sorted(t for t in schema if t not in _PLATFORM_TABLES)
 
 
+def _tables_read_by_report(flow: dict) -> list[str]:
+    """The tables a stored report's own query reads. It reads them whatever the role's table list says (the
+    list limits only what the chat bot may look up freely), so this is only shown, never required."""
+    sql = flow.get("sql_template") or ""
+    found = {
+        t.lower() for t in re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE)
+    }
+    return sorted(found - set(_PLATFORM_TABLES))
+
+
 def _tables_needed(flow: dict) -> set[str]:
     from app.services.workflow_publisher import (
         _referenced_entity_types,
@@ -219,6 +229,7 @@ async def list_roles(ctx: CtxDep):
                 "description": f["description"],
                 "is_active": f["is_active"],
                 "needs_tables": sorted(_tables_needed(f)),
+                "reads": _tables_read_by_report(f),
             }
             for f in flows
         ],

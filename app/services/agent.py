@@ -1232,6 +1232,16 @@ async def _validate_draft(
 # ── Tool execution ────────────────────────────────────────────────────────────
 
 
+async def _report_runs_with_its_own_data(user: dict, intent_key: str) -> bool:
+    """True for a stored report the person's role has been given (or that is meant for people on their case).
+    Such a report is written by the organisation and shows only what it selects, so it reads what it needs:
+    the role's table list limits only what the chat bot may look up freely. (Before, a role that held a
+    report but not a table the report joined was offered it on the menu and then refused it.)"""
+    if intent_key in set(user.get("permissions", [])):
+        return True
+    return await _is_party_report(user, intent_key)
+
+
 async def _is_party_report(user: dict, intent_key: str) -> bool:
     """True for a stored report meant for people on a case (workflows.settings.who_can_use): the
     report itself limits what each person sees, so the role's table list does not apply to it."""
@@ -1478,7 +1488,7 @@ async def _execute_tool(
             user=user,
             response_format="generic",
             business_glossary=glossary,
-            trusted=await _is_party_report(user, intent_key),
+            trusted=await _report_runs_with_its_own_data(user, intent_key),
         )
         if (wf.get("response_format") or "") == "list":
             # finished by code, so the model cannot drop a row or change a value
@@ -2283,7 +2293,7 @@ async def _run_report_by_code(
         user=user,
         response_format="generic",
         business_glossary=glossary,
-        trusted=await _is_party_report(user, wf["intent_key"]),
+        trusted=await _report_runs_with_its_own_data(user, wf["intent_key"]),
     )
     if (wf.get("response_format") or "") == "list":
         text = format_list(wf["name"], raw)
@@ -2631,7 +2641,7 @@ async def run_agent(
                 user=user,
                 response_format="generic",  # always JSON here — formatting happens below
                 business_glossary=wf.get("business_glossary", {}),
-                trusted=await _is_party_report(user, wf["intent_key"]),
+                trusted=await _report_runs_with_its_own_data(user, wf["intent_key"]),
             )
             history_to_save = [{"role": "user", "content": message}]
 

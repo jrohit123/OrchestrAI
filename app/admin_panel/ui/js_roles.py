@@ -62,7 +62,7 @@ async function renderRoleEditor(root, route) {
         locked ? h('div', { class: 'notice', style: { marginTop: '12px' } }, icon('lock'), h('div', null, h('b', null, 'Built in. '), 'A database rule (' + pretty(r.built_in_by).toLowerCase() + ') moves people into and out of this role by its name. You can change what it can do, but not its name, and it cannot be deleted.')) : null));
     // 2. what they can do
     const flowRow = f => h('div', { class: 'rl-perm' }, h('label', { class: 'switch' }, h('input', { type: 'checkbox', role: 'switch', 'aria-label': f.name, checked: x.flows.has(f.intent_key), onchange: e => { e.target.checked ? x.flows.add(f.intent_key) : x.flows.delete(f.intent_key); armGuard(); drawEdit(); } }), h('span')),
-      h('div', null, h('b', null, f.name), f.is_active ? null : [' ', badge('off')], f.description ? h('span', { class: 'muted small rl-desc' }, f.description) : null));
+      h('div', null, h('b', null, f.name), f.is_active ? null : [' ', badge('off')], f.description ? h('span', { class: 'muted small rl-desc' }, f.description) : null, (f.reads || []).length ? h('span', { class: 'muted small rl-desc' }, 'Reads: ' + f.reads.map(pretty).join(', ')) : null));
     const can = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'What they can do', h('span', { class: 'muted small' }, 'Each line is a flow the chat bot offers them')),
       d.flows.length ? [d.flows.map(flowRow), x.flows.size ? null : h('div', { class: 'card-b muted small' }, 'This role cannot start anything yet.')] : empty('No flows yet', 'Make one on the Flows screen first.'));
     // 3. what the chat bot may look up
