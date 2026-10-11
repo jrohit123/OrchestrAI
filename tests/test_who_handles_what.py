@@ -237,3 +237,17 @@ def test_an_owner_is_needed_to_save():
         """
     )
     assert out["calls"] == []
+
+
+def test_two_people_with_the_same_first_name_are_kept_apart_in_the_short_names():
+    out = run(
+        """
+        tcats.push({ id: 'k-sec', parent_id: null, label: 'Security', is_active: true, depth: 0 });
+        trules.push({ id: 'r-sec', name: 'Security', category_id: 'k-sec', intent_key: null, match: {}, is_active: true,
+          people: [tp('u-1', 'Ashish Shukla', 1), tp('u-2', 'Ashish Srivastava', 1), tp('u-3', 'Chetan Bhandare', 2)] });
+        await renderTeamsTab(root);
+        return { row: rowNamed(root, 'Security').textContent };
+        """
+    )
+    assert "Ashish Sr." in out["row"]
+    assert "Chetan B." in out["row"]

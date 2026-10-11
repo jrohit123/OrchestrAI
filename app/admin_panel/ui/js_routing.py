@@ -186,7 +186,8 @@ async function renderCategoriesTab(root) {
 let WH_OPEN = null, WH_HIDDEN = false;
 const WH_KIDS = {};
 const whPlain = r => !r.intent_key && !Object.keys(r.match || {}).length;
-const whShort = n => { const p = String(n).split(' '); return p.length > 1 ? p[0] + ' ' + p[p.length - 1][0] + '.' : n; };
+// first name and as few letters of the surname as keep two people apart (Ashish Sr. and Ashish Sh.)
+const whShort = (n, known) => { const p = String(n).split(' '); if (p.length < 2) return n; const last = p[p.length - 1], same = (known || []).filter(x => x !== n && String(x).split(' ')[0] === p[0]).map(x => String(x).split(' ').pop()); let k = 1; while (k < last.length && same.some(o => o.slice(0, k) === last.slice(0, k))) k++; return p[0] + ' ' + last.slice(0, k) + (k < last.length ? '.' : ''); };
 async function renderTeamsTab(root) {
   const [cd, rd] = await Promise.all([api.get('/categories'), api.get('/rules')]);
   const cats = cd.rows, byId = Object.fromEntries(cats.map(c => [c.id, c]));
@@ -235,8 +236,9 @@ async function renderTeamsTab(root) {
     catch (e) { toast(e.message, 'bad'); }
   }
   const nameSpan = p => h('span', { class: 'wh-pn', style: p.reachable === false ? { color: 'var(--bad)' } : null, title: p.reachable === false ? 'Cannot be messaged right now' : null }, p.name);
-  const chips = (arr, max, short) => arr.length ? h('span', { class: 'chips' }, arr.slice(0, max).map(p => h('span', { class: 'chip', style: p.reachable === false ? { color: 'var(--bad)' } : null }, short ? whShort(p.name) : p.name)), arr.length > max ? h('span', { class: 'chip sunk' }, '+' + (arr.length - max)) : null) : h('span', { class: 'muted' }, 'none');
+  const chips = (arr, max, short) => arr.length ? h('span', { class: 'chips' }, arr.slice(0, max).map(p => h('span', { class: 'chip', style: p.reachable === false ? { color: 'var(--bad)' } : null }, short ? whShort(p.name, known) : p.name)), arr.length > max ? h('span', { class: 'chip sunk' }, '+' + (arr.length - max)) : null) : h('span', { class: 'muted' }, 'none');
   const first = p => String(p.name).split(' ')[0];
+  const known = [...new Set(rd.rows.flatMap(r => r.people.map(p => p.name)))];
   const sentence = (title, handles, loop) => {
     if (!handles.length) return h('span', { style: { color: 'var(--bad)' } }, 'Nobody is the owner yet, so a case would fall to the “Everything else” team.');
     const back = handles.slice(1);
