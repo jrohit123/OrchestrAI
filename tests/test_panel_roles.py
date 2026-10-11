@@ -622,7 +622,7 @@ def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
     tabs = {
         s["key"]: [t["key"] for t in s.get("tabs", [])] for s in meta._sections(HOUSING)
     }
-    assert tabs["rules"] == ["rules", "categories", "times"]
+    assert tabs["rules"] == ["teams", "rules", "categories", "times"]
     assert tabs["access"] == ["roles", "seats", "special"]
     assert tabs["assistant"] == ["messages", "instructions"]
     assert tabs["settings"] == ["general", "history"]

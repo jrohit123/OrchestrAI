@@ -178,12 +178,139 @@ async function renderCategoriesTab(root) {
     unc.total ? h('div', { class: 'card-b muted small' }, h('a', { href: href('cases', '', { category: 'none' }) }, plural(unc.total, 'case') + ' have no category'), ' (' + unc.open + ' open).') : null));
 }
 
+// ───────────────────────── Who handles what ─────────────────────────
+// One screen for "who looks after what": the areas on the left, the team of the chosen one on the right. It only reads
+// and writes case rules (one plain rule per area; a sub-kind follows its area until it is given a team of its own).
+// It never decides who gets a case: the database does, and "Try it" asks it.
+let WH_SEL = null;
+const whPlain = r => !r.intent_key && !Object.keys(r.match || {}).length;
+const whOrd = i => ['1st choice', '2nd choice', '3rd choice', '4th choice'][i] || (i + 1) + 'th choice';
+async function renderTeamsTab(root) {
+  const [cd, rd] = await Promise.all([api.get('/categories'), api.get('/rules')]);
+  const cats = cd.rows, byId = Object.fromEntries(cats.map(c => [c.id, c]));
+  const teamRule = id => rd.rows.find(r => (r.category_id || null) === id && whPlain(r)) || null;
+  const specials = id => rd.rows.filter(r => r.category_id === id && !whPlain(r)).length;
+  const inherited = c => { let p = c && c.parent_id ? byId[c.parent_id] : null, n = 0; while (p && n++ < 9) { if (teamRule(p.id)) return p; p = p.parent_id ? byId[p.parent_id] : null; } return null; };
+  const again = () => { clear(root); renderTeamsTab(root); };
+  let sel = WH_SEL === 'catch' || byId[WH_SEL] ? WH_SEL : ((cats.find(c => !c.depth) || {}).id || 'catch');
+  let draft = null, result = null;
+  const person = p => ({ id: p.user_id, name: p.name, reachable: p.reachable });
+  function load() {
+    WH_SEL = sel; result = null;
+    const c = sel === 'catch' ? null : byId[sel], rule = teamRule(sel === 'catch' ? null : sel);
+    draft = { rule, own: sel === 'catch' || !c.parent_id || !!rule, dirty: false,
+      handles: rule ? rule.people.filter(p => p.level === 1).map(person) : [], loop: rule ? rule.people.filter(p => p.level === 2).map(person) : [] };
+  }
+  async function leaveOk() { return !draft || !draft.dirty || await confirmBox('You have changes that are not saved. Leave them behind?', { ok: 'Leave them', danger: true }); }
+  async function pickArea(id) { if (id === sel) return; if (!await leaveOk()) return; sel = id; load(); paint(); }
+  function addModal(parentId) {
+    const name = h('input', { type: 'text', placeholder: parentId ? 'e.g. Lift stuck' : 'e.g. Finance' });
+    modal({ title: parentId ? 'New kind under ' + byId[parentId].label : 'New area', body: field('Name', name, parentId ? 'It follows the team of ' + byId[parentId].label + ' until you give it its own.' : 'You choose who handles it on the next screen.'),
+      actions: [{ label: 'Cancel' }, { label: 'Add', primary: true, run: async () => {
+        if (!name.value.trim()) throw new Error('Give it a name.');
+        const d = await api.post('/categories', { label: name.value.trim(), parent_id: parentId || null });
+        WH_SEL = d.id; toast('Added', 'ok'); again();
+      } }] });
+  }
+  async function save() {
+    const people = [...draft.handles.map(p => ({ user_id: p.id, level: 1 })), ...draft.loop.map(p => ({ user_id: p.id, level: 2 }))];
+    if (!draft.handles.length && !(draft.rule && draft.rule.assign_id)) { toast('Choose at least one person who handles it.', 'bad'); return; }
+    const r = draft.rule, c = sel === 'catch' ? null : byId[sel];
+    const body = r
+      ? { name: r.name, category_id: r.category_id, intent_key: null, match: {}, assign: r.assign_type ? { type: r.assign_type, id: r.assign_id } : null, backup: r.backup_type ? { type: r.backup_type, id: r.backup_id } : null, people, target_minutes: r.target_minutes, is_active: r.is_active }
+      : { name: c ? (c.label.length < 2 ? c.label + ' team' : c.label) : 'Anything else (catch-all)', category_id: c ? c.id : null, intent_key: null, match: {}, people, is_active: true };
+    try { if (r) await api.put('/rules/' + r.id, body); else await api.post('/rules', body); toast('Saved', 'ok'); again(); }
+    catch (e) { toast(e.message, 'bad'); }
+  }
+  const sentence = (title, handles, loop) => {
+    if (!handles.length) return h('span', { style: { color: 'var(--bad)' } }, 'Nobody handles this yet. A case would fall to the “Everything else” team.');
+    return h('span', null, 'A case about ', h('b', null, title), ' goes to ', h('b', null, handles[0].name), '.',
+      handles.length > 1 ? ' If ' + handles[0].name + ' cannot be reached, ' + handles[1].name + ' takes it.' : '',
+      loop.length ? ' ' + loop.map(p => p.name).join(', ') + (loop.length > 1 ? ' are' : ' is') + ' kept in the loop.' : '', ' Everyone listed is told.');
+  };
+  function listBlock(key, title, help, editable, shown) {
+    const arr = shown || draft[key], rows = arr.map((p, i) => h('div', { class: 'wh-pr' }, avatar(p.name),
+      h('span', { class: 'wh-nm', style: p.reachable === false ? { color: 'var(--bad)' } : null }, p.name, p.reachable === false ? h('span', { class: 'muted small' }, ' · cannot be messaged right now') : null),
+      key === 'handles' ? badge(i === 0 ? 'Owner' : whOrd(i), i === 0 ? 'ok' : null) : badge('In the loop'),
+      editable ? h('span', { class: 'wh-ctl' },
+        h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Move up', style: { visibility: i ? 'visible' : 'hidden' }, onclick: () => { [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]; draft.dirty = true; paint(); } }, '↑'),
+        h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Move down', style: { visibility: i < arr.length - 1 ? 'visible' : 'hidden' }, onclick: () => { [arr[i + 1], arr[i]] = [arr[i], arr[i + 1]]; draft.dirty = true; paint(); } }, '↓'),
+        h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Remove ' + p.name, onclick: () => { arr.splice(i, 1); draft.dirty = true; paint(); } }, '×')) : null));
+    const adder = editable ? personPicker({ placeholder: '+ Add a person…', onChange: p => {
+      if (!p) return;
+      if (draft.handles.concat(draft.loop).some(x => x.id === p.id)) { toast(p.name + ' is already on this team.', 'bad'); adder.set(null); return; }
+      draft[key].push({ id: p.id, name: p.name, reachable: true }); draft.dirty = true; paint();
+    } }) : null;
+    return h('div', { class: 'wh-blk' }, h('div', { class: 'wh-lab' }, h('b', null, title), ' ', h('span', { class: 'muted small' }, help)),
+      rows.length ? rows : h('div', { class: 'muted small', style: { marginBottom: '6px' } }, key === 'handles' ? 'Nobody yet' : 'Nobody yet. This part is optional.'), adder ? adder.el : null);
+  }
+  function leftCard() {
+    const dot = c => { const own = !!teamRule(c.id); return h('span', { class: 'wh-dot ' + (own ? 'ok' : inherited(c) ? 'follow' : 'none'), title: own ? 'Has a team' : inherited(c) ? 'Follows its area' : 'Nobody set up' }); };
+    const rows = cats.map(c => h('button', { class: 'wh-row' + (sel === c.id ? ' on' : '') + (c.is_active ? '' : ' off'), type: 'button', style: { paddingLeft: (10 + c.depth * 18) + 'px' }, onclick: () => pickArea(c.id) },
+      dot(c), h('span', { class: 'wh-nm' }, c.label), c.is_active ? null : h('span', { class: 'muted small' }, 'hidden')));
+    return h('div', { class: 'card wh-left' }, h('div', { class: 'wh-hd' }, 'Areas'), rows,
+      h('div', { class: 'wh-sep' }),
+      h('button', { class: 'wh-row' + (sel === 'catch' ? ' on' : ''), type: 'button', onclick: () => pickArea('catch') }, h('span', { class: 'wh-dot ' + (teamRule(null) ? 'ok' : 'none') }), h('span', { class: 'wh-nm' }, 'Everything else')),
+      h('div', { class: 'wh-sep' }),
+      h('div', { class: 'row', style: { padding: '4px 8px 8px', flexWrap: 'wrap' } },
+        h('button', { class: 'btn sm', type: 'button', onclick: () => addModal(null) }, '+ Area'),
+        sel !== 'catch' ? h('button', { class: 'btn sm', type: 'button', onclick: () => addModal(sel) }, '+ Kind under it') : null));
+  }
+  function rightCol() {
+    const c = sel === 'catch' ? null : byId[sel], col = h('div', { class: 'stack' });
+    const from = draft.own ? null : inherited(c), shownRule = from ? teamRule(from.id) : null;
+    const handles = draft.own ? draft.handles : (shownRule ? shownRule.people.filter(p => p.level === 1).map(person) : []);
+    const loop = draft.own ? draft.loop : (shownRule ? shownRule.people.filter(p => p.level === 2).map(person) : []);
+    const head = h('div', { class: 'row' });
+    if (!c) head.append(h('b', { style: { fontSize: '16px', flex: 1 } }, 'Everything else'));
+    else {
+      const ren = h('input', { type: 'text', value: c.label, 'aria-label': 'Name', style: { flex: 1, fontWeight: 600 } });
+      ren.addEventListener('change', async () => { const v = ren.value.trim(); if (!v) { ren.value = c.label; return; } try { await api.patch('/categories/' + c.id, { label: v }); toast('Renamed', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); ren.value = c.label; } });
+      head.append(ren, h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'More for ' + c.label, 'data-popkeep': '1', onclick: e => openPop(e.currentTarget, [
+        h('button', { class: 'mi', type: 'button', onclick: async () => { closePop(); try { await api.patch('/categories/' + c.id, { is_active: !c.is_active }); again(); } catch (x) { toast(x.message, 'bad'); } } }, icon('eye'), c.is_active ? 'Hide it' : 'Show it again'),
+        h('button', { class: 'mi', type: 'button', style: { color: 'var(--bad)' }, onclick: async () => { closePop(); if (!await confirmBox('Delete “' + c.label + '”? This only works if nothing uses it. Otherwise hide it.', { ok: 'Delete', danger: true })) return; try { await api.del('/categories/' + c.id); WH_SEL = null; toast('Deleted', 'ok'); again(); } catch (x) { toast(x.message, 'bad'); } } }, icon('trash'), 'Delete')], { align: 'right', width: 200 }) }, icon('dots', 'sm')));
+    }
+    col.append(h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, head,
+      c && !c.is_active ? notice('This one is hidden, so people cannot pick it. Its team is kept.', 'warn') : null,
+      !c ? h('div', { class: 'muted small' }, 'Used when a case has no kind, or its kind has nobody set up.') : null,
+      c && c.parent_id && !draft.own ? h('div', { class: 'wh-note' }, h('span', { style: { flex: 1 } }, from ? ['Follows the team of ', h('b', null, from.label), '. Change that team and this follows.'] : 'Nobody is set up above it either. Add a team to it, or to its area.'),
+        h('button', { class: 'btn sm', type: 'button', onclick: () => { draft.own = true; if (shownRule) { draft.handles = shownRule.people.filter(p => p.level === 1).map(person); draft.loop = shownRule.people.filter(p => p.level === 2).map(person); } draft.dirty = true; paint(); } }, 'Give it its own team')) : null,
+      c && c.parent_id && draft.own && draft.rule ? h('div', { class: 'wh-note warm' }, h('span', { style: { flex: 1 } }, 'Has its own team.'),
+        h('button', { class: 'btn sm', type: 'button', onclick: async () => { if (!await confirmBox('Remove its own team? It will follow its area again.', { ok: 'Remove', danger: true })) return; try { await api.del('/rules/' + draft.rule.id); toast('It follows its area again', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } } }, 'Follow its area instead')) : null,
+      draft.rule && !draft.rule.people.length && draft.rule.assign_name ? notice('This one points at ' + draft.rule.assign_name + ' the old way (' + draft.rule.assign_type + '). Add people below and save to replace that.', 'warn') : null,
+      h('div', { class: 'wh-sent' }, sentence(c ? c.label : 'anything else', handles, loop)),
+      listBlock('handles', 'Handles it, in order', 'If the first cannot be reached, the next takes it.', draft.own, draft.own ? null : handles),
+      listBlock('loop', 'Kept in the loop', 'Told about every case. Takes it only if nobody above can be reached.', draft.own, draft.own ? null : loop),
+      c && specials(c.id) ? h('div', { class: 'muted small' }, plural(specials(c.id), 'extra rule') + ' with conditions also apply to this kind. ', h('a', { href: href('rules', 'rules') }, 'See them')) : null,
+      draft.dirty ? h('div', { class: 'wh-save' }, h('span', { style: { flex: 1 } }, 'You have changes that are not saved.'), h('button', { class: 'btn', type: 'button', onclick: () => { load(); paint(); } }, 'Discard'), h('button', { class: 'btn primary', type: 'button', onclick: save }, 'Save team')) : null)));
+    if (c) {
+      const out = h('div', { class: 'quote', hidden: !result });
+      if (result) out.append(routeResultText(result.route));
+      col.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Try it'), h('div', { class: 'card-b stack' },
+        h('div', { class: 'muted small' }, 'Asks the system who would get a new case of this kind today, using what is saved. Names in red cannot be messaged right now.'),
+        h('div', null, h('button', { class: 'btn', type: 'button', onclick: async () => {
+          if (draft.dirty) { toast('Save your changes first, then try it.', 'bad'); return; }
+          try { result = await api.post('/rules/test', { category_id: c.id, context: {} }); paint(); } catch (e) { toast(e.message, 'bad'); } } }, 'Who would get it?')), out)));
+    }
+    const first = {};
+    rd.rows.filter(whPlain).forEach(r => { const p = r.people.find(x => x.level === 1); if (p) first[p.name] = (first[p.name] || 0) + 1; });
+    const names = Object.keys(first).sort((a, b) => first[b] - first[a] || a.localeCompare(b));
+    col.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'First choice on how many'), h('div', { class: 'card-b chips' },
+      names.length ? names.map(n => h('span', { class: 'chip' + (first[n] >= 3 ? ' wh-busy' : '') }, n + ' · ' + first[n] + (first[n] >= 3 ? ' (a lot)' : ''))) : h('span', { class: 'muted small' }, 'Nobody yet'))));
+    return col;
+  }
+  function paint() { clear(root); root.append(h('div', { class: 'wh' }, leftCard(), rightCol())); }
+  setTopAction({ label: 'New area', run: () => addModal(null) });
+  load(); paint();
+}
+
 SECTIONS.rules = {
   title: 'Case rules', sub: 'How new cases are sorted, who gets them, and how fast they must be answered.',
   async render(root, route) {
+    if (route.tab === 'rules') return renderRulesTab(root);
     if (route.tab === 'categories') return renderCategoriesTab(root);
     if (route.tab === 'times') { root.append(h('div', { class: 'grid' }, await targetsCard())); return; }
-    return renderRulesTab(root);
+    return renderTeamsTab(root);
   },
 };
 

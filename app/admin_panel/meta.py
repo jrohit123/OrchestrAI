@@ -59,7 +59,8 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         rule_tabs = []
         if caps.get("case_model"):
             rule_tabs += [
-                {"key": "rules", "label": "Who gets them"},
+                {"key": "teams", "label": "Who handles what"},
+                {"key": "rules", "label": "Rules in detail"},
                 {"key": "categories", "label": "Kinds of complaint"},
             ]
         if caps.get("targets"):

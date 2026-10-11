@@ -114,7 +114,8 @@ def test_cases_is_search_open_closed_and_one_filters_button():
     housing = {"cases": True, "case_model": True, "targets": True}
     rules = next(s for s in meta._sections(housing) if s["key"] == "rules")
     assert [t["label"] for t in rules["tabs"]] == [
-        "Who gets them",
+        "Who handles what",
+        "Rules in detail",
         "Kinds of complaint",
         "Response times",
     ]
