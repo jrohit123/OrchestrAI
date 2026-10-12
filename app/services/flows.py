@@ -225,17 +225,8 @@ def _media_ids(photos_answer) -> list[str]:
     return found
 
 
-async def _form_message(phone: str, data: dict) -> tuple[str, list[str]]:
-    """The filled form as one message for the chat bot, like a person typing it all at once, plus its photos."""
-    from app.services.identity import resolve_identity
-
-    user = await resolve_identity(phone)
-    if not user:
-        return "", []
-    settings = await config_store.org_settings(user["source_key"], user["org_id"])
-    cfg = flow_of(settings, "complaint") or {}
-    intent_key = str(cfg.get("workflow") or "file_a_complaint")
-    schema = await _complaint_schema(user, intent_key)
+async def _form_details(user: dict, data: dict, schema: dict) -> str:
+    """The filled form as plain labelled lines (Problem: ..., Where: ...), the way a person would type it."""
     lines = []
     for answer_key, field in FORM_FIELDS.items():
         value = str(data.get(answer_key) or "").strip()
@@ -243,42 +234,123 @@ async def _form_message(phone: str, data: dict) -> tuple[str, list[str]]:
             lines.append(
                 f"{(schema.get(field) or {}).get('label') or field.title()}: {value}"
             )
-    category = str(data.get("category") or "").strip()
-    if category and category != NO_CATEGORY:
-        row = await fetch_one(
-            "SELECT label FROM case_categories WHERE org_id = $1 AND key = $2",
-            user["org_id"],
-            category,
-            source_key=user["source_key"],
+    category = await _category_label(user, data)
+    if category:
+        lines.append(f"{EXTRA_LABELS['category']}: {category}")
+    return chr(10).join(lines)
+
+
+async def _category_label(user: dict, data: dict) -> str:
+    key = str(data.get("category") or "").strip()
+    if not key or key == NO_CATEGORY:
+        return ""
+    row = await fetch_one(
+        "SELECT label FROM case_categories WHERE org_id = $1 AND key = $2",
+        user["org_id"],
+        key,
+        source_key=user["source_key"],
+    )
+    return (row or {}).get("label") or key
+
+
+async def use_form(
+    user: dict, phone: str, form: dict, session: dict, session_id: str, ttl: int
+):
+    """A filled form: its answers go straight into the complaint workflow's draft and the usual summary ("Here's what
+    I'll save... yes") is shown, with no language model reading anything. Returns (done, details): done is True when the
+    summary was sent; otherwise details is what the chat bot should be told instead, as if typed after the command."""
+    from app.redis_client import set_session
+    from app.services import agent
+    from app.services.draft_store import close_draft
+    from app.services.messaging import send_text
+
+    data = form.get("data") or {}
+    settings = await config_store.org_settings(user["source_key"], user["org_id"])
+    intent_key = str(
+        (flow_of(settings, "complaint") or {}).get("workflow") or "file_a_complaint"
+    )
+    wf = await fetch_one(
+        "SELECT * FROM workflows WHERE org_id = $1 AND intent_key = $2 AND is_active",
+        user["org_id"],
+        intent_key,
+        source_key=user["source_key"],
+    )
+    schema = (
+        (await _complaint_schema(user, intent_key))
+        if not wf
+        else agent._parse_jsonb(wf.get("entity_schema"), {}) or {}
+    )
+    details = await _form_details(user, data, schema)
+    if not wf:
+        return False, details
+    fields = {
+        field: str(data.get(answer_key) or "").strip()
+        for answer_key, field in FORM_FIELDS.items()
+        if str(data.get(answer_key) or "").strip()
+    }
+    allowed = (schema.get("priority") or {}).get("enum")
+    if allowed and fields.get("priority") not in allowed:
+        fields.pop("priority", None)
+    category = await _category_label(user, data)
+    if category and "description" in schema:
+        fields["description"] = f"{EXTRA_LABELS['category']}: {category}"
+    if not fields.get("title") or not fields.get("location"):
+        return False, details
+    await close_draft(
+        user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
+    )
+    try:
+        result = await agent._confirm_by_code(
+            dict(user),
+            dict(wf),
+            fields,
+            {},
+            message=details,
+            history=session.get("conversation_history"),
+            limit=user.get("context_message_limit") or 12,
         )
-        lines.append(
-            f"{EXTRA_LABELS['category']}: {(row or {}).get('label') or category}"
+    except Exception as e:  # the chat bot reads it instead
+        logger.warning(
+            f"flows: the form could not be confirmed by code ({type(e).__name__}): {e}"
         )
-    if not lines:
-        return "", []
-    details = "\n".join(lines)
-    command = next(
-        (
-            w.get("slash_command")
-            for w in await menu.get_menu_workflows(user["org_id"], user)
-            if w["intent_key"] == intent_key
-        ),
-        None,
+        return False, details
+    if not result:
+        return False, details
+    reply, history, patch = result
+    patch.pop("_buttons", None)
+    session.update(patch)
+    session["conversation_history"] = history
+    session["last_message"] = details
+    await set_session(session_id, session, ttl=ttl)
+    await send_text(phone, reply)
+    return True, None
+
+
+async def _form_answer(phone: str, data: dict) -> tuple[str, list[str], dict | None]:
+    from app.services.identity import resolve_identity
+
+    user = await resolve_identity(phone)
+    if not user or not any(str(data.get(k) or "").strip() for k in FORM_FIELDS):
+        return "", [], None
+    settings = await config_store.org_settings(user["source_key"], user["org_id"])
+    intent_key = str(
+        (flow_of(settings, "complaint") or {}).get("workflow") or "file_a_complaint"
     )
     limit = config_store.limit_of(settings, "photo_max")
     refs = [f"{photos.WHATSAPP}{i}" for i in _media_ids(data.get("photos"))][:limit]
-    return (f"/{command} {details}" if command else details), refs
+    return intent_key, refs, {"data": data}
 
 
-async def read_answer(phone: str, inter: dict) -> tuple[str, list[str]]:
-    """What a person's finished Flow means as a message: (text, photo references). ("", []) leaves the answer alone.
-    A chosen workflow is its key, handled like a tap on a menu row. A filled form is its details in one message."""
+async def read_answer(phone: str, inter: dict) -> tuple[str, list[str], dict | None]:
+    """What a person's finished Flow means: (text, photo references, form). ("", [], None) leaves the answer alone.
+    A chosen workflow is its key, handled like a tap on a menu row. A filled form is the complaint workflow's key with
+    the form's answers (see use_form) and its photos."""
     try:
         data = json.loads((inter.get("nfm_reply") or {}).get("response_json") or "{}")
     except (TypeError, ValueError):
-        return "", []
+        return "", [], None
     if not isinstance(data, dict):
-        return "", []
+        return "", [], None
     logger.info(f"WhatsApp Flow answer with: {sorted(data)}")
     if data.get("photos"):  # only the shape of what came back, never its content
         first = (
@@ -292,7 +364,11 @@ async def read_answer(phone: str, inter: dict) -> tuple[str, list[str]]:
         )
     choice = str(data.get("workflow") or "").strip()
     if choice:
-        return (choice, []) if re.fullmatch(r"[A-Za-z0-9_]{1,80}", choice) else ("", [])
+        return (
+            (choice, [], None)
+            if re.fullmatch(r"[A-Za-z0-9_]{1,80}", choice)
+            else ("", [], None)
+        )
     if "problem" in data or "location" in data:
-        return await _form_message(phone, data)
-    return "", []
+        return await _form_answer(phone, data)
+    return "", [], None

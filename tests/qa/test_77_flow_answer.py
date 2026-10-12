@@ -30,7 +30,7 @@ def flow_answer(w, phone, answer):
 async def handled_after(w, answer):
     seen = []
 
-    async def handle_message(phone, text, msg_type="text", attachments=None):
+    async def handle_message(phone, text, msg_type="text", attachments=None, form=None):
         seen.append(text)
 
     _patch(w, webhook, "handle_message", handle_message)
@@ -72,8 +72,10 @@ def test_a_filled_complaint_form_reaches_the_chat_bot_as_one_message_with_its_ph
     async def scenario(w):
         seen = []
 
-        async def handle_message(phone, text, msg_type="text", attachments=None):
-            seen.append((text, attachments))
+        async def handle_message(
+            phone, text, msg_type="text", attachments=None, form=None
+        ):
+            seen.append((text, attachments, form))
 
         _patch(w, webhook, "handle_message", handle_message)
         phone = w.ids.phone_member
@@ -86,8 +88,14 @@ def test_a_filled_complaint_form_reaches_the_chat_bot_as_one_message_with_its_ph
         }
         reply = await w.wa_post(flow_answer(w, phone, answer))
         assert reply.status_code == 200
-        text, attachments = seen[0]
-        assert "Leakage in bathroom" in text and "T5-901" in text and "urgent" in text
+        text, attachments, form = seen[0]
+        assert (
+            text == "file_a_complaint"
+        )  # the complaint workflow, with the answers handed along
+        assert (
+            form["data"]["problem"] == "Leakage in bathroom"
+            and form["data"]["priority"] == "urgent"
+        )
         assert attachments == ["wa:media-1"]
 
     qa_run(scenario)
@@ -149,5 +157,55 @@ def test_cancelling_a_draft_also_clears_the_chats_copy_so_the_same_workflow_can_
         await w.login("member")
         await w.say(user["phone"], "/cancel")
         assert not (await get_session(session_id)).get("pending_action")
+
+    qa_run(scenario)
+
+
+@needs_qa
+def test_typed_words_that_only_say_complaint_open_the_form_instead_of_the_questions():
+    async def scenario(w):
+        from app.redis_client import get_session
+        from app.services import flows
+
+        sent = await flow_world(
+            w,
+            {
+                "whatsapp_flows": {
+                    "complaint": {
+                        "enabled": True,
+                        "flow_id": "456",
+                        "workflow": "file_a_complaint",
+                    }
+                }
+            },
+        )
+
+        async def schema(user, intent_key):
+            return {"priority": {"enum": ["urgent", "low"]}}
+
+        _patch(w, flows, "_complaint_schema", schema)
+        phone = w.ids.phone_member
+
+        async def run_agent(text, user, phone, **kw):
+            # the chat bot starts the complaint with nothing filled in: it would ask the questions
+            return (
+                "Please provide these details!",
+                [],
+                {
+                    "pending_action": {
+                        "intent_key": "file_a_complaint",
+                        "stage": "collecting",
+                        "fields": {},
+                    }
+                },
+            )
+
+        _patch(w, webhook, "run_agent", run_agent)
+        await w.say(phone, "I would like to add a complaint")
+        assert len(sent) == 1 and sent[0]["screen"] == "COMPLAINT"
+        assert not [m for m in w.sent if "Please provide" in m.get("text", "")]
+        user = await w.user("member")
+        session = await get_session(f"{user['org_id']}:{phone}")
+        assert not session.get("pending_action")
 
     qa_run(scenario)

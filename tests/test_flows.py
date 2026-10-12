@@ -4,6 +4,7 @@ network: the few things a Flow reads are replaced."""
 
 import asyncio
 import json
+from typing import ClassVar
 
 from app.services import flows
 
@@ -313,22 +314,25 @@ def test_a_chosen_workflow_is_its_key_and_anything_odd_is_left_alone():
     assert run(flows.read_answer("+91", answer(workflow="view_all_cases"))) == (
         "view_all_cases",
         [],
+        None,
     )
     assert run(flows.read_answer("+91", answer(workflow="x; drop table cases"))) == (
         "",
         [],
+        None,
     )
-    assert run(flows.read_answer("+91", answer(other="x"))) == ("", [])
+    assert run(flows.read_answer("+91", answer(other="x"))) == ("", [], None)
     assert run(
         flows.read_answer("+91", {"nfm_reply": {"response_json": "not json"}})
-    ) == ("", [])
+    ) == ("", [], None)
     assert run(flows.read_answer("+91", {"nfm_reply": {"response_json": "[1]"}})) == (
         "",
         [],
+        None,
     )
 
 
-def test_a_filled_form_becomes_one_message_for_the_chat_bot_with_its_photos(
+def test_a_filled_form_is_the_complaint_workflows_key_with_its_answers_and_photos(
     monkeypatch,
 ):
     form_world(monkeypatch)
@@ -337,85 +341,163 @@ def test_a_filled_form_becomes_one_message_for_the_chat_bot_with_its_photos(
         return USER
 
     monkeypatch.setattr("app.services.identity.resolve_identity", resolve_identity)
-    monkeypatch.setattr(
-        flows.menu,
-        "get_menu_workflows",
-        workflows(
-            wf("file_a_complaint", "File a complaint", "create", slash="complaint")
-        ),
+    data = {
+        "flow_token": "complaint:abc",
+        "location": "T5-901",
+        "problem": "Leakage in bathroom",
+        "category": "plumbing",
+        "priority": "urgent",
+        "photos": [{"id": "m1", "mime_type": "image/jpeg"}, {"id": "m2"}],
+    }
+    text, refs, form = run(flows.read_answer("+919000000001", answer(**data)))
+    assert text == "file_a_complaint" and refs == ["wa:m1", "wa:m2"]
+    assert form == {"data": data}
+
+
+def test_an_empty_form_or_an_unknown_person_is_left_alone(monkeypatch):
+    form_world(monkeypatch)
+
+    async def resolve_identity(phone):
+        return USER
+
+    monkeypatch.setattr("app.services.identity.resolve_identity", resolve_identity)
+    assert run(flows.read_answer("+91", answer(location="", problem=""))) == (
+        "",
+        [],
+        None,
     )
+
+    async def nobody(phone):
+        return None
+
+    monkeypatch.setattr("app.services.identity.resolve_identity", nobody)
+    assert run(flows.read_answer("+91", answer(location="T5", problem="Leak"))) == (
+        "",
+        [],
+        None,
+    )
+
+
+# ------------------------------------------------------------ the form's answers go straight into the draft
+
+
+class FakeAgent:
+    """What use_form needs of the chat bot's own code: reading a workflow's schema and saving the checked draft."""
+
+    seen: ClassVar[dict] = {}
+
+    @staticmethod
+    def _parse_jsonb(value, default):
+        return value if value is not None else default
+
+    @staticmethod
+    async def _confirm_by_code(user, wf, fields, display, *, message, history, limit):
+        FakeAgent.seen = {"fields": fields, "message": message, "limit": limit}
+        return (
+            "SUMMARY",
+            (history or []) + [{"role": "assistant", "content": "SUMMARY"}],
+            {
+                "pending_action": {
+                    "intent_key": wf["intent_key"],
+                    "fields": fields,
+                    "stage": "awaiting_confirmation",
+                },
+                "_buttons": [{"id": "yes"}],
+            },
+        )
+
+
+def use_form_world(monkeypatch, wf_row="default"):
+    sent, saved, closed = [], {}, []
+    form_world(monkeypatch)
+    row = {
+        "intent_key": "file_a_complaint",
+        "name": "File a complaint",
+        "entity_schema": {**SCHEMA, "description": {}},
+    }
 
     async def fetch_one(sql, *a, **k):
+        if "FROM workflows" in sql:
+            return None if wf_row is None else row
         return {"label": "Plumbing"}
 
+    async def send_text(to, text):
+        sent.append((to, text))
+
+    async def set_session(session_id, data, ttl=600):
+        saved.update({"id": session_id, "data": dict(data), "ttl": ttl})
+
+    async def close_draft(org_id, user_id, stage, source_key=None):
+        closed.append(stage)
+
     monkeypatch.setattr(flows, "fetch_one", fetch_one)
-    text, refs = run(
-        flows.read_answer(
+    monkeypatch.setattr("app.services.messaging.send_text", send_text)
+    monkeypatch.setattr("app.redis_client.set_session", set_session)
+    monkeypatch.setattr("app.services.draft_store.close_draft", close_draft)
+    monkeypatch.setattr(
+        "app.services.agent._parse_jsonb", FakeAgent._parse_jsonb, raising=False
+    )
+    monkeypatch.setattr(
+        "app.services.agent._confirm_by_code", FakeAgent._confirm_by_code, raising=False
+    )
+    return sent, saved, closed
+
+
+FORM = {
+    "data": {
+        "problem": "Leak",
+        "location": "T5-901",
+        "category": "plumbing",
+        "priority": "urgent",
+    }
+}
+
+
+def test_a_filled_form_is_saved_as_a_draft_by_code_and_the_summary_is_sent(monkeypatch):
+    sent, saved, closed = use_form_world(monkeypatch)
+    done, details = run(
+        flows.use_form(
+            {**USER, "context_message_limit": 5},
             "+919000000001",
-            answer(
-                flow_token="complaint:abc",
-                location="T5-901",
-                problem="Leakage in bathroom",
-                category="plumbing",
-                priority="urgent",
-                photos=[{"id": "m1", "mime_type": "image/jpeg"}, {"id": "m2"}],
-            ),
+            FORM,
+            {},
+            "o1:+919000000001",
+            600,
         )
     )
+    assert done is True and details is None
+    assert FakeAgent.seen["fields"] == {
+        "title": "Leak",
+        "location": "T5-901",
+        "priority": "urgent",
+        "description": "Category: Plumbing",
+    }
+    assert FakeAgent.seen["limit"] == 5
+    assert sent == [("+919000000001", "SUMMARY")] and closed == [
+        "cancelled"
+    ]  # an old draft is dropped first
     assert (
-        text
-        == "/complaint Problem: Leakage in bathroom\nWhere: T5-901\nPriority: urgent\nCategory: Plumbing"
+        saved["data"]["pending_action"]["stage"] == "awaiting_confirmation"
+        and "_buttons" not in saved["data"]
     )
-    assert refs == ["wa:m1", "wa:m2"]
 
 
-def test_a_form_without_a_category_or_photos_still_works_and_an_empty_one_is_left_alone(
+def test_a_priority_the_workflow_does_not_know_is_left_out_and_a_missing_problem_hands_over_to_the_chat_bot(
     monkeypatch,
 ):
-    form_world(monkeypatch)
-
-    async def resolve_identity(phone):
-        return USER
-
-    monkeypatch.setattr("app.services.identity.resolve_identity", resolve_identity)
-    monkeypatch.setattr(
-        flows.menu, "get_menu_workflows", workflows()
-    )  # no slash command known
-    text, refs = run(
-        flows.read_answer(
-            "+91",
-            answer(
-                location="T5-901",
-                problem="Leak",
-                category="none",
-                priority="low",
-                photos="",
-            ),
-        )
-    )
-    assert text == "Problem: Leak\nWhere: T5-901\nPriority: low" and refs == []
-    assert run(flows.read_answer("+91", answer(location="", problem=""))) == ("", [])
+    use_form_world(monkeypatch)
+    bad = {"data": {**FORM["data"], "priority": "whenever"}}
+    run(flows.use_form(USER, "+91", bad, {}, "s", 600))
+    assert "priority" not in FakeAgent.seen["fields"]
+    sent, _saved, _closed = use_form_world(monkeypatch)
+    no_problem = {"data": {"location": "T5-901", "priority": "low"}}
+    done, details = run(flows.use_form(USER, "+91", no_problem, {}, "s", 600))
+    assert done is False and "Where: T5-901" in details and sent == []
 
 
-def test_a_flow_can_be_limited_to_some_numbers_while_it_is_tried(monkeypatch):
-    monkeypatch.setattr(
-        flows.menu, "get_menu_workflows", workflows(wf("a", "A", "create"))
-    )
-    settings_are(
-        monkeypatch,
-        {
-            "whatsapp_flows": {
-                "menu": {
-                    "enabled": True,
-                    "flow_id": "1",
-                    "only_phones": ["+919000000001"],
-                }
-            }
-        },
-    )
-    sent = sent_flows(monkeypatch)
+def test_when_the_workflow_cannot_be_found_the_chat_bot_gets_the_details(monkeypatch):
+    use_form_world(monkeypatch, wf_row=None)
+    done, details = run(flows.use_form(USER, "+91", FORM, {}, "s", 600))
     assert (
-        run(flows.send_menu(USER, "+919000000002", "x", say)) is False
-    )  # not in the list: the old menu
-    assert run(flows.send_menu(USER, "+919000000001", "x", say)) is True
-    assert [s["to"] for s in sent] == ["+919000000001"]
+        done is False and "Problem: Leak" in details and "Category: Plumbing" in details
+    )

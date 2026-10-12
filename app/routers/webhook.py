@@ -167,6 +167,7 @@ async def receive_message(request: Request):
 
         # ── Extract text ──
         attachments = None
+        form = None  # the answers of a filled WhatsApp Flow form, when that is what this is
         unreadable = False
         if msg_type == "text":
             text = msg["text"]["body"]
@@ -190,7 +191,7 @@ async def receive_message(request: Request):
             elif inter.get("type") == "nfm_reply":
                 # the answer of a WhatsApp Flow (the menu or the complaint form panel): a chosen workflow is
                 # taken like a tap on a menu row, a filled form like a complaint typed in one message
-                text, found = await flows.read_answer(phone, inter)
+                text, found, form = await flows.read_answer(phone, inter)
                 if not text:
                     logger.info(
                         "A WhatsApp Flow answer without anything to do was left alone"
@@ -229,7 +230,11 @@ async def receive_message(request: Request):
         )
         try:
             await handle_message(
-                phone=phone, text=text, msg_type=msg_type, attachments=attachments
+                phone=phone,
+                text=text,
+                msg_type=msg_type,
+                attachments=attachments,
+                form=form,
             )
         except Exception as e:
             logger.error(f"handle_message error: {e}", exc_info=True)
@@ -811,6 +816,7 @@ async def handle_message(
     text: str,
     msg_type: str = "text",
     attachments: list[str] | None = None,
+    form: dict | None = None,
 ):
     """One incoming message. A person's messages are handled one at a time (see
     _one_turn_at_a_time). Photos and text can come in any order, so once the turn is done any photo
@@ -824,7 +830,7 @@ async def handle_message(
             if not has_turn:
                 await _tell_busy(phone, user)
                 return
-            await _handle_message(phone, text, msg_type, attachments)
+            await _handle_message(phone, text, msg_type, attachments, form)
             await _send_kept_messages(phone)
     finally:
         user = _turn_user.get()
@@ -837,6 +843,7 @@ async def _handle_message(
     text: str,
     msg_type: str = "text",
     attachments: list[str] | None = None,
+    form: dict | None = None,
 ):
     # 1. Identity
     user = await resolve_identity(phone)
@@ -1728,7 +1735,8 @@ async def _handle_message(
     # correction_hint, which then confuses the LLM into producing garbled
     # or fabricated replies. Just re-show the current draft instead.
     if (
-        pending_action
+        form is None  # a filled form replaces the draft instead
+        and pending_action
         and pending_action.get("stage") in ("collecting", "awaiting_confirmation")
         and text.strip() == pending_action.get("intent_key")
     ):
@@ -2019,8 +2027,17 @@ async def _handle_message(
         session["pending_action"] = pending_action
         await set_session(session_id, session, ttl=session_ttl)
 
+    # a filled complaint form: its answers go straight into the draft and the usual summary is shown; if that cannot
+    # be done by code, the chat bot is given the details as if typed after the command
+    if form is not None:
+        done, details = await flows.use_form(
+            user, phone, form, session, session_id, session_ttl
+        )
+        if done:
+            return
+        command_args = details
     # a tap or command for the complaint workflow opens the form panel instead of the chat questions, when set up
-    if await flows.start_form(user, phone, text, command_args, say):
+    elif await flows.start_form(user, phone, text, command_args, say):
         return
 
     try:
@@ -2034,6 +2051,30 @@ async def _handle_message(
         )
         # tap-to-answer buttons for the reply (Telegram only); never saved in the session
         buttons = session_patch.pop("_buttons", None)
+
+        # Typed words that only say "I want to complain" (nothing filled in yet) open the form too, when it is set
+        # up: the empty draft the questions would have used is dropped and the form is sent in place of them.
+        form_sent = False
+        started = session_patch.get("pending_action")
+        if (
+            isinstance(started, dict)
+            and started.get("stage") == "collecting"
+            and not started.get("fields")
+            and await flows.start_form(
+                user, phone, started.get("intent_key") or "", None, say
+            )
+        ):
+            from app.services.draft_store import close_draft
+
+            await close_draft(
+                user["org_id"],
+                user["user_id"],
+                "cancelled",
+                source_key=user["source_key"],
+            )
+            session_patch["pending_action"] = None
+            reply = await say(user["source_key"], "flow.complaint_intro")
+            form_sent = True
 
         # Capture the menu flag BEFORE popping it
         sent_menu = bool(session_patch.get("_send_menu"))
@@ -2081,7 +2122,7 @@ async def _handle_message(
         # whole confirmation) — sending an empty text message would just
         # fail against the Telegram/WhatsApp API for nothing.
         if not sent_menu:
-            if reply and reply.strip():
+            if reply and reply.strip() and not form_sent:
                 if buttons and phone.startswith("tg:"):
                     await send_buttons(phone, reply, buttons)
                 else:
