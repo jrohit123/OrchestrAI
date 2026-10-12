@@ -277,6 +277,12 @@ def _flow_choice(inter: dict) -> str:
     if not isinstance(data, dict):
         return ""
     logger.info(f"WhatsApp Flow answer with: {sorted(data)}")
+    photos = data.get("photos")
+    if photos:  # only the shape of what came back, never its content
+        first = photos[0] if isinstance(photos, list) and photos else photos
+        shape = sorted(first) if isinstance(first, dict) else type(first).__name__
+        count = len(photos) if isinstance(photos, list) else 1
+        logger.info(f"WhatsApp Flow answer photos: {count} of shape {shape}")
     choice = str(data.get("workflow") or "").strip()
     return choice if re.fullmatch(r"[A-Za-z0-9_]{1,80}", choice) else ""
 
