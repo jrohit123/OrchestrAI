@@ -1378,7 +1378,7 @@ async def _handle_message(
         if text_stripped.lower() == "/cancel":
             await cancel_user_draft(user, phone, confirm=False)
             return
-        if text_stripped.lower() == "/start":
+        if text_stripped.lower() in ("/start", "/menu"):
             # /start is Telegram's own "user just opened this bot" signal —
             # sent automatically on first open or tapping Start, not
             # something typed expecting a specific command. It was falling
