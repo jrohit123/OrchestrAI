@@ -719,6 +719,18 @@ async def _tick_panel_keys():
     await _tick("panel_keys", _tidy_panel_keys)
 
 
+async def _update_whatsapp_commands():
+    from app.services import whatsapp_commands
+
+    outcome = await whatsapp_commands.sync()
+    if outcome.startswith(("synced", "failed")):
+        logger.info(f"whatsapp commands: {outcome}")
+
+
+async def _tick_whatsapp_commands():
+    await _tick("whatsapp_commands", _update_whatsapp_commands)
+
+
 def start_scheduler():
     scheduler.add_job(
         _tick_scheduled_reports,
@@ -745,6 +757,13 @@ def start_scheduler():
         _tick_panel_keys,
         trigger=CronTrigger(hour=3, minute=40, timezone="Asia/Kolkata"),
         id="panel_keys",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _tick_whatsapp_commands,
+        trigger=CronTrigger(minute="*/10", timezone="Asia/Kolkata"),
+        id="whatsapp_commands",
         replace_existing=True,
         max_instances=1,
     )

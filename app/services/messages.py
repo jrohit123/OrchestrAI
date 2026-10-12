@@ -740,6 +740,13 @@ _MESSAGES = [
         "Didn't recognise that command — here's what's available:",
     ),
     Msg(
+        "commands.menu_hint",
+        "menu",
+        "Hint for the /menu command",
+        "On WhatsApp, the line under /menu in the list that pops up when someone types a slash. No emoji.",
+        "Show what I can do",
+    ),
+    Msg(
         "flow.menu_button",
         "menu",
         "Button that opens the menu panel",

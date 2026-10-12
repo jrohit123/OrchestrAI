@@ -243,3 +243,41 @@ async def send_flow(
             logger.error(f"send_flow failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
+
+
+GRAPH_URL = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}"
+
+
+async def conversational_automation() -> dict:
+    """What is set on the number for the chat itself: the "/" commands, the tap-to-send prompts, the welcome message."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            GRAPH_URL,
+            params={"fields": "conversational_automation"},
+            headers=HEADERS,
+        )
+        if resp.status_code >= 400:
+            logger.error(
+                f"conversational_automation read failed ({resp.status_code}): {resp.text}"
+            )
+        resp.raise_for_status()
+    return resp.json().get("conversational_automation") or {}
+
+
+async def set_commands(commands: list[dict], keep: dict | None = None):
+    """Replace the "/" command list on the number. The prompts and the welcome message already there are sent along
+    unchanged, so only the commands change."""
+    body: dict = {"commands": commands}
+    keep = keep or {}
+    if keep.get("prompts"):
+        body["prompts"] = keep["prompts"]
+    if "enable_welcome_message" in keep:
+        body["enable_welcome_message"] = keep["enable_welcome_message"]
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{GRAPH_URL}/conversational_automation", json=body, headers=HEADERS
+        )
+        if resp.status_code >= 400:
+            logger.error(f"set_commands failed ({resp.status_code}): {resp.text}")
+        resp.raise_for_status()
+    return resp.json()
