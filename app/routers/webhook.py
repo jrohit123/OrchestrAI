@@ -187,6 +187,15 @@ async def receive_message(request: Request):
             inter = msg["interactive"]
             if inter.get("type") == "list_reply":
                 text = inter["list_reply"]["id"]
+            elif inter.get("type") == "nfm_reply":
+                # the answer of a WhatsApp Flow (the in-panel menu): the workflow chosen there is taken like a
+                # tap on a menu row
+                text = _flow_choice(inter)
+                if not text:
+                    logger.info(
+                        "A WhatsApp Flow answer without a workflow was left alone"
+                    )
+                    return {"status": "ok"}
             else:
                 text = inter["button_reply"]["id"]
         else:
@@ -256,6 +265,20 @@ _WHATSAPP_WORDING = {
     "onboarding.code_sent": "onboarding.code_sent_whatsapp",
     "onboarding.linked": "onboarding.linked_whatsapp",
 }
+
+
+def _flow_choice(inter: dict) -> str:
+    """The workflow a person chose in a WhatsApp Flow: the "workflow" in the answer's response_json, only when
+    it looks like a workflow's key (letters, digits, underscore). Anything else is "" and is left alone."""
+    try:
+        data = json.loads((inter.get("nfm_reply") or {}).get("response_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    logger.info(f"WhatsApp Flow answer with: {sorted(data)}")
+    choice = str(data.get("workflow") or "").strip()
+    return choice if re.fullmatch(r"[A-Za-z0-9_]{1,80}", choice) else ""
 
 
 # kinds of WhatsApp message the chat bot cannot read (a reaction or a system note is not one of them)

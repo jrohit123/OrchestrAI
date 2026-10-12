@@ -1,0 +1,62 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "MENU",
+      "title": "Menu",
+      "data": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          },
+          "__example__": [
+            { "id": "example", "main-content": { "title": "Example", "description": "Replace me" } }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "sections",
+            "list-items": "${data.items}",
+            "on-click-action": {
+              "name": "navigate",
+              "next": { "type": "screen", "name": "DONE" },
+              "payload": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Done",
+      "terminal": true,
+      "success": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "The list above came from data we sent." },
+          {
+            "type": "Footer",
+            "label": "Close",
+            "on-click-action": { "name": "complete", "payload": {} }
+          }
+        ]
+      }
+    }
+  ]
+}

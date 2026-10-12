@@ -1,0 +1,165 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "MENU",
+      "title": "Menu",
+      "data": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "main-content": {
+                "type": "object",
+                "properties": { "title": { "type": "string" }, "description": { "type": "string" } }
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "next": {
+                    "type": "object",
+                    "properties": { "type": { "type": "string" }, "name": { "type": "string" } }
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": { "type": "string" },
+                            "main-content": {
+                              "type": "object",
+                              "properties": { "title": { "type": "string" }, "description": { "type": "string" } }
+                            },
+                            "on-click-action": {
+                              "type": "object",
+                              "properties": {
+                                "name": { "type": "string" },
+                                "next": {
+                                  "type": "object",
+                                  "properties": { "type": { "type": "string" }, "name": { "type": "string" } }
+                                },
+                                "payload": {
+                                  "type": "object",
+                                  "properties": { "workflow": { "type": "string" } }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "example",
+              "main-content": { "title": "Example", "description": "Replace me" },
+              "on-click-action": {
+                "name": "navigate",
+                "next": { "type": "screen", "name": "SECTION" },
+                "payload": {
+                  "items": [
+                    {
+                      "id": "inner",
+                      "main-content": { "title": "Inner", "description": "Replace me" },
+                      "on-click-action": {
+                        "name": "navigate",
+                        "next": { "type": "screen", "name": "DONE" },
+                        "payload": { "workflow": "example" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "NavigationList", "name": "sections", "list-items": "${data.items}" }
+        ]
+      }
+    },
+    {
+      "id": "SECTION",
+      "title": "Choose",
+      "data": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "main-content": {
+                "type": "object",
+                "properties": { "title": { "type": "string" }, "description": { "type": "string" } }
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "next": {
+                    "type": "object",
+                    "properties": { "type": { "type": "string" }, "name": { "type": "string" } }
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": { "workflow": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "inner",
+              "main-content": { "title": "Inner", "description": "Replace me" },
+              "on-click-action": {
+                "name": "navigate",
+                "next": { "type": "screen", "name": "DONE" },
+                "payload": { "workflow": "example" }
+              }
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "NavigationList", "name": "choices", "list-items": "${data.items}" }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Start",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "workflow": { "type": "string", "__example__": "example" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "Ready to start this?" },
+          {
+            "type": "Footer",
+            "label": "Start",
+            "on-click-action": { "name": "complete", "payload": { "workflow": "${data.workflow}" } }
+          }
+        ]
+      }
+    }
+  ]
+}

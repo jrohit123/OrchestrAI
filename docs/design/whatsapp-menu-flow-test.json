@@ -1,0 +1,130 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "MENU",
+      "title": "Menu",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "sections",
+            "list-items": [
+              {
+                "id": "create",
+                "main-content": { "title": "Create", "description": "1 option" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "CREATE" }, "payload": {} }
+              },
+              {
+                "id": "reports",
+                "main-content": { "title": "Reports", "description": "2 options" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "REPORTS" }, "payload": {} }
+              },
+              {
+                "id": "more",
+                "main-content": { "title": "More", "description": "3 options" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "MORE" }, "payload": {} }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "CREATE",
+      "title": "Create",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "create_items",
+            "list-items": [
+              {
+                "id": "file_a_complaint",
+                "main-content": { "title": "File a complaint", "description": "Report a problem" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "file_a_complaint" } }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "REPORTS",
+      "title": "Reports",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "report_items",
+            "list-items": [
+              {
+                "id": "view_all_cases",
+                "main-content": { "title": "All Tickets", "description": "Every case" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "view_all_cases" } }
+              },
+              {
+                "id": "my_cases",
+                "main-content": { "title": "My Open Tickets", "description": "Cases you are on" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "my_cases" } }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "MORE",
+      "title": "More",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "more_items",
+            "list-items": [
+              {
+                "id": "case_add_update",
+                "main-content": { "title": "Add an update", "description": "Write on a case" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "case_add_update" } }
+              },
+              {
+                "id": "case_close_with_note",
+                "main-content": { "title": "Close with a note", "description": "Finish a case" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "case_close_with_note" } }
+              },
+              {
+                "id": "case_pass_on",
+                "main-content": { "title": "Hand over a case", "description": "Pass to someone" },
+                "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DONE" }, "payload": { "workflow": "case_pass_on" } }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Start",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "workflow": { "type": "string", "__example__": "view_all_cases" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "Ready to start this?" },
+          {
+            "type": "Footer",
+            "label": "Start",
+            "on-click-action": { "name": "complete", "payload": { "workflow": "${data.workflow}" } }
+          }
+        ]
+      }
+    }
+  ]
+}
