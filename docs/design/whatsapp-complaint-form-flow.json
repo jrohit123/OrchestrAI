@@ -1,0 +1,111 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "COMPLAINT",
+      "title": "Raise a complaint",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "plumbing",
+              "title": "Plumbing"
+            }
+          ]
+        },
+        "priorities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "urgent",
+              "title": "Urgent"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextInput",
+            "name": "location",
+            "label": "Tower and flat",
+            "input-type": "text",
+            "helper-text": "For example T5-901",
+            "required": true
+          },
+          {
+            "type": "TextArea",
+            "name": "problem",
+            "label": "What is the problem?",
+            "helper-text": "For example Leakage in bathroom",
+            "required": true
+          },
+          {
+            "type": "Dropdown",
+            "name": "category",
+            "label": "Category",
+            "required": false,
+            "data-source": "${data.categories}"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "priority",
+            "label": "How urgent is it?",
+            "required": true,
+            "data-source": "${data.priorities}"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "photos",
+            "label": "Add photos (optional)",
+            "description": "Up to 3 photos",
+            "photo-source": "camera_gallery",
+            "max-file-size-kb": 5120,
+            "min-uploaded-photos": 0,
+            "max-uploaded-photos": 3
+          },
+          {
+            "type": "Footer",
+            "label": "Submit",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "location": "${form.location}",
+                "problem": "${form.problem}",
+                "category": "${form.category}",
+                "priority": "${form.priority}",
+                "photos": "${form.photos}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

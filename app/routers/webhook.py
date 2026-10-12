@@ -23,7 +23,7 @@ from app.redis_client import (
     set_auth_token,
     set_session,
 )
-from app.services import config_store, photos, reach
+from app.services import config_store, flows, photos, reach
 from app.services.action_executor import execute_pending_action
 from app.services.agent import run_agent
 from app.services.identity import resolve_identity
@@ -188,14 +188,15 @@ async def receive_message(request: Request):
             if inter.get("type") == "list_reply":
                 text = inter["list_reply"]["id"]
             elif inter.get("type") == "nfm_reply":
-                # the answer of a WhatsApp Flow (the in-panel menu): the workflow chosen there is taken like a
-                # tap on a menu row
-                text = _flow_choice(inter)
+                # the answer of a WhatsApp Flow (the menu or the complaint form panel): a chosen workflow is
+                # taken like a tap on a menu row, a filled form like a complaint typed in one message
+                text, found = await flows.read_answer(phone, inter)
                 if not text:
                     logger.info(
-                        "A WhatsApp Flow answer without a workflow was left alone"
+                        "A WhatsApp Flow answer without anything to do was left alone"
                     )
                     return {"status": "ok"}
+                attachments = found or None
             else:
                 text = inter["button_reply"]["id"]
         else:
@@ -265,26 +266,6 @@ _WHATSAPP_WORDING = {
     "onboarding.code_sent": "onboarding.code_sent_whatsapp",
     "onboarding.linked": "onboarding.linked_whatsapp",
 }
-
-
-def _flow_choice(inter: dict) -> str:
-    """The workflow a person chose in a WhatsApp Flow: the "workflow" in the answer's response_json, only when
-    it looks like a workflow's key (letters, digits, underscore). Anything else is "" and is left alone."""
-    try:
-        data = json.loads((inter.get("nfm_reply") or {}).get("response_json") or "{}")
-    except (TypeError, ValueError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    logger.info(f"WhatsApp Flow answer with: {sorted(data)}")
-    photos = data.get("photos")
-    if photos:  # only the shape of what came back, never its content
-        first = photos[0] if isinstance(photos, list) and photos else photos
-        shape = sorted(first) if isinstance(first, dict) else type(first).__name__
-        count = len(photos) if isinstance(photos, list) else 1
-        logger.info(f"WhatsApp Flow answer photos: {count} of shape {shape}")
-    choice = str(data.get("workflow") or "").strip()
-    return choice if re.fullmatch(r"[A-Za-z0-9_]{1,80}", choice) else ""
 
 
 # kinds of WhatsApp message the chat bot cannot read (a reaction or a system note is not one of them)
@@ -1402,10 +1383,11 @@ async def _handle_message(
             # their session expired and they just re-verified, so a full
             # "Welcome to X, I'm your assistant" paragraph here would be
             # redundant with what they just saw seconds earlier.
+            intro = await say(user["source_key"], "menu.intro")
+            if await flows.send_menu(user, phone, intro, say):
+                return
             sections = await build_menu_sections(user["org_id"], user)
-            await send_list(
-                phone, await say(user["source_key"], "menu.intro"), "Menu", sections
-            )
+            await send_list(phone, intro, "Menu", sections)
             return
         if text_stripped.lower() in ("/help", "/h"):
             from app.services.agent import _build_help_response
@@ -1449,13 +1431,11 @@ async def _handle_message(
             parts = text_stripped.split(None, 1)
             command_args = parts[1].strip() if len(parts) > 1 else None
         else:
+            unknown = await say(user["source_key"], "menu.unknown_command")
+            if await flows.send_menu(user, phone, unknown, say):
+                return
             sections = await build_menu_sections(user["org_id"], user)
-            await send_list(
-                phone,
-                await say(user["source_key"], "menu.unknown_command"),
-                "📋 Menu",
-                sections,
-            )
+            await send_list(phone, unknown, "📋 Menu", sections)
             return
 
     # 2. Fetch org TTL
@@ -2039,6 +2019,10 @@ async def _handle_message(
         session["pending_action"] = pending_action
         await set_session(session_id, session, ttl=session_ttl)
 
+    # a tap or command for the complaint workflow opens the form panel instead of the chat questions, when set up
+    if await flows.start_form(user, phone, text, command_args, say):
+        return
+
     try:
         reply, updated_history, session_patch = await run_agent(
             text,
@@ -2058,12 +2042,13 @@ async def _handle_message(
         if sent_menu:
             from app.services.messaging import send_list
 
-            await send_list(
-                phone,
-                reply,
-                session_patch["button_label"],
-                session_patch["menu_sections"],
-            )
+            if not await flows.send_menu(user, phone, reply, say):
+                await send_list(
+                    phone,
+                    reply,
+                    session_patch["button_label"],
+                    session_patch["menu_sections"],
+                )
             # Remove menu flag from session_patch before saving
             session_patch.pop("_send_menu", None)
             session_patch.pop("menu_sections", None)

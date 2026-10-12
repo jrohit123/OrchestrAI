@@ -740,6 +740,27 @@ _MESSAGES = [
         "Didn't recognise that command — here's what's available:",
     ),
     Msg(
+        "flow.menu_button",
+        "menu",
+        "Button that opens the menu panel",
+        "On WhatsApp, under the menu message: the button that opens the panel with the sections and what they can do. At most 20 letters.",
+        "Open menu",
+    ),
+    Msg(
+        "flow.complaint_intro",
+        "menu",
+        "Message above the complaint form",
+        "On WhatsApp, when someone starts a complaint and the form panel is used instead of the questions.",
+        "Fill in the form and I will show you a summary to confirm before anything is saved.",
+    ),
+    Msg(
+        "flow.complaint_button",
+        "menu",
+        "Button that opens the complaint form",
+        "On WhatsApp, under the message above the complaint form. At most 20 letters.",
+        "Raise a complaint",
+    ),
+    Msg(
         "error.generic",
         "error",
         "Something went wrong",

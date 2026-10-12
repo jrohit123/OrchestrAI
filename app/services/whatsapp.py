@@ -201,3 +201,45 @@ async def send_template(to: str, name: str, language: str = "en"):
             logger.error(f"send_template failed ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
     return resp.json()
+
+
+async def send_flow(
+    to: str,
+    *,
+    body: str,
+    flow_id: str,
+    cta: str,
+    screen: str,
+    data: dict,
+    flow_token: str,
+    draft: bool = False,
+):
+    """A WhatsApp Flow (a panel inside WhatsApp) with a button that opens it. `data` is what its first screen shows.
+    The answer comes back as a message of type interactive / nfm_reply (see flows.read_answer). `draft` sends the
+    unpublished version, for testing."""
+    parameters = {
+        "flow_message_version": "3",
+        "flow_token": flow_token,
+        "flow_id": str(flow_id),
+        "flow_cta": cta,
+        "flow_action": "navigate",
+        "flow_action_payload": {"screen": screen, "data": data},
+    }
+    if draft:
+        parameters["mode"] = "draft"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "flow",
+            "body": {"text": body[:1024]},
+            "action": {"name": "flow", "parameters": parameters},
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(BASE_URL, json=payload, headers=HEADERS)
+        if resp.status_code >= 400:
+            logger.error(f"send_flow failed ({resp.status_code}): {resp.text}")
+        resp.raise_for_status()
+    return resp.json()
