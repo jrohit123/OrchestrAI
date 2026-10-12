@@ -134,3 +134,20 @@ def test_the_menu_is_sent_as_a_panel_when_it_is_set_up_and_as_the_list_when_it_i
         assert not [m for m in w.sent if m["kind"] == "list"]  # not both
 
     qa_run(scenario)
+
+
+@needs_qa
+def test_cancelling_a_draft_also_clears_the_chats_copy_so_the_same_workflow_can_start_again():
+    async def scenario(w):
+        from app.redis_client import get_session
+
+        user = await w.make_pending(
+            "member", "file_a_complaint", {}, stage="collecting"
+        )
+        session_id = f"{user['org_id']}:{user['phone']}"
+        assert (await get_session(session_id)).get("pending_action")
+        await w.login("member")
+        await w.say(user["phone"], "/cancel")
+        assert not (await get_session(session_id)).get("pending_action")
+
+    qa_run(scenario)

@@ -2245,6 +2245,17 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
     await close_draft(
         user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
     )
+    # the chat's own copy of the draft too, or tapping the same workflow again says "already filling it in"
+    session_id = f"{user['org_id']}:{phone}"
+    session = await get_session(session_id)
+    if session.pop("pending_action", None) is not None:
+        row = await fetch_one(
+            "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
+            user["org_id"],
+            source_key=user["source_key"],
+        )
+        minutes = (row or {}).get("session_ttl_minutes") or 480
+        await set_session(session_id, session, ttl=minutes * 60)
 
     if confirm and field_count >= 2:
         await send_text(
