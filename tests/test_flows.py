@@ -395,3 +395,27 @@ def test_a_form_without_a_category_or_photos_still_works_and_an_empty_one_is_lef
     )
     assert text == "Problem: Leak\nWhere: T5-901\nPriority: low" and refs == []
     assert run(flows.read_answer("+91", answer(location="", problem=""))) == ("", [])
+
+
+def test_a_flow_can_be_limited_to_some_numbers_while_it_is_tried(monkeypatch):
+    monkeypatch.setattr(
+        flows.menu, "get_menu_workflows", workflows(wf("a", "A", "create"))
+    )
+    settings_are(
+        monkeypatch,
+        {
+            "whatsapp_flows": {
+                "menu": {
+                    "enabled": True,
+                    "flow_id": "1",
+                    "only_phones": ["+919000000001"],
+                }
+            }
+        },
+    )
+    sent = sent_flows(monkeypatch)
+    assert (
+        run(flows.send_menu(USER, "+919000000002", "x", say)) is False
+    )  # not in the list: the old menu
+    assert run(flows.send_menu(USER, "+919000000001", "x", say)) is True
+    assert [s["to"] for s in sent] == ["+919000000001"]

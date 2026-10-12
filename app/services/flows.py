@@ -46,6 +46,13 @@ def flow_of(settings: dict | None, kind: str) -> dict | None:
     return {**chosen, "flow_id": flow_id} if flow_id else None
 
 
+def _allowed(cfg: dict, phone: str) -> bool:
+    """While a Flow is being tried, "only_phones" limits it to those numbers; everyone else keeps the old menu and questions.
+    Empty or missing means everyone."""
+    only = cfg.get("only_phones")
+    return not (isinstance(only, list) and only) or phone in {str(p) for p in only}
+
+
 def _cut(text, size: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= size else text[: size - 1].rstrip() + "…"
@@ -138,7 +145,7 @@ async def send_menu(user: dict, phone: str, body: str, say) -> bool:
         return False
     settings = await config_store.org_settings(user["source_key"], user["org_id"])
     cfg = flow_of(settings, "menu")
-    if not cfg:
+    if not cfg or not _allowed(cfg, phone):
         return False
     found = await menu_data(user)
     if not found:
@@ -194,7 +201,7 @@ async def start_form(user: dict, phone: str, text: str, command_args, say) -> bo
         return False
     settings = await config_store.org_settings(user["source_key"], user["org_id"])
     cfg = flow_of(settings, "complaint")
-    if not cfg:
+    if not cfg or not _allowed(cfg, phone):
         return False
     intent_key = str(cfg.get("workflow") or "file_a_complaint")
     if text.strip() != intent_key:
