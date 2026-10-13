@@ -142,4 +142,21 @@ CSS += r"""
 .wf-foot{padding:10px 14px;border-top:1px solid #eee}
 .wf-go{background:#128c7e;color:#fff;text-align:center;border-radius:20px;padding:10px;font-weight:600}
 @media (max-width:1100px){.wf-wrap{grid-template-columns:minmax(0,1fr)}.wf-side{position:static}.wf-phone{margin:0 auto}}
+.wf-edit{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+.wf-codewrap{display:flex;border-top:1px solid var(--line);background:var(--surface-2)}
+.wf-gut{margin:0;padding:12px 8px;text-align:right;color:var(--faint);font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;overflow:hidden;height:560px;min-width:38px;user-select:none}
+.wf-code{flex:1;min-width:0;height:560px;border:0;outline:0;resize:vertical;padding:12px;background:transparent;color:var(--ink);font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow:auto;tab-size:2}
+.wf-code.small{height:auto;border:1px solid var(--line);border-radius:8px;width:100%}
+.wf-errs{border-top:1px solid var(--line);padding:10px 14px;max-height:160px;overflow:auto}
+.wf-eh{font-weight:650;margin-bottom:4px}.wf-e{color:var(--bad);font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace;padding:2px 0}
+.wf-menu{display:grid;gap:2px;padding:4px}.wf-menu .btn{justify-content:flex-start;text-align:left}
+.wf-result{margin-top:10px;font-size:12.5px}.wf-result pre{background:var(--sunken);padding:8px;border-radius:8px;overflow:auto;margin:6px 0 0}
+.wf-empty{padding:30px 16px;text-align:center;color:#666;flex:1;background:#fff}
+.wf-th{font-size:20px;font-weight:700}.wf-ts{font-size:16px;font-weight:650}.wf-tb{font-size:14px;color:#333}.wf-tc{font-size:12px;color:#777}
+.wf-radio .dot.sq{border-radius:4px}
+.wf-link{color:#027eb5;text-decoration:underline}.wf-unk{font-size:11px;color:#999;border:1px dashed #ccc;border-radius:6px;padding:4px 8px}
+.wf-img{background:#eee;border-radius:8px;padding:20px;text-align:center;color:#888}.wf-img img{max-width:100%}
+.wf-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 2px;border-bottom:1px solid #eee;cursor:pointer}
+.wf-managed{text-align:center;font-size:11px;color:#888;padding:6px;background:#fff}
+@media (max-width:1100px){.wf-edit{grid-template-columns:minmax(0,1fr)}}
 """
