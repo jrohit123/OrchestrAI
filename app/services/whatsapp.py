@@ -245,14 +245,14 @@ async def send_flow(
     return resp.json()
 
 
-GRAPH_URL = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}"
+PHONE_URL = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}"
 
 
 async def conversational_automation() -> dict:
     """What is set on the number for the chat itself: the "/" commands, the tap-to-send prompts, the welcome message."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            GRAPH_URL,
+            PHONE_URL,
             params={"fields": "conversational_automation"},
             headers=HEADERS,
         )
@@ -275,7 +275,7 @@ async def set_commands(commands: list[dict], keep: dict | None = None):
         body["enable_welcome_message"] = keep["enable_welcome_message"]
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{GRAPH_URL}/conversational_automation", json=body, headers=HEADERS
+            f"{PHONE_URL}/conversational_automation", json=body, headers=HEADERS
         )
         if resp.status_code >= 400:
             logger.error(f"set_commands failed ({resp.status_code}): {resp.text}")
