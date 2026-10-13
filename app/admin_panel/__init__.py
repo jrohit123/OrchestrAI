@@ -19,6 +19,7 @@ from app.admin_panel import (
     roles,
     routing,
     studio,
+    whatsapp_form,
     workflows,
 )
 
@@ -40,5 +41,6 @@ for _module in (
     org_settings,
     message_texts,
     ai_instructions,
+    whatsapp_form,
 ):
     router.include_router(_module.router)

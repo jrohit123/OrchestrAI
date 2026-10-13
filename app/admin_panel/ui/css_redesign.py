@@ -117,4 +117,29 @@ CSS += r"""
 .wh-try{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .wh-sep{border-top:1px solid var(--line-2)}
 @media (max-width:760px){.wh-hd,.wh-r{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.wh-hd div:nth-child(n+3){display:none}.wh-r>div:nth-child(n+3){display:none}.wh-same{grid-column:2}}
+/* ───── WhatsApp form editor and phone preview ───── */
+.wf-wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}
+.wf-side{position:sticky;top:76px}
+.wf-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.wf-field{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:10px;background:var(--surface-2)}
+.wf-field.off{opacity:.65}
+.wf-status{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.wf-phone{position:relative;width:320px;height:620px;border-radius:30px;border:8px solid #1c1f26;background:#e5ddd5;overflow:hidden;display:flex;flex-direction:column;font:14px/1.4 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#111}
+.wf-top{background:#075e54;color:#fff;padding:12px 14px;display:flex;gap:8px;align-items:baseline}.wf-top span{opacity:.75;font-size:12px}
+.wf-chat{padding:14px;flex:1}
+.wf-bubble{background:#fff;border-radius:0 10px 10px 10px;padding:10px 12px;max-width:85%;box-shadow:0 1px 1px rgba(0,0,0,.12);white-space:pre-wrap}
+.wf-open{margin:10px -12px -10px;padding:10px;border-top:1px solid #e6e6e6;text-align:center;color:#027eb5;font-weight:600;cursor:pointer}
+.wf-sheet{position:absolute;left:0;right:0;bottom:0;top:70px;background:#fff;border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -4px 16px rgba(0,0,0,.25)}
+.wf-bar{display:flex;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid #eee}.wf-bar .x{cursor:pointer;color:#555}
+.wf-body{padding:12px 14px;overflow:auto;flex:1;display:grid;gap:12px;align-content:start}
+.wf-l{font-size:13px;font-weight:600;margin-bottom:4px}
+.wf-in{border:1px solid #cfd3d8;border-radius:8px;padding:9px 10px;min-height:38px;color:#777;display:flex;justify-content:space-between}
+.wf-in.tall{min-height:70px}
+.wf-h{font-size:12px;color:#777;margin-top:3px}
+.wf-radios{display:grid;gap:8px}.wf-radio{display:flex;gap:10px;align-items:center}
+.wf-radio .dot{width:16px;height:16px;border-radius:50%;border:2px solid #9aa0a6;display:inline-block}.wf-radio .dot.on{border-color:#128c7e;background:radial-gradient(#128c7e 45%,transparent 50%)}
+.wf-photo{border:1px dashed #9aa0a6;border-radius:8px;padding:12px;display:grid;gap:2px;color:#128c7e}.wf-photo span{color:#777;font-size:12px}
+.wf-foot{padding:10px 14px;border-top:1px solid #eee}
+.wf-go{background:#128c7e;color:#fff;text-align:center;border-radius:20px;padding:10px;font-weight:600}
+@media (max-width:1100px){.wf-wrap{grid-template-columns:minmax(0,1fr)}.wf-side{position:static}.wf-phone{margin:0 auto}}
 """

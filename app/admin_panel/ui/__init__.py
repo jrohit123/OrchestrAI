@@ -24,6 +24,7 @@ from app.admin_panel.ui import (
     js_studio,
     js_studio_form,
     js_super,
+    js_whatsapp,
 )
 
 APP_CSS = css.CSS
@@ -49,6 +50,7 @@ APP_JS = (
             js_home,
             js_rest,
             js_settings,
+            js_whatsapp,
             js_assistant,
             js_auth,
             js_super,
