@@ -1,0 +1,64 @@
+ID,file:line,what,category,severity,proposed home,effort
+H01,app/services/prompt_loader.py:27,Industry prompt is a file named after orgs.industry; a new industry needs a code deploy,prompt,blocks target,"prompts(key, scope, version) table; pack seeds it",M
+H02,app/prompts/_base.txt:105,"The shared base prompt names jewellery tables (customers, invoices, orders) and a housing workflow key",prompt/client-specific,blocks target,"split: generic text stays global, domain text moves to industry packs",M
+H03,app/prompts/_base.txt:303,Base prompt hardcodes workflow key register_complaint (retired workflow),prompt,hurts,remove; fill workflow names from tenant data at call time,S
+H04,app/prompts/housing_society.txt:58,Whole industry prompt (202 lines) is a code file; it caused the live 'assign_case' bug until fixed in 327a9a3,prompt/client-specific,blocks target,pack housing_society -> prompts rows,M
+H05,app/prompts/jewellery.txt:140,Industry prompt (527 lines) hardcodes Baanganga workflow keys and tables,prompt/client-specific,blocks target,pack jewellery -> prompts rows,M
+H06,app/prompts/workflow_builder_system.txt:110,Builder prompt hardcodes housing workflow key and examples,prompt/client-specific,hurts,global builder prompt without client examples; examples per pack,S
+H07,app/prompts/workflow_compiler.txt:64,"Compiler prompt examples use housing (flat, wing) and invoice/GST words",prompt/client-specific,hurts,examples per pack,S
+H08,app/prompts/response_formatting.txt:16,Formatting prompt contains a jewellery example,prompt/client-specific,minor,generic example,S
+H09,app/routers/webhook.py:817,"62 user-facing strings in webhook.py (onboarding, OTP, errors, photo notes) are Python literals",message text,hurts,"system_messages(key, locale, body)",M
+H10,app/executor/workflow_executor.py:93,12 approval/OTP messages as literals,message text,hurts,system_messages,S
+H11,app/services/step_interpreter.py:1459,Two literal user messages inside the step interpreter,message text,minor,system_messages,S
+H12,app/ai_models_config.json,Model roster and fallback order live in a repo file,model config,minor,platform settings (control DB) with file default,S
+H13,app/services/llm_router.py:60,12 s per-attempt timeout,threshold,minor,platform settings,S
+H14,app/services/llm_router.py:117,Provider base URLs,url,minor,stays in code (provider adapter),S
+H15,app/services/agent.py:1256,"LLM temperature/max_tokens repeated at call sites (agent, studio, pdf, builder)",model parameter,minor,"platform settings by purpose (agent, builder, pdf)",S
+H16,app/services/agent.py:1154,Draft is abandoned after 30 min,threshold,hurts,orgs.settings.limits.draft_stale_minutes,S
+H17,app/services/agent.py:1160,Re-ask cap of 3,threshold,minor,orgs.settings.limits,S
+H18,app/routers/webhook.py:241,Photo cap 5 per request,threshold,minor,workflow settings.photos.max,S
+H19,app/routers/webhook.py:275,Held-photo time 15 min,threshold,minor,orgs.settings.limits,S
+H20,app/services/case_ops.py:30,Second copy of the photo cap,threshold/duplicate,minor,one setting,S
+H21,app/services/sql_guard.py:37,AI-written SQL returns at most 100 rows,threshold,minor,orgs.settings.limits,S
+H22,app/services/sql_guard.py:38,5 s query timeout,threshold,minor,orgs.settings.limits,S
+H23,app/services/query_engine.py:152,"Stored-report timeout 10 s and silent LIMIT 100 (a second, different limit)",threshold/duplicate,minor,one setting,S
+H24,app/services/field_reader.py:55,Code-reader option and word limits,threshold,minor,orgs.settings.limits,S
+H25,app/services/report_format.py:23,Report paragraph size,threshold,minor,workflow response settings,S
+H26,app/services/step_catalog.py:537,Block nesting depth 5 (validator),engine limit,minor,stays in code (engine mechanic),S
+H27,app/services/step_interpreter.py:1555,Block nesting depth 5 (runtime): second copy of the same limit,engine limit/duplicate,minor,one constant,S
+H28,app/db.py:38,Every DB connection is forced to IST,timezone,blocks target,orgs.timezone; set per request,M
+H29,app/scheduler/jobs.py:22,Scheduler runs on IST,timezone,blocks target,orgs.timezone,M
+H30,app/services/agent.py:1923,IST offset hard-coded again for schedule messages,timezone,blocks target,orgs.timezone,S
+H31,app/services/step_interpreter.py:991,TODAY+30 / TODAY+7 literals decide default due dates,business rule,minor,step params / SLA policy,S
+H32,app/services/agent.py:1514,Invoice maths (GST-inclusive back-calculation) lives in the generate_pdf tool,client-specific logic,hurts,calc_rules + pdf_config; pack for jewellery,M
+H33,app/services/agent.py:873,Jewellery org defaults injected into every prompt from orgs columns,client-specific,hurts,orgs.settings.prompt_vars,S
+H34,db:orgs,"Columns gst_rate and default_making_charge_pct on the shared orgs table (godrej NULL, baanganga set)",client-specific column,hurts,orgs.settings JSON,S
+H35,app/services/agent.py:469,Tool description names a Baanganga workflow,client-specific,hurts,built from tenant workflow list,S
+H36,app/services/menu.py:10,Menu section names and order fixed to Reports / Create / More,labels,minor,orgs.settings.menu or workflows.menu_section table,S
+H37,app/scheduler/jobs.py:230,"SLA logic is exactly two passes (reminder, breach), no escalation chain, one table",SLA,hurts,sla_policies + escalation_steps,M
+H38,app/scheduler/jobs.py:163,Default role name 'member' in scheduled runs,role literal,minor,orgs.settings.default_role,S
+H39,app/db.py:92,Exactly one tenant per messaging channel; a second WhatsApp tenant makes onboarding raise,tenancy,blocks target,per-tenant channel config in control DB,M
+H40,app/services/identity.py:25,Identity is resolved by scanning every tenant DB in turn for the phone,tenancy,blocks target,control DB map phone/chat -> tenant,M
+H41,app/services/messaging.py:24,One WhatsApp number and one Telegram bot for all tenants (env tokens); channel chosen by id prefix,tenancy/channel,blocks target,channels config per tenant (secret refs),M
+H42,app/services/whatsapp.py:15,Meta Graph API URL and version,url,minor,stays in code (channel adapter),S
+H43,app/main.py:60,Unauthenticated debug endpoints expose any tenant's table and column names,security,blocks target,remove or protect,S
+H44,app/routers/admin.py:20,Admin token check exists but is not applied to any route,security,blocks target,auth dependency on every admin router,M
+H45,app/routers/admin.py:490,Role name 'owner' hardcoded as a default in the classic admin,role literal,minor,retire classic admin,S
+H46,app/admin_panel/people.py:71,"Dashboard people/seats screens assume the housing model (committee seats, residents, staff)",client-specific module,hurts,housing pack provides the admin sections,L
+H47,app/admin_panel/routing.py:97,Routing screens assume the case model,client-specific module,hurts,case-management pack,L
+H48,app/admin_panel/cases.py:180,Cases screen assumes the housing case model,client-specific module,hurts,case-management pack,L
+H49,app/admin_panel/overview.py:35,Overview numbers are case-specific,client-specific module,hurts,pack-defined dashboard cards,M
+H50,app/services/case_ops.py:482,"Six step types know about cases, parties and routing",client-specific registry,hurts,case-management pack registered at startup,M
+H51,app/services/step_interpreter.py:610,Google Sheets targets are a magic prefix on the table name inside db.* steps,format,hurts,explicit target in step params,S
+H52,app/routers/webhook.py:205,OTP/linking session TTLs 180 s and 300 s are literals (many sites),threshold,minor,orgs columns already exist for OTP (otp_expiry_minutes): use them,S
+H53,app/services/workflow_builder_agent.py:667,Builder chat compaction thresholds,threshold,minor,platform settings,S
+H54,app/admin_panel/studio.py:738,Studio chat rate limit is in process memory (resets on deploy; not shared across replicas),threshold,minor,Redis counters,S
+H55,app/scheduler/jobs.py:556,Two jobs run inside every web replica (no leader election),scheduling,hurts,single scheduler process or advisory lock,M
+H56,db:case_activity_type_check,"CHECK list of activity types is data (comment, evidence, status_change, assignment, priority_change)",enum as CHECK,minor,registry of activity types (code) or lookup table,S
+H57,db:case_parties_role_check,"CHECK list of party roles (requester, assignee, level2, helper, watcher)",enum as CHECK,minor,lookup table per tenant,S
+H58,db:committee_positions_kind_check,CHECK list of seat kinds,enum as CHECK,minor,lookup table per tenant,S
+H59,db:user_drafts_stage_check,CHECK list of draft stages (engine mechanic),enum as CHECK,minor,stays (engine state machine),S
+H60,db:workflows_kind_check,"CHECK list of workflow kinds (workflow, block, case_action)",enum as CHECK,minor,stays (engine concept) but only in godrej: baanganga lacks it,S
+H61,db:priority_tat_rules,Response times per priority with no ordering rule; live Low = 10 min vs Urgent = 120,SLA data quality,hurts,sla_policies + CHECK/trigger on ordering,S
+H62,db:workflows.last_run,"Column never written by any code (NULL on 27 of 27 workflows, live); the dashboard and classic admin read it",dead column,minor,"write it from workflow_runs, or drop it",S
+H63,db:all databases,"Application connects as the superuser `postgres`; no app/read-only/migrator roles (live, all three DBs)",security,blocks target,"roles app_rw, app_ro, migrator; secret_ref in control DB",M

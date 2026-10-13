@@ -1,0 +1,40 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "design-proto",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "docs/design"],
+      "port": 8765
+    },
+    {
+      "name": "dashboard-local",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m", "uvicorn", "dash_server:app",
+        "--app-dir", "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\d2e1d158-a80e-4c0d-badb-d5ac11287253\\scratchpad\\harness",
+        "--host", "127.0.0.1", "--port", "8770"
+      ],
+      "port": 8770
+    },
+    {
+      "name": "dashboard-login",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m", "uvicorn", "dash_login:app",
+        "--app-dir", "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\8089dd14-8714-42b9-8660-22922972df30\\scratchpad",
+        "--host", "127.0.0.1", "--port", "8771"
+      ],
+      "port": 8771
+    },
+    {
+      "name": "ux-society",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set DASH_REPO=C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\cb75d095-7515-42e8-baaa-6f68d88f67bf\\scratchpad\\ux&& python -m uvicorn ux_csp:app --app-dir C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\cb75d095-7515-42e8-baaa-6f68d88f67bf\\scratchpad --host 127.0.0.1 --port 8780"
+      ],
+      "port": 8780
+    }
+  ]
+}
