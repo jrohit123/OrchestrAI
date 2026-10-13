@@ -103,7 +103,10 @@ async function renderWhatsappFlows(root) {
         { label: 'Flow ID', render: f => h('span', { class: 'muted' }, f.id) },
         { label: 'Status', render: f => badgeOf(f.status) },
         { label: 'Used by', render: f => h('span', { class: 'row' }, usedBy(f.id)) },
-        { label: '', render: f => h('button', { class: 'btn sm', type: 'button', onclick: () => open(f.id) }, f.status === 'PUBLISHED' ? 'Open' : 'Edit') },
+        { label: '', render: f => h('span', { class: 'row' }, h('button', { class: 'btn sm', type: 'button', onclick: () => open(f.id) }, 'Edit'),
+          h('button', { class: 'btn sm danger', type: 'button', onclick: async () => {
+            if (!await confirmBox(f.status === 'PUBLISHED' ? 'Retire “' + f.name + '”? Meta cannot delete a published Flow, so it is switched off for good. Messages already sent with it stop working.' : 'Delete the draft “' + f.name + '”?', { ok: f.status === 'PUBLISHED' ? 'Retire' : 'Delete', danger: true })) return;
+            try { await api.del('/whatsapp-flows/' + f.id); toast('Done', 'ok'); show(); } catch (e) { toast(e.message, 'bad'); } } }, f.status === 'PUBLISHED' ? 'Retire' : 'Delete')) },
       ], d.flows) : h('div', { class: 'card-b' }, empty('No Flows yet', 'Press Create Flow to start from the sample.'))));
   };
   show();
@@ -116,7 +119,7 @@ async function wfEditor(box, id, back) {
   try { d = await api.get('/whatsapp-flows/' + id); } catch (e) { fill(box, errorBox(e, () => wfEditor(box, id, back))); return; }
   const live = d.status === 'PUBLISHED';
   let savedText = d.json_text, errors = d.errors || [], screenId = null, flow = null, parseError = '', last = null;
-  const area = h('textarea', { class: 'wf-code', spellcheck: 'false', 'aria-label': 'Flow JSON', readonly: live });
+  const area = h('textarea', { class: 'wf-code', spellcheck: 'false', 'aria-label': 'Flow JSON' });
   area.value = d.json_text;
   const gutter = h('pre', { class: 'wf-gut', 'aria-hidden': 'true' });
   const phone = h('div', { class: 'wf-phone' });
@@ -137,7 +140,7 @@ async function wfEditor(box, id, back) {
   const drawStat = () => {
     fill(stat, badge(pretty(String(d.status || '').toLowerCase()), live ? 'ok' : 'warn'),
       d.used_for.map(k => badge('Chat bot ' + (k === 'menu' ? 'menu' : 'complaint form'), 'ok')),
-      !live && area.value !== savedText ? badge('Changes not saved', 'warn') : null);
+      area.value !== savedText ? badge('Changes not saved', 'warn') : null);
   };
   const drawPhone = () => {
     if (!flow || !Array.isArray(flow.screens)) { fill(phone, h('div', { class: 'wf-top' }, h('b', null, 'WhatsApp')), h('div', { class: 'wf-empty' }, parseError ? 'Fix the JSON to see the preview.' : 'Add a screens list to see the preview.')); return; }
@@ -151,10 +154,14 @@ async function wfEditor(box, id, back) {
   let timer = null;
   area.addEventListener('input', () => { lines(); drawStat(); clearTimeout(timer); timer = setTimeout(() => { parse(); drawErrors(); drawPhone(); }, 250); });
   area.addEventListener('scroll', () => { gutter.scrollTop = area.scrollTop; });
-  area.addEventListener('keydown', e => { if (e.key === 'Tab' && !live) { e.preventDefault(); const s = area.selectionStart; area.setRangeText('  ', s, area.selectionEnd, 'end'); area.dispatchEvent(new Event('input')); } });
+  area.addEventListener('keydown', e => { if (e.key === 'Tab') { e.preventDefault(); const s = area.selectionStart; area.setRangeText('  ', s, area.selectionEnd, 'end'); area.dispatchEvent(new Event('input')); } });
 
   const save = async (quiet) => {
-    if (live) return true;
+    if (live) {   // Meta does not let a published Flow change: the edits become a new draft
+      if (area.value === savedText) { if (!quiet) toast('Nothing has changed.', 'ok'); return true; }
+      try { const r = await api.post('/whatsapp-flows/' + id + '/copy', { json_text: area.value }); toast('Saved as a new draft (the published one is unchanged until you publish this)', 'ok'); wfEditor(box, r.id, back); } catch (e) { toast(e.message, 'bad'); }
+      return false;
+    }
     try {
       const r = await api.put('/whatsapp-flows/' + id + '/json', { json_text: area.value });
       savedText = area.value; errors = r.errors || []; drawErrors(); drawStat();
@@ -163,6 +170,7 @@ async function wfEditor(box, id, back) {
     } catch (e) { toast(e.message, 'bad'); return false; }
   };
   const sendTest = async () => {
+    if (live && area.value !== savedText) { toast('Press “Save as new draft” first, then send the draft.', 'bad'); return; }
     if (!await save(true)) return;
     parse(); if (parseError || !flow || !flow.screens) { toast('Fix the JSON first.', 'bad'); return; }
     const phoneIn = h('input', { type: 'tel', inputmode: 'numeric', placeholder: '919876543210', 'aria-label': 'Phone number with country code' });
@@ -194,7 +202,6 @@ async function wfEditor(box, id, back) {
     if (!await confirmBox('Make the chat bot use this Flow for its ' + word + '? People get it from the next message on.', { ok: 'Use it' })) return;
     try { await api.put('/whatsapp-flows/use', { kind, flow_id: id }); toast('Done', 'ok'); wfEditor(box, id, back); } catch (e) { toast(e.message, 'bad'); }
   };
-  const copy = async () => { try { const r = await api.post('/whatsapp-flows/' + id + '/copy'); toast('A draft copy was made', 'ok'); wfEditor(box, r.id, back); } catch (e) { toast(e.message, 'bad'); } };
   const remove = async () => {
     if (!await confirmBox(live ? 'Retire this published Flow? Messages already sent with it stop working.' : 'Delete this draft?', { ok: live ? 'Retire' : 'Delete', danger: true })) return;
     try { await api.del('/whatsapp-flows/' + id); toast('Done', 'ok'); back(); } catch (e) { toast(e.message, 'bad'); }
@@ -204,21 +211,21 @@ async function wfEditor(box, id, back) {
   const top = h('div', { class: 'row between' },
     h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: back }, '← Flows'), h('b', null, d.name), h('span', { class: 'muted small' }, id), stat),
     h('span', { class: 'row' },
-      live ? h('button', { class: 'btn', type: 'button', onclick: copy }, 'Make a copy to edit') : h('button', { class: 'btn', type: 'button', onclick: () => save(false) }, 'Save'),
+      h('button', { class: 'btn', type: 'button', onclick: () => save(false) }, live ? 'Save as new draft' : 'Save'),
       h('button', { class: 'btn', type: 'button', onclick: sendTest }, 'Send test'),
       live ? null : h('button', { class: 'btn primary', type: 'button', onclick: publish }, 'Publish'),
       h('button', { class: 'btn', type: 'button', 'aria-haspopup': 'menu', onclick: e => {
         const items = [
           live ? { label: 'Use as the chat bot’s menu', run: use('menu', 'menu') } : null,
           live ? { label: 'Use as the chat bot’s complaint form', run: use('complaint', 'complaint form') } : null,
-          live ? null : { label: 'Tidy the JSON', run: format },
+          { label: 'Tidy the JSON', run: format },
           d.preview_url ? { label: 'Open Meta’s own preview', run: () => window.open(d.preview_url, '_blank', 'noopener') } : null,
-          { label: live ? 'Retire this Flow' : 'Delete this draft', run: remove },
         ].filter(Boolean);
         openPop(e.currentTarget, h('div', { class: 'wf-menu' }, items.map(it => h('button', { class: 'btn ghost', type: 'button', onclick: () => { closePop(); it.run(); } }, it.label))), { width: 260, align: 'right' });
-      } }, '⋯')));
+      } }, '⋯'),
+      h('button', { class: 'btn danger', type: 'button', onclick: remove }, live ? 'Retire' : 'Delete')));
   fill(box, top,
-    live ? notice('This Flow is published, so it cannot be changed. Press “Make a copy to edit”, change the copy, publish it, then point the chat bot at it.', null) : null,
+    live ? notice('This Flow is published. Meta never changes a published Flow, so your edits are saved as a new draft (press Save as new draft). Publish that draft, then use it as the chat bot’s menu or form from the ⋯ menu.', null) : null,
     h('div', { class: 'wf-edit' },
       h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Editor'), h('div', { class: 'wf-codewrap' }, gutter, area), errBox),
       h('div', { class: 'wf-side' }, h('div', { class: 'row between', style: { marginBottom: '8px' } }, h('b', null, 'Preview'), screenSel), phone, result)));

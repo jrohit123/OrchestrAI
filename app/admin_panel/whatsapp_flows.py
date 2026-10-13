@@ -283,16 +283,19 @@ async def publish(ctx: CtxDep, flow_id: str):
 
 
 @router.post("/whatsapp-flows/{flow_id}/copy")
-async def copy_flow(ctx: CtxDep, flow_id: str):
-    """A new draft with the same layout, for changing a published Flow (published ones cannot be changed)."""
+async def copy_flow(ctx: CtxDep, flow_id: str, body: JsonBody | None = None):
+    """A new draft made from this Flow, with the edited layout when one is sent, else the Flow's own. Meta does not let a
+    published Flow be changed, so changing one means a new draft that is then published and used instead."""
     flow_id = _id(flow_id)
     account = await _need_account(ctx)
     found = await _run(flow_admin.details(flow_id))
-    text = await _run(flow_admin.read_json(flow_id))
+    text = body.json_text if body else await _run(flow_admin.read_json(flow_id))
     try:
         layout = json.loads(text)
     except ValueError as e:
-        raise HTTPException(400, "The Flow has no layout to copy.") from e
+        raise HTTPException(
+            400, "The layout is not valid JSON yet, so it cannot be saved."
+        ) from e
     base = re.sub(r"_v\d+$", "", found["name"] or "flow")
     new_id, errors = await _run(
         flow_admin.create(account, f"{base}_v{uuid.uuid4().hex[:4]}", layout)
