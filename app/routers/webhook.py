@@ -75,6 +75,9 @@ async def _clear_stuck_draft(
         user["org_id"], user["user_id"], reason, source_key=user["source_key"]
     )
     session.pop("pending_action", None)
+    # The AI must forget the request too. Left in its memory (details, "reply yes to save"), the next message, even a plain
+    # "hello", makes it fill the request in again from there.
+    session["conversation_history"] = []
     await set_session(session_id, session, ttl=session_ttl)
 
 
@@ -1829,7 +1832,9 @@ async def _handle_message(
                         or await say(user["source_key"], "action.completed"),
                     },
                 ]
-                session["conversation_history"] = session["conversation_history"][-15:]
+                session["conversation_history"] = session["conversation_history"][
+                    -2:
+                ]  # only the closing exchange: the finished request is forgotten
                 await set_session(session_id, session, ttl=session_ttl)
                 done = result.get("message") or await say(
                     user["source_key"], "action.completed"
@@ -1970,7 +1975,9 @@ async def _handle_message(
                         or await say(user["source_key"], "action.completed"),
                     },
                 ]
-                session["conversation_history"] = session["conversation_history"][-15:]
+                session["conversation_history"] = session["conversation_history"][
+                    -2:
+                ]  # only the closing exchange: the finished request is forgotten
                 await set_session(session_id, session, ttl=session_ttl)
                 await send_text(
                     phone,
@@ -2097,6 +2104,14 @@ async def _handle_message(
             # Save history without assistant reply (menu is the reply)
             updated_history = updated_history or [{"role": "user", "content": text}]
         else:
+            if (
+                pending_action
+                and "pending_action" in session_patch
+                and not session_patch["pending_action"]
+            ):
+                updated_history = (updated_history or [])[
+                    -2:
+                ]  # the request ended this turn: forget it
             # Apply session patch if any
             if session_patch:
                 session = {**session, **session_patch}
@@ -2289,14 +2304,15 @@ async def cancel_user_draft(user: dict, phone: str, confirm: bool = True):
     # the chat's own copy of the draft too, or tapping the same workflow again says "already filling it in"
     session_id = f"{user['org_id']}:{phone}"
     session = await get_session(session_id)
-    if session.pop("pending_action", None) is not None:
-        row = await fetch_one(
-            "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
-            user["org_id"],
-            source_key=user["source_key"],
-        )
-        minutes = (row or {}).get("session_ttl_minutes") or 480
-        await set_session(session_id, session, ttl=minutes * 60)
+    session.pop("pending_action", None)
+    session["conversation_history"] = []  # see _clear_stuck_draft
+    row = await fetch_one(
+        "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
+        user["org_id"],
+        source_key=user["source_key"],
+    )
+    minutes = (row or {}).get("session_ttl_minutes") or 480
+    await set_session(session_id, session, ttl=minutes * 60)
 
     if confirm and field_count >= 2:
         await send_text(

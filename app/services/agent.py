@@ -2572,6 +2572,9 @@ async def run_agent(
     logger.info(f"Starting agent for: {message[:100]}")
 
     session_patch = {}
+    # Was a request already open when this message came? A draft that is started by this very message must have its
+    # content in this message (see _adds_nothing), never only in what was said before.
+    had_draft_at_start = bool(pending_action)
     org_conf = await config_store.org_settings(user["source_key"], user["org_id"])
 
     # Greetings and help requests are no longer a keyword fast-path here —
@@ -3578,6 +3581,33 @@ async def run_agent(
             # re-indenting the ~60-line body below by one level, and the risk
             # of an indentation slip in the item-merge logic isn't worth the
             # style win.
+            if (
+                tool_call.function.name == "update_draft"
+                and not had_draft_at_start
+                and _adds_nothing(message, command_args)
+                and isinstance(result, dict)
+                and sum(
+                    1
+                    for v in (result.get("fields") or {}).values()
+                    if v not in (None, "")
+                )
+                >= 3
+            ):
+                # "hello" cannot start a request with title, place and urgency all filled in: those came from older
+                # messages (a request the person already cancelled or finished). Drop it and let the chat bot answer.
+                from app.services.draft_store import close_draft as _drop_revived
+
+                await _drop_revived(
+                    user["org_id"],
+                    user["user_id"],
+                    "cancelled",
+                    source_key=user["source_key"],
+                )
+                logger.warning(
+                    "a message with no request tried to start one from earlier messages; dropped"
+                )
+                tool_results[-1]["content"] = json.dumps({"error": _NOTHING_ASKED})
+                result = None
             if tool_call.function.name == "update_draft":  # noqa: SIM102
                 if isinstance(result, dict) and result.get("type") == "draft_update":
                     # Build pending_action from result
@@ -3667,6 +3697,27 @@ async def run_agent(
 
                     # Validate draft is complete before allowing confirmation
                     draft = session_patch.get("pending_action") or pending_action or {}
+
+                    if not had_draft_at_start and _adds_nothing(message, command_args):
+                        from app.services.draft_store import (
+                            close_draft as _drop_revived,
+                        )
+
+                        await _drop_revived(
+                            user["org_id"],
+                            user["user_id"],
+                            "cancelled",
+                            source_key=user["source_key"],
+                        )
+                        session_patch["pending_action"] = None
+                        pending_action = None
+                        logger.warning(
+                            "a message with no request tried to confirm one from earlier messages; dropped"
+                        )
+                        tool_results[-1]["content"] = json.dumps(
+                            {"error": _NOTHING_ASKED}
+                        )
+                        break
 
                     # QA verification: validate + recompute via calc_rules
                     # This catches missing fields AND silently corrects LLM arithmetic
@@ -3833,6 +3884,19 @@ async def run_agent(
     # Final safety check: ensure we never return empty string
     fallback_message = "🤔 Something went wrong. Please try again."
     return fallback_message, history_to_save, session_patch
+
+
+_NOTHING_ASKED = (
+    "The user's latest message does not ask for anything yet (it is a greeting or a one-word reply). Do not start, fill in "
+    "or confirm any request from earlier messages: those requests are finished or cancelled. Greet them, or ask what they need."
+)
+
+
+def _adds_nothing(message: str, command_args: str | None = None) -> bool:
+    """A message too short to carry a request: a greeting, "ok", "yes". At most two words and no digit (a flat or tower
+    number is a digit). Counted by spaces, so it works in every language and script."""
+    text = f"{message or ''} {command_args or ''}".strip()
+    return len(text.split()) <= 2 and not any(c.isdigit() for c in text)
 
 
 def _serialize_history(messages: list) -> list:

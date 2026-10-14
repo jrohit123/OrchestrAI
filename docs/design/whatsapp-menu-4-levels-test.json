@@ -1,0 +1,618 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "MENU",
+      "title": "Menu",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "use_cases",
+            "list-items": [
+              {
+                "id": "tickets",
+                "main-content": {
+                  "title": "Tickets",
+                  "description": "Complaints and cases"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "TICKETS"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "bookings",
+                "main-content": {
+                  "title": "Bookings",
+                  "description": "Clubhouse, parking"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "BOOKINGS"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "visitors",
+                "main-content": {
+                  "title": "Visitors",
+                  "description": "Passes and gate"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "VISITORS"
+                  },
+                  "payload": {}
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TICKETS",
+      "title": "Tickets",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "ticket_groups",
+            "list-items": [
+              {
+                "id": "create",
+                "main-content": {
+                  "title": "Create",
+                  "description": "3 options"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "TICKETS_CREATE"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "reports",
+                "main-content": {
+                  "title": "Reports",
+                  "description": "3 options"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "TICKETS_REPORTS"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "more",
+                "main-content": {
+                  "title": "More",
+                  "description": "2 options"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "TICKETS_MORE"
+                  },
+                  "payload": {}
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "BOOKINGS",
+      "title": "Bookings",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "booking_items",
+            "list-items": [
+              {
+                "id": "clubhouse",
+                "main-content": {
+                  "title": "Book the clubhouse",
+                  "description": "Pick a date"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "bookings > clubhouse"
+                  }
+                }
+              },
+              {
+                "id": "parking",
+                "main-content": {
+                  "title": "Book a parking slot",
+                  "description": "2 options"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "PARKING"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "mine",
+                "main-content": {
+                  "title": "My bookings",
+                  "description": "Upcoming"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "bookings > my_bookings"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "VISITORS",
+      "title": "Visitors",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "visitor_items",
+            "list-items": [
+              {
+                "id": "preapprove",
+                "main-content": {
+                  "title": "Pre-approve a visitor",
+                  "description": "Share a pass"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "visitors > pre_approve"
+                  }
+                }
+              },
+              {
+                "id": "today",
+                "main-content": {
+                  "title": "Visitors today",
+                  "description": "Who is expected"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "visitors > today"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TICKETS_CREATE",
+      "title": "Create",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "create_items",
+            "list-items": [
+              {
+                "id": "complaint",
+                "main-content": {
+                  "title": "File a complaint",
+                  "description": "Pick a kind"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "COMPLAINT_KIND"
+                  },
+                  "payload": {}
+                }
+              },
+              {
+                "id": "lift",
+                "main-content": {
+                  "title": "Report a lift problem",
+                  "description": "Lift out of order"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > lift"
+                  }
+                }
+              },
+              {
+                "id": "water",
+                "main-content": {
+                  "title": "Report a water issue",
+                  "description": "Leak or no supply"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > water"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TICKETS_REPORTS",
+      "title": "Reports",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "report_items",
+            "list-items": [
+              {
+                "id": "all",
+                "main-content": {
+                  "title": "All tickets",
+                  "description": "Everything open"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > reports > all"
+                  }
+                }
+              },
+              {
+                "id": "mine",
+                "main-content": {
+                  "title": "My tickets",
+                  "description": "Raised by me"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > reports > mine"
+                  }
+                }
+              },
+              {
+                "id": "overdue",
+                "main-content": {
+                  "title": "Overdue",
+                  "description": "Past their target"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > reports > overdue"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TICKETS_MORE",
+      "title": "More",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "more_items",
+            "list-items": [
+              {
+                "id": "assign",
+                "main-content": {
+                  "title": "Assign a case",
+                  "description": "Pass it on"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > more > assign"
+                  }
+                }
+              },
+              {
+                "id": "close",
+                "main-content": {
+                  "title": "Close a case",
+                  "description": "Mark it done"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > more > close"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "PARKING",
+      "title": "Parking",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "parking_items",
+            "list-items": [
+              {
+                "id": "visitor",
+                "main-content": {
+                  "title": "Visitor slot",
+                  "description": "For a guest"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "bookings > parking > visitor"
+                  }
+                }
+              },
+              {
+                "id": "resident",
+                "main-content": {
+                  "title": "Resident slot",
+                  "description": "For my vehicle"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "bookings > parking > resident"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "COMPLAINT_KIND",
+      "title": "Kind of complaint",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "kinds",
+            "list-items": [
+              {
+                "id": "plumbing",
+                "main-content": {
+                  "title": "Plumbing",
+                  "description": "Leaks, taps"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > plumbing"
+                  }
+                }
+              },
+              {
+                "id": "electrical",
+                "main-content": {
+                  "title": "Electrical",
+                  "description": "Lights, power"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > electrical"
+                  }
+                }
+              },
+              {
+                "id": "lift",
+                "main-content": {
+                  "title": "Lift",
+                  "description": "Stuck or slow"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > lift"
+                  }
+                }
+              },
+              {
+                "id": "security",
+                "main-content": {
+                  "title": "Security",
+                  "description": "Gate, guards"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > security"
+                  }
+                }
+              },
+              {
+                "id": "housekeeping",
+                "main-content": {
+                  "title": "Housekeeping",
+                  "description": "Cleaning"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > housekeeping"
+                  }
+                }
+              },
+              {
+                "id": "other",
+                "main-content": {
+                  "title": "Something else",
+                  "description": "Not listed"
+                },
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "DONE"
+                  },
+                  "payload": {
+                    "path": "tickets > create > complaint > other"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "You chose",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "path": {
+          "type": "string",
+          "__example__": "tickets > create > complaint > plumbing"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Your choice"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.path}"
+          },
+          {
+            "type": "Footer",
+            "label": "Send to the chat",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "path": "${data.path}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
