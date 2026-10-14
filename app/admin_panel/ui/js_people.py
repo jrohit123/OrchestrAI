@@ -183,11 +183,34 @@ function addPersonModal(lk) {
     } }] });
 }
 
+// what each person handles, read from Who handles what (so it never disagrees with it): kind -> goes first / backup / told
+async function whoHandlesMap() {
+  if (!S.boot.caps.case_model) return null;
+  try {
+    const [rd, cd] = await Promise.all([api.get('/rules'), api.get('/categories')]);
+    const label = Object.fromEntries(cd.rows.map(c => [c.id, c.label]));
+    const map = {};
+    rd.rows.filter(r => r.is_active !== false).forEach(r => {
+      const kind = r.category_id ? (label[r.category_id] || 'a kind') : 'Everything else';
+      const l1 = (r.people || []).filter(p => p.level === 1), l2 = (r.people || []).filter(p => p.level === 2);
+      l1.forEach((p, i) => (map[p.user_id] = map[p.user_id] || []).push([kind, i === 0 ? 'goes first' : 'backup']));
+      l2.forEach(p => (map[p.user_id] = map[p.user_id] || []).push([kind, 'told']));
+    });
+    return map;
+  } catch (e) { return null; }   // a courtesy column: without it the list still works
+}
+function handlesCell(list) {
+  if (!list || !list.length) return h('span', { class: 'muted' }, '—');
+  return h('div', { class: 'small' }, list.slice(0, 3).map(([k, how]) => h('div', null, h('b', null, k), ' · ', h('span', { class: how === 'goes first' ? '' : 'muted' }, how))),
+    list.length > 3 ? h('div', { class: 'muted' }, '+' + (list.length - 3) + ' more') : null);
+}
+
 async function renderPeopleTab(root, route) {
   const mine = S.renderId;
   const lk = await getLookups();
+  const handles = await whoHandlesMap();
   const q = { ...route.q }; delete q.person; q.page = Number(q.page || 1);
-  setTopAction(isSuper() ? { label: 'Add person', run: () => addPersonModal(lk) } : { label: 'Ask for a new person', icon: 'send', run: () => askDialog('Please add a new person.\nName: \nEmail: \nRole: ') });
+  setTopAction({ label: 'Add person', run: () => addPersonModal(lk) });   // admins add people too (docs/plan/dashboard-v2.md)
   const bar = h('div', { class: 'filters' }), chips = h('div', { class: 'chips', style: { marginBottom: '12px' } }), out = h('div', { class: 'card' });
   root.append(bar, chips, out);
   const update = patch => { Object.assign(q, patch); if (!('page' in patch)) q.page = 1; load(); };
@@ -226,6 +249,7 @@ async function renderPeopleTab(root, route) {
       fill(out, table([
         { label: 'Person', cls: 'wide', render: p => h('div', { class: 'person' }, avatar(p.name), h('div', null, h('div', null, h('b', null, p.name), p.is_active ? null : [' ', badge('Inactive')]), h('div', { class: 'muted small' }, p.email || ''))) },
         { label: 'Role', render: p => p.role ? badge(roleLabel(p.role), 'brand') : h('span', { class: 'muted' }, '—') },
+        handles ? { label: 'Handles', render: p => handlesCell(handles[p.id]) } : null,
         S.boot.caps.residents || S.boot.caps.seats ? { label: 'Home or seat', render: p => (p.homes.length || p.seats.length) ? h('div', null, p.homes.slice(0, 2).map(x => h('div', { class: 'small' }, homeText(x), x.status !== 'active' ? ' ' : '', x.status !== 'active' ? badge(pretty(x.status), 'warn') : null)),
           p.seats.length ? h('div', { class: 'chips' }, p.seats.map(s => badge(s.name))) : null) : h('span', { class: 'muted' }, '—') } : null,
         { label: 'On ' + chatWord(), render: p => p.reachable ? badge('Yes', 'ok') : badge('Not yet', 'warn') },

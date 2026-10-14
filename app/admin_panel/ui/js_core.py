@@ -176,6 +176,7 @@ function bars(items, onClick) {
 }
 function table(cols, data, opts) {
   opts = opts || {};
+  cols = cols.filter(Boolean);   // a column a database cannot fill is simply left out
   if (!data.length) return empty(opts.emptyTitle || 'Nothing here yet', opts.emptyText || '');
   const t = h('table', { class: 't ' + (opts.cls || '') },
     h('thead', null, h('tr', null, cols.map(c => h('th', { class: c.cls || '' }, c.label)))),
