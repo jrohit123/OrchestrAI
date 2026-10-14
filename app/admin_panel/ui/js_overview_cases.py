@@ -106,6 +106,7 @@ async function showCase(id) {
       closed ? [h('dt', null, 'Closed'), h('dd', null, fmtDT(c.closed_at))] : null,
       Object.entries(c.custom_fields || {}).map(([k, v]) => [h('dt', null, pretty(k)), h('dd', null, typeof v === 'object' ? JSON.stringify(v) : String(v))]));
     const body = [h('div', { class: 'card' }, h('div', { class: 'card-b' }, facts))];
+    if (S.boot.caps.tat_clock) body.push(await clockCard(c));
     if (S.boot.caps.case_model && isSuper()) {
       const r = d.routing;
       let inner;
@@ -148,6 +149,37 @@ function timeBar(c, big) {
   return h('div', { class: 'tat' + (big ? ' big' : ''), title: k.total_minutes ? 'Time to fix: ' + minutes(k.total_minutes) : '' },
     h('div', { class: 'tbar ' + tone }, h('i', { style: { width: (k.no_limit ? 100 : Math.min(100, pct)) + '%' } }), marks),
     h('div', { class: 'ttxt ' + tone }, text));
+}
+
+// A ticket's clock, on its page: how much of its time to fix is used, and every step of its reminder plan (done, skipped,
+// next, later) with when it ran or will run. From GET /cases/{id}/clock; nothing is worked out here.
+const CLOCK_STATE = { done: ['✓', 'Done'], skipped: ['⏭', 'Not needed'], failed: ['⚠', 'Nobody could be reached'], next: ['⏳', 'Next'], later: ['○', 'Later'] };
+async function clockCard(c) {
+  const holder = h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Time to fix'), h('div', { class: 'card-b muted small' }, 'Loading…'));
+  (async () => {
+    let k;
+    try { k = await api.get('/cases/' + c.id + '/clock'); } catch (e) { holder.remove(); return; }
+    const noLimit = k.total_minutes == null;
+    const row = { status: c.status, clock: { percent: k.percent == null ? 0 : Math.round(k.percent), total_minutes: k.total_minutes, elapsed_minutes: k.elapsed_minutes, paused: !!k.paused, no_limit: noLimit },
+      marks: (k.steps || []).filter(x => x.at_percent != null && x.at_percent <= 100).map(x => Number(x.at_percent)) };
+    const words = a => (typeof remActWords === 'function' ? remActWords(a, []) : ['•', a.do]).join(' ');
+    const steps = (k.steps || []).map(x => {
+      const [ic, label] = CLOCK_STATE[x.state] || ['•', x.state];
+      const when = x.when ? fmtDT(x.when) : '';
+      const head = x.every_minutes ? 'Every ' + minutes(x.every_minutes) : Number(x.at_percent) + '%';
+      return h('div', { class: 'clk ' + x.state }, h('span', { class: 'clk-i' }, ic),
+        h('div', { class: 'grow' }, h('b', null, head), when ? ' · ' + when : '', x.only_if && x.only_if !== 'always' ? h('span', { class: 'muted' }, ' · only if ' + (REM_ONLY[x.only_if] || x.only_if)) : null,
+          h('div', { class: 'small' }, (x.actions || []).map(words).join(' · ')),
+          x.state === 'skipped' && x.detail && x.detail.why ? h('div', { class: 'muted small' }, 'Not needed: ' + x.detail.why + '.') : null,
+          x.state === 'done' && x.detail && x.detail.told && x.detail.told.length ? h('div', { class: 'muted small' }, 'Told: ' + x.detail.told.join(', ') + (x.detail.moved_to ? ' · now with ' + x.detail.moved_to : '')) : null),
+        h('span', { class: 'muted small' }, label));
+    });
+    fill(holder, h('div', { class: 'card-h' }, 'Time to fix', h('span', { class: 'muted small' }, noLimit ? 'No time limit' : minutes(k.total_minutes) + (k.due_at ? ' · due ' + fmtDT(k.due_at) : ''))),
+      h('div', { class: 'card-b stack s8' }, timeBar(row, true),
+        k.plan ? h('div', { class: 'muted small' }, 'Reminder plan: ', h('a', { href: href('cases', 'reminders') }, k.plan.name)) : h('div', { class: 'muted small' }, 'No reminder plan applies.'),
+        steps));
+  })();
+  return holder;
 }
 
 // Tickets: the list, and (as tabs) everything about how tickets are handled, which used to be the Case rules screen

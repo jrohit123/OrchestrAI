@@ -196,4 +196,9 @@ td.tatcol{min-width:190px}
 .remexdot.late{border-color:var(--bad)}
 .remexlab{position:absolute;top:16px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11.5px;color:var(--ink-2);text-align:center;line-height:1.3}
 @media (max-width:760px){.remex{grid-template-columns:1fr;padding-right:20px}}
+/* ───── a ticket's clock (its page) ───── */
+.clk{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.clk.next{border-color:var(--brand);background:var(--brand-soft)}.clk.later{opacity:.7}.clk.failed{border-color:var(--bad)}
+.clk-i{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;flex:none;background:var(--sunken)}
+.clk.done .clk-i{background:var(--ok);color:var(--on-ok)}.clk.next .clk-i{background:var(--brand);color:var(--on-brand)}
 """
