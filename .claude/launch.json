@@ -35,6 +35,16 @@
         "set DASH_REPO=C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\cb75d095-7515-42e8-baaa-6f68d88f67bf\\scratchpad\\ux&& python -m uvicorn ux_csp:app --app-dir C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\cb75d095-7515-42e8-baaa-6f68d88f67bf\\scratchpad --host 127.0.0.1 --port 8780"
       ],
       "port": 8780
+    },
+    {
+      "name": "dashboard-v2",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m", "uvicorn", "ux_server:app",
+        "--app-dir", "D:\\Orchestrator AI\\docs\\ux\\tools",
+        "--host", "127.0.0.1", "--port", "8781"
+      ],
+      "port": 8781
     }
   ]
 }

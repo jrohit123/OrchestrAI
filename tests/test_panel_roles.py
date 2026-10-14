@@ -617,16 +617,21 @@ def keys(caps):
 
 def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
     assert keys(HOUSING) == [
-        "overview", "cases", "conversations", "people", "workflows", "assistant", "rules", "access", "settings",
+        "overview", "cases", "conversations", "people", "access", "assistant", "workflows", "settings",
     ]  # fmt: skip
     tabs = {
         s["key"]: [t["key"] for t in s.get("tabs", [])] for s in meta._sections(HOUSING)
     }
-    assert tabs["rules"] == ["teams", "rules", "categories", "times"]
+    assert tabs["cases"] == [
+        "list",
+        "teams",
+        "categories",
+        "rules",
+        "times",
+    ]  # Tickets holds the old Case rules
     assert tabs["access"] == ["roles", "seats", "special"]
     assert tabs["assistant"] == ["messages", "instructions", "whatsapp"]
     assert tabs["settings"] == ["general", "history"]
-    assert tabs["cases"] == []  # Cases is only the list
 
 
 def test_an_organisation_without_cases_has_no_case_screens():
@@ -635,9 +640,9 @@ def test_an_organisation_without_cases_has_no_case_screens():
         "overview",
         "conversations",
         "people",
-        "workflows",
-        "assistant",
         "access",
+        "assistant",
+        "workflows",
         "settings",
     ]
     tabs = {
@@ -651,17 +656,31 @@ def test_set_up_screens_that_the_database_cannot_do_are_left_out_and_never_shown
         "overview",
         "cases",
         "people",
-        "workflows",
-        "assistant",
         "access",
+        "assistant",
+        "workflows",
         "settings",
     ]
     only_times = [
         s
         for s in meta._sections({"cases": True, "targets": True})
-        if s["key"] == "rules"
+        if s["key"] == "cases"
     ]
-    assert [t["key"] for t in only_times[0]["tabs"]] == ["times"]
+    assert [t["key"] for t in only_times[0]["tabs"]] == ["list", "times"]
+
+
+def test_an_admin_gets_the_day_to_day_screens_only():
+    admin = meta._sections(HOUSING, "admin")
+    assert [s["key"] for s in admin] == ["overview", "cases", "conversations", "people"]
+    assert [t["key"] for t in admin[1]["tabs"]] == ["list"]
+    # the super admin's copy is not changed by working out the admin's
+    assert [t["key"] for t in meta._sections(HOUSING)[1]["tabs"]] == [
+        "list",
+        "teams",
+        "categories",
+        "rules",
+        "times",
+    ]
 
 
 def test_the_menu_numbers_never_turn_a_problem_into_an_error(monkeypatch):

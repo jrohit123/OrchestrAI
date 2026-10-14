@@ -300,7 +300,7 @@ async function renderTeamsTab(root) {
         if (draft.dirty) { toast('Save your changes first, then try it.', 'bad'); return; }
         try { result = await api.post('/rules/test', { category_id: c.id, context: {} }); paint(); } catch (x) { toast(x.message, 'bad'); } } }, 'Who would get a new case today?'), out));
       box.append(h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { class: 'btn sm', type: 'button', onclick: () => addModal(c.id) }, '+ Add a kind under ' + c.label)));
-      if (specials(c.id)) box.append(h('div', { class: 'muted small', style: { marginTop: '6px' } }, plural(specials(c.id), 'extra rule') + ' with conditions also apply to this kind. ', h('a', { href: href('rules', 'rules') }, 'See them')));
+      if (specials(c.id)) box.append(h('div', { class: 'muted small', style: { marginTop: '6px' } }, plural(specials(c.id), 'extra rule') + ' with conditions also apply to this kind. ', h('a', { href: href('cases', 'rules') }, 'See them')));
     }
     return box;
   }

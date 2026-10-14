@@ -60,7 +60,7 @@ SECTIONS.overview = {
     const needs = [];
     if (k && k.unassigned) needs.push({ tone: 'warn', ic: 'usercheck', title: plural(k.unassigned, 'case') + (k.unassigned === 1 ? ' has' : ' have') + ' no one handling ' + (k.unassigned === 1 ? 'it' : 'them'), sub: 'They wait until someone takes them.', cta: 'See ' + (k.unassigned === 1 ? 'it' : 'them'), to: href('cases', '', { status: 'open', unassigned: '1' }) });
     if (k && k.overdue) needs.push({ tone: 'bad', ic: 'clock', title: plural(k.overdue, 'case') + (k.overdue === 1 ? ' is' : ' are') + ' past the target time', sub: 'The longest one is ' + (c.overdue[0] ? relDue(c.overdue[0].due_at) : 'late') + '.', cta: 'See ' + (k.overdue === 1 ? 'it' : 'them'), to: href('cases', '', { status: 'open', overdue: '1' }) });
-    if (gaps.length) needs.push({ tone: 'info', ic: 'route', title: plural(gaps.length, 'kind') + ' of complaint ' + (gaps.length === 1 ? 'has' : 'have') + ' nobody to go to', sub: 'New cases of ' + (gaps.length === 1 ? 'this kind' : 'these kinds') + ' stay unassigned.', cta: 'Fix in Case rules', to: href('rules') });
+    if (gaps.length) needs.push({ tone: 'info', ic: 'route', title: plural(gaps.length, 'kind') + ' of complaint ' + (gaps.length === 1 ? 'has' : 'have') + ' nobody to go to', sub: 'New cases of ' + (gaps.length === 1 ? 'this kind' : 'these kinds') + ' stay unassigned.', cta: 'Fix in Case rules', to: href('cases', 'teams') });
     if (rows24.some(r => r.had_error)) needs.push({ tone: 'bad', ic: 'chat', title: plural(rows24.filter(r => r.had_error).length, 'conversation') + ' failed since yesterday', sub: 'Something went wrong while the chat bot was working.', cta: 'Open Conversations', to: href('conversations') });
     if (silent > 0) needs.push({ tone: 'info', ic: 'send', title: silent + ' of ' + d.people.active + ' people cannot be messaged yet', sub: 'The chat bot has no way to reach them.', cta: 'Open People', to: href('people') });
     const more = needs.slice(3);
@@ -105,8 +105,8 @@ SECTIONS.overview = {
     // a set-up list worked out from live facts, so it ticks itself; it shows only until everything is done
     const steps = [];
     steps.push([d.people.active > 0, 'Add your people', null, d.people.active ? null : ['Open People', href('people')]]);
-    if (cats) { steps.push([cats.rows.length > 0, 'Create the kinds of complaint', null]); steps.push([!gaps.length && cats.rows.length > 0, 'Give every kind someone to go to', gaps.length ? gaps.length + ' left: ' + gaps.slice(0, 3).map(g => g.label).join(', ') + '.' : null, gaps.length ? ['Open Case rules', href('rules')] : null]); }
-    if (targets) steps.push([!targets.missing.length && targets.rows.length > 0, 'Check the response times', targets.missing.length ? 'Not set yet: ' + targets.missing.map(pretty).join(', ') + '.' : null, targets.missing.length ? ['Open response times', href('rules', 'times')] : null]);
+    if (cats) { steps.push([cats.rows.length > 0, 'Create the kinds of complaint', null]); steps.push([!gaps.length && cats.rows.length > 0, 'Give every kind someone to go to', gaps.length ? gaps.length + ' left: ' + gaps.slice(0, 3).map(g => g.label).join(', ') + '.' : null, gaps.length ? ['Open Case rules', href('cases', 'teams')] : null]); }
+    if (targets) steps.push([!targets.missing.length && targets.rows.length > 0, 'Check the response times', targets.missing.length ? 'Not set yet: ' + targets.missing.map(pretty).join(', ') + '.' : null, targets.missing.length ? ['Open response times', href('cases', 'times')] : null]);
     steps.push([d.workflows.active > 0, 'Switch on a flow', null, d.workflows.active ? null : ['Open Flows', href('workflows')]]);
     const done = steps.filter(s => s[0]).length;
     if (HOME_HEAD && HOME_HEAD.isConnected) {

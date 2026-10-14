@@ -110,7 +110,7 @@ async function showCase(id) {
       const r = d.routing;
       let inner;
       if (!c.category_id) inner = h('span', { class: 'muted' }, 'This case has no kind of complaint yet, so no case rule can apply.');
-      else if (!r) inner = h('span', null, 'No case rule matches this kind of complaint yet. ', h('a', { href: href('rules') }, 'Add one'));
+      else if (!r) inner = h('span', null, 'No case rule matches this kind of complaint yet. ', h('a', { href: href('cases', 'teams') }, 'Add one'));
       else inner = h('div', { class: 'stack' },
         h('div', null, 'Rule ', h('b', null, '“' + r.rule_name + '”'), ' would send it to ', r.assignee_name ? h('b', null, r.assignee_name) : h('b', { style: { color: 'var(--bad)' } }, 'nobody (no one it points to can be messaged)'),
           r.via === 'backup' ? ' (the backup, because the first choice is unavailable)' : '', r.level2.length ? ', with ' + r.level2.map(x => x.name).join(', ') + ' as level 2' : '', '.'),
@@ -131,10 +131,37 @@ async function showCase(id) {
   } catch (e) { if (drawer === dr) { clear(dr.bodyEl); dr.bodyEl.append(notice(e.message, 'bad')); dr.titleEl.textContent = 'Case'; } }
 }
 // Cases: only the daily work. Search, Open / Closed and one Filters button; how cases are sent and timed is set up under Case rules.
+// A ticket's time bar: how much of its time to fix it has used (green, amber from 40%, red when late, grey when paused,
+// dashed when it has no time limit). The small dots are the steps of its reminder plan; a filled one has passed.
+function timeBar(c, big) {
+  const k = c.clock;
+  if (!k) return null;
+  const closedNow = (S.boot.enums.closed || []).includes(c.status);
+  const pct = k.percent || 0;
+  const tone = closedNow ? 'done' : k.no_limit ? 'none' : k.paused ? 'paused' : pct >= 100 ? 'late' : pct >= 40 ? 'warn' : 'ok';
+  const text = closedNow ? 'Closed after ' + minutes(k.elapsed_minutes)
+    : k.no_limit ? 'No time limit · open ' + minutes(k.elapsed_minutes)
+    : k.paused ? 'Clock paused · ' + pct + '% used'
+    : pct >= 100 ? 'Late by ' + minutes(Math.max(1, k.elapsed_minutes - k.total_minutes))
+    : pct + '% used · ' + minutes(Math.max(1, k.total_minutes - k.elapsed_minutes)) + ' left';
+  const marks = k.no_limit ? [] : (c.marks || []).filter(m => m < 100).map(m => h('span', { class: 'tmark' + (pct >= m ? ' done' : ''), style: { left: m + '%' }, 'data-tip': m + '% of the time to fix: a reminder step' }));
+  return h('div', { class: 'tat' + (big ? ' big' : ''), title: k.total_minutes ? 'Time to fix: ' + minutes(k.total_minutes) : '' },
+    h('div', { class: 'tbar ' + tone }, h('i', { style: { width: (k.no_limit ? 100 : Math.min(100, pct)) + '%' } }), marks),
+    h('div', { class: 'ttxt ' + tone }, text));
+}
+
+// Tickets: the list, and (as tabs) everything about how tickets are handled, which used to be the Case rules screen
+const TICKET_TABS = {
+  list: ['Tickets', 'Everything people have reported, and where it stands'],
+  teams: ['Who handles what', 'Who gets each kind of ticket, who backs them up, and who is kept informed.'],
+  categories: ['Kinds of ticket', 'The kinds people choose from, and the words that sort a ticket into one.'],
+  rules: ['Rules in detail', 'Every rule, its order and its exceptions. Most days Who handles what is all you need.'],
+  times: ['Response times', 'How long each urgency gets before a ticket counts as late.'],
+};
 SECTIONS.cases = {
-  title: 'Cases', sub: 'Everything people have reported, and where it stands',
-  actions: () => S.boot.caps.case_model && hasSection('rules') ? h('a', { class: 'btn ghost', href: href('rules') }, 'How cases are handled', icon('arrowr', 'sm')) : null,
+  heading: (sec, r) => { const t = TICKET_TABS[r.tab] || TICKET_TABS.list; return { title: t[0], sub: t[1] }; },
   async render(root, route) {
+    if (route.tab && route.tab !== 'list') return SECTIONS.rules.render(root, route);
     const mine = S.renderId;
     const lk = S.boot.caps.case_category ? await getLookups() : { categories: [] };
     const closedList = S.boot.enums.closed || [], closedVal = closedList.join(',');
@@ -190,13 +217,15 @@ SECTIONS.cases = {
         const part = (label, n, val) => h('button', { type: 'button', 'aria-pressed': String((q.status || '') === val), onclick: () => update({ status: val }) }, label + ' ', h('span', { style: { opacity: .7 } }, n));
         fill(seg, part('All', total, ''), part('Open', openN, 'open'), closed.length ? part('Closed', total - openN, closedVal) : null);
         const dot = p => h('span', { class: 'pd ' + prioTone(p) });
+        const c0 = d.rows[0];   // a database with the clock (housing-0013) shows the time bar instead of the due date
         fill(out,
           table([
             { label: 'Case', cls: 'wide', render: c => h('div', { class: 'cs' }, h('b', null, c.case_number), ' ', c.title,
               h('div', { class: 'muted small' }, [c.priority ? [dot(c.priority), pretty(c.priority)] : null, c.category_label ? (c.category_parent_label ? c.category_parent_label + ' › ' : '') + c.category_label : null, c.location, c.complainant_name ? 'raised by ' + c.complainant_name : null].filter(Boolean).flatMap((x, i) => [i ? ' · ' : null, x]))) },
             { label: 'Status', render: c => statusBadge(c.status) },
             { label: 'Who has it', render: c => c.assignee_name ? person(null, c.assignee_name) : h('span', { class: 'row' }, badge('Not assigned', 'warn'), canAssign() && !closed.includes(c.status) ? h('button', { class: 'btn sm', type: 'button', onclick: e => { e.stopPropagation(); assignDialog(c); } }, 'Assign') : null) },
-            { label: 'Due', render: c => closed.includes(c.status) ? h('span', { class: 'muted' }, 'closed ' + fmtD(c.closed_at)) : h('span', { style: c.is_overdue ? { color: 'var(--bad)', fontWeight: 600 } : null }, relDue(c.due_at)) },
+            c0 && c0.clock ? { label: 'Time to fix', cls: 'tatcol', render: c => timeBar(c) }
+              : { label: 'Due', render: c => closed.includes(c.status) ? h('span', { class: 'muted' }, 'closed ' + fmtD(c.closed_at)) : h('span', { style: c.is_overdue ? { color: 'var(--bad)', fontWeight: 600 } : null }, relDue(c.due_at)) },
           ], d.rows, { onRow: c => go('cases', '', { ...q, case: c.id }), emptyTitle: 'No cases match', emptyText: 'Try removing a filter.' }),
           pager(d.total, d.page, d.page_size, p => update({ page: p })));
       } catch (e) { fill(out, notice(e.message, 'bad')); }

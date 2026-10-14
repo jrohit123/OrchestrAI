@@ -161,4 +161,16 @@ CSS += r"""
 @media (max-width:1100px){.wf-edit{grid-template-columns:minmax(0,1fr)}}
 .imp-t td,.imp-t th{vertical-align:top;padding:8px 10px}.imp-t tr.off{opacity:.55}.imp-t tr.needs td{background:var(--bg-warn,rgba(250,200,60,.14))}
 .imp-t select{max-width:190px}
+/* ───── a ticket's time to fix (the time bar) ───── */
+.tat{display:grid;gap:4px;min-width:170px}
+.tbar{position:relative;height:8px;border-radius:6px;background:var(--sunken)}
+.tat.big .tbar{height:14px;margin:4px 0}
+.tbar i{display:block;height:100%;border-radius:6px;background:var(--ok)}
+.tbar.warn i{background:var(--warn)}.tbar.late i{background:var(--bad)}.tbar.paused i{background:var(--faint)}.tbar.done i{background:var(--line-2)}
+.tbar.none{background:repeating-linear-gradient(90deg,var(--line-2) 0 8px,transparent 8px 14px)}.tbar.none i{display:none}
+.tmark{position:absolute;top:50%;width:10px;height:10px;border-radius:50%;transform:translate(-50%,-50%);border:2px solid var(--ink-2);background:var(--surface)}
+.tat.big .tmark{width:18px;height:18px}
+.tmark.done{background:var(--ink-2)}
+.ttxt{font-size:12.5px;color:var(--muted)}.ttxt.late{color:var(--bad);font-weight:600}.ttxt.warn{color:var(--t-warn)}
+td.tatcol{min-width:190px}
 """

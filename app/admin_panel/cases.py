@@ -66,16 +66,26 @@ def case_columns(ctx: Ctx) -> tuple[str, str]:
         "LEFT JOIN users cu ON cu.id = c.complainant_id",
         "LEFT JOIN users au ON au.id = c.assigned_to_id",
     ]
+    due = "c.due_date"
     if ctx.caps.get("targets"):
         # the reminder job counts from created_at + the priority's response time
         joins.append(
             "LEFT JOIN priority_tat_rules t ON t.org_id = c.org_id AND t.priority = c.priority"
         )
-        cols.append(
-            "COALESCE(c.due_date, c.created_at + make_interval(mins => t.tat_minutes)) AS due_at"
+        due = (
+            "COALESCE(c.due_date, c.created_at + make_interval(mins => t.tat_minutes))"
         )
-    else:
-        cols.append("c.due_date AS due_at")
+    if ctx.caps.get("tat_clock"):
+        # the ticket's own clock (housing-0013); a kind with no time limit has no due time at all
+        no_limit = "(c.category_id IS NOT NULL AND public.case_category_no_limit(c.category_id))"
+        cols += [
+            "c.tat_started_at",
+            "c.tat_paused_at",
+            "c.tat_paused_minutes",
+            f"{no_limit} AS no_time_limit",
+        ]
+        due = f"CASE WHEN {no_limit} THEN NULL ELSE {due} END"
+    cols.append(f"{due} AS due_at")
     if ctx.caps.get("case_category"):
         joins += [
             "LEFT JOIN case_categories k ON k.id = c.category_id",
@@ -199,7 +209,64 @@ async def query_cases(
         r["is_overdue"] = bool(
             not r["is_closed"] and r["due_at"] and r["due_at"] < _now_like(r["due_at"])
         )
+        r["clock"] = clock_of(r)
     return out, total["n"] if total else 0
+
+
+def clock_of(r: dict) -> dict | None:
+    """How much of its time to fix a ticket has used, for the time bar: {"percent", "total_minutes",
+    "elapsed_minutes", "paused", "no_limit"}. None for a database without the clock (before housing-0013).
+    The clock stops while the ticket is paused and when it was closed."""
+    if "tat_started_at" not in r:
+        return None
+    from app.services.reminder_plans import clock
+
+    stopped = r.get("tat_paused_at") or (
+        r.get("closed_at") if r.get("is_closed") else None
+    )
+    ref = r.get("tat_started_at") or r.get("created_at")
+    now = stopped or (_now_like(ref) if ref else datetime.now())
+    c = clock(
+        {
+            "tat_started_at": r.get("tat_started_at"),
+            "created_at": r.get("created_at"),
+            "tat_paused_minutes": r.get("tat_paused_minutes") or 0,
+            "due_date": None if r.get("no_time_limit") else r.get("due_at"),
+        },
+        now,
+    )
+    pct = c["percent"]
+    return {
+        "percent": None
+        if pct is None
+        else (999 if pct == float("inf") else round(pct)),
+        "total_minutes": None if c["total"] is None else round(c["total"]),
+        "elapsed_minutes": round(c["elapsed"]),
+        "paused": bool(r.get("tat_paused_at")),
+        "no_limit": bool(r.get("no_time_limit")),
+    }
+
+
+async def plan_marks(ctx: Ctx, cases: list[dict]) -> None:
+    """Each ticket's reminder steps as marks for its time bar ("marks": [25, 40, 100]), from the plan of its kind.
+    Nothing when the organisation has no plans (or no clock)."""
+    if not ctx.caps.get("tat_clock") or not cases:
+        return
+    from app.services import reminder_plans
+
+    try:
+        steps, own, parents, default = await reminder_plans._plans(
+            ctx.source_key, ctx.org_id
+        )
+    except Exception:  # an organisation without the plan tables
+        return
+    for r in cases:
+        plan = reminder_plans.plan_for(r.get("category_id"), own, parents, default)
+        r["marks"] = sorted(
+            float(x["at_percent"])
+            for x in steps.get(plan, [])
+            if x.get("at_percent") is not None and float(x["at_percent"]) <= 100
+        )
 
 
 def _is_overdue(ctx: Ctx, r: dict) -> bool:
@@ -244,6 +311,7 @@ async def list_cases(
         limit=page_size,
         offset=(page - 1) * page_size,
     )
+    await plan_marks(ctx, found)
     counts = await fetch_all(
         "SELECT status, count(*) AS n FROM cases WHERE org_id = $1 GROUP BY status",
         ctx.org_id,

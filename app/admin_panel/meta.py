@@ -31,21 +31,40 @@ router = APIRouter(
 ADMIN_SECTIONS = {
     "overview",
     "cases",
+    "conversations",
     "people",
 }  # what an admin (not a super admin) sees
+# the tabs an admin sees inside those screens (a screen not listed here keeps all its tabs)
+ADMIN_TABS = {"cases": {"list"}}
 
 
 def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     """Which screens this org gets. Driven by what its database can do, not by org name.
-    The page puts Home, Cases, Conversations and People under "Every day" and the rest under
-    "Set up": how cases are sent and timed, roles and seats, what the chat bot says, settings."""
+    The page groups them (js_boot.NAV): Home; Your work (Tickets, Conversations); Your team (People, Roles & access);
+    Chat bot; Build (Flows); Settings. Tickets holds everything about tickets: the list, who handles which kind,
+    the kinds, the rules in detail and the response times. An admin gets the day-to-day screens only (see the plan in
+    docs/plan/dashboard-v2.md)."""
     sections: list[dict] = [{"key": "overview", "label": "Home"}]
     if caps.get("cases"):
-        sections.append({"key": "cases", "label": "Cases"})
+        tabs = [{"key": "list", "label": "All tickets"}]
+        if caps.get("case_model"):
+            tabs += [
+                {"key": "teams", "label": "Who handles what"},
+                {"key": "categories", "label": "Kinds of ticket"},
+                {"key": "rules", "label": "Rules in detail"},
+            ]
+        if caps.get("targets"):
+            tabs.append({"key": "times", "label": "Response times"})
+        sections.append({"key": "cases", "label": "Tickets", "tabs": tabs})
     if caps.get("audit"):
         sections.append({"key": "conversations", "label": "Conversations"})
     sections.append({"key": "people", "label": "People"})
-    sections.append({"key": "workflows", "label": "Flows"})
+    access_tabs = [{"key": "roles", "label": "Roles"}]
+    if caps.get("seats"):
+        access_tabs.append({"key": "seats", "label": "Seats"})
+    if caps.get("grants"):
+        access_tabs.append({"key": "special", "label": "Special access"})
+    sections.append({"key": "access", "label": "Roles & access", "tabs": access_tabs})
     assistant_tabs = []
     if caps.get("texts"):
         assistant_tabs.append({"key": "messages", "label": "Messages"})
@@ -57,24 +76,7 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         sections.append(
             {"key": "assistant", "label": "Chat bot", "tabs": assistant_tabs}
         )
-    if caps.get("cases"):
-        rule_tabs = []
-        if caps.get("case_model"):
-            rule_tabs += [
-                {"key": "teams", "label": "Who handles what"},
-                {"key": "rules", "label": "Rules in detail"},
-                {"key": "categories", "label": "Kinds of complaint"},
-            ]
-        if caps.get("targets"):
-            rule_tabs.append({"key": "times", "label": "Response times"})
-        if rule_tabs:
-            sections.append({"key": "rules", "label": "Case rules", "tabs": rule_tabs})
-    access_tabs = [{"key": "roles", "label": "Roles"}]
-    if caps.get("seats"):
-        access_tabs.append({"key": "seats", "label": "Seats"})
-    if caps.get("grants"):
-        access_tabs.append({"key": "special", "label": "Special access"})
-    sections.append({"key": "access", "label": "Roles & access", "tabs": access_tabs})
+    sections.append({"key": "workflows", "label": "Flows"})
     settings: dict = {"key": "settings", "label": "Settings"}
     if caps.get("events") or caps.get("audit"):
         settings["tabs"] = [
@@ -83,7 +85,10 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         ]
     sections.append(settings)
     if level != "super":
-        sections = [s for s in sections if s["key"] in ADMIN_SECTIONS]
+        sections = [dict(s) for s in sections if s["key"] in ADMIN_SECTIONS]
+        for s in sections:
+            if s.get("tabs") and s["key"] in ADMIN_TABS:
+                s["tabs"] = [t for t in s["tabs"] if t["key"] in ADMIN_TABS[s["key"]]]
     return sections
 
 

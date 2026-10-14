@@ -26,12 +26,11 @@ def _routes():
 # ------------------------------------------------------------ the menu and the frame
 
 
-def test_the_menu_has_two_groups_and_nothing_that_is_not_there_yet():
-    assert "['Every day', ['overview', 'cases', 'conversations', 'people']]" in APP_JS
-    assert (
-        "['Set up', ['workflows', 'assistant', 'rules', 'access', 'settings']]"
-        in APP_JS
-    )
+def test_the_menu_is_grouped_like_the_approved_prototype_and_has_nothing_that_is_not_there_yet():
+    assert "['Your work', ['cases', 'conversations']]" in APP_JS
+    assert "['Your team', ['people', 'access']]" in APP_JS
+    assert "['Chat bot', ['assistant']]" in APP_JS
+    assert "['Build', ['workflows']]" in APP_JS
     assert "NAV_SOON" not in APP_JS  # no greyed "Soon" items
     assert (
         "not active yet)" not in APP_JS
@@ -40,7 +39,10 @@ def test_the_menu_has_two_groups_and_nothing_that_is_not_there_yet():
 
 
 def test_the_set_up_screens_are_told_apart_in_the_page_frame():
-    assert "const SETUP = new Set(NAV[1][1])" in APP_JS
+    assert (
+        "const SETUP = new Set(['access', 'assistant', 'workflows', 'settings'])"
+        in APP_JS
+    )
     assert "sec.tabs.length > 1" in APP_JS  # a tab bar for one tab is not drawn
     assert "S.leaveGuard = null; window.onbeforeunload = null;" in APP_JS
 
@@ -109,14 +111,15 @@ def test_home_shows_what_needs_you_and_four_numbers():
 
 
 def test_cases_is_search_open_closed_and_one_filters_button():
-    assert "'How cases are handled'" in APP_JS
+    assert "TICKET_TABS" in APP_JS  # the old Case rules live in the Tickets tabs
     assert "Filters · " in APP_JS
     housing = {"cases": True, "case_model": True, "targets": True}
-    rules = next(s for s in meta._sections(housing) if s["key"] == "rules")
-    assert [t["label"] for t in rules["tabs"]] == [
+    tickets = next(s for s in meta._sections(housing) if s["key"] == "cases")
+    assert [t["label"] for t in tickets["tabs"]] == [
+        "All tickets",
         "Who handles what",
+        "Kinds of ticket",
         "Rules in detail",
-        "Kinds of complaint",
         "Response times",
     ]
 
@@ -215,11 +218,13 @@ def _remap(r):
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ({"section": "routing", "tab": "", "q": {}}, {"section": "rules", "tab": ""}),
-        ({"section": "routing", "tab": "categories", "q": {}}, {"section": "rules", "tab": "categories"}),
-        ({"section": "cases", "tab": "rules", "q": {}}, {"section": "rules", "tab": ""}),
-        ({"section": "cases", "tab": "categories", "q": {}}, {"section": "rules", "tab": "categories"}),
-        ({"section": "cases", "tab": "times", "q": {}}, {"section": "rules", "tab": "times"}),
+        ({"section": "routing", "tab": "", "q": {}}, {"section": "cases", "tab": "teams"}),
+        ({"section": "routing", "tab": "categories", "q": {}}, {"section": "cases", "tab": "categories"}),
+        ({"section": "rules", "tab": "", "q": {}}, {"section": "cases", "tab": "teams"}),
+        ({"section": "rules", "tab": "times", "q": {}}, {"section": "cases", "tab": "times"}),
+        ({"section": "cases", "tab": "rules", "q": {}}, None),  # the Tickets tabs are where these live now
+        ({"section": "cases", "tab": "categories", "q": {}}, None),
+        ({"section": "cases", "tab": "times", "q": {}}, None),
         ({"section": "people", "tab": "seats", "q": {}}, {"section": "access", "tab": "seats"}),
         ({"section": "people", "tab": "access", "q": {}}, {"section": "access", "tab": "special"}),
         ({"section": "people", "tab": "roles", "q": {}}, {"section": "access", "tab": ""}),
@@ -231,6 +236,9 @@ def _remap(r):
 )  # fmt: skip
 def test_links_and_bookmarks_from_the_old_menu_still_work(old, new):
     got = _remap(old)
+    if new is None:
+        assert got is None
+        return
     assert {k: got[k] for k in new} == new
 
 

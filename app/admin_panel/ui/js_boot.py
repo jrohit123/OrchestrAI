@@ -3,10 +3,14 @@ JS = r"""
 // The menu has two groups: what people do every day, and what is set up once and changed now and then.
 // The server decides which screens exist for this organisation; this only says where each one goes.
 const NAV = [
-  ['Every day', ['overview', 'cases', 'conversations', 'people']],
-  ['Set up', ['workflows', 'assistant', 'rules', 'access', 'settings']],
+  ['', ['overview']],
+  ['Your work', ['cases', 'conversations']],
+  ['Your team', ['people', 'access']],
+  ['Chat bot', ['assistant']],
+  ['Build', ['workflows']],
+  ['', ['settings']],
 ];
-const SETUP = new Set(NAV[1][1]);
+const SETUP = new Set(['access', 'assistant', 'workflows', 'settings']);
 const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
@@ -26,8 +30,8 @@ function openWords(anchor, up) {
 // links and bookmarks from older versions of the dashboard keep working
 function remapRoute(r) {
   const t = r.tab, q = r.q;
-  if (r.section === 'routing') return { section: 'rules', tab: t === 'categories' ? 'categories' : '', q };
-  if (r.section === 'cases' && ['rules', 'categories', 'times'].includes(t)) return { section: 'rules', tab: t === 'rules' ? '' : t, q };
+  if (r.section === 'routing') return { section: 'cases', tab: t === 'categories' ? 'categories' : 'teams', q };
+  if (r.section === 'rules') return { section: 'cases', tab: t || 'teams', q };   // Case rules is now part of Tickets
   if (r.section === 'people' && t === 'seats') return { section: 'access', tab: 'seats', q };
   if (r.section === 'people' && t === 'access') return { section: 'access', tab: 'special', q };
   if (r.section === 'people' && t === 'roles') return { section: 'access', tab: '', q };
@@ -83,7 +87,7 @@ function paintHints() {
   const hn = S.hints || {}, un = hn.unassigned, gaps = hn.rule_gaps;
   const ct = document.querySelector('.nav a[data-key="cases"] .ct');
   if (ct) { ct.hidden = !un; ct.textContent = un > 99 ? '99+' : String(un || ''); ct.title = un ? plural(un, 'open case') + ' with no one handling ' + (un === 1 ? 'it' : 'them') : ''; }
-  const dot = document.querySelector('.nav a[data-key="rules"] .navdot');
+  const dot = document.querySelector('.nav a[data-key="cases"] .navdot');
   if (dot) { dot.hidden = !gaps; dot.title = gaps ? plural(gaps, 'kind of complaint') + ' with nobody to go to' : ''; }
 }
 async function refreshHints(force) {
@@ -163,12 +167,12 @@ function buildShell(app) {
   const logo = h('span', { class: 'logo' }, o.name[0]);
   if (o.has_logo) api.get('/logo').then(d => { if (d.logo_url) fill(logo, h('img', { src: d.logo_url, alt: '' })); }).catch(() => {});
   const link = sec => h('a', { href: href(sec.key), 'data-key': sec.key }, icon(NAV_ICON[sec.key] || 'list'), h('span', { class: 'tx' }, sec.label),
-    sec.key === 'cases' ? h('span', { class: 'ct', hidden: true }) : null, sec.key === 'rules' ? h('i', { class: 'navdot', hidden: true }) : null);
+    sec.key === 'cases' ? h('span', { class: 'ct', hidden: true }) : null, sec.key === 'cases' ? h('i', { class: 'navdot', hidden: true }) : null);
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sections' });
   const placed = new Set();
   NAV.forEach(([label, keys]) => {
     const items = keys.map(k => { placed.add(k); return have.has(k) ? link(have.get(k)) : null; }).filter(Boolean);
-    if (items.length) nav.append(h('div', { class: 'navlabel' }, label), ...items);
+    if (items.length) nav.append(...(label ? [h('div', { class: 'navlabel' }, label)] : []), ...items);
   });
   const extra = S.boot.sections.filter(s => !placed.has(s.key));
   if (extra.length) nav.append(...extra.map(link));
