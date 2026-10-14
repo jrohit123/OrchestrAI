@@ -154,6 +154,7 @@ function timeBar(c, big) {
 const TICKET_TABS = {
   list: ['Tickets', 'Everything people have reported, and where it stands'],
   teams: ['Who handles what', 'Who gets each kind of ticket, who backs them up, and who is kept informed.'],
+  reminders: ['Reminders', 'When the chat bot reminds, tells the backup or hands a ticket over: as a share of each ticket’s time to fix.'],
   categories: ['Kinds of ticket', 'The kinds people choose from, and the words that sort a ticket into one.'],
   rules: ['Rules in detail', 'Every rule, its order and its exceptions. Most days Who handles what is all you need.'],
   times: ['Response times', 'How long each urgency gets before a ticket counts as late.'],
@@ -161,6 +162,7 @@ const TICKET_TABS = {
 SECTIONS.cases = {
   heading: (sec, r) => { const t = TICKET_TABS[r.tab] || TICKET_TABS.list; return { title: t[0], sub: t[1] }; },
   async render(root, route) {
+    if (route.tab === 'reminders') return renderReminders(root);
     if (route.tab && route.tab !== 'list') return SECTIONS.rules.render(root, route);
     const mine = S.renderId;
     const lk = S.boot.caps.case_category ? await getLookups() : { categories: [] };

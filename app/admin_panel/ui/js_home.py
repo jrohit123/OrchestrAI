@@ -37,6 +37,25 @@ function chatKind(c) {
   return 'ok';
 }
 
+// the set-up list as a card, the way the approved prototype shows it: a bar, each step with its button
+function setupCard(steps) {
+  const done = steps.filter(s => s[0]).length;
+  return h('div', { class: 'card setcard' }, h('div', { class: 'card-h' }, 'Set up in ' + steps.length + ' steps', h('span', { class: 'muted small' }, done + ' of ' + steps.length + ' done')),
+    h('div', { class: 'card-b stack s8' }, h('div', { class: 'setbar' }, h('i', { style: { width: (done / steps.length * 100) + '%' } })),
+      steps.map(([ok, title, note, link]) => h('div', { class: 'check' + (ok ? ' done' : '') }, h('span', { class: 'cb' }, ok ? icon('check', 'xs') : null),
+        h('div', { class: 'grow' }, h('b', null, title), note ? h('div', { class: 'muted small' }, note) : null), link && !ok ? h('a', { class: 'btn sm', href: link[1] }, link[0]) : null))));
+}
+// the open tickets closest to the end of their time to fix
+async function timeToFixCard(box) {
+  let d;
+  try { d = await api.get('/cases', { status: 'open', sort: 'due', page_size: 40 }); } catch (e) { return; }
+  const rows = d.rows.filter(x => x.clock && !x.clock.no_limit && !x.clock.paused).sort((a, b) => (b.clock.percent || 0) - (a.clock.percent || 0)).slice(0, 4);
+  if (!rows.length || !box.isConnected) return;
+  box.append(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Time to fix', h('a', { class: 'btn sm', href: href('cases', '', { status: 'open', sort: 'due' }) }, 'All tickets')),
+    h('div', { class: 'card-b' }, rows.map(x => h('a', { class: 'tfrow', href: href('cases', '', { case: x.id }) },
+      h('div', { class: 'row between' }, h('b', null, x.title), h('span', { class: 'muted small' }, x.case_number)), timeBar(x))))));
+}
+
 let HOME_HEAD = null;                          // the right side of the Home title: filled once the page knows its set-up list
 SECTIONS.overview = {
   title: 'Home',
@@ -101,6 +120,7 @@ SECTIONS.overview = {
           fail || open ? h('a', { class: 'btn sm', href: href('conversations') }, 'View') : null)));
     }
     root.append(h('div', { class: 'cols-21' }, left, right));
+    if (caps.cases && caps.tat_clock) timeToFixCard(right);
 
     // a set-up list worked out from live facts, so it ticks itself; it shows only until everything is done
     const steps = [];
@@ -109,6 +129,7 @@ SECTIONS.overview = {
     if (targets) steps.push([!targets.missing.length && targets.rows.length > 0, 'Check the response times', targets.missing.length ? 'Not set yet: ' + targets.missing.map(pretty).join(', ') + '.' : null, targets.missing.length ? ['Open response times', href('cases', 'times')] : null]);
     steps.push([d.workflows.active > 0, 'Switch on a flow', null, d.workflows.active ? null : ['Open Flows', href('workflows')]]);
     const done = steps.filter(s => s[0]).length;
+    if (isSuper() && steps.length >= 3 && done < steps.length) right.prepend(setupCard(steps));
     if (HOME_HEAD && HOME_HEAD.isConnected) {
       fill(HOME_HEAD, isSuper() && steps.length >= 3 && done < steps.length ? h('button', { class: 'badge brand setchip', type: 'button', 'data-popkeep': '1', title: 'What is left to set up', onclick: e => openPop(e.currentTarget, h('div', { class: 'stack s8', style: { padding: '8px' } }, h('b', null, 'Getting set up · ' + done + ' of ' + steps.length), h('div', { class: 'progress' }, h('i', { style: { width: Math.round(done / steps.length * 100) + '%' } })),
         steps.map(([ok, title, note, link]) => h('div', { class: 'check' + (ok ? ' done' : '') }, h('span', { class: 'cb' }, ok ? icon('check', 'xs') : null), h('div', null, h('b', null, title), note ? h('div', { class: 'muted small' }, note) : null, link ? h('a', { class: 'small', href: link[1] }, link[0] + ' →') : null)))), { align: 'right', width: 340 }) }, 'Getting set up · ' + done + ' of ' + steps.length) : null,

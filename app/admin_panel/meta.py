@@ -35,7 +35,7 @@ ADMIN_SECTIONS = {
     "people",
 }  # what an admin (not a super admin) sees
 # the tabs an admin sees inside those screens (a screen not listed here keeps all its tabs)
-ADMIN_TABS = {"cases": {"list", "teams"}}
+ADMIN_TABS = {"cases": {"list", "teams", "reminders"}}
 
 
 def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
@@ -50,6 +50,11 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         if caps.get("case_model"):
             tabs += [
                 {"key": "teams", "label": "Who handles what"},
+                *(
+                    [{"key": "reminders", "label": "Reminders"}]
+                    if caps.get("tat_clock")
+                    else []
+                ),
                 {"key": "categories", "label": "Kinds of ticket"},
                 {"key": "rules", "label": "Rules in detail"},
             ]

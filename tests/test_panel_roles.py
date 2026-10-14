@@ -676,6 +676,10 @@ def test_an_admin_gets_the_day_to_day_screens_only():
         "list",
         "teams",
     ]  # Who handles what, read only
+    clock = meta._sections(
+        {**HOUSING, "tat_clock": True}, "admin"
+    )  # with the clock (housing-0013): Reminders too
+    assert [t["key"] for t in clock[1]["tabs"]] == ["list", "teams", "reminders"]
     # the super admin's copy is not changed by working out the admin's
     assert [t["key"] for t in meta._sections(HOUSING)[1]["tabs"]] == [
         "list",

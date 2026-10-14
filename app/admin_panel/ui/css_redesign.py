@@ -176,4 +176,24 @@ td.tatcol{min-width:190px}
 .wh-t.tat5 .wh-hd,.wh-t.tat5 .wh-r{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr) minmax(0,.9fr) minmax(130px,.8fr)}
 .wh-t.tat5 .wh-same{grid-column:2 / span 3}
 .wh-r select{max-width:150px;padding:3px 6px;font-size:12.5px}
+/* ───── Home: the set-up card and the time-to-fix card ───── */
+.setbar{height:8px;border-radius:9px;background:var(--sunken);overflow:hidden}.setbar i{display:block;height:100%;background:var(--brand)}
+.setcard .check{align-items:center}
+.tfrow{display:grid;gap:4px;padding:8px 0;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.tfrow:last-child{border-bottom:0}.tfrow:hover b{color:var(--brand)}
+/* ───── Tickets → Reminders ───── */
+.remstep{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:grid;gap:8px;background:var(--surface-2)}
+.remstep.late{border-left:3px solid var(--bad)}
+.remstep input[type=number]{width:76px}
+.remchip{gap:4px}.remchip .x{border:0;background:none;color:var(--faint);font-size:14px;line-height:1;padding:0 0 0 2px;cursor:pointer}
+.remurg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px}
+.remex{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;align-items:center;padding:4px 48px 30px 0}
+.remexbar{position:relative;height:10px;border-radius:6px;background:linear-gradient(90deg,var(--ok) 0 40%,var(--warn) 40% 100%);opacity:.75}
+.remexbar.none{background:repeating-linear-gradient(90deg,var(--line-2) 0 8px,transparent 8px 14px);height:24px;display:flex;align-items:center;opacity:1}
+.remexbar.none span{background:var(--surface);padding:0 6px;font-size:12.5px;color:var(--muted)}
+.remexstep{position:absolute;top:50%;transform:translate(-50%,-50%)}
+.remexdot{display:block;width:14px;height:14px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-2)}
+.remexdot.late{border-color:var(--bad)}
+.remexlab{position:absolute;top:16px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11.5px;color:var(--ink-2);text-align:center;line-height:1.3}
+@media (max-width:760px){.remex{grid-template-columns:1fr;padding-right:20px}}
 """
