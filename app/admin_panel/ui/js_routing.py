@@ -188,6 +188,33 @@ const WH_KIDS = {};
 const whPlain = r => !r.intent_key && !Object.keys(r.match || {}).length;
 // first name and as few letters of the surname as keep two people apart (Ashish Sr. and Ashish Sh.)
 const whShort = (n, known) => { const p = String(n).split(' '); if (p.length < 2) return n; const last = p[p.length - 1], same = (known || []).filter(x => x !== n && String(x).split(' ')[0] === p[0]).map(x => String(x).split(' ').pop()); let k = 1; while (k < last.length && same.some(o => o.slice(0, k) === last.slice(0, k))) k++; return p[0] + ' ' + last.slice(0, k) + (k < last.length ? '.' : ''); };
+// The time to fix choices of a kind (minutes). '' = by urgency (or the parent's), 'none' = no limit.
+const TAT_CHOICES = [['', 'By urgency'], ['120', '2 hours'], ['240', '4 hours'], ['480', '8 hours'], ['1440', '1 day'], ['2880', '2 days'], ['5760', '4 days'], ['10080', '1 week'], ['20160', '2 weeks'], ['43200', '1 month'], ['129600', '3 months'], ['none', 'No limit']];
+function tatWords(c, byId) {
+  let x = c, n = 0;
+  while (x && n++ < 10) {
+    if (x.no_time_limit) return x === c ? 'No limit' : 'No limit (from ' + x.label + ')';
+    if (x.target_minutes) return x === c ? minutes(x.target_minutes) : minutes(x.target_minutes) + ' (from ' + x.label + ')';
+    x = x.parent_id ? byId[x.parent_id] : null;
+  }
+  return 'By urgency';
+}
+function tatCell(c, byId, again) {
+  if (!isSuper() || !c || c.id === 'catch') return h('div', { class: 'muted small' }, c && c.id !== 'catch' ? tatWords(c, byId) : 'By urgency');
+  const cur = c.no_time_limit ? 'none' : c.target_minutes ? String(c.target_minutes) : '';
+  const opts = TAT_CHOICES.map(([v, l]) => [v, v === '' && c.parent_id ? 'Same as ' + (byId[c.parent_id] ? byId[c.parent_id].label : 'its area') : l]);
+  if (cur && !opts.some(o => o[0] === cur)) opts.splice(1, 0, [cur, minutes(Number(cur))]);
+  const pick = sel(opts, cur, { 'aria-label': 'Time to fix of ' + c.label });
+  pick.addEventListener('click', e => e.stopPropagation());
+  pick.addEventListener('change', async () => {
+    const v = pick.value;
+    const body = v === 'none' ? { no_time_limit: true, target_minutes: null } : { no_time_limit: false, target_minutes: v ? Number(v) : null };
+    try { await api.patch('/categories/' + c.id, body); toast('Time to fix of ' + c.label + ': ' + (v === 'none' ? 'no limit' : v ? minutes(Number(v)) : 'by urgency'), 'ok'); again(); }
+    catch (x) { toast(x.message, 'bad'); pick.value = cur; }
+  });
+  return h('div', { onclick: e => e.stopPropagation() }, pick);
+}
+
 async function renderTeamsTab(root) {
   const [cd, rd] = await Promise.all([api.get('/categories'), api.get('/rules')]);
   const cats = cd.rows, byId = Object.fromEntries(cats.map(c => [c.id, c]));
@@ -263,9 +290,10 @@ async function renderTeamsTab(root) {
       h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Remove ' + p.name, onclick: () => { draft.handles = draft.handles.filter(x => x !== p); draft.loop = draft.loop.filter(x => x !== p); draft.dirty = true; paint(); } }, '×'));
   }
   function editor(c, e) {
-    const box = h('div', { class: 'wh-ed' }), editable = draft.own;
+    const box = h('div', { class: 'wh-ed' }), editable = draft.own && isSuper();   // an admin sees the team but does not change it
     const head = h('div', { class: 'row' });
     if (c.id === 'catch') head.append(h('b', { style: { flex: 1 } }, 'Everything else'), h('span', { class: 'muted small' }, 'Used when a case has no kind, or its kind has nobody set up.'));
+    else if (!isSuper()) head.append(h('b', { style: { flex: 1 } }, c.label), h('span', { class: 'muted small' }, 'Ask a super admin to change this team.'));
     else {
       const ren = h('input', { type: 'text', value: c.label, 'aria-label': 'Name', style: { flex: 1, fontWeight: 600 } });
       ren.addEventListener('change', async () => { const v = ren.value.trim(); if (!v) { ren.value = c.label; return; } try { await api.patch('/categories/' + c.id, { label: v }); toast('Renamed', 'ok'); again(); } catch (x) { toast(x.message, 'bad'); ren.value = c.label; } });
@@ -276,9 +304,9 @@ async function renderTeamsTab(root) {
     box.append(head);
     if (c.id !== 'catch' && !c.is_active) box.append(notice('This one is hidden, so people cannot pick it. Its team is kept.', 'warn'));
     box.append(h('div', { class: 'wh-sent' }, sentence(c.id === 'catch' ? 'anything else' : c.label, editable ? draft.handles : lists(e.rule).handles, editable ? draft.loop : lists(e.rule).loop)));
-    if (!editable) box.append(h('div', { class: 'wh-note' }, h('span', { style: { flex: 1 } }, ['This one uses the team of ', h('b', null, e.from), '. Change that team and this follows.']),
-      h('button', { class: 'btn sm', type: 'button', onclick: () => { draft.own = true; draft.dirty = true; Object.assign(draft, lists(e.rule)); paint(); } }, 'Give it its own team')));
-    else if (c.id !== 'catch' && draft.rule) box.append(h('div', { class: 'wh-note warm' }, h('span', { style: { flex: 1 } }, 'Has its own team.'),
+    if (!editable && e.from) box.append(h('div', { class: 'wh-note' }, h('span', { style: { flex: 1 } }, ['This one uses the team of ', h('b', null, e.from), '. Change that team and this follows.']),
+      isSuper() ? h('button', { class: 'btn sm', type: 'button', onclick: () => { draft.own = true; draft.dirty = true; Object.assign(draft, lists(e.rule)); paint(); } }, 'Give it its own team') : null));
+    else if (editable && c.id !== 'catch' && draft.rule) box.append(h('div', { class: 'wh-note warm' }, h('span', { style: { flex: 1 } }, 'Has its own team.'),
       h('button', { class: 'btn sm', type: 'button', onclick: async () => { if (!await confirmBox('Remove its own team? It will use the team of ' + (c.parent_id && byId[c.parent_id] ? byId[c.parent_id].label : 'Everything else') + ' again.', { ok: 'Remove', danger: true })) return; try { await api.del('/rules/' + draft.rule.id); toast('Done', 'ok'); again(); } catch (x) { toast(x.message, 'bad'); } } }, 'Use the team above again')));
     if (draft.rule && !draft.rule.people.length && draft.rule.assign_name) box.append(notice('This one points at ' + draft.rule.assign_name + ' the old way (' + draft.rule.assign_type + '). Add people below and save to replace that.', 'warn'));
     const all = editable ? [...draft.handles, ...draft.loop] : [];
@@ -299,7 +327,7 @@ async function renderTeamsTab(root) {
       box.append(h('div', { class: 'wh-try' }, h('button', { class: 'btn sm', type: 'button', onclick: async () => {
         if (draft.dirty) { toast('Save your changes first, then try it.', 'bad'); return; }
         try { result = await api.post('/rules/test', { category_id: c.id, context: {} }); paint(); } catch (x) { toast(x.message, 'bad'); } } }, 'Who would get a new case today?'), out));
-      box.append(h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { class: 'btn sm', type: 'button', onclick: () => addModal(c.id) }, '+ Add a kind under ' + c.label)));
+      if (isSuper()) box.append(h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { class: 'btn sm', type: 'button', onclick: () => addModal(c.id) }, '+ Add a kind under ' + c.label)));
       if (specials(c.id)) box.append(h('div', { class: 'muted small', style: { marginTop: '6px' } }, plural(specials(c.id), 'extra rule') + ' with conditions also apply to this kind. ', h('a', { href: href('cases', 'rules') }, 'See them')));
     }
     return box;
@@ -308,9 +336,10 @@ async function renderTeamsTab(root) {
     const e = effective(c), L = lists(e.rule), kids = kidsOf(c.id).filter(k => WH_HIDDEN || k.is_active), on = WH_OPEN === c.id;
     const nm = h('div', { class: 'wh-name', style: { paddingLeft: (depth * 22) + 'px' } }, h('span', null, c.label), c.is_active ? null : [' ', badge('hidden')],
       kids.length ? h('button', { class: 'wh-kids', type: 'button', onclick: ev => { ev.stopPropagation(); WH_KIDS[c.id] = !WH_KIDS[c.id]; paint(); } }, (WH_KIDS[c.id] ? 'Hide ' : 'Show ') + plural(kids.length, 'kind')) : null);
-    const cells = e.from
+    const cells = [...(e.from
       ? [h('div', { class: 'wh-same' }, 'Same team as ' + e.from)]
-      : [h('div', { class: 'wh-own' }, L.handles.length ? nameSpan(L.handles[0]) : h('span', { style: { color: 'var(--bad)' } }, 'Nobody')), h('div', null, chips(L.handles.slice(1), 2, true)), h('div', null, chips(L.loop, 1, true))];
+      : [h('div', { class: 'wh-own' }, L.handles.length ? nameSpan(L.handles[0]) : h('span', { style: { color: 'var(--bad)' } }, 'Nobody')), h('div', null, chips(L.handles.slice(1), 2, true)), h('div', null, chips(L.loop, 1, true))]),
+      S.boot.caps.tat_clock ? tatCell(c, byId, again) : null];
     const out = [h('div', { class: 'wh-r' + (on ? ' on' : '') + (e.from ? ' same' : ''), role: 'button', tabindex: 0, 'aria-expanded': on ? 'true' : 'false', onclick: () => toggle(c.id), onkeydown: ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(c.id); } } }, nm, ...cells)];
     if (on && draft) out.push(editor(c, e));
     if (WH_KIDS[c.id]) kids.forEach(k => out.push(...rowFor(k, depth + 1)));
@@ -323,11 +352,11 @@ async function renderTeamsTab(root) {
     sw.addEventListener('change', () => { WH_HIDDEN = sw.checked; paint(); });
     root.append(h('div', { class: 'row between', style: { marginBottom: '10px' } },
       hiddenCount ? h('label', { class: 'row small' }, sw, 'Show hidden areas (' + hiddenCount + ')') : h('span'),
-      h('button', { class: 'btn', type: 'button', onclick: () => addModal(null) }, '+ Area')));
-    root.append(h('div', { class: 'wh-t' }, h('div', { class: 'wh-hd' }, h('div', null, 'Area'), h('div', null, 'Owner'), h('div', null, 'Backups (also told)'), h('div', null, 'Informed only')),
+      isSuper() ? h('button', { class: 'btn', type: 'button', onclick: () => addModal(null) }, '+ Area') : h('span', { class: 'muted small' }, 'Read only. A super admin can change these.')));
+    root.append(h('div', { class: 'wh-t' + (S.boot.caps.tat_clock ? ' tat5' : '') }, h('div', { class: 'wh-hd' }, h('div', null, 'Kind of ticket'), h('div', null, 'Goes first to'), h('div', null, 'Backup, in order (also told)'), h('div', null, 'Also told'), S.boot.caps.tat_clock ? h('div', null, 'Time to fix') : null),
       ...tops.flatMap(c => rowFor(c, 0)), h('div', { class: 'wh-sep' }), ...rowFor(CATCH, 0)));
   }
-  setTopAction({ label: 'New area', run: () => addModal(null) });
+  if (isSuper()) setTopAction({ label: 'New area', run: () => addModal(null) });
   if (WH_OPEN && (WH_OPEN === 'catch' || byId[WH_OPEN])) load(WH_OPEN); else { WH_OPEN = null; }
   paint();
 }

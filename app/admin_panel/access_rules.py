@@ -26,6 +26,9 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/people/{user_id}"),
         ("GET", "/chats"),
         ("GET", "/activity/session"),
+        ("GET", "/categories"),
+        ("GET", "/rules"),
+        ("POST", "/rules/test"),
         ("PATCH", "/people/{user_id}"),
         ("POST", "/people/import/preview"),
         ("POST", "/people/import/commit"),
@@ -37,7 +40,6 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
 SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/activity"),
-        ("GET", "/categories"),
         ("POST", "/categories"),
         ("DELETE", "/categories/{category_id}"),
         ("PATCH", "/categories/{category_id}"),
@@ -65,9 +67,7 @@ SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/roles"),
         ("DELETE", "/roles/{role_id}"),
         ("PATCH", "/roles/{role_id}"),
-        ("GET", "/rules"),
         ("POST", "/rules"),
-        ("POST", "/rules/test"),
         ("DELETE", "/rules/{rule_id}"),
         ("PUT", "/rules/{rule_id}"),
         ("POST", "/rules/{rule_id}/active"),

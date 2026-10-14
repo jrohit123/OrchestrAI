@@ -35,7 +35,7 @@ ADMIN_SECTIONS = {
     "people",
 }  # what an admin (not a super admin) sees
 # the tabs an admin sees inside those screens (a screen not listed here keeps all its tabs)
-ADMIN_TABS = {"cases": {"list"}}
+ADMIN_TABS = {"cases": {"list", "teams"}}
 
 
 def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:

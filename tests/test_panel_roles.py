@@ -672,7 +672,10 @@ def test_set_up_screens_that_the_database_cannot_do_are_left_out_and_never_shown
 def test_an_admin_gets_the_day_to_day_screens_only():
     admin = meta._sections(HOUSING, "admin")
     assert [s["key"] for s in admin] == ["overview", "cases", "conversations", "people"]
-    assert [t["key"] for t in admin[1]["tabs"]] == ["list"]
+    assert [t["key"] for t in admin[1]["tabs"]] == [
+        "list",
+        "teams",
+    ]  # Who handles what, read only
     # the super admin's copy is not changed by working out the admin's
     assert [t["key"] for t in meta._sections(HOUSING)[1]["tabs"]] == [
         "list",

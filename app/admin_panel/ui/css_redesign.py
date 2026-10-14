@@ -173,4 +173,7 @@ CSS += r"""
 .tmark.done{background:var(--ink-2)}
 .ttxt{font-size:12.5px;color:var(--muted)}.ttxt.late{color:var(--bad);font-weight:600}.ttxt.warn{color:var(--t-warn)}
 td.tatcol{min-width:190px}
+.wh-t.tat5 .wh-hd,.wh-t.tat5 .wh-r{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr) minmax(0,.9fr) minmax(130px,.8fr)}
+.wh-t.tat5 .wh-same{grid-column:2 / span 3}
+.wh-r select{max-width:150px;padding:3px 6px;font-size:12.5px}
 """
