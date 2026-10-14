@@ -252,6 +252,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-line);bord
 .drawer .db{padding:16px 18px 40px;overflow:auto;display:grid;gap:14px;align-content:start}
 .modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,calc(100% - 24px));max-height:calc(100% - 24px);background:var(--surface);border-radius:14px;z-index:61;display:flex;flex-direction:column;box-shadow:var(--sh2);border:1px solid var(--line)}
 .modal.wide{width:min(780px,calc(100% - 24px))}
+.modal.xwide{width:min(1100px,calc(100% - 24px))}
 .modal .mh{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700;font-size:16px;display:flex;align-items:center}
 .modal .mb{padding:16px 18px;overflow:auto}
 .modal .mf{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}

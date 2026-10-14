@@ -624,7 +624,7 @@ def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
     }
     assert tabs["rules"] == ["teams", "rules", "categories", "times"]
     assert tabs["access"] == ["roles", "seats", "special"]
-    assert tabs["assistant"] == ["messages", "instructions"]
+    assert tabs["assistant"] == ["messages", "instructions", "whatsapp"]
     assert tabs["settings"] == ["general", "history"]
     assert tabs["cases"] == []  # Cases is only the list
 
@@ -652,6 +652,7 @@ def test_set_up_screens_that_the_database_cannot_do_are_left_out_and_never_shown
         "cases",
         "people",
         "workflows",
+        "assistant",
         "access",
         "settings",
     ]

@@ -195,7 +195,7 @@ async function renderPeopleTab(root, route) {
   search.addEventListener('input', debounce(() => update({ q: search.value }), 300));
   const roleChips = h('div', { class: 'chips' });
   const filtersBtn = h('button', { class: 'btn', type: 'button', 'data-popkeep': '1', onclick: e => openFilters(e.currentTarget) });
-  add(bar, [search, roleChips, filtersBtn, h('span', { class: 'sp' }), hasSection('access') ? h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs')) : null]);
+  add(bar, [search, roleChips, filtersBtn, h('span', { class: 'sp' }), h('button', { class: 'btn', type: 'button', onclick: () => importPeopleModal(lk) }, 'Import from file'), hasSection('access') ? h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs')) : null]);
   const extra = () => ['status', 'reachable', 'seat'].filter(k => q[k]).length;
   function openFilters(anchor) {
     openPop(anchor, h('div', { class: 'stack s8', style: { padding: '10px' } },

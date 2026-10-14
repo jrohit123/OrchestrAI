@@ -159,4 +159,6 @@ CSS += r"""
 .wf-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 2px;border-bottom:1px solid #eee;cursor:pointer}
 .wf-managed{text-align:center;font-size:11px;color:#888;padding:6px;background:#fff}
 @media (max-width:1100px){.wf-edit{grid-template-columns:minmax(0,1fr)}}
+.imp-t td,.imp-t th{vertical-align:top;padding:8px 10px}.imp-t tr.off{opacity:.55}.imp-t tr.needs td{background:var(--bg-warn,rgba(250,200,60,.14))}
+.imp-t select{max-width:190px}
 """

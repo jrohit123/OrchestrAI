@@ -257,7 +257,7 @@ function modal(o) {
     });
     return b;
   });
-  const box = h('div', { class: 'modal' + (o.wide ? ' wide' : '') },
+  const box = h('div', { class: 'modal' + (o.xwide ? ' xwide' : o.wide ? ' wide' : '') },
     h('div', { class: 'mh' }, o.title, h('span', { class: 'sp' }), h('button', { class: 'x', onclick: close }, '×')),
     h('div', { class: 'mb' }, o.body),
     o.actions ? h('div', { class: 'mf' }, err, buttons) : null);
