@@ -285,6 +285,8 @@ async def run_case_reminders():
             cfg = (settings or {}).get("case_reminders")
             if not cfg or not cfg.get("enabled"):
                 continue
+            if config_store.setting(settings, "reminders.enabled", False) is True:
+                continue  # its reminder plans run instead (app/services/reminder_plans.py)
 
             org_id = str(org["id"])
 
@@ -702,6 +704,12 @@ async def _tick_case_reminders():
     await _tick("case_reminders", run_case_reminders)
 
 
+async def _tick_reminder_plans():
+    from app.services.reminder_plans import run_reminder_plans
+
+    await _tick("reminder_plans", run_reminder_plans)
+
+
 async def _tick_cleanup():
     await _tick("cleanup", run_cleanup)
 
@@ -743,6 +751,13 @@ def start_scheduler():
         _tick_case_reminders,
         trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
         id="case_reminders",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _tick_reminder_plans,
+        trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
+        id="reminder_plans",
         replace_existing=True,
         max_instances=1,
     )

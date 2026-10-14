@@ -56,6 +56,12 @@ TEMPLATE_SOURCES = {
     "jewellery": "schema_jewellery.sql",
 }
 
+# database changes made after the schema dumps were taken, run on top of them in this order
+TEMPLATE_MIGRATIONS = {
+    "housing": ["features/housing/housing-0013_reminder_plans.sql"],
+}
+MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+
 # the people and numbers in every test are made up
 PHONES = {
     "admin": "+919000000001",
@@ -118,27 +124,30 @@ async def ensure_templates() -> None:
     finally:
         await admin.close()
     for kind, filename in TEMPLATE_SOURCES.items():
-        result = await asyncio.to_thread(
-            subprocess.run,
-            [
-                psql,
-                "-X",
-                "-q",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-d",
-                _dsn_for(f"qa_tmpl_{kind}"),
-                "-f",
-                str(FIXTURES / filename),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"could not build template '{kind}': {result.stderr[-800:]}"
+        for path in [FIXTURES / filename] + [
+            MIGRATIONS / m for m in TEMPLATE_MIGRATIONS.get(kind, [])
+        ]:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    psql,
+                    "-X",
+                    "-q",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-d",
+                    _dsn_for(f"qa_tmpl_{kind}"),
+                    "-f",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"could not build template '{kind}': {result.stderr[-800:]}"
+                )
     _templates_ready = True
 
 
