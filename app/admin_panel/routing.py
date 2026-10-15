@@ -73,6 +73,8 @@ class CategoryBody(BaseModel):
     parent_id: UUID | None = None
     default_priority: str | None = None
     target_minutes: int | None = Field(None, ge=1, le=525600)
+    # true: tickets of this kind (and the kinds under it) get no due time; a time to fix and this cannot both be set
+    no_time_limit: bool | None = None
     keywords: list[str] = Field(default_factory=list, max_length=40)
     extra_fields: list[dict] = Field(default_factory=list, max_length=12)
     is_active: bool = True
@@ -83,18 +85,45 @@ class CategoryPatch(BaseModel):
     parent_id: UUID | None = None
     default_priority: str | None = None
     target_minutes: int | None = Field(None, ge=1, le=525600)
+    no_time_limit: bool | None = None
     keywords: list[str] | None = Field(None, max_length=40)
     extra_fields: list[dict] | None = Field(None, max_length=12)
     is_active: bool | None = None
 
 
+def _time_limit(ctx: Ctx, changes: dict) -> dict:
+    """A kind has either a time to fix or no time limit, never both: 'no time limit' clears the minutes, and minutes
+    switch 'no time limit' off. A database without the column (before housing-0013) can only be told 'no' to it."""
+    no_limit = changes.pop("no_time_limit", None)
+    minutes = changes.get("target_minutes")
+    if no_limit and minutes is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose either a time to fix or no time limit, not both.",
+        )
+    if not ctx.caps.get("tat_clock"):
+        if no_limit:
+            ctx.need("tat_clock")
+        return changes
+    if no_limit:
+        changes["target_minutes"] = None
+        changes["no_time_limit"] = True
+    elif minutes is not None or no_limit is False:
+        changes["no_time_limit"] = False
+    return changes
+
+
 @router.get("/categories")
 async def list_categories(ctx: CtxDep):
     ctx.need("case_model")
+    no_limit = (
+        "no_time_limit" if ctx.caps.get("tat_clock") else "false AS no_time_limit"
+    )
     cats = rows(
         await fetch_all(
-            "SELECT id, parent_id, key, label, default_priority, target_minutes, keywords, "
-            "extra_fields, is_active, sort_order FROM case_categories WHERE org_id = $1",
+            "SELECT id, parent_id, key, label, default_priority, target_minutes, "
+            f"{no_limit}, keywords, extra_fields, is_active, sort_order "
+            "FROM case_categories WHERE org_id = $1",
             ctx.org_id,
             source_key=ctx.source_key,
         )
@@ -192,6 +221,14 @@ async def create_category(ctx: CtxDep, body: CategoryBody):
         raise HTTPException(
             status_code=400, detail="Give the category a name with letters."
         )
+    limit = _time_limit(
+        ctx,
+        {"target_minutes": body.target_minutes, "no_time_limit": body.no_time_limit},
+    )
+    # the column only exists after housing-0013; without it nothing is written there
+    extra_col, extra_val = (
+        (", no_time_limit", ", $11") if "no_time_limit" in limit else ("", "")
+    )
     async with tx(ctx) as conn:
         key = slug
         if body.parent_id:
@@ -223,18 +260,19 @@ async def create_category(ctx: CtxDep, body: CategoryBody):
         )
         cat = await conn.fetchrow(
             "INSERT INTO case_categories (org_id, parent_id, key, label, default_priority, "
-            "target_minutes, keywords, extra_fields, is_active, sort_order) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10) RETURNING id, key",
+            f"target_minutes, keywords, extra_fields, is_active, sort_order{extra_col}) "
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10{extra_val}) RETURNING id, key",
             ctx.org_id,
             body.parent_id,
             key,
             body.label.strip(),
             body.default_priority,
-            body.target_minutes,
+            limit["target_minutes"],
             _clean_keywords(body.keywords),
             dump(_clean_extra_fields(body.extra_fields)),
             body.is_active,
             order,
+            *([limit["no_time_limit"]] if extra_col else []),
         )
         await log_event(
             ctx,
@@ -254,6 +292,9 @@ async def update_category(ctx: CtxDep, category_id: UUID, body: CategoryPatch):
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=400, detail="Nothing to change.")
+    changes = _time_limit(ctx, changes)
+    if not changes:  # only a "no_time_limit" that changes nothing was sent
+        raise HTTPException(status_code=400, detail="Nothing to change.")
     if changes.get("label") is None and "label" in changes:
         raise HTTPException(status_code=400, detail="A category needs a name.")
     if "is_active" in changes and changes["is_active"] is None:
@@ -265,9 +306,10 @@ async def update_category(ctx: CtxDep, category_id: UUID, body: CategoryPatch):
         changes["extra_fields"] = _clean_extra_fields(changes["extra_fields"] or [])
     if "label" in changes:
         changes["label"] = changes["label"].strip()
+    no_limit = ", no_time_limit" if ctx.caps.get("tat_clock") else ""
     async with tx(ctx) as conn:
         before = await conn.fetchrow(
-            "SELECT label, parent_id, default_priority, target_minutes, is_active "
+            f"SELECT label, parent_id, default_priority, target_minutes, is_active{no_limit} "
             "FROM case_categories WHERE id = $1 AND org_id = $2 FOR UPDATE",
             category_id,
             ctx.org_id,

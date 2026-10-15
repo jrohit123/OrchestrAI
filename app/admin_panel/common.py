@@ -67,7 +67,14 @@ SELECT
     WHERE table_schema = 'public' AND table_name = 'roles'
       AND column_name IN ('permissions', 'readable_tables', 'readable_entity_types',
                           'is_approver', 'approval_max_amount'))  AS role_editor,
-  to_regclass('public.entity_records') IS NOT NULL            AS entity_records
+  to_regclass('public.entity_records') IS NOT NULL            AS entity_records,
+  EXISTS (SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'case_categories'
+             AND column_name = 'no_time_limit')               AS tat_clock,
+  (to_regclass('public.reminder_plans') IS NOT NULL
+   AND to_regclass('public.reminder_plan_categories') IS NOT NULL
+   AND to_regclass('public.reminder_plan_steps') IS NOT NULL
+   AND to_regclass('public.case_reminder_log') IS NOT NULL)  AS reminders
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -105,6 +112,14 @@ _CAP_MESSAGES = {
         "Run migration core-0009 first."
     ),
     "role_editor": "This organisation's database cannot keep everything a role needs yet.",
+    "tat_clock": (
+        "This organisation's database cannot keep 'no time limit' or the ticket clock yet. "
+        "Run migration housing-0013 first."
+    ),
+    "reminders": (
+        "This organisation's database does not have reminder plans yet. "
+        "Run migration housing-0013 first."
+    ),
 }
 
 
