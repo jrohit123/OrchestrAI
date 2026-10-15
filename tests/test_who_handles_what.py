@@ -14,6 +14,7 @@ from tests.js_page import STUB
 PRELUDE = r"""
 const icon = () => h('i', null);
 const setTopAction = () => {};
+const isSuper = () => true;   // the table is editable only for super admins (admins read it)
 const tcalls = [];
 const U = { a: 'u-anuja', b: 'u-bhaskar', c: 'u-chetan', e: 'u-elizabeth' };
 const tp = (id, name, level, reachable = true) => ({ user_id: id, name, level, reachable });
@@ -35,6 +36,7 @@ api.put = async (p, b) => { tcalls.push(['PUT', p, b]); return { ok: true }; };
 api.patch = async (p, b) => { tcalls.push(['PATCH', p, b]); return { ok: true }; };
 api.del = async p => { tcalls.push(['DELETE', p]); return { ok: true }; };
 toast = () => {};
+S.boot = { caps: {} };   // no time-to-fix column in these tests
 confirmBox = async () => true;
 openPop = () => {}; closePop = () => {};
 const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
@@ -87,7 +89,7 @@ def test_the_table_lists_the_areas_with_owner_and_backups_and_hides_the_hidden_o
         return { head, rows };
         """
     )
-    assert "Backups (also told)" in out["head"] and "Informed only" in out["head"]
+    assert "Backup, in order (also told)" in out["head"] and "Also told" in out["head"]
     assert (
         out["rows"][0].startswith("Finance") and "Bhaskar Chatterjee" in out["rows"][0]
     )
