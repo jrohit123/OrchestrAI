@@ -72,7 +72,7 @@ async def get_pool(source_key: str) -> "asyncpg.Pool":
     pool = await asyncpg.create_pool(
         dsn=row["database_url"],
         min_size=2,
-        max_size=10,
+        max_size=25,
         init=_set_timezone,
         statement_cache_size=0,
         timeout=15,
