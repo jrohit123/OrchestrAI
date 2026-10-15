@@ -705,4 +705,6 @@ def test_building_blocks_get_their_own_screen_for_super_admins_only():
     caps = {**HOUSING, "workflow_kind": True}
     assert keys(caps)[-3:] == ["workflows", "blocks", "settings"]
     assert "blocks" not in [s["key"] for s in meta._sections(caps, "admin")]
-    assert "blocks" not in keys(HOUSING)  # without kinds in the database there are no blocks to show
+    assert "blocks" not in keys(
+        HOUSING
+    )  # without kinds in the database there are no blocks to show

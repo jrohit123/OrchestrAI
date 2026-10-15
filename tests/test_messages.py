@@ -504,7 +504,9 @@ def test_cancelling_a_draft_with_answers_says_how_many_were_dropped(chat, monkey
     monkeypatch.setattr("app.services.draft_store.get_active_draft", draft)
     monkeypatch.setattr("app.services.draft_store.close_draft", close)
 
-    async def session_length(*a, **k):  # cancelling also clears the chat's memory, kept for the session's length
+    async def session_length(
+        *a, **k
+    ):  # cancelling also clears the chat's memory, kept for the session's length
         return {"session_ttl_minutes": 480}
 
     monkeypatch.setattr(webhook, "fetch_one", session_length)

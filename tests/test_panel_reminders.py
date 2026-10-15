@@ -83,7 +83,10 @@ async def step_ids(w, plan_id) -> list:
 
 
 def test_every_new_call_has_its_rule_and_only_the_clock_is_open_to_admins():
-    assert ("GET", "/reminders") in access_rules.ADMIN_CALLS  # admins read Reminders; they cannot change it
+    assert (
+        "GET",
+        "/reminders",
+    ) in access_rules.ADMIN_CALLS  # admins read Reminders; they cannot change it
     new_super = {
         ("PUT", "/reminders/settings"),
         ("PUT", "/reminders/urgency"),
@@ -101,7 +104,10 @@ def test_every_new_call_has_its_rule_and_only_the_clock_is_open_to_admins():
         for r in reminders.router.routes
         for m in r.methods
     }
-    assert paths == new_super | {("GET", "/reminders"), ("GET", "/cases/{case_id}/clock")}
+    assert paths == new_super | {
+        ("GET", "/reminders"),
+        ("GET", "/cases/{case_id}/clock"),
+    }
 
 
 def test_an_organisation_without_reminder_plans_is_told_so_instead_of_an_error():
