@@ -165,6 +165,10 @@ function newWorkflowModal(kinds, startKind) {
     h('span', { class: 'gi' }, icon(ic)), h('b', { class: 't' }, title, rec ? [' ', badge('Easiest', 'brand')] : null), h('span', { class: 's' }, sub));
   async function created(r, made) {
     FV.kind = made === 'block' ? 'block' : 'flow';             // the Flows list opens on the right tab when you go back to it
+    if (FV.intoUsecase) {   // made inside a use case's box: it belongs there, with nothing to choose
+      try { await api.put('/workflows/' + r.id + '/usecase', { usecase_id: FV.intoUsecase }); } catch (e) { toast(e.message, 'bad'); }
+      FV.intoUsecase = null;
+    }
     toast(made === 'block' ? 'Building block created.' : 'Created. It is switched off until you turn it on, and nobody can use it yet.', 'ok');
     m.close(); await ensureStudio(); openWorkflow(r.id);
   }

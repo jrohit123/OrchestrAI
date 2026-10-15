@@ -48,7 +48,7 @@ async def menu_groups(org_id: str, user: dict) -> list[dict]:
             usecases = [
                 dict(r)
                 for r in await fetch_all(
-                    "SELECT id, name, icon FROM usecases WHERE org_id = $1 AND is_active ORDER BY sort_order, name",
+                    "SELECT id, name, icon, is_active FROM usecases WHERE org_id = $1 ORDER BY sort_order, name",
                     org_id,
                     source_key=user["source_key"],
                 )
@@ -63,6 +63,11 @@ async def menu_groups(org_id: str, user: dict) -> list[dict]:
             for w in allowed
             if w.get("usecase_id") and str(w["usecase_id"]) == str(u["id"])
         ]
+        if not u[
+            "is_active"
+        ]:  # a use case switched off: none of its flows are in the menu
+            placed.update(w["intent_key"] for w in mine)
+            continue
         if mine:
             groups.append(
                 {

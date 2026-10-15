@@ -530,13 +530,14 @@ def test_the_menu_groups_flows_by_use_case_and_only_shows_switched_on_ones(monke
     async def fetch_all(query, *args, **kw):
         assert "FROM usecases" in query
         return [
-            {"id": tickets, "name": "Tickets", "icon": "🎫"},
+            {"id": tickets, "name": "Tickets", "icon": "🎫", "is_active": True},
             {
                 "id": "33333333-0000-0000-0000-000000000003",
                 "name": "Bookings",
                 "icon": "📅",
+                "is_active": True,
             },  # nothing on: not shown
-            {"id": visitors, "name": "Visitors", "icon": "🚪"},
+            {"id": visitors, "name": "Visitors", "icon": "🚪", "is_active": True},
         ]
 
     monkeypatch.setattr(flows.menu, "fetch_all", fetch_all)
@@ -554,3 +555,34 @@ def test_the_menu_groups_flows_by_use_case_and_only_shows_switched_on_ones(monke
     ]
     sections = run(flows.menu.build_menu_sections("o1", USER))
     assert [s["title"] for s in sections] == ["🎫 Tickets", "🚪 Visitors", "📊 Reports"]
+
+
+def test_a_use_case_switched_off_takes_all_its_flows_out_of_the_menu(monkeypatch):
+    tickets, visitors = (
+        "11111111-0000-0000-0000-000000000001",
+        "22222222-0000-0000-0000-000000000002",
+    )
+    monkeypatch.setattr(
+        flows.menu,
+        "get_menu_workflows",
+        workflows(
+            {
+                **wf("file_a_complaint", "File a complaint", "create"),
+                "usecase_id": tickets,
+            },
+            {
+                **wf("preapprove_visitor", "Pre-approve a visitor", "create"),
+                "usecase_id": visitors,
+            },
+        ),
+    )
+
+    async def fetch_all(query, *args, **kw):
+        return [
+            {"id": tickets, "name": "Tickets", "icon": "🎫", "is_active": True},
+            {"id": visitors, "name": "Visitors", "icon": "🚪", "is_active": False},
+        ]
+
+    monkeypatch.setattr(flows.menu, "fetch_all", fetch_all)
+    groups = run(flows.menu.menu_groups("o1", USER))
+    assert [g["title"] for g in groups] == ["🎫 Tickets"]  # not even under Create

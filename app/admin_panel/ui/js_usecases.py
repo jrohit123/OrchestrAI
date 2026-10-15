@@ -82,6 +82,45 @@ function newUsecaseModal(d) {
     } }] });
 }
 
+// ───────────────────────── Flows, one box per use case ─────────────────────────
+// A flow lives in the box it was made in. The box's switch decides whether the use case is in the chat menu; each flow
+// keeps its own switch. The menu builds itself from this (app/services/menu.py): nothing is written by hand.
+async function renderFlowBoxes(root) {
+  const mine = S.renderId;
+  let d;
+  try { [d] = await Promise.all([api.get('/usecases'), ensureStudio()]); } catch (e) { fill(root, errorBox(e)); return; }
+  if (mine !== S.renderId) return;
+  const again = async () => { S.lookups = null; await ensureStudio(); if (mine === S.renderId) renderFlowBoxes(root); };
+  setTopAction({ label: 'New use case', run: () => newUsecaseModal(d) });
+  const flowsOf = id => ST.flows.filter(w => String(w.usecase_id || '') === String(id || ''));
+  const moveSel = w => {
+    const s = sel([['', 'Move to…'], ...d.usecases.filter(u => String(u.id) !== String(w.usecase_id || '')).map(u => [u.id, (u.icon ? u.icon + ' ' : '') + u.name])], '', { 'aria-label': 'Move ' + w.name + ' to another use case' });
+    s.addEventListener('change', async () => { if (!s.value) return; try { await api.put('/workflows/' + w.id + '/usecase', { usecase_id: s.value }); toast('Moved', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } });
+    return s;
+  };
+  const flowRow = w => h('div', { class: 'ucb-row' + (w.is_active ? '' : ' off') },
+    h('a', { href: '#/workflows?w=' + w.id, class: 'grow' }, w.name),
+    w.kind === 'case_action' ? badge('button on a ticket') : null,
+    moveSel(w),
+    switchEl(w.is_active, async v => { try { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; toast(switchNote(w, v), 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } }, false, w.name));
+  const box = u => {
+    const list = flowsOf(u ? u.id : null), flows = list.filter(w => w.kind !== 'block'), blocks = list.filter(w => w.kind === 'block');
+    if (!u && !list.length) return null;
+    const make = kind => () => { FV.intoUsecase = u ? u.id : null; newWorkflowModal(!!S.boot.caps.workflow_kind, kind); };
+    const head = u
+      ? h('div', { class: 'ucb-h' }, h('span', { class: 'ucb-ic' }, u.icon || '•'), h('b', null, u.name), h('span', { class: 'muted small' }, flows.length + ' flow' + (flows.length === 1 ? '' : 's') + ' · ' + blocks.length + ' block' + (blocks.length === 1 ? '' : 's')),
+          h('span', { class: 'sp' }), h('span', { class: 'muted small' }, u.is_active ? 'In the menu' : 'Off: not in the menu'),
+          switchEl(u.is_active, async v => { try { await api.patch('/usecases/' + u.id, { is_active: v }); u.is_active = v; toast(v ? u.name + ' is in the menu again' : u.name + ' left the menu; its flows are kept', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } }, false, u.name))
+      : h('div', { class: 'ucb-h' }, h('b', null, 'Not in a use case yet'), h('span', { class: 'muted small' }, 'Shown in the menu after the use cases. Move each one into its use case.'));
+    return h('div', { class: 'card ucb' + (u && !u.is_active ? ' off' : '') }, head,
+      flows.length ? flows.map(flowRow) : h('div', { class: 'ucb-row muted small' }, 'No flows yet.'),
+      blocks.length ? h('details', { class: 'ucb-blocks' }, h('summary', null, 'Building blocks (' + blocks.length + ')'), blocks.map(flowRow)) : null,
+      u ? h('div', { class: 'ucb-row' }, h('button', { class: 'btn sm', type: 'button', onclick: make('workflow') }, '＋ New flow in ' + u.name), h('button', { class: 'btn sm ghost', type: 'button', onclick: make('block') }, '＋ New building block')) : null);
+  };
+  fill(root, d.usecases.map(box), box(null),
+    h('div', { class: 'muted small', style: { marginTop: '8px' } }, 'The chat menu shows the use cases that are on, with their flows that are on, to the people whose role may use them. Rename use cases and the people on their records in ', h('a', { href: href('usecases') }, 'Use cases'), '.'));
+}
+
 SECTIONS.usecases = {
   title: 'Use cases', sub: 'What the chat bot is used for, like Tickets, Bookings and Visitors, and the people each kind of record can have.',
   async render(root) { return renderUsecases(root); },

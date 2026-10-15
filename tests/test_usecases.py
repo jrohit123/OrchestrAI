@@ -73,10 +73,9 @@ def test_no_screen_or_engine_code_names_a_kind_of_person():
         "PARTY = ",
     ):
         assert word not in js, word
-    src = (
-        Path(case_ops.__file__).read_text(encoding="utf-8")
-        + Path(reminder_plans.__file__).read_text(encoding="utf-8")
-    )
+    src = Path(case_ops.__file__).read_text(encoding="utf-8") + Path(
+        reminder_plans.__file__
+    ).read_text(encoding="utf-8")
     assert not re.search(r"""["'](level2|watcher|helper|requester)["']""", src)
 
 

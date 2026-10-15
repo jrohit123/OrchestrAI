@@ -206,7 +206,6 @@ function detailsPane() {
     d.kind !== 'block' ? startCard() : null,
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'About it'), h('div', { class: 'card-b stack' },
       field('What it does', desc, 'One sentence. The AI reads this to understand when to use it.'),
-      uc.pick,
       kinds ? field('What kind is it?', sel([['workflow', 'A flow people start'], ['case_action', 'A case button (on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only used by other flows. A case button is a button on a case.') : null,
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
@@ -516,6 +515,7 @@ SECTIONS.workflows = {
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
     if (route.q.w) return renderEditor(root, route.q.w);
+    if (S.boot.caps.usecases) return renderFlowBoxes(root);   // one box per use case (js_usecases.py)
     return renderFlows(root, route, S.boot.caps.workflow_kind ? 'flow' : null);
   },
 };

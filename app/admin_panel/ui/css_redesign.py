@@ -235,4 +235,12 @@ td.tatcol{min-width:190px}
 .cm-row:hover,.cm-row:focus{background:#f5f7f7;outline:0}.cm-row.back{color:#027eb5}
 .cm-row .muted{color:#777}
 @media (max-width:1100px){.cm-wrap{grid-template-columns:minmax(0,1fr)}.cm-side{position:static}}
+/* ───── Flows, one box per use case ───── */
+.ucb{margin-bottom:14px;overflow:hidden}.ucb.off{opacity:.65}
+.ucb-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.ucb-ic{font-size:20px}
+.ucb-row{display:flex;align-items:center;gap:10px;padding:8px 16px;border-top:1px solid var(--line)}
+.ucb-row:first-of-type{border-top:0}.ucb-row.off a{color:var(--muted)}
+.ucb-row select{width:auto;max-width:170px;font-size:12.5px}
+.ucb-blocks>summary{padding:8px 16px;cursor:pointer;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
 """
