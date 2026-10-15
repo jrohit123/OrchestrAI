@@ -22,9 +22,9 @@ from app.admin_panel import (
     roles,
     routing,
     studio,
+    triggers,
     whatsapp_flows,
     whatsapp_templates,
-    triggers,
     workflows,
 )
 
