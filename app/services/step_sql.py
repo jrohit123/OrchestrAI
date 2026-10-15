@@ -407,7 +407,7 @@ def describe_step(step: dict, names: dict | None = None) -> str:
     if op == "derive_field":
         return f"Work out {(p.get('field') or 'a value').replace('_', ' ')}"
     if op == "compute":
-        return "Calculate totals"
+        return "Check the answers"
     if op in ("db.insert_row", "sheets.insert_row"):
         return f"Save a new {t}: {_pairs(p.get('values'))}"
     if op in ("db.update_row", "sheets.update_row"):

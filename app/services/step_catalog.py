@@ -170,9 +170,9 @@ STEP_TYPES: list[dict] = [
     },
     {
         "op": "compute",
-        "label": "Calculate totals",
+        "label": "Check the answers",
         "group": "Look up and check",
-        "help": "Runs the flow's calculation rules (invoices, quotes).",
+        "help": "Checks every answer is filled in, and works out totals if the flow has any.",
         "params": [],
     },
     {

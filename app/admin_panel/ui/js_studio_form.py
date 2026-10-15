@@ -86,7 +86,7 @@ function describeStep(s) {
     conflict_check: () => 'Stop if a ' + single(p.table, p) + ' already has ' + pairsText(p.match_columns, 2).replace(/ ← /g, ' = '),
     require_permission: () => 'Check the person is allowed' + ((p.any_of || []).length ? ' (' + p.any_of.join(' or ') + ')' : p.map ? ' (by ' + vlabel(p.from) + ')' : ''),
     derive_field: () => 'Work out ' + pretty(p.field || 'a value').toLowerCase(),
-    compute: () => 'Calculate totals',
+    compute: () => 'Check the answers',
     'db.insert_row': () => 'Save a new ' + single(p.table, p) + ': ' + pairsText(p.values, 3),
     'db.update_row': () => 'Change the ' + single(p.table, p) + ': ' + pairsText(p.set, 3),
     'db.upsert_row': () => 'Save or change a ' + single(p.table, p) + ': ' + pairsText(p.values, 3),
