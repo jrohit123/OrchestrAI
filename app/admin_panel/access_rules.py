@@ -90,10 +90,16 @@ SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("DELETE", "/workflows/{workflow_id}"),
         ("GET", "/workflows/{workflow_id}"),
         ("POST", "/workflows/{workflow_id}/active"),
+        ("DELETE", "/workflows/{workflow_id}/after"),
+        ("PUT", "/workflows/{workflow_id}/after"),
         ("PUT", "/workflows/{workflow_id}/definition"),
         ("PUT", "/workflows/{workflow_id}/layout"),
         ("POST", "/workflows/{workflow_id}/restore"),
         ("PUT", "/workflows/{workflow_id}/roles"),
+        ("DELETE", "/workflows/{workflow_id}/schedule"),
+        ("GET", "/workflows/{workflow_id}/schedule"),
+        ("PUT", "/workflows/{workflow_id}/schedule"),
+        ("POST", "/workflows/{workflow_id}/schedule/run"),
         ("GET", "/workflows/{workflow_id}/versions/{version}"),
     }
 )

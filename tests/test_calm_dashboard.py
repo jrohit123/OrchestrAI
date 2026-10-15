@@ -78,8 +78,8 @@ def test_the_words_are_explained_once_and_are_the_same_everywhere():
 
 
 def test_what_is_not_built_yet_is_not_offered_in_the_step_list():
+    # "On a schedule" is a way to START a flow now (the How does it start card), not a step
     for later in [
-        "On a schedule",
         "If / else branch",
         "Repeat for each",
         "Decide with the assistant",

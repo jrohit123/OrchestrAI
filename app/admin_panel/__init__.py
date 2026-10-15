@@ -19,6 +19,7 @@ from app.admin_panel import (
     roles,
     routing,
     studio,
+    triggers,
     workflows,
 )
 
@@ -36,6 +37,7 @@ for _module in (
     routing,
     workflows,
     studio,
+    triggers,
     activity,
     org_settings,
     message_texts,

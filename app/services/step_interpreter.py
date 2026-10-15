@@ -1985,6 +1985,11 @@ async def run_workflow_steps(
     )
     if dry_run:
         result["trace"] = trace
+    elif result.get("status") == "done":
+        from app.services import flow_triggers
+
+        # never raises, never changes the answer
+        await flow_triggers.after_done(workflow, user)
     return result
 
 
