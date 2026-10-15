@@ -402,23 +402,9 @@ STEP_TYPES: list[dict] = [
                 "label": "As",
                 "kind": "choice",
                 "required": True,
-                "options": [
-                    [
-                        "level2",
-                        "Level 2",
-                        "Steps in when the first person cannot sort it out.",
-                    ],
-                    [
-                        "helper",
-                        "Helper",
-                        "Helps with the case, such as someone it was passed on to.",
-                    ],
-                    [
-                        "watcher",
-                        "Watcher",
-                        "Is kept informed but does not act on the case.",
-                    ],
-                ],
+                # filled per organisation from its kinds of people on a ticket (people_kinds), never listed here
+                "options_from": "ticket_people",
+                "options": [],
             },
         ],
     },

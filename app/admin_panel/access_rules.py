@@ -42,6 +42,11 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
 # Everything else: flows, the chat bot, rules, roles and access, settings, the chat log, adding people.
 SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", "/usecases"),
+        ("POST", "/usecases"),
+        ("PATCH", "/usecases/{usecase_id}"),
+        ("PUT", "/record-kinds/{record_type}"),
+        ("PUT", "/workflows/{workflow_id}/usecase"),
         ("GET", "/activity"),
         ("GET", "/chat-menu"),
         ("PUT", "/chat-menu"),

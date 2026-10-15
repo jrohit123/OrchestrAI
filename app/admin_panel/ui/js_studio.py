@@ -196,19 +196,21 @@ function detailsPane() {
   const accessMsg = h('span', { class: 'small muted' });
   const access = d.kind === 'block'
     ? h('div', { class: 'muted' }, 'A building block is only used by other flows, so it is not given to roles. Give the flow that uses it instead.')
-    : h('div', { class: 'stack' }, h('div', { class: 'row' }, boxes.map(b => h('label', { class: 'row' }, b.cb, b.r.name))),
+    : h('div', { class: 'stack' }, h('div', { class: 'row small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); boxes.forEach(b => b.cb.checked = true); } }, 'Tick every role'), h('span', { class: 'muted' }, '·'), h('a', { href: '#', onclick: e => { e.preventDefault(); boxes.forEach(b => b.cb.checked = false); } }, 'Untick all')),
+        h('div', { class: 'row' }, boxes.map(b => h('label', { class: 'row' }, b.cb, b.r.name))),
         h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: async () => { try { await api.put('/workflows/' + d.id + '/roles', { roles: boxes.filter(b => b.cb.checked).map(b => b.r.name) }); d.granted_roles = boxes.filter(b => b.cb.checked).map(b => b.r.name); accessMsg.textContent = 'Saved'; toast('Access saved', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Save who can use it'), accessMsg));
   const desc = h('textarea', { rows: 3, oninput: e => { w.description = e.target.value; commit(false); } }); desc.value = w.description;
   const phrases = tagsEditor(w.training_phrases, [], l => { w.training_phrases = l; commit(false); });
+  const uc = usecaseParts(d);
   return h('div', { class: 'stack' },
     d.kind !== 'block' ? startCard() : null,
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'About it'), h('div', { class: 'card-b stack' },
       field('What it does', desc, 'One sentence. The AI reads this to understand when to use it.'),
+      uc.pick,
       kinds ? field('What kind is it?', sel([['workflow', 'A flow people start'], ['case_action', 'A case button (on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only used by other flows. A case button is a button on a case.') : null,
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
-    h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access)),
-    d.kind !== 'block' && S.boot.caps.cases && worksOnTickets(EW.work, d) ? peopleOnCaseCard() : null,
+    h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access, uc.people)),
     d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id }, u.name)))) : null);
 }
 
@@ -303,26 +305,37 @@ function startCard() {
   return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'How does it start?'), body);
 }
 
-// only a flow that works on tickets has people on a ticket (and photos that land on one): a booking or visitor flow does not
-function worksOnTickets(w, d) {
-  const cfg = (w && w.settings) || {};
-  if (d.kind === 'case_action' || (cfg.who_can_use || []).length || cfg.photos) return true;
-  const steps = JSON.stringify((w && w.steps) || []), schema = JSON.stringify((w && w.entity_schema) || {});
-  const tickets = /"(table|into|from)":\s*"(cases|case_[a-z_]+)"/;   // the tickets tables, read or written
-  return /"op":\s*"case\./.test(steps) || /"workflow":\s*"case_/.test(steps) || tickets.test(steps) || tickets.test(schema);
-}
-
-// people on a ticket: a workflow can be opened to them for the tickets they are on
-function peopleOnCaseCard() {
+// the use case a flow is filed under, and the people on its kind of record who may use it on their own records. All of it
+// is data (usecases, record_people_kinds): no kind of person and no kind of record is named here.
+function usecaseParts(d) {
+  if (!S.boot.caps.usecases) return { pick: null, people: null };
   const cfg = EW.work.settings = EW.work.settings || {};
-  const roles = [['requester', 'The person who raised the ticket'], ['assignee', 'The person handling it'], ['level2', 'People also told (level 2)'], ['helper', 'Helpers, such as someone who passed it on'], ['watcher', 'Watchers']];
-  const have = new Set(cfg.who_can_use || []);
-  const save = () => { const l = roles.map(r => r[0]).filter(r => have.has(r)); if (l.length) cfg.who_can_use = l; else delete cfg.who_can_use; commit(false); };
-  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on a ticket'),
-    h('div', { class: 'card-b stack' }, h('div', { class: 'muted' }, 'Tick who may use this on the tickets they are on, even if their role does not allow it. They can only act on their own tickets.'),
-      roles.map(([k, label]) => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: have.has(k), onchange: e => { e.target.checked ? have.add(k) : have.delete(k); save(); } }), label)),
-      h('div', { class: 'card-h', style: { padding: '10px 0 0', border: 0 } }, 'Photos'),
-      h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }), h('span', null, 'Keep photos people send in the chat while this flow runs, on the ticket it makes'))));
+  const pick = h('div'), people = h('div');
+  getLookups().then(lk => {
+    const ucs = lk.usecases || [];
+    const current = () => ucs.find(u => u.id === d.usecase_id);
+    const drawPeople = () => {
+      const u = current(), kinds = u ? ((lk.people_kinds || {})[u.record_type] || []) : [];
+      if (d.kind === 'block' || !u || (!kinds.length && !u.keeps_photos)) { fill(people); return; }
+      const rec = u.record_type.replace(/_/g, ' ');
+      const have = new Set(cfg.who_can_use || []);
+      const save = () => { const l = kinds.map(k => k.key).filter(k => have.has(k)); if (l.length) cfg.who_can_use = l; else delete cfg.who_can_use; commit(false); };
+      fill(people, h('div', { class: 'stack s8', style: { marginTop: '14px' } },
+        kinds.length ? [h('b', { class: 'small' }, 'People on the ' + rec),
+          h('div', { class: 'muted small' }, 'They may use it on their own ' + rec + 's only, even if their role does not allow it.'),
+          h('div', { class: 'row' }, kinds.map(k => h('label', { class: 'row', title: k.description }, h('input', { type: 'checkbox', checked: have.has(k.key), onchange: e => { e.target.checked ? have.add(k.key) : have.delete(k.key); save(); } }), k.label)))] : null,
+        u.keeps_photos ? h('label', { class: 'row', style: { marginTop: '6px' } }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }),
+          'Keep photos people send in the chat while it runs, on the ' + rec + ' it makes') : null));
+    };
+    const s = sel([['', 'Shared by every use case'], ...ucs.filter(u => u.is_active || u.id === d.usecase_id).map(u => [u.id, (u.icon ? u.icon + ' ' : '') + u.name])], d.usecase_id || '', { 'aria-label': 'Use case' });
+    s.addEventListener('change', async () => {
+      try { await api.put('/workflows/' + d.id + '/usecase', { usecase_id: s.value || null }); d.usecase_id = s.value || null; toast(current() ? 'Filed under ' + current().name : 'Shared by every use case now', 'ok'); drawPeople(); }
+      catch (e) { toast(e.message, 'bad'); s.value = d.usecase_id || ''; }
+    });
+    fill(pick, field('Use case', s, 'Where it belongs: the chat menu, the lists and the building blocks follow this.'));
+    drawPeople();
+  });
+  return { pick, people };
 }
 
 // ----- what it asks for (entity_schema) -----

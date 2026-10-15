@@ -30,7 +30,7 @@ def test_the_menu_is_grouped_like_the_approved_prototype_and_has_nothing_that_is
     assert "['Your work', ['cases', 'conversations']]" in APP_JS
     assert "['Your team', ['people', 'access']]" in APP_JS
     assert "['Chat bot', ['assistant']]" in APP_JS
-    assert "['Build', ['workflows', 'blocks']]" in APP_JS
+    assert "['Build', ['usecases', 'workflows', 'blocks']]" in APP_JS
     assert "NAV_SOON" not in APP_JS  # no greyed "Soon" items
     assert (
         "not active yet)" not in APP_JS
@@ -40,7 +40,7 @@ def test_the_menu_is_grouped_like_the_approved_prototype_and_has_nothing_that_is
 
 def test_the_set_up_screens_are_told_apart_in_the_page_frame():
     assert (
-        "const SETUP = new Set(['access', 'assistant', 'workflows', 'blocks', 'settings'])"
+        "const SETUP = new Set(['access', 'assistant', 'usecases', 'workflows', 'blocks', 'settings'])"
         in APP_JS
     )
     assert "sec.tabs.length > 1" in APP_JS  # a tab bar for one tab is not drawn

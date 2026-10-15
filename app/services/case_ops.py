@@ -22,12 +22,23 @@ import asyncpg
 
 from app.db import execute, fetch_all, fetch_one
 from app.logging_config import get_context_logger
-from app.services import config_store
+from app.services import config_store, people_kinds
 
 logger = get_context_logger(__name__)
 
-# who is told first when one person holds several roles on a case
-_ROLE_ORDER = ["assignee", "level2", "helper", "requester", "watcher"]
+# who is told first when one person holds several roles on a ticket, which kinds a step may add, and who gets the
+# buttons: all read from the ticket's kinds of people (record_people_kinds), never listed here
+ACTING = (
+    "handler",
+    "backup",
+    "other",
+)  # meanings of people who act on a ticket (the others are told only)
+
+
+async def _ticket_kinds(ctx: dict) -> list[dict]:
+    return await people_kinds.kinds(ctx["source_key"], ctx["org_id"], "ticket")
+
+
 _CATEGORY_CACHE_SECONDS = 60
 _category_cache: dict[str, tuple[float, list[dict]]] = {}
 
@@ -307,9 +318,12 @@ async def _op_add_parties(params: dict, ctx: dict) -> dict:
     """
     si = _si()
     role = params.get("role")
-    if role not in ("level2", "helper", "watcher"):
+    found = await _ticket_kinds(ctx)
+    if not people_kinds.can_be_added(found, role):
+        addable = [k["label"] for k in found if k["added"]]
         raise si.StepError(
-            "case.add_parties: the role must be level2, helper or watcher"
+            f"case.add_parties: '{role}' is not a kind of person a flow may put on a ticket"
+            + (f" (it can be: {', '.join(addable)})" if addable else "")
         )
     case_id = si._resolve_path(ctx, params.get("case_id"))
     ids = _as_ids(si._resolve_path(ctx, params.get("users_from")))
@@ -397,7 +411,9 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
     if str(case.get("id")) == "(new)":
         _preview(ctx, "Everyone on the case will be told")
         return ctx
-    roles = list(params.get("roles") or _ROLE_ORDER)
+    ticket_kinds = await _ticket_kinds(ctx)
+    order = people_kinds.keys(ticket_kinds)
+    roles = list(params.get("roles") or order)
     rows = await fetch_all(
         "SELECT u.id, u.name, u.phone, p.party_role FROM case_parties p "
         "JOIN users u ON u.id = p.user_id "
@@ -440,7 +456,10 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
         for role, text in (params.get("role_templates") or {}).items()
     }
     default_template = si._resolve_path(ctx, params.get("message_template"))
-    button_roles = set(params.get("button_roles") or ["assignee", "level2", "helper"])
+    button_roles = set(
+        params.get("button_roles")
+        or [k["key"] for k in ticket_kinds if k["meaning"] in ACTING]
+    )
     buttons = [
         {"title": title, "command": command}
         for title, command in (params.get("buttons") or {}).items()
@@ -469,11 +488,7 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
     told = []
     for who in people.values():
         template = next(
-            (
-                templates[r]
-                for r in _ROLE_ORDER
-                if r in who["roles"] and templates.get(r)
-            ),
+            (templates[r] for r in order if r in who["roles"] and templates.get(r)),
             default_template,
         )
         if not template:

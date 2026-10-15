@@ -438,7 +438,7 @@ def describe_step(step: dict, names: dict | None = None) -> str:
     if op == "case.authorize":
         return "Check the person is on the case"
     if op == "case.add_parties":
-        return f"Put {_short(p.get('users_from'))} on the case as {(p.get('role') or 'a helper').replace('level2', 'level 2')}"
+        return f"Put {_short(p.get('users_from'))} on the case as {(p.get('role') or 'a helper').replace('_', ' ')}"
     if op == "case.attach_photos":
         return "Attach the photos to the case"
     if op == "notify.parties":

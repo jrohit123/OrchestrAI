@@ -17,7 +17,7 @@ from app.admin_panel.common import (
     rows,
 )
 from app.db import fetch_all, fetch_one
-from app.services import photos
+from app.services import people_kinds, photos
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -458,8 +458,17 @@ async def case_detail(ctx: CtxDep, case_id: UUID):
                         "note": None,
                     }
                 )
+    # what each kind of person is called, its order and what it means come from the data (record_people_kinds)
+    found = await people_kinds.kinds(
+        ctx.source_key, ctx.org_id, "ticket", active_only=False
+    )
+    rank = {k["key"]: (i, k) for i, k in enumerate(found)}
     for p in parties:
         p["reachable"] = bool(p.pop("phone", None))
+        i, k = rank.get(p["party_role"], (len(found), None))
+        p["label"] = k["label"] if k else p["party_role"].replace("_", " ").capitalize()
+        p["meaning"] = k["meaning"] if k else "other"
+        p["rank"] = i
     return {
         "case": case,
         "timeline": timeline,

@@ -217,7 +217,7 @@ def test_the_card_and_the_list_are_wired_into_the_page():
     ):
         assert words in js_studio.JS
     assert "Someone starts it" in js_flows.JS
-    card = js_studio.JS.split("function startCard()")[1].split("// people on a case")[0]
+    card = js_studio.JS.split("function startCard()")[1].split("// the use case a flow is filed under")[0]
     assert "assistant" not in card.lower()
     assert "case" not in card.lower().replace("case_action", "")  # tickets, not cases
 

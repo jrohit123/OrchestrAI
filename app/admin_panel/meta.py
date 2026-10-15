@@ -86,6 +86,8 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     sections.append({"key": "workflows", "label": "Flows"})
     if caps.get("workflow_kind"):
         sections.append({"key": "blocks", "label": "Building blocks"})
+    if caps.get("usecases"):
+        sections.append({"key": "usecases", "label": "Use cases"})
     settings: dict = {"key": "settings", "label": "Settings"}
     if caps.get("events") or caps.get("audit"):
         settings["tabs"] = [
@@ -237,12 +239,36 @@ async def lookups(ctx: CtxDep):
         enums["resident_statuses"] = await check_values(ctx, "residents", "status")
     if ctx.caps.get("seat_kind"):
         enums["seat_kinds"] = await check_values(ctx, "committee_positions", "kind")
+    usecases: list[dict] = []
+    people: dict[str, list] = {}
+    if ctx.caps.get(
+        "usecases"
+    ):  # the use cases and the kinds of people on each kind of record (all data)
+        usecases = rows(
+            await fetch_all(
+                "SELECT id, key, name, icon, record_type, keeps_photos, is_active FROM usecases "
+                "WHERE org_id = $1 ORDER BY sort_order, name",
+                ctx.org_id,
+                source_key=ctx.source_key,
+            )
+        )
+        for k in rows(
+            await fetch_all(
+                "SELECT record_type, key, label, description, meaning, added FROM record_people_kinds "
+                "WHERE org_id = $1 AND is_active ORDER BY record_type, sort_order, label",
+                ctx.org_id,
+                source_key=ctx.source_key,
+            )
+        ):
+            people.setdefault(k.pop("record_type"), []).append(k)
     return {
         "roles": roles,
         "workflows": workflows,
         "seats": seats,
         "categories": categories,
         "enums": enums,
+        "usecases": usecases,
+        "people_kinds": people,
     }
 
 

@@ -78,7 +78,12 @@ SELECT
   to_regclass('public.whatsapp_template_drafts') IS NOT NULL AS template_drafts,
   (to_regclass('public.flow_schedules') IS NOT NULL
    AND to_regclass('public.flow_chains') IS NOT NULL
-   AND to_regclass('public.flow_runs') IS NOT NULL)           AS flow_triggers
+   AND to_regclass('public.flow_runs') IS NOT NULL)           AS flow_triggers,
+  (to_regclass('public.usecases') IS NOT NULL
+   AND to_regclass('public.record_people_kinds') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'workflows'
+                  AND column_name = 'usecase_id'))             AS usecases
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -131,6 +136,10 @@ _CAP_MESSAGES = {
     "flow_triggers": (
         "This organisation's database cannot run flows on a schedule or after another flow yet. "
         "Run migration core-0026 first."
+    ),
+    "usecases": (
+        "This organisation's database has no use cases or kinds of people on a record yet. "
+        "Run migration core-0027 first."
     ),
 }
 

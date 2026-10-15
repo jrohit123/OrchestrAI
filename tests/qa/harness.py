@@ -58,7 +58,11 @@ TEMPLATE_SOURCES = {
 
 # database changes made after the schema dumps were taken, run on top of them in this order
 TEMPLATE_MIGRATIONS = {
-    "housing": ["features/housing/housing-0013_reminder_plans.sql"],
+    "housing": [
+        "features/housing/housing-0013_reminder_plans.sql",
+        "core/core-0027_use_cases.sql",
+        "features/housing/housing-0014_ticket_use_case.sql",
+    ],
 }
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 

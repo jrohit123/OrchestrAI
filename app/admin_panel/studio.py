@@ -115,6 +115,26 @@ def _kinds(ctx: Ctx) -> list[str]:
     return ["workflow", "case_action", "block"] if ctx.caps.get("workflow_kind") else []
 
 
+async def _with_people_kinds(ctx: Ctx, steps: list[dict]) -> list[dict]:
+    """A step choice that says options_from: "ticket_people" gets this organisation's kinds of people on a ticket that a
+    flow may add (record_people_kinds), so no list of kinds lives in the code."""
+    import copy
+
+    from app.services import people_kinds
+
+    found = [
+        k
+        for k in await people_kinds.kinds(ctx.source_key, ctx.org_id, "ticket")
+        if k["added"]
+    ]
+    out = copy.deepcopy(steps)
+    for st in out:
+        for p in st.get("params") or []:
+            if p.get("options_from") == "ticket_people":
+                p["options"] = [[k["key"], k["label"], k["description"]] for k in found]
+    return out
+
+
 @router.get("/studio/catalog")
 async def catalog(ctx: CtxDep):
     schema = await load_schema(ctx)
@@ -125,7 +145,7 @@ async def catalog(ctx: CtxDep):
     )
     perms = sorted({p for r in roles for p in (r["permissions"] or [])})
     return {
-        "steps": catalog_for_ui(_supported_ops()),
+        "steps": await _with_people_kinds(ctx, catalog_for_ui(_supported_ops())),
         "tables": {
             t: sorted(c) for t, c in sorted(schema.items()) if t not in _PLATFORM_TABLES
         },
@@ -281,6 +301,7 @@ async def workflow_detail(workflow_id: UUID, ctx: CtxDep):
         "intent_key": d["intent_key"],
         "description": d["description"],
         "workflow_type": d["workflow_type"],
+        "usecase_id": str(d["usecase_id"]) if d.get("usecase_id") else None,
         "version": d["version"],
         "is_active": d["is_active"],
         "slash_command": d["slash_command"],

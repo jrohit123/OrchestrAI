@@ -31,7 +31,9 @@ router = APIRouter(
 
 def _kind_columns(ctx: Ctx) -> str:
     if ctx.caps.get("workflow_kind"):
-        return "w.kind, w.settings"
+        return "w.kind, w.settings" + (
+            ", w.usecase_id" if ctx.caps.get("usecases") else ""
+        )
     return "'workflow'::text AS kind, '{}'::jsonb AS settings"
 
 

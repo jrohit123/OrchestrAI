@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from app.db import execute, fetch_all, fetch_one, get_all_source_keys, get_pool
 from app.logging_config import get_context_logger
-from app.services import config_store
+from app.services import config_store, people_kinds
 from app.services.messages import length_text, say
 
 logger = get_context_logger(__name__)
@@ -293,12 +293,16 @@ async def _people(source_key, case) -> dict:
         case["id"],
         source_key=source_key,
     )
-    by = {"assignee": [], "level2": [], "watcher": [], "requester": []}
+    # who is who comes from the ticket's kinds of people (record_people_kinds): handler, backup, informed, raiser
+    found = await people_kinds.kinds(source_key, case["org_id"], "ticket")
+    meaning = {k["key"]: k["meaning"] for k in found}
+    by: dict[str, list] = {"handler": [], "backup": [], "informed": [], "raiser": []}
     for r in rows:
-        if r["party_role"] in by:
-            by[r["party_role"]].append(dict(r))
+        m = meaning.get(r["party_role"])
+        if m in by:
+            by[m].append(dict(r))
     handler = next(
-        (p for p in by["assignee"] if p["id"] == case.get("assigned_to_id")), None
+        (p for p in by["handler"] if p["id"] == case.get("assigned_to_id")), None
     )
     if handler is None and case.get("assigned_to_id"):
         handler = await fetch_one(
@@ -308,11 +312,11 @@ async def _people(source_key, case) -> dict:
         )
         handler = dict(handler) if handler else None
     hid = handler["id"] if handler else None
-    raiser = next(iter(by["requester"]), None)
+    raiser = next(iter(by["raiser"]), None)
     return {
         "handler": handler,
-        "backups": [p for p in by["level2"] if p["id"] != hid],
-        "watchers": [p for p in by["watcher"] if p["id"] != hid],
+        "backups": [p for p in by["backup"] if p["id"] != hid],
+        "watchers": [p for p in by["informed"] if p["id"] != hid],
         "raiser": raiser if raiser and raiser["id"] != hid else None,
     }
 
@@ -499,11 +503,16 @@ async def _hand_over(source_key, org_id, case, old, new, percent) -> None:
         await conn.execute(
             "UPDATE cases SET assigned_to_id = $1 WHERE id = $2", new["id"], case["id"]
         )
-        if old:
+        backup = people_kinds.with_meaning(
+            await people_kinds.kinds(source_key, org_id, "ticket"), "backup"
+        )
+        if (
+            old and backup
+        ):  # the old handler stays on as a backup (the first kind that means "backup")
             await conn.execute(
-                "INSERT INTO case_parties (org_id, case_id, user_id, party_role) VALUES ($1, $2, $3, 'level2') "
+                "INSERT INTO case_parties (org_id, case_id, user_id, party_role) VALUES ($1, $2, $3, $4) "
                 "ON CONFLICT (case_id, user_id, party_role) WHERE ended_at IS NULL DO NOTHING",
-                org_id, case["id"], old["id"],
+                org_id, case["id"], old["id"], backup[0],
             )  # fmt: skip
         await conn.execute(
             "INSERT INTO case_activity (org_id, case_id, activity_type, payload) VALUES ($1, $2, 'escalation', $3::jsonb)",
