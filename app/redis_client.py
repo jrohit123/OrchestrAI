@@ -15,7 +15,17 @@ _redis = None
 
 async def init_redis():
     global _redis
-    _redis = await aioredis.from_url(required("REDIS_URL"), decode_responses=True)
+    # A connection that silently dies (the host's proxy drops idle ones) must never make a call wait for ever:
+    # every message and every scheduled job uses Redis, so one stuck call froze the whole chat bot (2026-10-15).
+    _redis = await aioredis.from_url(
+        required("REDIS_URL"),
+        decode_responses=True,
+        socket_timeout=5,
+        socket_connect_timeout=5,
+        socket_keepalive=True,
+        health_check_interval=20,
+        retry_on_timeout=True,
+    )
     logger.info("Redis connected")
 
 

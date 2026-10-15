@@ -22,6 +22,9 @@ async def init_db():
         max_size=5,
         init=_set_timezone,
         statement_cache_size=0,
+        timeout=15,
+        command_timeout=120,
+        max_inactive_connection_lifetime=240,
     )
     logger.info("Routing DB connected")
     # Pre-warm all known data sources
@@ -70,6 +73,9 @@ async def get_pool(source_key: str) -> "asyncpg.Pool":
         max_size=10,
         init=_set_timezone,
         statement_cache_size=0,
+        timeout=15,
+        command_timeout=120,
+        max_inactive_connection_lifetime=240,
     )
     _pools[source_key] = pool
     return pool
