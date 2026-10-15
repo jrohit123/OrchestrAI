@@ -101,7 +101,7 @@ def test_every_new_call_has_its_rule_and_only_the_clock_is_open_to_admins():
         for r in reminders.router.routes
         for m in r.methods
     }
-    assert paths == new_super | {("GET", "/cases/{case_id}/clock")}
+    assert paths == new_super | {("GET", "/reminders"), ("GET", "/cases/{case_id}/clock")}
 
 
 def test_an_organisation_without_reminder_plans_is_told_so_instead_of_an_error():
