@@ -501,3 +501,56 @@ def test_when_the_workflow_cannot_be_found_the_chat_bot_gets_the_details(monkeyp
     assert (
         done is False and "Problem: Leak" in details and "Category: Plumbing" in details
     )
+
+
+def test_the_menu_groups_flows_by_use_case_and_only_shows_switched_on_ones(monkeypatch):
+    """With use cases (Build > Use cases), the groups are the use cases with their flows; a flow filed under none
+    stays in its section after them. get_menu_workflows already leaves out switched-off and not-allowed flows."""
+    tickets, visitors = (
+        "11111111-0000-0000-0000-000000000001",
+        "22222222-0000-0000-0000-000000000002",
+    )
+    monkeypatch.setattr(
+        flows.menu,
+        "get_menu_workflows",
+        workflows(
+            {
+                **wf("file_a_complaint", "File a complaint", "create"),
+                "usecase_id": tickets,
+            },
+            {**wf("my_cases", "My Open Tickets", "reports"), "usecase_id": tickets},
+            {
+                **wf("preapprove_visitor", "Pre-approve a visitor", "create"),
+                "usecase_id": visitors,
+            },
+            {**wf("general_read", "Ask anything", "reports"), "usecase_id": None},
+        ),
+    )
+
+    async def fetch_all(query, *args, **kw):
+        assert "FROM usecases" in query
+        return [
+            {"id": tickets, "name": "Tickets", "icon": "🎫"},
+            {
+                "id": "33333333-0000-0000-0000-000000000003",
+                "name": "Bookings",
+                "icon": "📅",
+            },  # nothing on: not shown
+            {"id": visitors, "name": "Visitors", "icon": "🚪"},
+        ]
+
+    monkeypatch.setattr(flows.menu, "fetch_all", fetch_all)
+    groups = run(flows.menu.menu_groups("o1", USER))
+    assert [g["title"] for g in groups] == ["🎫 Tickets", "🚪 Visitors", "📊 Reports"]
+    assert [w["intent_key"] for w in groups[0]["flows"]] == [
+        "file_a_complaint",
+        "my_cases",
+    ]
+    screen, data = run(flows.menu_data(USER))
+    assert screen == "MENU" and [i["main-content"]["title"] for i in data["items"]] == [
+        "Tickets",
+        "Visitors",
+        "Reports",
+    ]
+    sections = run(flows.menu.build_menu_sections("o1", USER))
+    assert [s["title"] for s in sections] == ["🎫 Tickets", "🚪 Visitors", "📊 Reports"]

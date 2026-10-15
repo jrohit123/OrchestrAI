@@ -14,7 +14,6 @@ from app.admin_panel.ui import (
     js_flows,
     js_home,
     js_icons,
-    js_menu,
     js_overview_cases,
     js_people,
     js_people_import,
@@ -43,7 +42,6 @@ APP_JS = (
         for part in (
             js_core,
             js_icons,
-            js_menu,
             js_overview_cases,
             js_people,
             js_people_import,

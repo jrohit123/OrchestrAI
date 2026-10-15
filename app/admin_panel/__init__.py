@@ -10,7 +10,6 @@ from app.admin_panel import (
     auth_routes,
     case_buttons,
     cases,
-    chat_menu,
     message_texts,
     meta,
     org_settings,
@@ -52,7 +51,6 @@ for _module in (
     ai_instructions,
     whatsapp_flows,
     whatsapp_templates,
-    chat_menu,
     usecases,
 ):
     router.include_router(_module.router)

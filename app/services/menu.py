@@ -16,42 +16,90 @@ _VALID_TG_COMMAND = re.compile(r"^[a-z0-9_]{1,32}$")
 
 
 async def get_menu_workflows(org_id: str, user: dict) -> list[dict]:
-    rows = await fetch_all(
-        """
-        SELECT intent_key, name, command_description, menu_section, slash_command, workflow_type
-        FROM workflows
-        WHERE org_id = $1 AND is_active = true
-        ORDER BY menu_section, name
-    """,
-        org_id,
-        source_key=user["source_key"],
-    )
+    """The flows this person may use now: switched on, and allowed by their role (or by being on a ticket)."""
+    cols = "intent_key, name, command_description, menu_section, slash_command, workflow_type"
+    try:
+        rows = await fetch_all(
+            f"SELECT {cols}, usecase_id FROM workflows WHERE org_id = $1 AND is_active = true ORDER BY menu_section, name",
+            org_id,
+            source_key=user["source_key"],
+        )
+    except Exception:  # an organisation without use cases (core-0027)
+        rows = await fetch_all(
+            f"SELECT {cols}, NULL::uuid AS usecase_id FROM workflows WHERE org_id = $1 AND is_active = true "
+            "ORDER BY menu_section, name",
+            org_id,
+            source_key=user["source_key"],
+        )
     perms = set(user.get("permissions", []))
     return [dict(r) for r in rows if r["intent_key"] in perms]
 
 
-async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
-    # An organisation that organised its menu by use case (Chat bot > Menu) gets that menu; without one, or if it cannot
-    # be built, the flat menu below is made exactly as it always was.
-    from app.services import chat_menu
-
-    organised = await chat_menu.sections_for({**user, "org_id": org_id})
-    if organised is not None:
-        return organised
+async def menu_groups(org_id: str, user: dict) -> list[dict]:
+    """The menu, in groups: [{"key", "title", "flows": [...]}]. The groups are the organisation's use cases (Tickets,
+    Bookings ...: Build > Use cases), each with the switched-on flows filed under it that this person may use; a use
+    case with none is left out. Flows filed under no use case come after, in their sections as before, so an
+    organisation without use cases keeps exactly the menu it had. The look of the WhatsApp menu panel is the
+    organisation's own Flow JSON; this only decides what is in it."""
     allowed = await get_menu_workflows(org_id, user)
-    grouped: dict[str, list] = {}
-    for r in allowed:
-        grouped.setdefault(r["menu_section"] or "other", []).append(
-            {
-                "id": r["intent_key"],
-                "title": r["name"][:24],
-                "description": (r["command_description"] or "")[:72],
-            }
-        )
+    usecases: list[dict] = []
+    if any(w.get("usecase_id") for w in allowed):
+        try:
+            usecases = [
+                dict(r)
+                for r in await fetch_all(
+                    "SELECT id, name, icon FROM usecases WHERE org_id = $1 AND is_active ORDER BY sort_order, name",
+                    org_id,
+                    source_key=user["source_key"],
+                )
+            ]
+        except Exception as e:
+            logger.debug(f"menu: no use cases here ({e})")
+    groups: list[dict] = []
+    placed: set[str] = set()
+    for u in usecases:
+        mine = [
+            w
+            for w in allowed
+            if w.get("usecase_id") and str(w["usecase_id"]) == str(u["id"])
+        ]
+        if mine:
+            groups.append(
+                {
+                    "key": "uc_" + str(u["id"])[:8],
+                    "title": f"{u['icon']} {u['name']}".strip(),
+                    "flows": mine,
+                }
+            )
+            placed.update(w["intent_key"] for w in mine)
+    rest: dict[str, list] = {}
+    for w in allowed:
+        if w["intent_key"] not in placed:
+            rest.setdefault(w["menu_section"] or "other", []).append(w)
+    order = [k for k in SECTION_ORDER if k in rest] + sorted(
+        k for k in rest if k not in SECTION_ORDER
+    )
+    groups += [
+        {"key": k, "title": SECTION_LABELS.get(k, k.title()), "flows": rest[k]}
+        for k in order
+    ]
+    return groups
+
+
+async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
     sections = [
-        {"title": SECTION_LABELS.get(k, k.title()), "rows": grouped[k]}
-        for k in SECTION_ORDER
-        if k in grouped
+        {
+            "title": g["title"][:24],
+            "rows": [
+                {
+                    "id": w["intent_key"],
+                    "title": w["name"][:24],
+                    "description": (w["command_description"] or "")[:72],
+                }
+                for w in g["flows"]
+            ],
+        }
+        for g in await menu_groups(org_id, user)
     ]
     # My Status / Cancel / Help used to be appended here as a fixed
     # non-DB "⚙️ More" section — always shown regardless of what's actually

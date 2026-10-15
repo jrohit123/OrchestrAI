@@ -165,11 +165,10 @@ def test_the_chat_bot_section_says_what_it_is():
         if s["key"] == "assistant"
     )
     assert section["label"] == "Chat bot"
-    assert [t["label"] for t in section["tabs"]] == ["Messages", "AI notes", "Menu"]
+    assert [t["label"] for t in section["tabs"]] == ["Messages", "AI notes"]
     assert [t["key"] for t in section["tabs"]] == [
         "messages",
         "instructions",
-        "menu",
     ]  # old links work
     for part in [
         "Tell the chat bot about your place",

@@ -19,7 +19,7 @@ import uuid
 
 from app.db import fetch_all, fetch_one
 from app.logging_config import get_context_logger
-from app.services import chat_menu, config_store, menu, photos, whatsapp
+from app.services import config_store, menu, photos, whatsapp
 
 logger = get_context_logger(__name__)
 
@@ -85,37 +85,22 @@ def _item(workflow: dict) -> dict:
 async def menu_data(
     user: dict, settings: dict | None = None
 ) -> tuple[str, dict] | None:
-    """(first screen, its data) for the person's menu, from what their role may use. None when there is nothing.
-    With the organisation's settings given, a menu organised by use case (Chat bot > Menu) is used when there is one."""
-    if settings is not None:
-        try:
-            organised = await chat_menu.flow_data(user, settings)
-        except Exception as e:  # the flat menu is the fallback
-            logger.warning(f"flows: the menu by use case could not be built ({e})")
-            organised = None
-        if organised is not None:
-            return organised if organised[0] else None
-    allowed = await menu.get_menu_workflows(user["org_id"], user)
-    grouped: dict[str, list] = {}
-    for w in allowed:
-        grouped.setdefault(w["menu_section"] or "other", []).append(w)
-    keys = [k for k in menu.SECTION_ORDER if k in grouped] + sorted(
-        k for k in grouped if k not in menu.SECTION_ORDER
-    )
-    if not keys:
+    """(first screen, its data) for the person's menu: the groups (use cases first) of switched-on flows they may use,
+    the same as the list menu (menu.menu_groups). The look of the panel is the organisation's own Flow JSON; this only
+    fills it. None when there is nothing."""
+    groups = await menu.menu_groups(user["org_id"], user)
+    if not groups:
         return None
-    if len(keys) == 1:  # one section: no need to ask which, show its workflows
-        return "SECTION", {"items": [_item(w) for w in grouped[keys[0]][:MAX_ITEMS]]}
+    if len(groups) == 1:  # one group: no need to ask which, show its flows
+        return "SECTION", {"items": [_item(w) for w in groups[0]["flows"][:MAX_ITEMS]]}
     items = []
-    for k in keys[:MAX_ITEMS]:
-        flows = grouped[k][:MAX_ITEMS]
+    for g in groups[:MAX_ITEMS]:
+        flows = g["flows"][:MAX_ITEMS]
         items.append(
             {
-                "id": k,
+                "id": g["key"],
                 "main-content": {
-                    "title": _cut(
-                        _words(menu.SECTION_LABELS.get(k, k.title())), TITLE_MAX
-                    ),
+                    "title": _cut(_words(g["title"]), TITLE_MAX),
                     "description": _plural(len(flows)),
                 },
                 "on-click-action": {

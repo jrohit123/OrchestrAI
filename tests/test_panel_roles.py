@@ -635,7 +635,6 @@ def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
         "instructions",
         "whatsapp",
         "templates",
-        "menu",
     ]
     assert tabs["settings"] == ["general", "history"]
 

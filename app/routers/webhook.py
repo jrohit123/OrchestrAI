@@ -1448,16 +1448,6 @@ async def _handle_message(
             await send_list(phone, unknown, "📋 Menu", sections)
             return
 
-    # A tap on a row that opens a group of the menu organised by use case (Chat bot > Menu): answer with that group's list.
-    # Nothing happens for an organisation without such a menu: the text then goes on as it always did.
-    if text_stripped.startswith("menu:"):
-        from app.services import chat_menu
-
-        opened = await chat_menu.open_view(user, text_stripped)
-        if opened:
-            await send_list(phone, opened["body"], opened["button"], opened["sections"])
-            return
-
     # 2. Fetch org TTL
     org_row = await fetch_one(
         "SELECT session_ttl_minutes FROM orgs WHERE id = $1",
