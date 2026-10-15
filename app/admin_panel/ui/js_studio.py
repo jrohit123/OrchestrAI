@@ -208,7 +208,7 @@ function detailsPane() {
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access)),
-    d.kind !== 'block' && S.boot.caps.cases ? peopleOnCaseCard() : null,
+    d.kind !== 'block' && S.boot.caps.cases && worksOnTickets(EW.work, d) ? peopleOnCaseCard() : null,
     d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id }, u.name)))) : null);
 }
 
@@ -303,16 +303,26 @@ function startCard() {
   return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'How does it start?'), body);
 }
 
-// people on a case: a workflow can be opened to them for the cases they are on
+// only a flow that works on tickets has people on a ticket (and photos that land on one): a booking or visitor flow does not
+function worksOnTickets(w, d) {
+  const cfg = (w && w.settings) || {};
+  if (d.kind === 'case_action' || (cfg.who_can_use || []).length || cfg.photos) return true;
+  const steps = JSON.stringify((w && w.steps) || []), schema = JSON.stringify((w && w.entity_schema) || {});
+  const tickets = /"(table|into|from)":\s*"(cases|case_[a-z_]+)"/;   // the tickets tables, read or written
+  return /"op":\s*"case\./.test(steps) || /"workflow":\s*"case_/.test(steps) || tickets.test(steps) || tickets.test(schema);
+}
+
+// people on a ticket: a workflow can be opened to them for the tickets they are on
 function peopleOnCaseCard() {
   const cfg = EW.work.settings = EW.work.settings || {};
-  const roles = [['requester', 'The person who raised the case'], ['assignee', 'The person who has the case'], ['level2', 'Level 2'], ['helper', 'Helpers, such as someone who passed it on'], ['watcher', 'Watchers']];
+  const roles = [['requester', 'The person who raised the ticket'], ['assignee', 'The person handling it'], ['level2', 'People also told (level 2)'], ['helper', 'Helpers, such as someone who passed it on'], ['watcher', 'Watchers']];
   const have = new Set(cfg.who_can_use || []);
   const save = () => { const l = roles.map(r => r[0]).filter(r => have.has(r)); if (l.length) cfg.who_can_use = l; else delete cfg.who_can_use; commit(false); };
-  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on a case'),
-    h('div', { class: 'card-b stack' }, h('div', { class: 'muted' }, 'Tick who may use this on the cases they are on, even if their role does not allow it. They can only act on their own cases.'),
+  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'People on a ticket'),
+    h('div', { class: 'card-b stack' }, h('div', { class: 'muted' }, 'Tick who may use this on the tickets they are on, even if their role does not allow it. They can only act on their own tickets.'),
       roles.map(([k, label]) => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: have.has(k), onchange: e => { e.target.checked ? have.add(k) : have.delete(k); save(); } }), label)),
-      h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }), 'Takes photos sent in the chat while it is being filled in')));
+      h('div', { class: 'card-h', style: { padding: '10px 0 0', border: 0 } }, 'Photos'),
+      h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }), h('span', null, 'Keep photos people send in the chat while this flow runs, on the ticket it makes'))));
 }
 
 // ----- what it asks for (entity_schema) -----
