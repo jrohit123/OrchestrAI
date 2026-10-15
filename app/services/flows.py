@@ -19,7 +19,7 @@ import uuid
 
 from app.db import fetch_all, fetch_one
 from app.logging_config import get_context_logger
-from app.services import config_store, menu, photos, whatsapp
+from app.services import chat_menu, config_store, menu, photos, whatsapp
 
 logger = get_context_logger(__name__)
 
@@ -82,8 +82,19 @@ def _item(workflow: dict) -> dict:
     }
 
 
-async def menu_data(user: dict) -> tuple[str, dict] | None:
-    """(first screen, its data) for the person's menu, from what their role may use. None when there is nothing."""
+async def menu_data(
+    user: dict, settings: dict | None = None
+) -> tuple[str, dict] | None:
+    """(first screen, its data) for the person's menu, from what their role may use. None when there is nothing.
+    With the organisation's settings given, a menu organised by use case (Chat bot > Menu) is used when there is one."""
+    if settings is not None:
+        try:
+            organised = await chat_menu.flow_data(user, settings)
+        except Exception as e:  # the flat menu is the fallback
+            logger.warning(f"flows: the menu by use case could not be built ({e})")
+            organised = None
+        if organised is not None:
+            return organised if organised[0] else None
     allowed = await menu.get_menu_workflows(user["org_id"], user)
     grouped: dict[str, list] = {}
     for w in allowed:
@@ -147,7 +158,7 @@ async def send_menu(user: dict, phone: str, body: str, say) -> bool:
     cfg = flow_of(settings, "menu")
     if not cfg or not _allowed(cfg, phone):
         return False
-    found = await menu_data(user)
+    found = await menu_data(user, settings)
     if not found:
         return False
     screen, data = found

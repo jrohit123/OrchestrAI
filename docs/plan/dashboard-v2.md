@@ -34,7 +34,7 @@ lock, admin / super admin rules, router, search, dark mode), screen by screen. N
 | 4F | People with role, job and what they handle; Roles as ticks per use case | |
 | 4G | Flows and Building blocks screens and the plain builder (When → Ask, Decide, Do, Tell, Use; Test; versions) | |
 | 4H | WhatsApp forms (question builder) and Message templates (Meta template API) | |
-| 4I | Chat menu by use case; more use cases (Bookings, Visitors) need a generic records layer | later |
+| 4I | Chat menu by use case: built (Chat bot > Menu tab, `app/services/chat_menu.py`, tree kept in `orgs.settings.chat_menu`, no migration, off until switched on; list menu, Telegram buttons and the WhatsApp Flow panel all follow it). More use cases (Bookings, Visitors) need a generic records layer | menu built, records layer later |
 
 ## Going live
 

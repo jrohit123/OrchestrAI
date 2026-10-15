@@ -31,6 +31,13 @@ async def get_menu_workflows(org_id: str, user: dict) -> list[dict]:
 
 
 async def build_menu_sections(org_id: str, user: dict) -> list[dict]:
+    # An organisation that organised its menu by use case (Chat bot > Menu) gets that menu; without one, or if it cannot
+    # be built, the flat menu below is made exactly as it always was.
+    from app.services import chat_menu
+
+    organised = await chat_menu.sections_for({**user, "org_id": org_id})
+    if organised is not None:
+        return organised
     allowed = await get_menu_workflows(org_id, user)
     grouped: dict[str, list] = {}
     for r in allowed:

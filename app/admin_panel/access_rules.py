@@ -43,6 +43,10 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
 SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/activity"),
+        ("GET", "/chat-menu"),
+        ("PUT", "/chat-menu"),
+        ("POST", "/chat-menu/preview"),
+        ("POST", "/chat-menu/suggest"),
         ("POST", "/categories"),
         ("DELETE", "/categories/{category_id}"),
         ("PATCH", "/categories/{category_id}"),
