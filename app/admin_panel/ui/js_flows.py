@@ -122,6 +122,7 @@ async function renderFlows(root, route, only) {
   const strip = h('div');
   const helpOn = () => store.get('panel.flowhelp') !== 'off';
   function drawStrip() {
+    if (only === 'block') { fill(strip); return; }   // the 'how a flow works' strip is about flows
     if (!helpOn()) { fill(strip, h('div', { style: { marginBottom: '12px' } }, h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { store.set('panel.flowhelp', 'on'); drawStrip(); } }, icon('help', 'sm'), 'How a flow works'))); return; }
     const st = (k, ic, title, text) => h('div', { class: 'hw-st k-' + k }, h('span', { class: 'gi' }, icon(ic)), h('div', null, h('b', { class: 't' }, title), h('span', { class: 's' }, text)));
     fill(strip, h('div', { class: 'card hw' },
