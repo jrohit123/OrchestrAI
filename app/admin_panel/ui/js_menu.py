@@ -111,6 +111,11 @@ async function renderChatMenu(root) {
         h('div', null, h('b', null, 'Use this menu in the chat'), h('div', { class: 'muted small' }, 'Off: the chat bot shows the menu it always has, every flow in its section.')),
         switchEl(cfg.enabled, on => { cfg.enabled = on; changed(); }, false, 'Use this menu in the chat')),
       h('div', { class: 'muted small' }, 'People only see the flows their role can use, and a group with nothing for them is left out. The menu goes three levels deep: use case, group, flow.'),
+      h('div', { class: 'stack s8' }, h('b', { class: 'small' }, 'Who sees this menu'),
+        h('div', { class: 'row' }, h('label', { class: 'row' }, h('input', { type: 'radio', name: 'cm-who', checked: !(cfg.only_roles || []).length, onchange: () => { delete cfg.only_roles; changed(true); } }), 'Everyone'),
+          h('label', { class: 'row' }, h('input', { type: 'radio', name: 'cm-who', checked: !!(cfg.only_roles || []).length, onchange: () => { cfg.only_roles = [(d.roles[0] || {}).name].filter(Boolean); changed(true); } }), 'Only some roles, to try it out first')),
+        (cfg.only_roles || []).length ? h('div', { class: 'row' }, d.roles.map(r => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: cfg.only_roles.includes(r.name), onchange: e => { cfg.only_roles = e.target.checked ? [...cfg.only_roles, r.name] : cfg.only_roles.filter(x => x !== r.name); changed(true); } }), roleLabel(r.name)))) : null,
+        (cfg.only_roles || []).length ? h('div', { class: 'muted small' }, 'Everyone else keeps the menu they have today.') : null),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async () => {
           if (cfg.nodes.length && !await confirmBox('Replace what is here with today’s menu?', { ok: 'Replace' })) return;

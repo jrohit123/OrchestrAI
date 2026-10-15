@@ -484,3 +484,28 @@ def test_the_layout_is_made_from_the_tree_and_is_ready_for_meta():
         "DONE",
     ]
     json.dumps(layout)  # plain JSON all through
+
+
+def test_a_menu_shown_only_to_some_roles_leaves_everyone_else_with_todays_menu(
+    monkeypatch,
+):
+    fake_world(monkeypatch, {"chat_menu": {**TREE, "only_roles": ["admin"]}})
+    admin, committee = {**USER, "role": "admin"}, {**USER, "role": "committee"}
+    got = run(menu.build_menu_sections("o1", admin))
+    assert [r["title"] for r in got[0]["rows"]] == ["Tickets", "Bookings", "More"]
+    flat = run(menu.build_menu_sections("o1", committee))
+    assert [s["title"] for s in flat] == ["📊 Reports", "✍️ Create", "⚙️ More"]
+    assert (
+        run(
+            chat_menu.flow_data(
+                committee, {"chat_menu": {**TREE, "only_roles": ["admin"]}}
+            )
+        )
+        is None
+    )
+    assert chat_menu.clean({**TREE, "only_roles": [" admin ", "admin"]})[
+        "only_roles"
+    ] == ["admin"]
+    assert "only_roles" not in chat_menu.clean(TREE)
+    with pytest.raises(ValueError):
+        chat_menu.clean({**TREE, "only_roles": "admin"})

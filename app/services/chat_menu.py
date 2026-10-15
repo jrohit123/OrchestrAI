@@ -13,6 +13,7 @@ The tree is setting data, not code: orgs.settings -> chat_menu, written by the d
             {"flow": "my_cases", "label": "My tickets"},
             {"id": "raise", "label": "Raise", "children": [{"flow": "file_a_complaint"}]}]}],   # level 3: flows
      "show_unplaced": true, "other_label": "More",     # flows nobody placed go under a last use case with this name
+     "only_roles": ["admin"],                          # optional: only these roles see it, everyone else keeps today's menu
      "back_label": "Back", "more_label": "More", "button_label": "Choose"}
 
 Nothing is shown to a person that their role may not use: the tree is walked against the flows the existing check
@@ -176,6 +177,13 @@ def clean(raw, known_flows: set[str] | None = None) -> dict:
         "nodes": [group(n, 1) for n in nodes],
         "show_unplaced": raw.get("show_unplaced") is not False,
     }
+    only = raw.get("only_roles") or []
+    if not isinstance(only, list) or not all(
+        isinstance(r, str) and r.strip() for r in only
+    ):
+        _fail("The roles that see the menu must be a list of role names.")
+    if only:
+        result["only_roles"] = sorted({r.strip() for r in only})
     for k, size in WORD_MAX.items():
         v = _one_line(raw.get(k), size)
         if v:
@@ -398,6 +406,9 @@ async def _tree_for(user: dict, settings: dict | None = None):
     cfg = config(settings)
     if not cfg:
         return None
+    only = cfg.get("only_roles") or []
+    if only and (user.get("role") or "") not in only:
+        return None  # shown to some roles first (to try it out): everyone else keeps today's menu
     allowed = await menu.get_menu_workflows(user["org_id"], user)
     return cfg, resolve(cfg, allowed)
 
