@@ -133,6 +133,8 @@ async function save() {
     if (now.parked.length) s.parked = now.parked.map(p => ({ step: p.step, at: p.at })); else delete s.parked;
     changes.settings = s;
   }
+  const reach = EW.d.kind === 'block' ? (EW.d.used_in || []) : [];   // a building block: saving changes every flow that uses it, so say which
+  if (reach.length && !await confirmBox('This building block is used by ' + plural(reach.length, 'flow') + ': ' + reach.slice(0, 6).map(u => u.name).join(', ') + (reach.length > 6 ? ' and ' + (reach.length - 6) + ' more' : '') + '. They all change when you save. Save it?', { ok: 'Save for all of them' })) return;
   ui.save.disabled = true;
   try {
     const r = await api.put('/workflows/' + EW.id + '/definition', { base_version: EW.d.version, ...changes });
@@ -399,7 +401,14 @@ SECTIONS.workflows = {
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
     if (route.q.w) return renderEditor(root, route.q.w);
-    return renderFlows(root, route);
+    return renderFlows(root, route, S.boot.caps.workflow_kind ? 'flow' : null);
+  },
+};
+SECTIONS.blocks = {
+  title: 'Building blocks', sub: 'Small ready-made steps that flows use. Change one and every flow that uses it changes.',
+  async render(root, route) {
+    S.leaveGuard = null; window.onbeforeunload = null; EW = null;
+    return renderFlows(root, route, 'block');
   },
 };
 """

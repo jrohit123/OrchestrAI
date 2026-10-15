@@ -699,3 +699,10 @@ def test_the_menu_numbers_never_turn_a_problem_into_an_error(monkeypatch):
         meta.nav_hints(Ctx("alpha", "o", "Alpha", {"cases": True}, "t", ["closed"]))
     )
     assert got == {"unassigned": None, "rule_gaps": None}
+
+
+def test_building_blocks_get_their_own_screen_for_super_admins_only():
+    caps = {**HOUSING, "workflow_kind": True}
+    assert keys(caps)[-3:] == ["workflows", "blocks", "settings"]
+    assert "blocks" not in [s["key"] for s in meta._sections(caps, "admin")]
+    assert "blocks" not in keys(HOUSING)  # without kinds in the database there are no blocks to show

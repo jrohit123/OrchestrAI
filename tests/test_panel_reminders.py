@@ -83,8 +83,8 @@ async def step_ids(w, plan_id) -> list:
 
 
 def test_every_new_call_has_its_rule_and_only_the_clock_is_open_to_admins():
+    assert ("GET", "/reminders") in access_rules.ADMIN_CALLS  # admins read Reminders; they cannot change it
     new_super = {
-        ("GET", "/reminders"),
         ("PUT", "/reminders/settings"),
         ("PUT", "/reminders/urgency"),
         ("POST", "/reminders/plans"),

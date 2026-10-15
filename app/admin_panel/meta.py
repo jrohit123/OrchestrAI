@@ -82,6 +82,8 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
             {"key": "assistant", "label": "Chat bot", "tabs": assistant_tabs}
         )
     sections.append({"key": "workflows", "label": "Flows"})
+    if caps.get("workflow_kind"):
+        sections.append({"key": "blocks", "label": "Building blocks"})
     settings: dict = {"key": "settings", "label": "Settings"}
     if caps.get("events") or caps.get("audit"):
         settings["tabs"] = [

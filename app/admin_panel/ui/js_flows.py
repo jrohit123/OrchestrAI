@@ -15,12 +15,13 @@ function flowThumb(w) {
   return h('div', { class: 'thumb', 'aria-hidden': 'true' }, parts);
 }
 
-async function renderFlows(root, route) {
+async function renderFlows(root, route, only) {
   const mine = S.renderId;
   await ensureStudio();
   if (mine !== S.renderId) return;
   const kinds = !!S.boot.caps.workflow_kind;
   if (!kinds) FV.kind = 'flow';
+  if (only && kinds) FV.kind = only;   // the Flows and Building blocks menu entries each show their own kind
   const body = h('div'), chips = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Flows or building blocks' });
   const again = async () => { await ensureStudio(); draw(); };
   const isBlock = w => w.kind === 'block';
@@ -102,7 +103,7 @@ async function renderFlows(root, route) {
   }
   function draw() {
     const match = w => !FV.text || (w.name + ' ' + (w.description || '') + ' ' + w.intent_key).toLowerCase().includes(FV.text);
-    drawChips(); chips.style.display = kinds && FV.view === 'cards' ? '' : 'none';
+    drawChips(); chips.style.display = kinds && !only && FV.view === 'cards' ? '' : 'none';
     setTopAction({ label: kinds && FV.kind === 'block' ? 'New building block' : 'New flow', run: () => newWorkflowModal(kinds, kinds && FV.kind === 'block' ? 'block' : 'workflow') });
     if (FV.view === 'map') { fill(body, flowMap()); return; }
     const ofKind = ST.flows.filter(w => !kinds || (FV.kind === 'block' ? isBlock(w) : !isBlock(w)));

@@ -7,11 +7,11 @@ const NAV = [
   ['Your work', ['cases', 'conversations']],
   ['Your team', ['people', 'access']],
   ['Chat bot', ['assistant']],
-  ['Build', ['workflows']],
+  ['Build', ['workflows', 'blocks']],
   ['', ['settings']],
 ];
-const SETUP = new Set(['access', 'assistant', 'workflows', 'settings']);
-const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
+const SETUP = new Set(['access', 'assistant', 'workflows', 'blocks', 'settings']);
+const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', blocks: 'layers', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
   ['Flow', 'One thing the chat bot can do for people, like filing a complaint.'],
