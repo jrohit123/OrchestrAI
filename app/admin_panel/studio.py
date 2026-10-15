@@ -29,6 +29,7 @@ from app.admin_panel.common import (
 from app.admin_panel.workflows import where_used
 from app.db import fetch_all, fetch_one
 from app.logging_config import get_context_logger
+from app.services.flow_triggers import unfit_reasons
 from app.services.step_catalog import (
     FIELD_TYPES,
     STEP_TYPES,
@@ -463,6 +464,26 @@ async def _save(
             ):
                 problems.append(f"The command /{cmd} is already used by another flow.")
             changes["slash_command"] = cmd or None
+        if ctx.caps.get("flow_triggers") and await conn.fetchval(
+            "SELECT 1 FROM flow_schedules WHERE workflow_id = $1 "
+            "UNION ALL SELECT 1 FROM flow_chains WHERE workflow_id = $1",
+            workflow_id,
+        ):
+            unfit = unfit_reasons(
+                {
+                    "name": changes.get("name", row["name"]),
+                    "kind": kind,
+                    "workflow_type": row["workflow_type"],
+                    "steps": steps,
+                    "entity_schema": entity_schema,
+                }
+            )
+            if unfit:
+                problems.append(
+                    "This flow starts by itself (see “How does it start”), so it must stay "
+                    "something nobody has to answer."
+                )
+                problems += unfit
         if kind == "block" and await _granted_roles(ctx, row["intent_key"]):
             problems.append(
                 "A building block is only run by other workflows, so no role may be given "

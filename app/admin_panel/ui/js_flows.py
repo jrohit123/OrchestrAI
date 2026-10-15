@@ -51,11 +51,13 @@ async function renderFlows(root, route, only) {
         : h('div', { class: 'row small' }, badge('Not used yet', 'warn'), h('span', { class: 'muted' }, 'Safe to switch off and delete.')))
       : who;
     const go_ = () => openWorkflow(w.id);
+    const how = isBlock(w) ? null : h('div', { class: 'row small flat muted' }, icon(START_ICON[w.start ? w.start.kind : 'people'] || 'user', 'xs'), h('span', null, w.start ? w.start.words : 'Someone starts it'));
     // the name is the link (the keyboard and screen readers use it); a click anywhere else on the card opens it too
     return h('article', { class: 'card fcard' + (w.is_active ? '' : ' off'), onclick: e => { if (!e.target.closest('a,button,input,label')) go_(); } },
       h('div', { class: 'row between flat', style: { alignItems: 'flex-start' } },
         h('div', { class: 'grow' }, h('h2', { class: 'fname' }, h('a', { href: '#/workflows?w=' + w.id }, w.name)), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
         h('label', { class: 'row small flat', style: { gap: '6px' } }, w.is_active ? 'On' : 'Off', power(w))),
+      how,
       meta,
       h('div', { class: 'row small muted between' },
         h('span', null, (w.workflow_type === 'read' ? 'Looks things up' : plural(w.step_count, 'step')) + (w.slash_command ? ' · /' + w.slash_command : '') + ' · ' + (w.last_used ? 'used ' + ago(w.last_used) : 'not used yet')),

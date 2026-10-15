@@ -710,6 +710,21 @@ async def _tick_reminder_plans():
     await _tick("reminder_plans", run_reminder_plans)
 
 
+async def run_flow_schedules():
+    """Fires every minute: runs the flows whose schedule is due (see services/flow_triggers.py)."""
+    from app.services import flow_triggers
+
+    started = await flow_triggers.run_due_schedules(
+        datetime.datetime.now(datetime.timezone.utc)
+    )
+    if started:
+        logger.info(f"{started} scheduled flow(s) started")
+
+
+async def _tick_flow_schedules():
+    await _tick("flow_schedules", run_flow_schedules)
+
+
 async def _tick_cleanup():
     await _tick("cleanup", run_cleanup)
 
@@ -762,6 +777,13 @@ def start_scheduler():
         max_instances=1,
     )
     scheduler.add_job(
+        _tick_flow_schedules,
+        trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
+        id="flow_schedules",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
         _tick_cleanup,
         trigger=CronTrigger(hour=3, minute=30, timezone="Asia/Kolkata"),
         id="cleanup",
@@ -784,7 +806,7 @@ def start_scheduler():
     )
     scheduler.start()
     logger.info(
-        "Started — universal runner + case reminders every minute, cleanup daily at 03:30, "
+        "Started — universal runner + case reminders + flow schedules every minute, cleanup daily at 03:30, "
         "sign-in keys at 03:40"
     )
 

@@ -24,6 +24,7 @@ from app.admin_panel import (
     studio,
     whatsapp_flows,
     whatsapp_templates,
+    triggers,
     workflows,
 )
 
@@ -43,6 +44,7 @@ for _module in (
     reminders,
     workflows,
     studio,
+    triggers,
     activity,
     org_settings,
     message_texts,

@@ -201,6 +201,7 @@ function detailsPane() {
   const desc = h('textarea', { rows: 3, oninput: e => { w.description = e.target.value; commit(false); } }); desc.value = w.description;
   const phrases = tagsEditor(w.training_phrases, [], l => { w.training_phrases = l; commit(false); });
   return h('div', { class: 'stack' },
+    d.kind !== 'block' ? startCard() : null,
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'About it'), h('div', { class: 'card-b stack' },
       field('What it does', desc, 'One sentence. The AI reads this to understand when to use it.'),
       kinds ? field('What kind is it?', sel([['workflow', 'A flow people start'], ['case_action', 'A case button (on a case)'], ['block', 'A building block']], w.kind, { onchange: e => { w.kind = e.target.value; commit(true); } }), 'A building block is only used by other flows. A case button is a button on a case.') : null,
@@ -209,6 +210,97 @@ function detailsPane() {
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access)),
     d.kind !== 'block' && S.boot.caps.cases ? peopleOnCaseCard() : null,
     d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id }, u.name)))) : null);
+}
+
+// ----- how it starts: someone does it, on a schedule, or after another flow -----
+// Everything here is read from and saved to the server at once (it is not part of "Unsaved"): the times, the
+// rules and the words come from the server; this only draws them and sends what was picked.
+const START_WAYS = [
+  ['people', 'user', 'Someone does it', 'From the chat menu, a /command, something they type, or a button on a ticket.'],
+  ['schedule', 'cal', 'On a schedule', 'It runs by itself at set times, like a daily summary. Nobody has to be chatting.'],
+  ['after_flow', 'link', 'After another flow', 'It runs when another flow finishes well.'],
+];
+const START_ICON = { people: 'user', schedule: 'cal', after_flow: 'link' };
+const WEEK_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const RUN_HOW = { schedule: 'On its schedule', manual: 'Run by hand', after_flow: 'After another flow' };
+const RUN_WORD = { success: ['Worked', 'ok'], failed: ['Failed', 'bad'], skipped: ['Skipped', 'warn'] };
+function startCard() {
+  const d = EW.d, mine = EW, edit = isSuper(), body = h('div', { class: 'card-b stack' });
+  let st = EW.start || null, pick = null, form = null, problems = null;
+  const kindNow = () => pick || (st && st.kind) || 'people';
+  async function load() {
+    try { EW.start = st = await api.get('/workflows/' + d.id + '/schedule'); }
+    catch (e) { if (mine === EW) fill(body, notice(e.message, 'bad')); return; }
+    if (mine === EW && body.isConnected) draw();
+  }
+  async function act(fn, said) {
+    try { const r = await fn(); problems = null; pick = null; form = null; if (said) toast(said(r), 'ok'); await ensureStudio(); await load(); }
+    catch (e) { const dd = e.data && e.data.detail; problems = dd && dd.problems ? [dd.error, ...dd.problems] : [e.message]; draw(); }
+  }
+  function scheduleForm() {
+    const c = (st.schedule && st.schedule.cadence) || {};
+    form = form || { every: c.every || 'day', time: c.time || '09:00', days: c.days || [0], day_of_month: c.day_of_month || 1, working_days_only: !!c.working_days_only };
+    const work = (st.working_days || []).map(i => WEEK_SHORT[i]).join(', ');
+    const every = sel([['day', 'Every day'], ['week', 'Every week'], ['month', 'Every month']], form.every, { onchange: e => { form.every = e.target.value; draw(); } });
+    const time = h('input', { type: 'time', value: form.time, 'aria-label': 'Time of day', oninput: e => { form.time = e.target.value; } });
+    const days = form.every === 'week' ? h('div', { class: 'row' }, WEEK_SHORT.map((n, i) => h('label', { class: 'row small flat', style: { gap: '4px' } },
+      h('input', { type: 'checkbox', checked: form.days.includes(i), onchange: e => { form.days = e.target.checked ? [...new Set([...form.days, i])].sort() : form.days.filter(x => x !== i); } }), n))) : null;
+    const dom = form.every === 'month' ? h('input', { type: 'number', min: 1, max: 31, value: form.day_of_month, 'aria-label': 'Day of the month', style: { width: '90px' }, oninput: e => { form.day_of_month = parseInt(e.target.value, 10) || 1; } }) : null;
+    const wd = h('label', { class: 'row small flat', style: { gap: '6px' } }, h('input', { type: 'checkbox', checked: form.working_days_only, onchange: e => { form.working_days_only = e.target.checked; } }),
+      'Only on working days' + (work ? ' (' + work + ')' : ''));
+    return h('div', { class: 'stack' },
+      h('div', { class: 'row' }, every, form.every === 'month' ? ['on day', dom] : null, 'at', time, h('span', { class: 'muted small' }, zoneLabel(st.timezone))),
+      days, wd,
+      edit ? h('div', { class: 'row' }, h('button', { class: 'btn primary sm', type: 'button', disabled: !!(st.problems || []).length, onclick: () => act(() => api.put('/workflows/' + d.id + '/schedule', form), r => 'Saved: ' + r.words) }, 'Save the schedule')) : null);
+  }
+  function afterForm() {
+    const here = st.after ? st.after.id : '';
+    const list = sel([['', st.can_follow.length ? 'Choose a flow…' : 'No other flow to follow yet'], ...st.can_follow.map(o => [o.id, o.name])], here);
+    return h('div', { class: 'stack' }, field('Start after which flow?', list, 'It starts each time that flow finishes well. If that flow fails, nothing starts.'),
+      edit ? h('div', { class: 'row' }, h('button', { class: 'btn primary sm', type: 'button', disabled: !!(st.problems || []).length, onclick: () => { if (!list.value) { toast('Choose a flow first', 'bad'); return; } act(() => api.put('/workflows/' + d.id + '/after', { after_id: list.value }), r => 'Saved: ' + r.words); } }, 'Save')) : null);
+  }
+  function runsList() {
+    if (!st.runs.length) return h('div', { class: 'muted small' }, 'It has not run by itself yet.');
+    return h('div', { class: 'stack s8' }, h('b', { class: 'small' }, 'Last runs'), st.runs.map(r => {
+      const w = RUN_WORD[r.status] || [r.status, ''];
+      return h('div', { class: 'row small flat', style: { alignItems: 'flex-start' } }, badge(w[0], w[1]), h('div', { class: 'grow' }, h('div', null, (RUN_HOW[r.how_started] || r.how_started) + ' · ' + fmtDT(r.started_at)), r.message ? h('div', { class: 'muted', style: { overflowWrap: 'anywhere' } }, r.message) : null));
+    }));
+  }
+  function draw() {
+    if (!st.available) { fill(body, h('div', { class: 'muted' }, 'People start this flow. To let a flow start by itself, this organisation’s database needs one small update first (core-0026). Ask whoever looks after the system.')); return; }
+    const kind = kindNow(), cur = st.kind, parts = [];
+    parts.push(h('div', { class: 'nf-start' }, START_WAYS.map(([k, ic, t, s]) => h('button', { type: 'button', class: 'nf-card' + (kind === k ? ' on' : ''), disabled: !edit, onclick: () => { pick = k; problems = null; draw(); } },
+      h('span', { class: 'gi' }, icon(ic)), h('b', { class: 't' }, t), h('span', { class: 's' }, s)))));
+    if (!edit) parts.push(h('div', { class: 'muted small' }, 'Only a super admin can change how a flow starts.'));
+    if (problems) parts.push(notice(problems.join(' '), 'bad'));
+    if (kind !== 'people' && (st.problems || []).length) parts.push(notice(st.problems.join(' '), 'warn'));
+    if (cur !== 'people' && !st.is_active) parts.push(notice('This flow is switched off, so it will not start until you switch it on (on the Flows page).', 'warn'));
+    if (kind === 'people') {
+      parts.push(cur === 'people'
+        ? h('div', { class: 'muted' }, 'Set the phrases people can type and the /command below, and who may use it under “Who can use it”.')
+        : h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Right now it starts: ' + (cur === 'schedule' ? st.schedule.words : 'after “' + st.after.name + '”') + '.'),
+          edit ? h('button', { class: 'btn sm', type: 'button', onclick: () => act(() => api.del('/workflows/' + d.id + (cur === 'schedule' ? '/schedule' : '/after')), () => 'People start it again') }, 'Let people start it instead') : null));
+    } else if (kind === 'schedule') {
+      parts.push(scheduleForm());
+      if (st.schedule) {
+        parts.push(h('div', { class: 'row small between' },
+          h('span', { class: 'muted' }, 'Now: ' + st.schedule.words + ' · next run ' + fmtDT(st.schedule.next_run_at) + (st.schedule.last_run_at ? ' · last run ' + ago(st.schedule.last_run_at) : '')),
+          edit ? h('button', { class: 'btn sm', type: 'button', disabled: !st.is_active, title: st.is_active ? '' : 'Switch the flow on first', onclick: async () => {
+            if (!await confirmBox('Run “' + d.name + '” now? It does exactly what it does on its schedule, for real.', { ok: 'Run it now' })) return;
+            try { const r = await api.post('/workflows/' + d.id + '/schedule/run', {}); toast(r.status === 'success' ? 'It ran: ' + r.message : 'It did not run well: ' + r.message, r.status === 'success' ? 'ok' : 'bad'); await load(); }
+            catch (e) { toast(e.message, 'bad'); }
+          } }, icon('play', 'sm'), 'Run it now') : null));
+      }
+    } else {
+      parts.push(afterForm());
+    }
+    if (st.followers.length) parts.push(h('div', { class: 'small muted' }, 'These start after it: ' + st.followers.map(f => f.name).join(', ') + '.'));
+    if (cur !== 'people' || st.runs.length) parts.push(runsList());
+    fill(body, ...parts);
+  }
+  if (st) draw(); else fill(body, h('div', { class: 'muted' }, 'Loading…'));
+  load();
+  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'How does it start?'), body);
 }
 
 // people on a case: a workflow can be opened to them for the cases they are on

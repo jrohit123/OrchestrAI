@@ -15,6 +15,7 @@ from app.admin_panel.common import (
     rows,
     tx,
 )
+from app.admin_panel.triggers import how_flows_start
 from app.db import execute, fetch_all, fetch_one
 from app.services.step_catalog import (
     aliases_made_by,
@@ -85,8 +86,10 @@ async def list_workflows(ctx: CtxDep):
         )
     )
     names = {w["intent_key"]: w["name"] for w in found}
+    starts = await how_flows_start(ctx)
     used_in: dict[str, list[dict]] = {}
     for w in found:
+        w["start"] = starts.get(str(w["id"]))  # None = a person starts it
         steps = normalize_steps(jb(w.pop("steps"), []))
         w["step_count"] = len(steps)
         # the shape of the flow, for the little picture on its card: what each step is and whether it has an "only if"
@@ -263,6 +266,19 @@ async def delete_workflow(workflow_id: UUID, ctx: CtxDep):
             detail=f"'{w['name']}' is a building block used by "
             f"{', '.join(u['name'] for u in users)}. Remove it from those first.",
         )
+    if ctx.caps.get("flow_triggers"):
+        following = await fetch_all(
+            "SELECT w.name FROM flow_chains c JOIN workflows w ON w.id = c.workflow_id "
+            "WHERE c.after_workflow_id = $1",
+            workflow_id,
+            source_key=ctx.source_key,
+        )
+        if following:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{', '.join(f['name'] for f in following)} start(s) after "
+                f"'{w['name']}'. Change how they start first.",
+            )
     if ctx.caps.get("cases"):
         made = await fetch_one(
             "SELECT count(*) AS n FROM cases WHERE workflow_id = $1",
