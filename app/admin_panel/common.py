@@ -74,7 +74,8 @@ SELECT
   (to_regclass('public.reminder_plans') IS NOT NULL
    AND to_regclass('public.reminder_plan_categories') IS NOT NULL
    AND to_regclass('public.reminder_plan_steps') IS NOT NULL
-   AND to_regclass('public.case_reminder_log') IS NOT NULL)  AS reminders
+   AND to_regclass('public.case_reminder_log') IS NOT NULL)  AS reminders,
+  to_regclass('public.whatsapp_template_drafts') IS NOT NULL AS template_drafts
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -119,6 +120,10 @@ _CAP_MESSAGES = {
     "reminders": (
         "This organisation's database does not have reminder plans yet. "
         "Run migration housing-0013 first."
+    ),
+    "template_drafts": (
+        "This organisation's database cannot keep message-template drafts yet. "
+        "Run migration core-0025 first. You can still send a template to Meta without saving it."
     ),
 }
 

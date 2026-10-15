@@ -41,10 +41,10 @@ function wfPreview(flow, screenId, go, done) {
       case 'RichText': return h('div', { class: 'wf-tb' }, wfText(n.text, screen));
       case 'TextInput': return q(n.label, n.required, h('div', { class: 'wf-in' }, h('span', { class: 'ph' }, '')), n['helper-text']);
       case 'TextArea': return q(n.label, n.required, h('div', { class: 'wf-in tall' }, ''), n['helper-text']);
-      case 'Dropdown': { const c = wfChoices(n, screen); return q(n.label, n.required, h('div', { class: 'wf-in' }, h('span', null, c[0] ? wfText(c[0].title) : 'Choose'), h('span', null, '⌄')), n['helper-text']); }
+      case 'Dropdown': { const c = wfChoices(n, screen); return q(n.label, n.required, h('div', { class: 'wf-in' }, h('span', null, c[0] ? wfText(c[0].title) : 'Choose'), h('span', null, '⌄')), n['helper-text'] || n.description); }
       case 'RadioButtonsGroup': case 'CheckboxGroup': case 'ChipsSelector': {
         const box = n.type === 'CheckboxGroup';
-        return q(n.label, n.required, h('div', { class: 'wf-radios' }, wfChoices(n, screen).map((p, i) => h('div', { class: 'wf-radio' }, h('span', { class: 'dot' + (box ? ' sq' : '') + (i === 0 && !box ? ' on' : '') }), wfText(p.title)))), n['helper-text']);
+        return q(n.label, n.required, h('div', { class: 'wf-radios' }, wfChoices(n, screen).map((p, i) => h('div', { class: 'wf-radio' }, h('span', { class: 'dot' + (box ? ' sq' : '') + (i === 0 && !box ? ' on' : '') }), wfText(p.title)))), n['helper-text'] || n.description);
       }
       case 'DatePicker': case 'CalendarPicker': case 'TimePicker': return q(n.label, n.required, h('div', { class: 'wf-in' }, h('span', null, n.type === 'TimePicker' ? 'hh:mm' : 'dd/mm/yyyy'), h('span', null, '▾')), n['helper-text']);
       case 'PhotoPicker': case 'DocumentPicker': return q(n.label, true, h('div', { class: 'wf-photo' }, h('b', null, '＋ ' + (n.type === 'PhotoPicker' ? 'Add photos' : 'Add files')), n.description ? h('span', null, wfText(n.description, screen)) : null));
@@ -127,6 +127,28 @@ async function wfEditor(box, id, back) {
   const errBox = h('div', { class: 'wf-errs' });
   const stat = h('span', { class: 'row' });
   const result = h('div', { class: 'wf-result' });
+  const builderBox = h('div', { class: 'wfb stack s12' });
+  let mode = 'questions';
+  const modeBtn = (key, text) => h('button', { type: 'button', 'aria-pressed': String(mode === key), onclick: () => { mode = key; drawMode(); } }, text);
+  const modeBar = h('div', { class: 'seg sm' });
+  const codeWrap = h('div', { class: 'wf-codewrap' }, gutter, area);
+  const drawMode = () => {
+    fill(modeBar, modeBtn('questions', 'Questions'), modeBtn('json', 'JSON (advanced)'));
+    builderBox.hidden = mode !== 'questions'; codeWrap.hidden = mode !== 'json';
+    if (mode === 'questions') drawBuilder();
+  };
+  // the builder reads the JSON fresh for every change and writes it back, so the two never drift apart
+  const builderIo = {
+    flow: () => { parse(); return parseError ? null : flow; },
+    apply: (fn, redraw) => {
+      parse(); if (parseError || !flow) return;
+      fn(flow);
+      area.value = JSON.stringify(flow, null, 2);
+      lines(); parse(); drawErrors(); drawStat(); drawPhone();
+      if (redraw) drawBuilder();
+    },
+  };
+  const drawBuilder = () => wfbDraw(builderBox, builderIo);
 
   const lines = () => { gutter.textContent = Array.from({ length: area.value.split('\n').length }, (_, i) => i + 1).join('\n'); gutter.scrollTop = area.scrollTop; };
   const parse = () => {
@@ -152,7 +174,7 @@ async function wfEditor(box, id, back) {
   };
   screenSel.addEventListener('change', () => { screenId = screenSel.value; drawPhone(); });
   let timer = null;
-  area.addEventListener('input', () => { lines(); drawStat(); clearTimeout(timer); timer = setTimeout(() => { parse(); drawErrors(); drawPhone(); }, 250); });
+  area.addEventListener('input', () => { lines(); drawStat(); clearTimeout(timer); timer = setTimeout(() => { parse(); drawErrors(); drawPhone(); if (mode === 'questions') drawBuilder(); }, 250); });
   area.addEventListener('scroll', () => { gutter.scrollTop = area.scrollTop; });
   area.addEventListener('keydown', e => { if (e.key === 'Tab') { e.preventDefault(); const s = area.selectionStart; area.setRangeText('  ', s, area.selectionEnd, 'end'); area.dispatchEvent(new Event('input')); } });
 
@@ -227,8 +249,8 @@ async function wfEditor(box, id, back) {
   fill(box, top,
     live ? notice('This Flow is published. Meta never changes a published Flow, so your edits are saved as a new draft (press Save as new draft). Publish that draft, then use it as the chat bot’s menu or form from the ⋯ menu.', null) : null,
     h('div', { class: 'wf-edit' },
-      h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Editor'), h('div', { class: 'wf-codewrap' }, gutter, area), errBox),
+      h('div', { class: 'card' }, h('div', { class: 'card-h row between' }, h('span', null, 'Editor'), modeBar), builderBox, codeWrap, errBox),
       h('div', { class: 'wf-side' }, h('div', { class: 'row between', style: { marginBottom: '8px' } }, h('b', null, 'Preview'), screenSel), phone, result)));
-  lines(); parse(); drawErrors(); drawStat(); drawPhone();
+  lines(); parse(); drawErrors(); drawStat(); drawPhone(); drawMode();
 }
 """

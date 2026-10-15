@@ -27,6 +27,8 @@ from app.admin_panel.ui import (
     js_studio_form,
     js_super,
     js_whatsapp,
+    js_whatsapp_builder,
+    js_whatsapp_templates,
 )
 
 APP_CSS = css.CSS
@@ -54,7 +56,9 @@ APP_JS = (
             js_home,
             js_rest,
             js_settings,
+            js_whatsapp_builder,
             js_whatsapp,
+            js_whatsapp_templates,
             js_assistant,
             js_auth,
             js_super,

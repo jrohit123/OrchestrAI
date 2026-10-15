@@ -285,7 +285,7 @@ async function renderInstructions(root) {
 }
 
 SECTIONS.assistant = {
-  heading: (sec, r) => r.tab === 'whatsapp' ? ({ title: 'WhatsApp Flows', sub: 'The forms and panels that open inside WhatsApp. Write or paste the Flow JSON, see it as a phone, send yourself a test, and publish. No need to open Meta.' }) : ({ title: sec.label, sub: r.tab === 'instructions' ? 'The chat bot’s AI reads these notes before every message. Most days you do not need to change anything here.' : 'The chat bot is what people talk to on ' + botApp() + '. These are the texts it sends by itself, like a welcome or an error. Pick one and change the words.' }),
-  async render(root, route) { return route.tab === 'instructions' ? renderInstructions(root) : route.tab === 'whatsapp' ? renderWhatsappFlows(root) : renderMessages(root); },
+  heading: (sec, r) => r.tab === 'templates' ? ({ title: 'Message templates', sub: 'The messages WhatsApp lets the chat bot start with a person who has not written for 24 hours. Write one in plain words, send it to Meta for approval, and see its verdict here.' }) : r.tab === 'whatsapp' ? ({ title: 'WhatsApp Flows', sub: 'The forms and panels that open inside WhatsApp. Write or paste the Flow JSON, see it as a phone, send yourself a test, and publish. No need to open Meta.' }) : ({ title: sec.label, sub: r.tab === 'instructions' ? 'The chat bot’s AI reads these notes before every message. Most days you do not need to change anything here.' : 'The chat bot is what people talk to on ' + botApp() + '. These are the texts it sends by itself, like a welcome or an error. Pick one and change the words.' }),
+  async render(root, route) { return route.tab === 'instructions' ? renderInstructions(root) : route.tab === 'whatsapp' ? renderWhatsappFlows(root) : route.tab === 'templates' ? renderWhatsappTemplates(root) : renderMessages(root); },
 };
 """
