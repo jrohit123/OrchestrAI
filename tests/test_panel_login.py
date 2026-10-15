@@ -569,7 +569,7 @@ def test_an_admin_gets_home_cases_and_people_and_a_super_admin_gets_everything(
                 r = await a.get(base + path)
                 assert r.status_code == 403, path
                 assert r.json()["detail"] == "Only a super admin can do that."
-            assert (await a.post(base + "/people", json={})).status_code == 403
+            assert (await a.post(base + "/people", json={})).status_code == 422  # admins add people too (dashboard v2); an empty body is just invalid
             assert (await a.get(base + "/lookups")).status_code == 200
             # a super admin: the whole menu and the same calls
             r = await p.sign_in(s, "kartik@x.test")
