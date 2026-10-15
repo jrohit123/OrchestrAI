@@ -283,7 +283,7 @@ def test_the_chat_bot_section_has_a_menu_tab_for_a_super_admin_and_not_for_an_ad
     caps = {"texts": True, "prompts": True, "cases": True}
     section = next(s for s in meta._sections(caps) if s["key"] == "assistant")
     tabs = [t["key"] for t in section["tabs"]]
-    assert tabs == ["messages", "instructions", "whatsapp", "menu"]
+    assert tabs == ["messages", "instructions", "whatsapp", "templates", "menu"]
     assert next(t["label"] for t in section["tabs"] if t["key"] == "menu") == "Menu"
     # an organisation with nothing else in the section still gets the menu tab
     bare = next(s for s in meta._sections({}) if s["key"] == "assistant")
