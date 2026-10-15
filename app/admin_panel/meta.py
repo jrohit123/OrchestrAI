@@ -78,6 +78,7 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     if caps.get("cases"):
         assistant_tabs.append({"key": "whatsapp", "label": "WhatsApp Flows"})
         assistant_tabs.append({"key": "templates", "label": "Message templates"})
+    assistant_tabs.append({"key": "menu", "label": "Menu"})
     if assistant_tabs:
         sections.append(
             {"key": "assistant", "label": "Chat bot", "tabs": assistant_tabs}

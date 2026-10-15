@@ -210,4 +210,29 @@ td.tatcol{min-width:190px}
 .tpl-h{font-weight:700;margin-bottom:4px}.tpl-f{font-size:12px;color:#777;margin-top:6px}.tpl-t{font-size:11px;color:#999;text-align:right;margin-top:4px}
 .tpl-b{margin:8px -12px -10px;padding:9px;border-top:1px solid #e6e6e6;text-align:center;color:#027eb5;font-weight:600}.tpl-b+.tpl-b{margin-top:0;margin-bottom:-10px}
 .wf-codewrap[hidden]{display:none}
+/* ───── Chat bot > Menu: the tree editor and the chat preview ───── */
+.cm-wrap{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px;align-items:start}
+.cm-side{position:sticky;top:76px}
+.cm-group{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:12px;display:grid;gap:10px}
+.cm-group.l2{background:var(--surface-2);border-radius:10px}
+.cm-group.off,.cm-entry.off{opacity:.6}
+.cm-ghead{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.cm-gname{display:grid;gap:6px;flex:1;min-width:220px}
+.cm-kids{display:grid;gap:8px}
+.cm-entry{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--surface)}
+.cm-entry input[type=text]{flex:1;min-width:140px}
+.cm-name{flex:1.2;min-width:160px;display:grid;gap:2px}
+.cm-shown{display:flex;gap:6px;align-items:center}
+.cm-add{padding-top:2px}
+.cm-save{position:sticky;bottom:0;display:none;gap:10px;align-items:center;padding:12px 16px;margin-top:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 -4px 16px rgba(0,0,0,.08)}
+.cm-save.on{display:flex}
+.cm-phone{background:#e5ddd5;border-radius:14px;padding:12px;display:grid;gap:10px;color:#111;font:14px/1.4 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+.cm-bubble{background:#fff;border-radius:0 10px 10px 10px;padding:10px 12px;max-width:90%;box-shadow:0 1px 1px rgba(0,0,0,.12)}
+.cm-open{margin:10px -12px -10px;padding:10px;border-top:1px solid #e6e6e6;text-align:center;color:#027eb5;font-weight:600}
+.cm-sheet{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 -2px 8px rgba(0,0,0,.15)}
+.cm-sheet-h{padding:10px 14px;border-bottom:1px solid #eee;font-weight:600}
+.cm-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #f1f1f1;cursor:pointer}
+.cm-row:hover,.cm-row:focus{background:#f5f7f7;outline:0}.cm-row.back{color:#027eb5}
+.cm-row .muted{color:#777}
+@media (max-width:1100px){.cm-wrap{grid-template-columns:minmax(0,1fr)}.cm-side{position:static}}
 """

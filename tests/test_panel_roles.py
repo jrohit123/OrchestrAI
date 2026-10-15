@@ -630,7 +630,7 @@ def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
         "times",
     ]  # Tickets holds the old Case rules
     assert tabs["access"] == ["roles", "seats", "special"]
-    assert tabs["assistant"] == ["messages", "instructions", "whatsapp", "templates"]
+    assert tabs["assistant"] == ["messages", "instructions", "whatsapp", "templates", "menu"]
     assert tabs["settings"] == ["general", "history"]
 
 
