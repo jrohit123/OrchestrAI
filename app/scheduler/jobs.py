@@ -691,9 +691,21 @@ async def delete_scheduled_report(
 
 async def _tick(name: str, job):
     """One run of a scheduled job. Only one copy of the app may run it at a time (see locks.py):
-    a copy that finds another one already running it skips this run."""
-    if not await run_if_free(routing_pool(), name, job):
-        logger.debug(f"{name}: another copy of the app is running it, skipping")
+    a copy that finds another one already running it skips this run.
+    A hard 50-second timeout prevents any job from blocking the next minute's run."""
+    import asyncio
+
+    async def _run():
+        if not await run_if_free(routing_pool(), name, job):
+            logger.debug(f"{name}: another copy of the app is running it, skipping")
+
+    try:
+        await asyncio.wait_for(_run(), timeout=50)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"{name}: job exceeded 50-second limit and was cancelled — "
+            "check for a slow DB query or stuck network call"
+        )
 
 
 async def _tick_scheduled_reports():

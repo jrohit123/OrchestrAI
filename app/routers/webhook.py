@@ -1350,7 +1350,10 @@ async def _handle_message(
         else await reach.door_message(user["source_key"], text, msg_type)
     )
     if door:
-        if door == "ready" and not await reach.has_waiting(phone):
+        waiting_count = await reach.deliver_waiting(
+            phone, user["source_key"], user["org_id"]
+        )
+        if door == "ready" and waiting_count == 0:
             await send_text(
                 phone, await say(user["source_key"], "hold.nothing_waiting")
             )

@@ -304,6 +304,9 @@ def _wait_key(phone: str) -> str:
 async def _keep(phone: str, item: dict, settings: dict | None) -> None:
     redis = get_redis()
     if redis is None:
+        logger.warning(
+            f"reach: Redis not available — cannot hold message for {_last4(phone)}"
+        )
         return
     try:
         if item.get(
@@ -318,6 +321,10 @@ async def _keep(phone: str, item: dict, settings: dict | None) -> None:
         )
         days = config_store.limit_of(settings, "hold_days")
         await redis.expire(_wait_key(phone), days * 86400)
+        length = await redis.llen(_wait_key(phone))
+        logger.info(
+            f"reach: held 1 message for {_last4(phone)} (now {length} waiting, expires in {days}d)"
+        )
     except Exception as e:
         logger.warning(f"reach: could not keep a message for {_last4(phone)}: {e}")
 
@@ -632,6 +639,9 @@ async def deliver_waiting(phone: str, source_key: str, org_id) -> int:
     if not feature_on(settings):
         return 0
     items = await _take(phone)
+    logger.info(
+        f"reach: deliver_waiting for {_last4(phone)}: found {len(items)} item(s)"
+    )
     if not items:
         return 0
     lines = [await say(source_key, "hold.waiting_intro", count=len(items))]
