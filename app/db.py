@@ -19,7 +19,9 @@ async def init_db():
     _routing_pool = await asyncpg.create_pool(
         dsn=required("ROUTING_DATABASE_URL"),
         min_size=1,
-        max_size=5,
+        # every per-minute job holds one connection for its whole run (its lock), and its work needs more: with
+        # 5 here, five jobs at once left nothing for anyone and froze the bot (2026-10-15)
+        max_size=25,
         init=_set_timezone,
         statement_cache_size=0,
         timeout=15,
