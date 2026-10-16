@@ -5,6 +5,7 @@ It is what the bot calls itself: the AI is told its name, and the standard texts
 OrchestrAI!") say this name instead. The WhatsApp number's own profile name is Meta's and is not changed here."""
 
 import json
+import re
 import time
 
 from app.db import fetch_one
@@ -55,3 +56,16 @@ def named(text: str, name: str) -> str:
     if not text or not name or name == DEFAULT:
         return text
     return text.replace(DEFAULT, name)
+
+
+# How the bot introduced itself before it had a name. Old chats are full of it and the AI copies it from them.
+_OLD_INTRO = re.compile(r"your (?:business )?ERP assistant(?= for)", re.IGNORECASE)
+
+
+def fix_intro(text: str, name: str) -> str:
+    """An AI reply with the old "I'm your ERP assistant for X" introduction, saying the bot's name instead."""
+    if not text:
+        return text
+    return _OLD_INTRO.sub(f"*{name}*, the chat bot", text).replace(
+        "the chat bot for", "the chat bot of"
+    )

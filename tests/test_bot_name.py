@@ -61,3 +61,14 @@ def test_only_super_admins_change_the_name():
         <= calls
         <= access_rules.SUPER_CALLS
     )
+
+
+def test_the_old_erp_assistant_introduction_says_the_name():
+    from app.services import bot_name
+
+    old = "Good afternoon, *Kartik!* 👋\n\nI'm your ERP assistant for *Godrej Emerald*. How can I assist you today?"
+    assert (
+        bot_name.fix_intro(old, "Emery")
+        == "Good afternoon, *Kartik!* 👋\n\nI'm *Emery*, the chat bot of *Godrej Emerald*. How can I assist you today?"
+    )
+    assert bot_name.fix_intro("Your case is open.", "Emery") == "Your case is open."

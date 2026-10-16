@@ -3387,6 +3387,11 @@ async def run_agent(
                 final_content = (
                     "❌ Sorry, I couldn't process that request. Please try again."
                 )
+            from app.services import bot_name
+
+            final_content = bot_name.fix_intro(
+                final_content, await bot_name.of(user.get("source_key"))
+            )
             return final_content, history_to_save, session_patch
 
         # LLM wants to call tools
