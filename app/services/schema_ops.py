@@ -100,7 +100,9 @@ class CreateRecordType(BaseModel):
     prefix: str = Field(default="", max_length=6)
     statuses: list[StatusIn] = Field(default_factory=list, max_length=MAX_STATUSES)
     fields: list[FieldIn] = Field(default_factory=list, max_length=MAX_FIELDS)
-    people: list[str] = Field(default_factory=list, max_length=10)  # kinds of people besides "Created it"
+    people: list[str] = Field(
+        default_factory=list, max_length=10
+    )  # kinds of people besides "Created it"
     icon: str = Field(default="", max_length=8)
     about: str = Field(default="", max_length=200)
     read_by_roles: list[str] = Field(default_factory=list, max_length=30)
@@ -142,8 +144,12 @@ class World:
     """A snapshot of what exists now, so a plan can be checked without touching the database."""
 
     tables: set[str] = field(default_factory=set)
-    types: dict[str, dict] = field(default_factory=dict)  # key -> {label, plural, table_name, is_system, statuses}
-    fields: dict[str, dict[str, dict]] = field(default_factory=dict)  # type -> key -> {label, kind, is_system, is_active, storage}
+    types: dict[str, dict] = field(
+        default_factory=dict
+    )  # key -> {label, plural, table_name, is_system, statuses}
+    fields: dict[str, dict[str, dict]] = field(
+        default_factory=dict
+    )  # type -> key -> {label, kind, is_system, is_active, storage}
     usecase_keys: set[str] = field(default_factory=set)
     roles: dict[str, str] = field(default_factory=dict)  # lower-case name -> id
     can_use_cases: bool = True
@@ -176,7 +182,9 @@ def _copy(w: World) -> World:
     )
 
 
-def _name_problem(name: str, what: str, taken: set[str], reserved: set[str] = frozenset()) -> str | None:
+def _name_problem(
+    name: str, what: str, taken: set[str], reserved: set[str] = frozenset()
+) -> str | None:
     if not _NAME.match(name):
         return f"“{what}” cannot be turned into a name the database accepts. Use letters and numbers."
     if name in SQL_WORDS:
@@ -188,12 +196,16 @@ def _name_problem(name: str, what: str, taken: set[str], reserved: set[str] = fr
     return None
 
 
-def _field_problems(f: FieldIn, taken: set[str], *, new_table: bool) -> tuple[str, list[str]]:
+def _field_problems(
+    f: FieldIn, taken: set[str], *, new_table: bool
+) -> tuple[str, list[str]]:
     """(the column name, the problems)."""
     probs: list[str] = []
     key = slug(f.label, "f")
     if f.kind not in KINDS:
-        probs.append(f"“{f.label}”: the kind “{f.kind}” is not one of: {', '.join(KINDS)}.")
+        probs.append(
+            f"“{f.label}”: the kind “{f.kind}” is not one of: {', '.join(KINDS)}."
+        )
         return key, probs
     p = _name_problem(key, f.label, taken, RESERVED_COLUMNS)
     if p:
@@ -202,8 +214,12 @@ def _field_problems(f: FieldIn, taken: set[str], *, new_table: bool) -> tuple[st
     if f.kind == "choice":
         if len(opts) < 2:
             probs.append(f"“{f.label}”: a list needs at least two choices.")
-        if any(len(o) > 40 for o in opts) or len({o.lower() for o in opts}) != len(opts):
-            probs.append(f"“{f.label}”: each choice must be different and under 40 letters.")
+        if any(len(o) > 40 for o in opts) or len({o.lower() for o in opts}) != len(
+            opts
+        ):
+            probs.append(
+                f"“{f.label}”: each choice must be different and under 40 letters."
+            )
     elif opts:
         probs.append(f"“{f.label}”: only “One of a list” takes choices.")
     if f.required and not new_table and KINDS[f.kind][1] is None and f.kind != "choice":
@@ -265,17 +281,27 @@ def _create_type(op: CreateRecordType, w: World, plan: Plan) -> None:
     plan_start = len(plan.issues)
     for p in (
         _name_problem(key, op.label, set(w.types)),
-        _name_problem(table, op.plural, w.tables | {t["table_name"] for t in w.types.values() if t.get("table_name")}),
+        _name_problem(
+            table,
+            op.plural,
+            w.tables
+            | {t["table_name"] for t in w.types.values() if t.get("table_name")},
+        ),
     ):
         if p:
             plan.issues.append(p)
     if not w.can_use_cases:
-        plan.issues.append("This database has no use cases yet (core-0027). Apply that first.")
+        plan.issues.append(
+            "This database has no use cases yet (core-0027). Apply that first."
+        )
     if table in w.tables:
         plan.issues.append(f"There is already a table called {table}.")
     if slug(op.plural, "u") in w.usecase_keys:
         plan.issues.append(f"There is already a use case called “{op.plural}”.")
-    statuses = list(op.statuses) or [StatusIn(label="Open"), StatusIn(label="Done", closed=True)]
+    statuses = list(op.statuses) or [
+        StatusIn(label="Open"),
+        StatusIn(label="Done", closed=True),
+    ]
     skeys = [slug(s.label, "s") for s in statuses]
     if len(set(skeys)) != len(skeys):
         plan.issues.append("Two statuses have the same name.")
@@ -319,7 +345,9 @@ def _create_type(op: CreateRecordType, w: World, plan: Plan) -> None:
         *checks,
     ]  # fmt: skip
     plan.sql_up.append(f'CREATE TABLE public."{table}" (\n' + ",\n".join(body) + "\n)")
-    plan.sql_up.append(f'CREATE INDEX "idx_{table}_org" ON public."{table}" (org_id, created_at DESC)')
+    plan.sql_up.append(
+        f'CREATE INDEX "idx_{table}_org" ON public."{table}" (org_id, created_at DESC)'
+    )
     plan.sql_down.insert(0, f'DROP TABLE public."{table}"')
     plan.writes.append({
         "what": "record_type", "key": key, "label": op.label.strip(), "plural": op.plural.strip(), "table": table,
@@ -340,16 +368,28 @@ def _create_type(op: CreateRecordType, w: World, plan: Plan) -> None:
     w.tables.add(table)
     w.types[key] = {"label": op.label.strip(), "plural": op.plural.strip(), "table_name": table, "is_system": False,
                     "statuses": [{"key": k, "label": s.label, "closed": s.closed} for k, s in zip(skeys, statuses)]}  # fmt: skip
-    w.fields[key] = {fr["key"]: {**fr, "is_system": False, "is_active": True} for fr in field_rows}
+    w.fields[key] = {
+        fr["key"]: {**fr, "is_system": False, "is_active": True} for fr in field_rows
+    }
     w.usecase_keys.add(slug(op.plural, "u"))
-    plan.summary.append(f"A new kind of record, {op.label.strip()}, kept in its own table, with the use case {op.plural.strip()} in the menu.")
-    plan.summary.append("Statuses: " + " → ".join(s.label.strip() for s in statuses) + ".")
+    plan.summary.append(
+        f"A new kind of record, {op.label.strip()}, kept in its own table, with the use case {op.plural.strip()} in the menu."
+    )
+    plan.summary.append(
+        "Statuses: " + " → ".join(s.label.strip() for s in statuses) + "."
+    )
     if field_rows:
-        plan.summary.append("Fields: " + ", ".join(fr["label"] for fr in field_rows) + ".")
-    plan.summary.append("People on it: " + ", ".join(lab for _, lab, _, _ in people) + ".")
+        plan.summary.append(
+            "Fields: " + ", ".join(fr["label"] for fr in field_rows) + "."
+        )
+    plan.summary.append(
+        "People on it: " + ", ".join(lab for _, lab, _, _ in people) + "."
+    )
     if roles:
         plan.summary.append(f"{len(roles)} role(s) may read it.")
-    plan.summary.append("Flows can save and read these records as soon as it is applied. Make the flows in the use case’s box.")
+    plan.summary.append(
+        "Flows can save and read these records as soon as it is applied. Make the flows in the use case’s box."
+    )
 
 
 def _type(op_type: str, w: World, plan: Plan) -> tuple[str, dict] | None:
@@ -379,11 +419,17 @@ def _add_field(op: AddField, w: World, plan: Plan) -> None:
            "storage": "custom" if custom else "column", "sort_order": len(existing) + 1}  # fmt: skip
     table = t["table_name"]
     if not custom:
-        plan.sql_up.append(f'ALTER TABLE public."{table}" ADD COLUMN {_column_sql(fkey, op.field, with_default=True)}')
+        plan.sql_up.append(
+            f'ALTER TABLE public."{table}" ADD COLUMN {_column_sql(fkey, op.field, with_default=True)}'
+        )
         plan.sql_down.insert(0, f'ALTER TABLE public."{table}" DROP COLUMN "{fkey}"')
         if op.field.kind == "choice":
-            plan.sql_up.append(f'ALTER TABLE public."{table}" ADD {_choice_check(table, fkey, op.field.options)}')
-        plan.summary.append(f"A new column “{op.field.label.strip()}” on {t['plural']} ({KIND_WORDS[op.field.kind]}).")
+            plan.sql_up.append(
+                f'ALTER TABLE public."{table}" ADD {_choice_check(table, fkey, op.field.options)}'
+            )
+        plan.summary.append(
+            f"A new column “{op.field.label.strip()}” on {t['plural']} ({KIND_WORDS[op.field.kind]})."
+        )
     else:
         plan.summary.append(
             f"A new field “{op.field.label.strip()}” on {t['plural']} ({KIND_WORDS[op.field.kind]}), kept inside each record, so the table itself does not change."
@@ -398,22 +444,40 @@ def _add_status(op: AddStatus, w: World, plan: Plan) -> None:
         return
     key, t = got
     if t["is_system"] or not t.get("table_name"):
-        plan.issues.append(f"The statuses of {t['plural']} are set by their own rules, not here.")
+        plan.issues.append(
+            f"The statuses of {t['plural']} are set by their own rules, not here."
+        )
         return
     skey = slug(op.status.label, "s")
     have = list(t.get("statuses") or [])
     if skey in {s["key"] for s in have}:
-        plan.issues.append(f"{t['plural']} already have the status “{op.status.label}”.")
+        plan.issues.append(
+            f"{t['plural']} already have the status “{op.status.label}”."
+        )
         return
     if len(have) >= MAX_STATUSES:
-        plan.issues.append(f"{t['plural']} cannot have more than {MAX_STATUSES} statuses.")
+        plan.issues.append(
+            f"{t['plural']} cannot have more than {MAX_STATUSES} statuses."
+        )
         return
     table = t["table_name"]
-    new = have + [{"key": skey, "label": op.status.label.strip(), "closed": op.status.closed}]
-    plan.sql_up.append(f'ALTER TABLE public."{table}" DROP CONSTRAINT IF EXISTS "{table}_status_check"')
-    plan.sql_up.append(f'ALTER TABLE public."{table}" ADD {_status_check(table, [s["key"] for s in new])}')
-    plan.sql_down.insert(0, f'ALTER TABLE public."{table}" DROP CONSTRAINT IF EXISTS "{table}_status_check"')
-    plan.sql_down.insert(1, f'ALTER TABLE public."{table}" ADD {_status_check(table, [s["key"] for s in have])}')
+    new = have + [
+        {"key": skey, "label": op.status.label.strip(), "closed": op.status.closed}
+    ]
+    plan.sql_up.append(
+        f'ALTER TABLE public."{table}" DROP CONSTRAINT IF EXISTS "{table}_status_check"'
+    )
+    plan.sql_up.append(
+        f'ALTER TABLE public."{table}" ADD {_status_check(table, [s["key"] for s in new])}'
+    )
+    plan.sql_down.insert(
+        0,
+        f'ALTER TABLE public."{table}" DROP CONSTRAINT IF EXISTS "{table}_status_check"',
+    )
+    plan.sql_down.insert(
+        1,
+        f'ALTER TABLE public."{table}" ADD {_status_check(table, [s["key"] for s in have])}',
+    )
     plan.writes.append({"what": "statuses", "record_type": key, "statuses": new})
     t["statuses"] = new
     plan.summary.append(f"A new status “{op.status.label.strip()}” for {t['plural']}.")
@@ -431,7 +495,9 @@ def _set_active(op: SetFieldActive, w: World, plan: Plan) -> None:
     if f.get("is_system"):
         plan.issues.append(f"“{f['label']}” is made by the system and stays on.")
         return
-    plan.writes.append({"what": "field_active", "record_type": key, "key": op.key, "active": op.active})
+    plan.writes.append(
+        {"what": "field_active", "record_type": key, "key": op.key, "active": op.active}
+    )
     f["is_active"] = op.active
     plan.summary.append(
         f"Switch “{f['label']}” {'on' if op.active else 'off'} on {t['plural']}. "

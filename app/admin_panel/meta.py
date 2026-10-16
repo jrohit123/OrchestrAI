@@ -97,8 +97,9 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
                 "key": "schema",
                 "label": "Data & schema",
                 "tabs": [
+                    {"key": "database", "label": "Your databases"},
+                    {"key": "builder", "label": "AI change builder"},
                     {"key": "types", "label": "Kinds of record"},
-                    {"key": "ai", "label": "Describe a change"},
                     {"key": "history", "label": "History"},
                 ],
             }

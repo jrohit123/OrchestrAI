@@ -55,10 +55,10 @@ def test_every_call_is_for_super_admins_only():
     assert calls <= access_rules.SUPER_CALLS and not (calls & access_rules.ADMIN_CALLS)
 
 
-def test_data_and_schema_is_a_super_admin_screen_with_three_tabs():
+def test_data_and_schema_is_a_super_admin_screen_with_four_tabs():
     caps = {"cases": True, "schema_editor": True}
     s = [x for x in meta._sections(caps) if x["key"] == "schema"]
-    assert s and [t["key"] for t in s[0]["tabs"]] == ["types", "ai", "history"]
+    assert s and [t["key"] for t in s[0]["tabs"]] == ["database", "builder", "types", "history"]
     assert not [x for x in meta._sections(caps, "admin") if x["key"] == "schema"]
     assert not [x for x in meta._sections({"cases": True}) if x["key"] == "schema"]
 

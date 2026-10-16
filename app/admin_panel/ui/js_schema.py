@@ -141,6 +141,8 @@ async function typePage(root, d, t, again) {
 }
 
 async function renderSchema(root, route) {
+  if (route.tab === 'database') return renderDatabase(root);                       // js_database.py
+  if (route.tab === 'builder' || route.tab === 'ai') return renderBuilder(root);
   const mine = S.renderId;
   let d;
   try { d = await api.get('/schema'); } catch (e) { fill(root, errorBox(e)); return; }

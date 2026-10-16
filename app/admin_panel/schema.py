@@ -80,12 +80,16 @@ async def _world(ctx: Ctx, conn=None) -> World:
     if w.can_use_cases:
         w.usecase_keys = {
             r["key"]
-            for r in await all_("SELECT key FROM usecases WHERE org_id = $1", ctx.org_id)
+            for r in await all_(
+                "SELECT key FROM usecases WHERE org_id = $1", ctx.org_id
+            )
         }
     if w.can_role_tables:
         w.roles = {
             r["name"].lower(): str(r["id"])
-            for r in await all_("SELECT id, name FROM roles WHERE org_id = $1", ctx.org_id)
+            for r in await all_(
+                "SELECT id, name FROM roles WHERE org_id = $1", ctx.org_id
+            )
         }
     return w
 
@@ -96,7 +100,9 @@ def _parse(body: "OpsBody") -> list:
     except ValidationError as e:
         first = e.errors()[0]
         where = ".".join(str(x) for x in first.get("loc", []) if x != "op")
-        raise HTTPException(422, f"A change is not complete ({where}): {first.get('msg')}.")
+        raise HTTPException(
+            422, f"A change is not complete ({where}): {first.get('msg')}."
+        )
 
 
 def _show(plan: Plan) -> dict:
@@ -201,7 +207,9 @@ async def schema_overview(ctx: CtxDep):
             source_key=ctx.source_key,
         )
     ):
-        if isinstance(r["options"], str):  # jsonb comes back as text: the screens need a list
+        if isinstance(
+            r["options"], str
+        ):  # jsonb comes back as text: the screens need a list
             r["options"] = json.loads(r["options"])
         r["options"] = r["options"] if isinstance(r["options"], list) else []
         fields.setdefault(r.pop("record_type"), []).append(r)
@@ -214,7 +222,9 @@ async def schema_overview(ctx: CtxDep):
                 source_key=ctx.source_key,
             )
         ):
-            uses.setdefault(r["record_type"], []).append(f"{r['icon']} {r['name']}".strip())
+            uses.setdefault(r["record_type"], []).append(
+                f"{r['icon']} {r['name']}".strip()
+            )
     for t in types:
         if isinstance(t["statuses"], str):
             t["statuses"] = json.loads(t["statuses"])
@@ -280,7 +290,7 @@ async def records_of(ctx: CtxDep, record_type: str, limit: int = 20):
     )
     names = ", ".join(f'"{slug(c["key"], "f")}"' for c in cols)
     got = await fetch_all(
-        f'SELECT id::text, status, {names + ", " if names else ""}created_at '
+        f"SELECT id::text, status, {names + ', ' if names else ''}created_at "
         f'FROM public."{slug(t["table_name"], "t")}" WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2',
         ctx.org_id,
         max(1, min(limit, 100)),
@@ -307,7 +317,9 @@ async def schema_plan(ctx: CtxDep, body: Annotated[OpsBody, Body()]):
     out["tried"] = plan.ok and not complaint
     if complaint:
         out["ok"] = False
-        out["issues"] = out["issues"] + [f"The database refused it when tried: {complaint}"]
+        out["issues"] = out["issues"] + [
+            f"The database refused it when tried: {complaint}"
+        ]
     return out
 
 
@@ -324,7 +336,9 @@ async def schema_apply(ctx: CtxDep, body: Annotated[OpsBody, Body()]):
         )
     try:
         async with tx(ctx) as conn:
-            fresh = build_plan(ops, await _world(ctx, conn))  # nothing changed while the person was looking
+            fresh = build_plan(
+                ops, await _world(ctx, conn)
+            )  # nothing changed while the person was looking
             if not fresh.ok:
                 raise HTTPException(409, "; ".join(fresh.issues))
             await _execute(conn, ctx, fresh, ops, ctx.actor)
@@ -347,7 +361,9 @@ async def schema_apply(ctx: CtxDep, body: Annotated[OpsBody, Body()]):
             )
         except Exception:
             logger.warning("could not write the failed change to the history")
-        raise HTTPException(409, f"The database refused it, and nothing was changed: {msg}")
+        raise HTTPException(
+            409, f"The database refused it, and nothing was changed: {msg}"
+        )
     step_interpreter.invalidate_schema_allowlist(ctx.source_key)
     _caps_cache.pop(ctx.source_key, None)
     people_kinds.invalidate()

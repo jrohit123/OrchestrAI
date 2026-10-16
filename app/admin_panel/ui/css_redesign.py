@@ -265,4 +265,27 @@ td.tatcol{min-width:190px}
 .sch-hist{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
 .sch-ai{display:grid;gap:16px}.sch-log{max-height:300px;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .sch-msg{max-width:90%;padding:8px 11px;border-radius:10px;font-size:13.5px;background:var(--sunken)}.sch-msg.me{align-self:flex-end;background:var(--accent,#4535c9);color:#fff}
+/* ───── Data & schema: your databases, AI change builder ───── */
+.dbstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.dbstat b{display:block;font-size:22px}
+.dbgrid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;align-items:start}
+.dbt-h{display:flex;gap:10px;align-items:center;width:100%;padding:10px 14px;border:0;background:none;cursor:pointer;text-align:left;color:inherit}
+.dbcols{margin:0 0 6px}.dbcols td,.dbcols th{padding:5px 14px}
+.dbhist summary{cursor:pointer;font-size:13px}
+.dbb{display:grid;grid-template-columns:340px minmax(0,1fr) 320px;gap:14px;align-items:start}
+.dbb-chat{display:flex;flex-direction:column;height:calc(100vh - 230px);min-height:480px}
+.dbb-log{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.dbb-msg{padding:8px 10px;border-radius:10px;font-size:13px;max-width:95%}
+.dbb-msg.ai{background:var(--sunken)}.dbb-msg.me{background:var(--brand);color:var(--on-brand);align-self:flex-end}
+.dbb-q{margin-top:8px;display:grid;gap:6px}
+.dbb-read{margin-top:6px}.dbb-read td{padding:4px 6px}
+.dbb-ex{padding:0 10px 8px;flex-wrap:wrap;gap:4px}
+.dbb-in{padding:10px;border-top:1px solid var(--line);flex-wrap:nowrap}
+.dbb-code{width:100%;min-height:380px;font-family:var(--mono,ui-monospace,Consolas,monospace);font-size:12px;white-space:pre}
+.dbb-step{display:flex;gap:10px;align-items:flex-start}
+.dbb-si{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11px;background:var(--sunken);border:1px solid var(--line);flex:none}
+.dbb-step.ok .dbb-si{background:var(--ok);color:#fff;border-color:var(--ok)}.dbb-step.run .dbb-si{background:var(--brand);color:#fff}.dbb-step.fail .dbb-si{background:var(--bad);color:#fff}
+.dbb-issue{font-size:12.5px;padding:6px 8px;border-radius:7px;cursor:pointer}
+.dbb-issue.error{background:var(--bad-soft,#fbe8e6)}.dbb-issue.warn{background:var(--warn-soft,#fdf2dc)}
+@media(max-width:1250px){.dbb,.dbgrid{grid-template-columns:1fr}.dbb-chat{height:520px}}
 """
