@@ -21,8 +21,21 @@ HEADERS = {
 }
 
 
+async def _footer():
+    """The organisation's footer note (services/footer.py), or None. Never stops a message."""
+    try:
+        from app.services import footer
+
+        return await footer.for_whatsapp()
+    except Exception:
+        return None
+
+
 async def send_text(to: str, message: str):
-    """Send a plain text WhatsApp message."""
+    """Send a plain text WhatsApp message (with the footer note as its last line, when the organisation wants that)."""
+    from app.services.footer import with_plain_line
+
+    message = with_plain_line(message, await _footer())
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -43,6 +56,7 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
     buttons = [{"id": "approve", "title": "✅ Approve"}, ...]
     Max 3 buttons.
     """
+    foot = await _footer()
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -56,6 +70,7 @@ async def send_buttons(to: str, body: str, buttons: list[dict]):
                     for b in buttons[:3]
                 ]
             },
+            **({"footer": {"text": foot["text"]}} if foot else {}),
         },
     }
     async with httpx.AsyncClient() as client:
@@ -112,6 +127,7 @@ async def send_document(
 
 async def send_list(to: str, body: str, button_label: str, sections: list[dict]):
     """Interactive list message. Max 10 rows total across sections."""
+    foot = await _footer()
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -120,6 +136,7 @@ async def send_list(to: str, body: str, button_label: str, sections: list[dict])
             "type": "list",
             "body": {"text": body},
             "action": {"button": button_label[:20], "sections": sections},
+            **({"footer": {"text": foot["text"]}} if foot else {}),
         },
     }
     async with httpx.AsyncClient() as client:

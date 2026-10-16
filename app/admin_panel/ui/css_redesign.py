@@ -288,4 +288,10 @@ td.tatcol{min-width:190px}
 .dbb-issue{font-size:12.5px;padding:6px 8px;border-radius:7px;cursor:pointer}
 .dbb-issue.error{background:var(--bad-soft,#fbe8e6)}.dbb-issue.warn{background:var(--warn-soft,#fdf2dc)}
 @media(max-width:1250px){.dbb,.dbgrid{grid-template-columns:1fr}.dbb-chat{height:520px}}
+/* ───── Settings: footer note preview ───── */
+.ft-prev{background:#efeae2;border-radius:12px;padding:10px;display:grid;gap:8px;max-width:360px}
+.ft-b{background:#fff;color:#111;border-radius:8px;padding:7px 9px 5px;font-size:13px;line-height:1.4}
+.ft-f{font-size:11.5px;color:#8696a0;margin-top:3px}.ft-i{color:#667781}
+.ft-bt{border-top:1px solid #e9e9e9;margin:6px -9px -5px;text-align:center;color:#00a5f4;padding:7px}
+.ft-common summary{cursor:pointer}
 """

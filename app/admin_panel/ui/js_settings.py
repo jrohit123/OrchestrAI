@@ -102,6 +102,56 @@ async function settingsSupportCard() {
       try { await api.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
 }
 
+// Footer note: one common text for every organisation, and this organisation's choice (common, its own, or none). See
+// services/footer.py. Buttons and lists get WhatsApp's own footer line; plain replies get it as an italic last line when on.
+async function settingsFooterCard() {
+  if (!isSuper()) return null;
+  const card = h('div', { class: 'card' });
+  let d;
+  try { d = await api.get('/footer'); } catch (e) { fill(card, h('div', { class: 'card-h' }, 'Footer note'), h('div', { class: 'card-b' }, notice(e.message, 'bad'))); return card; }
+  const box = h('div', { class: 'stack s8' });
+  function prev() {
+    const mine = d.org, com = d.common;
+    const t = mine.mode === 'off' ? '' : mine.mode === 'own' ? mine.text.trim() : com.text.trim();
+    const plain = mine.mode === 'own' ? mine.plain : com.plain;
+    fill(box, h('b', { class: 'small' }, 'How it looks'),
+      h('div', { class: 'ft-prev' },
+        h('div', { class: 'ft-b' }, 'Close ticket CS-26-0142 with the note "Leak fixed"?', t ? h('div', { class: 'ft-f' }, t) : null, h('div', { class: 'ft-bt' }, 'Yes'), h('div', { class: 'ft-bt' }, 'No')),
+        h('div', { class: 'ft-b' }, 'Ticket CS-26-0142 is under review.', t && plain ? [h('br'), h('br'), h('i', { class: 'ft-i' }, t)] : null)),
+      !t ? h('div', { class: 'muted small' }, 'No footer is added.') : null);
+  }
+  function draw() {
+    const mine = d.org, com = d.common;
+    const own = h('input', { type: 'text', maxlength: d.max, value: mine.text, placeholder: 'e.g. ' + S.boot.org.name + ' helpdesk · reply menu anytime', oninput: e => { mine.text = e.target.value; prev(); } });
+    const plainOwn = h('input', { type: 'checkbox', checked: mine.plain, onchange: e => { mine.plain = e.target.checked; prev(); } });
+    const comText = h('input', { type: 'text', maxlength: d.max, value: com.text, placeholder: 'e.g. Powered by OrchestrAI · reply menu anytime', oninput: e => { com.text = e.target.value; prev(); } });
+    const comPlain = h('input', { type: 'checkbox', checked: com.plain, onchange: e => { com.plain = e.target.checked; prev(); } });
+    const radio = (v, label) => h('label', { class: 'row small' }, h('input', { type: 'radio', name: 'ft-mode', checked: mine.mode === v, onchange: () => { mine.mode = v; draw(); } }), label);
+    const saveMine = h('button', { class: 'btn primary sm', type: 'button', onclick: async () => {
+      try { await api.put('/footer', { mode: mine.mode, text: mine.text, plain: mine.plain }); toast('Saved. New messages use it within a minute.', 'ok'); } catch (e) { toast(e.message, 'bad'); }
+    } }, 'Save for ' + S.boot.org.name);
+    const saveCommon = h('button', { class: 'btn sm', type: 'button', disabled: !com.available, onclick: async () => {
+      try { await api.put('/footer/common', { text: com.text, plain: com.plain }); toast('Saved for every organisation that uses the common footer.', 'ok'); } catch (e) { toast(e.message, 'bad'); }
+    } }, 'Save the common footer');
+    fill(card, h('div', { class: 'card-h' }, 'Footer note', h('span', { class: 'muted small' }, 'up to ' + d.max + ' letters')),
+      h('div', { class: 'card-b stack' },
+        !d.whatsapp ? notice('This organisation is on Telegram. The footer note is a WhatsApp feature, so it is not shown there.', 'info') : null,
+        h('div', { class: 'muted small' }, 'A short line under the chat bot\u2019s WhatsApp messages. Messages with buttons or a list show it as WhatsApp\u2019s own grey footer; plain replies can show it as an italic last line. Approved templates keep their own footer.'),
+        h('div', { class: 'stack s8' }, h('b', { class: 'small' }, 'For ' + S.boot.org.name),
+          radio('common', 'Use the common footer' + (com.text ? ': "' + com.text + '"' : ' (none set yet)')),
+          radio('own', 'Its own footer'),
+          mine.mode === 'own' ? h('div', { class: 'stack s8', style: { paddingLeft: '22px' } }, own, h('label', { class: 'row small' }, plainOwn, 'Also add it as the last line of plain replies')) : null,
+          radio('off', 'No footer'), h('div', null, saveMine)),
+        h('details', { class: 'ft-common' }, h('summary', { class: 'small' }, 'The common footer (used by every organisation that chooses it)'),
+          !com.available ? notice('The shared settings need one small update on the routing database first (control-0002).', 'warn') : null,
+          h('div', { class: 'stack s8', style: { marginTop: '8px' } }, comText, h('label', { class: 'row small' }, comPlain, 'Also add it as the last line of plain replies'), h('div', null, saveCommon))),
+        box));
+    prev();
+  }
+  draw();
+  return card;
+}
+
 SECTIONS.settings = {
   title: 'Settings', sub: 'Your organisation and how the chat bot behaves, each setting in one place.',
   async render(root, route) {
@@ -114,11 +164,12 @@ SECTIONS.settings = {
       const next = settingsGroupCard(g, onSaved);
       cards[key].replaceWith(next); cards[key] = next;
     };
-    const parts = await Promise.all([settingsOrgCard(info), settingsSupportCard()]);
+    const parts = await Promise.all([settingsOrgCard(info), settingsSupportCard(), settingsFooterCard()]);
     cards.org = parts[0]; cards.time = settingsTimeCard(info);
+    if (parts[2]) cards.footer = parts[2];
     info.groups.forEach(g => { cards[g.key] = settingsGroupCard(g, onSaved); });
     cards.you = settingsBrowserCard(); cards.support = parts[1];
-    const order = [['org', 'Organisation'], ['time', 'Time & language'], ...info.groups.map(g => [g.key, g.label]), ['you', 'This browser'], ['support', 'For support']];
+    const order = [['org', 'Organisation'], ['time', 'Time & language'], ...(cards.footer ? [['footer', 'Footer note']] : []), ...info.groups.map(g => [g.key, g.label]), ['you', 'This browser'], ['support', 'For support']];
     const go = k => { const t = cards[k]; if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
     const links = order.map(([k, l]) => h('a', { role: 'button', tabindex: '0', 'data-k': k, onclick: () => go(k), onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(k); } } }, l));
     root.append(h('div', { class: 'setgrid' }, h('nav', { class: 'setnav', 'aria-label': 'Settings sections' }, links), h('div', { class: 'stack s16' }, order.map(([k]) => cards[k]))));

@@ -11,6 +11,7 @@ from app.admin_panel import (
     case_buttons,
     cases,
     database,
+    footer_settings,
     message_texts,
     meta,
     org_settings,
@@ -55,6 +56,7 @@ for _module in (
     whatsapp_templates,
     usecases,
     database,
+    footer_settings,
     schema,
 ):
     router.include_router(_module.router)

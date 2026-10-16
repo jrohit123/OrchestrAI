@@ -456,7 +456,9 @@ def lint(
                 name, rest = m.group(4).lower(), m.group(5)
                 if name not in tables and name not in made:
                     add("error", "sql", f"There is no table {name} to change.")
-                if re.search(r"\b(DROP|ALTER\s+COLUMN|RENAME|TYPE)\b", rest, re.IGNORECASE):
+                if re.search(
+                    r"\b(DROP|ALTER\s+COLUMN|RENAME|TYPE)\b", rest, re.IGNORECASE
+                ):
                     add("error", "sql", f"Only adding is allowed when changing {name}.")
                 for c in re.findall(
                     r"ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?\"?([a-z_][a-z0-9_]*)",
@@ -467,7 +469,9 @@ def lint(
                         made.setdefault(name, set()).add(c.lower())
                 continue
             m = re.match(
-                r"^CREATE\s+EXTENSION\s+(IF\s+NOT\s+EXISTS\s+)?\"?([a-z_]+)", st, re.IGNORECASE
+                r"^CREATE\s+EXTENSION\s+(IF\s+NOT\s+EXISTS\s+)?\"?([a-z_]+)",
+                st,
+                re.IGNORECASE,
             )
             if m and m.group(2).lower() not in EXTENSIONS:
                 add(
