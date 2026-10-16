@@ -201,6 +201,9 @@ async def schema_overview(ctx: CtxDep):
             source_key=ctx.source_key,
         )
     ):
+        if isinstance(r["options"], str):  # jsonb comes back as text: the screens need a list
+            r["options"] = json.loads(r["options"])
+        r["options"] = r["options"] if isinstance(r["options"], list) else []
         fields.setdefault(r.pop("record_type"), []).append(r)
     uses: dict[str, list] = {}
     if ctx.caps.get("usecases"):

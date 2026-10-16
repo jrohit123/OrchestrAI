@@ -65,7 +65,7 @@ function typeForm(op, roles, onChange) {
           lab.addEventListener('input', () => { f.label = lab.value; ch(); });
           const kind = sel(Object.entries(S.schema.kinds), f.kind || 'text', { 'aria-label': 'Kind' });
           kind.addEventListener('change', () => { f.kind = kind.value; if (f.kind !== 'choice') f.options = []; draw(); ch(); });
-          const opts = f.kind === 'choice' ? (() => { const o = h('input', { type: 'text', value: (f.options || []).join(', '), placeholder: 'Choices, separated by commas', 'aria-label': 'Choices' }); o.addEventListener('input', () => { f.options = o.value.split(',').map(x => x.trim()).filter(Boolean); ch(); }); return o; })() : null;
+          const opts = f.kind === 'choice' ? (() => { const o = h('input', { type: 'text', value: (Array.isArray(f.options) ? f.options : []).join(', '), placeholder: 'Choices, separated by commas', 'aria-label': 'Choices' }); o.addEventListener('input', () => { f.options = o.value.split(',').map(x => x.trim()).filter(Boolean); ch(); }); return o; })() : null;
           return h('div', { class: 'row', style: { flexWrap: 'nowrap', alignItems: 'center' } }, h('div', { style: { flex: 1 } }, lab), kind, opts ? h('div', { style: { flex: 1 } }, opts) : null,
             h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: !!f.required, onchange: e => { f.required = e.target.checked; ch(); } }), 'Required'),
             h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Remove', onclick: () => { op.fields.splice(i, 1); draw(); ch(); } }, '×'));
@@ -130,7 +130,7 @@ async function typePage(root, d, t, again) {
       h('div', { class: 'card-h' }, t.plural, t.usecases.map(u => badge(u)), t.is_system ? badge('run by the system') : null, h('span', { class: 'sp' }), t.count != null ? h('span', { class: 'muted small' }, t.count + ' ' + (t.count === 1 ? word : t.plural.toLowerCase())) : null,
         h('button', { class: 'btn sm primary', type: 'button', onclick: () => addFieldModal(t, again) }, '＋ Add a field')),
       h('div', { class: 'card-b' }, t.fields.length ? h('div', { class: 'stack s8' }, t.fields.map(f => h('div', { class: 'row', style: { flexWrap: 'nowrap', alignItems: 'center', opacity: f.is_active ? 1 : .55 } },
-        h('div', { style: { flex: 1 } }, h('b', null, f.label), f.is_system ? h('span', { class: 'muted small' }, ' · made by the system') : null, f.options && f.options.length ? h('div', { class: 'muted small' }, f.options.join(' · ')) : null),
+        h('div', { style: { flex: 1 } }, h('b', null, f.label), f.is_system ? h('span', { class: 'muted small' }, ' · made by the system') : null, Array.isArray(f.options) && f.options.length ? h('div', { class: 'muted small' }, f.options.join(' · ')) : null),
         h('span', { class: 'small' }, d.kinds[f.kind] || f.kind), h('span', { class: 'small muted', style: { width: '70px' } }, f.required ? 'Required' : ''), h('span', { class: 'small muted', style: { width: '90px' } }, f.storage === 'custom' ? 'inside the record' : 'own column'),
         f.is_system ? h('span', { style: { width: '34px' } }) : switchEl(f.is_active, v => flip(f, v), false, f.label))))
         : h('div', { class: 'muted' }, 'No fields yet.'))),
