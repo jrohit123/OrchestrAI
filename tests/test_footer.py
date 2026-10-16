@@ -111,3 +111,46 @@ def test_only_super_admins_change_the_footer():
         for m in r.methods
     }
     assert calls <= access_rules.SUPER_CALLS and not (calls & access_rules.ADMIN_CALLS)
+
+
+def test_the_menu_panel_carries_the_footer_too(monkeypatch):
+    sent = []
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            sent.append(json)
+            return Resp()
+
+    async def foot():
+        return {"text": "Managed by Aitamate", "plain": False}
+
+    monkeypatch.setattr(whatsapp.httpx, "AsyncClient", lambda *a, **k: Client())
+    monkeypatch.setattr(footer, "for_whatsapp", foot)
+    asyncio.run(
+        whatsapp.send_flow(
+            "+910000000000",
+            body="Here is the menu",
+            flow_id="1",
+            cta="Open menu",
+            screen="MENU",
+            data={"items": []},
+            flow_token="t",
+        )  # fmt: skip
+    )
+    assert sent[0]["interactive"]["footer"] == {"text": "Managed by Aitamate"}

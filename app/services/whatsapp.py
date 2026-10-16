@@ -244,6 +244,7 @@ async def send_flow(
     }
     if draft:
         parameters["mode"] = "draft"
+    foot = await _footer()
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -252,6 +253,7 @@ async def send_flow(
             "type": "flow",
             "body": {"text": body[:1024]},
             "action": {"name": "flow", "parameters": parameters},
+            **({"footer": {"text": foot["text"]}} if foot else {}),
         },
     }
     async with httpx.AsyncClient() as client:
