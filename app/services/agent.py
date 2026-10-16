@@ -137,10 +137,13 @@ async def _build_greeting_response_with_menu(user: dict, message: str) -> dict:
     tod = _time_of_day_greeting(now_ist.hour)
     first_name = user["user_name"].split()[0]
     org = user.get("org_name", "")
+    from app.services import bot_name
+
+    name = await bot_name.of(user.get("source_key"))
 
     greeting_text = (
         f"{tod}, *{first_name}!* 👋\n\n"
-        f"I'm your ERP assistant for *{org}*.\n"
+        f"I'm *{name}*, the chat bot of *{org}*.\n"
         f"Here's what I can help you with:"
     )
 
