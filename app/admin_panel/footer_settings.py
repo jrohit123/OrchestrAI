@@ -104,3 +104,51 @@ async def save_common_footer(ctx: CtxDep, body: CommonFooter):
         after=value,
     )
     return {"ok": True}
+
+
+# ───────────────────────── the chat bot's name (services/bot_name.py) ─────────────────────────
+
+
+@router.get("/bot-name")
+async def get_bot_name(ctx: CtxDep):
+    from app.services import bot_name
+
+    bot_name.invalidate()
+    row = await fetch_one(
+        "SELECT settings FROM orgs WHERE id = $1", ctx.org_id, source_key=ctx.source_key
+    )
+    settings = row["settings"] if row else {}
+    settings = json.loads(settings) if isinstance(settings, str) else (settings or {})
+    return {
+        "name": bot_name.clean(settings.get("bot_name")),
+        "default": bot_name.DEFAULT,
+        "max": bot_name.MAX,
+    }
+
+
+class BotName(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field("", max_length=100)
+
+
+@router.put("/bot-name")
+async def save_bot_name(ctx: CtxDep, body: BotName):
+    from app.services import bot_name
+
+    name = bot_name.clean(body.name)
+    await execute(
+        "UPDATE orgs SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('bot_name', $2::text) WHERE id = $1",
+        ctx.org_id,
+        name,
+        source_key=ctx.source_key,
+    )
+    config_store.invalidate(ctx.source_key)
+    bot_name.invalidate()
+    await log_event(
+        ctx,
+        "settings",
+        "bot_name",
+        f"Chat bot name: {name or bot_name.DEFAULT + ' (the default)'}",
+        after={"bot_name": name},
+    )
+    return {"ok": True, "name": name or bot_name.DEFAULT}

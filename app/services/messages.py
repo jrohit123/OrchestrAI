@@ -1106,4 +1106,9 @@ def length_text(minutes: int) -> str:
 async def say(source_key: str | None, key: str, **values) -> str:
     """The text of message `key` for one organisation (its own wording if it wrote one, else the
     built-in one), with the {values} filled in. With no source_key the built-in wording is used."""
-    return await config_store.message(source_key, key, MESSAGES[key].text, **values)
+    from app.services import bot_name
+
+    text = await config_store.message(source_key, key, MESSAGES[key].text, **values)
+    return bot_name.named(
+        text, await bot_name.of(source_key)
+    )  # the bot's own name, when it has one

@@ -1097,7 +1097,10 @@ async def _build_system_prompt(user: dict) -> str:
         else ""
     )
 
+    from app.services import bot_name
+
     return _AGENT_SYSTEM_WRAPPER_TEMPLATE.format(
+        bot_name=await bot_name.of(user.get("source_key")),
         org_name=user["org_name"],
         critical_tables_block=critical_tables_block,
         user_name=user["user_name"],

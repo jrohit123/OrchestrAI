@@ -102,6 +102,27 @@ async function settingsSupportCard() {
       try { await api.post('/sessions/clear'); toast('Cleared', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'End them all now')));
 }
 
+// Chat bot name: what the bot calls itself in this organisation (services/bot_name.py). Empty = OrchestrAI.
+async function settingsBotNameCard() {
+  if (!isSuper()) return null;
+  const card = h('div', { class: 'card' });
+  let d;
+  try { d = await api.get('/bot-name'); } catch (e) { fill(card, h('div', { class: 'card-h' }, 'Chat bot name'), h('div', { class: 'card-b' }, notice(e.message, 'bad'))); return card; }
+  const prev = h('div', { class: 'ft-prev' });
+  const inp = h('input', { type: 'text', maxlength: d.max, value: d.name, placeholder: d.default + ' (the default)' });
+  const draw = () => { const n = inp.value.trim() || d.default; fill(prev, h('div', { class: 'ft-b' }, 'Good afternoon, Kartik! I\u2019m ' + n + ', the chat bot of ' + S.boot.org.name + '. How can I help you today?'), h('div', { class: 'ft-b' }, '\ud83d\udc4b Welcome to ' + n + '! Reply with your email address to link your number.')); };
+  inp.addEventListener('input', draw);
+  const save = h('button', { class: 'btn primary sm', type: 'button', onclick: async () => {
+    try { const r = await api.put('/bot-name', { name: inp.value }); toast('Saved. The chat bot is now ' + r.name + '.', 'ok'); } catch (e) { toast(e.message, 'bad'); }
+  } }, 'Save');
+  fill(card, h('div', { class: 'card-h' }, 'Chat bot name', h('span', { class: 'muted small' }, 'up to ' + d.max + ' letters')),
+    h('div', { class: 'card-b stack' },
+      h('div', { class: 'muted small' }, 'What the chat bot calls itself in ' + S.boot.org.name + ', for example \u201cGM AI\u201d. Leave it empty for ' + d.default + '. The WhatsApp number\u2019s own profile name stays as Meta has it.'),
+      h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, save), h('b', { class: 'small' }, 'How it sounds'), prev));
+  draw();
+  return card;
+}
+
 // Footer note: one common text for every organisation, and this organisation's choice (common, its own, or none). See
 // services/footer.py. Buttons and lists get WhatsApp's own footer line; plain replies get it as an italic last line when on.
 async function settingsFooterCard() {
@@ -164,12 +185,13 @@ SECTIONS.settings = {
       const next = settingsGroupCard(g, onSaved);
       cards[key].replaceWith(next); cards[key] = next;
     };
-    const parts = await Promise.all([settingsOrgCard(info), settingsSupportCard(), settingsFooterCard()]);
+    const parts = await Promise.all([settingsOrgCard(info), settingsSupportCard(), settingsFooterCard(), settingsBotNameCard()]);
     cards.org = parts[0]; cards.time = settingsTimeCard(info);
     if (parts[2]) cards.footer = parts[2];
+    if (parts[3]) cards.botname = parts[3];
     info.groups.forEach(g => { cards[g.key] = settingsGroupCard(g, onSaved); });
     cards.you = settingsBrowserCard(); cards.support = parts[1];
-    const order = [['org', 'Organisation'], ['time', 'Time & language'], ...(cards.footer ? [['footer', 'Footer note']] : []), ...info.groups.map(g => [g.key, g.label]), ['you', 'This browser'], ['support', 'For support']];
+    const order = [['org', 'Organisation'], ['time', 'Time & language'], ...(cards.botname ? [['botname', 'Chat bot name']] : []), ...(cards.footer ? [['footer', 'Footer note']] : []), ...info.groups.map(g => [g.key, g.label]), ['you', 'This browser'], ['support', 'For support']];
     const go = k => { const t = cards[k]; if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
     const links = order.map(([k, l]) => h('a', { role: 'button', tabindex: '0', 'data-k': k, onclick: () => go(k), onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(k); } } }, l));
     root.append(h('div', { class: 'setgrid' }, h('nav', { class: 'setnav', 'aria-label': 'Settings sections' }, links), h('div', { class: 'stack s16' }, order.map(([k]) => cards[k]))));

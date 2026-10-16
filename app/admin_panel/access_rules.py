@@ -47,6 +47,8 @@ SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/schema"),
         ("GET", "/db/schema"),
         ("GET", "/footer"),
+        ("GET", "/bot-name"),
+        ("PUT", "/bot-name"),
         ("PUT", "/footer"),
         ("PUT", "/footer/common"),
         ("GET", "/db/builder/context"),
