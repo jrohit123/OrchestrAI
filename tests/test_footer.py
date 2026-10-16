@@ -151,6 +151,6 @@ def test_the_menu_panel_carries_the_footer_too(monkeypatch):
             screen="MENU",
             data={"items": []},
             flow_token="t",
-        )  # fmt: skip
+        )
     )
     assert sent[0]["interactive"]["footer"] == {"text": "Managed by Aitamate"}
