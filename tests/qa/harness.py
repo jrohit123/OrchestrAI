@@ -62,6 +62,8 @@ TEMPLATE_MIGRATIONS = {
         "features/housing/housing-0013_reminder_plans.sql",
         "core/core-0027_use_cases.sql",
         "features/housing/housing-0014_ticket_use_case.sql",
+        "core/core-0028_schema_editor.sql",
+        "features/housing/housing-0015_ticket_record_type.sql",
     ],
 }
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"

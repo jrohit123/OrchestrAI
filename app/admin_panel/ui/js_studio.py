@@ -304,7 +304,7 @@ function startCard() {
   return h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'How does it start?'), body);
 }
 
-// the use case a flow is filed under, and the people on its kind of record who may use it on their own records. All of it
+// the use case a flow is filed under (changed with Move to… on the Flows screen), and the people on its kind of record who may use it on their own records. All of it
 // is data (usecases, record_people_kinds): no kind of person and no kind of record is named here.
 function usecaseParts(d) {
   if (!S.boot.caps.usecases) return { pick: null, people: null };
@@ -326,12 +326,6 @@ function usecaseParts(d) {
         u.keeps_photos ? h('label', { class: 'row', style: { marginTop: '6px' } }, h('input', { type: 'checkbox', checked: !!cfg.photos, onchange: e => { if (e.target.checked) cfg.photos = true; else delete cfg.photos; commit(false); } }),
           'Keep photos people send in the chat while it runs, on the ' + rec + ' it makes') : null));
     };
-    const s = sel([['', 'Shared by every use case'], ...ucs.filter(u => u.is_active || u.id === d.usecase_id).map(u => [u.id, (u.icon ? u.icon + ' ' : '') + u.name])], d.usecase_id || '', { 'aria-label': 'Use case' });
-    s.addEventListener('change', async () => {
-      try { await api.put('/workflows/' + d.id + '/usecase', { usecase_id: s.value || null }); d.usecase_id = s.value || null; toast(current() ? 'Filed under ' + current().name : 'Shared by every use case now', 'ok'); drawPeople(); }
-      catch (e) { toast(e.message, 'bad'); s.value = d.usecase_id || ''; }
-    });
-    fill(pick, field('Use case', s, 'Where it belongs: the chat menu, the lists and the building blocks follow this.'));
     drawPeople();
   });
   return { pick, people };
@@ -523,6 +517,7 @@ SECTIONS.blocks = {
   title: 'Building blocks', sub: 'Small ready-made steps that flows use. Change one and every flow that uses it changes.',
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
+    if (S.boot.caps.usecases) return renderBlockBoxes(root);   // one box per use case (js_usecases.py)
     return renderFlows(root, route, 'block');
   },
 };

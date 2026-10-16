@@ -30,6 +30,7 @@ router = APIRouter(
 
 MAX_ROWS = 500
 MAX_CHARS = 1_500_000
+MAX_BYTES = 4_000_000  # an Excel file
 # What a column may be called in the file (lower case, letters only), for each thing we read.
 ALIASES = {
     "name": {"name", "fullname", "person", "member", "resident", "contactname"},
@@ -64,22 +65,80 @@ def _key(text: str) -> str:
     return re.sub(r"[^a-z]", "", (text or "").lower())
 
 
-def read_csv(text: str) -> tuple[dict[str, int], list[list[str]]]:
-    """(which column holds what, the rows under the header). Raises ValueError with a sentence for the person."""
+def _csv_table(text: str) -> list[list[str]]:
     text = (text or "").lstrip("﻿")
     if not text.strip():
         raise ValueError("The file is empty.")
     if len(text) > MAX_CHARS:
         raise ValueError("The file is too big. Split it into smaller files.")
+    if "\x00" in text:  # an Excel or other binary file read as text
+        raise ValueError(
+            "This file cannot be read. Upload a CSV or an Excel (.xlsx) file."
+        )
     first = next((ln for ln in text.splitlines() if ln.strip()), "")
     delimiter = (
         max(",;	|", key=first.count) if any(d in first for d in ",;	|") else ","
     )
-    table = [
-        [c.strip() for c in row]
-        for row in csv.reader(io.StringIO(text), delimiter=delimiter)
-        if any(c.strip() for c in row)
-    ]
+    try:
+        return [
+            [c.strip() for c in row]
+            for row in csv.reader(io.StringIO(text), delimiter=delimiter)
+            if any(c.strip() for c in row)
+        ]
+    except csv.Error as e:
+        raise ValueError(
+            "This file cannot be read as a CSV. Upload a CSV or an Excel (.xlsx) file."
+        ) from e
+
+
+def _cell_text(v) -> str:
+    """One Excel cell as text: a whole number stays whole (a phone number typed as a number keeps no .0)."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _xlsx_table(data: bytes) -> list[list[str]]:
+    """The first sheet of an Excel file as rows of text."""
+    import openpyxl
+
+    if len(data) > MAX_BYTES:
+        raise ValueError("The file is too big. Split it into smaller files.")
+    try:
+        book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as e:
+        raise ValueError(
+            "This Excel file cannot be read. Save it again as .xlsx, or as a CSV."
+        ) from e
+    try:
+        sheet = book.worksheets[0]
+        table = []
+        for row in sheet.iter_rows(values_only=True):
+            cells = [_cell_text(v) for v in row]
+            if any(cells):
+                table.append(cells)
+            if len(table) > MAX_ROWS + 1:
+                break
+        return table
+    finally:
+        book.close()
+
+
+def read_csv(text: str) -> tuple[dict[str, int], list[list[str]]]:
+    """(which column holds what, the rows under the header) of a CSV. Raises ValueError with a sentence for the person."""
+    return _columns(_csv_table(text))
+
+
+def read_upload(
+    text: str = "", xlsx: bytes | None = None
+) -> tuple[dict[str, int], list[list[str]]]:
+    """A CSV (as text) or an Excel file (as bytes): the same columns and rows either way."""
+    return _columns(_xlsx_table(xlsx) if xlsx is not None else _csv_table(text))
+
+
+def _columns(table: list[list[str]]) -> tuple[dict[str, int], list[list[str]]]:
     if len(table) < 2:
         raise ValueError(
             "The file needs a first row with column names (for example Name, Email, Role) and at least one person."
@@ -127,7 +186,7 @@ async def _lookup(ctx):
         source_key=ctx.source_key,
     )
     seats, holders = [], {}
-    if ctx.caps.get("seats"):
+    if False:  # seats are not used any more: a role does that job (the rows stay in the database)
         seats = await fetch_all(
             "SELECT id, name FROM committee_positions WHERE org_id = $1",
             ctx.org_id,
@@ -150,20 +209,32 @@ async def _lookup(ctx):
 
 class PreviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    csv_text: str
+    csv_text: str = ""
+    file_b64: str | None = Field(None, max_length=6_000_000)  # an Excel file, base64
+    file_name: str = Field("", max_length=200)
     country: str = Field("", max_length=8)  # for 10-digit numbers, like +91
 
 
 @router.post("/people/import/preview")
 async def preview(ctx: CtxDep, body: PreviewBody):
     try:
-        columns, data = read_csv(body.csv_text)
+        if body.file_b64:
+            import base64
+
+            try:
+                raw = base64.b64decode(body.file_b64, validate=True)
+            except ValueError as e:
+                raise ValueError(
+                    "The file did not arrive whole. Choose it again."
+                ) from e
+            columns, data = read_upload(xlsx=raw)
+        else:
+            columns, data = read_upload(body.csv_text)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     by_number = await people_channel(ctx.source_key) != "telegram"
-    roles, seats, holders, existing = await _lookup(ctx)
+    roles, _seats, holders, existing = await _lookup(ctx)
     role_by = {_key(r["name"]): r for r in roles}
-    seat_by = {_key(s["name"]): s for s in seats}
     have_email = {e["email"]: e["name"] for e in existing if e["email"]}
     have_phone = {e["phone"]: e["name"] for e in existing if e["phone"]}
     seen_email: set[str] = set()
@@ -178,7 +249,7 @@ async def preview(ctx: CtxDep, body: PreviewBody):
         name = " ".join(cell(row, "name").split())
         email = cell(row, "email").lower()
         phone_raw = cell(row, "phone")
-        role_raw, seat_raw = cell(row, "role"), cell(row, "seat")
+        role_raw = cell(row, "role")
         problems, notes = [], []
         if len(name) < 2:
             problems.append("The name is missing.")
@@ -201,13 +272,9 @@ async def preview(ctx: CtxDep, body: PreviewBody):
         role = role_by.get(_key(role_raw)) if role_raw else None
         if role_raw and not role:
             notes.append(f"No role called “{role_raw}”. Choose one.")
-        picked = []
-        for part in [p for p in SEAT_SPLIT.split(seat_raw) if p]:
-            seat = seat_by.get(_key(part))
-            if seat:
-                picked.append(str(seat["id"]))
-            else:
-                notes.append(f"No seat called “{part}”.")
+        picked: list[
+            str
+        ] = []  # seats are not used any more (a role does that job): a Seat column is ignored
         out.append(
             {
                 "line": n,
@@ -253,9 +320,8 @@ async def commit(ctx: CtxDep, body: CommitBody):
     if not body.rows:
         raise HTTPException(400, "There is nobody to add.")
     by_number = await people_channel(ctx.source_key) != "telegram"
-    roles, seats, _holders, existing = await _lookup(ctx)
+    roles, _seats, _holders, existing = await _lookup(ctx)
     role_name = {r["id"]: r["name"] for r in roles}
-    seat_name = {s["id"]: s["name"] for s in seats}
     taken_email = {e["email"] for e in existing if e["email"]}
     taken_phone = {e["phone"] for e in existing if e["phone"]}
     added, skipped = [], []
@@ -275,8 +341,6 @@ async def commit(ctx: CtxDep, body: CommitBody):
                 why = "Already here with that email or number."
             elif phone and not re.fullmatch(r"\+\d{8,15}", phone):
                 why = "The number is not valid."
-            elif any(s not in seat_name for s in r.seat_ids):
-                why = "A seat does not exist."
             if why:
                 skipped.append({"line": r.line, "name": name, "reason": why})
                 continue
@@ -291,29 +355,6 @@ async def commit(ctx: CtxDep, body: CommitBody):
                         phone,
                     )
                     seat_notes = []
-                    for sid in r.seat_ids:
-                        current = await conn.fetchrow(
-                            "SELECT u.name FROM committee_members m JOIN users u ON u.id = m.user_id "
-                            "WHERE m.position_id = $1 AND m.status = 'active'",
-                            sid,
-                        )
-                        if current and not body.replace_seats:
-                            seat_notes.append(
-                                f"“{seat_name[sid]}” is held by {current['name']}, so it was left as it was."
-                            )
-                            continue
-                        await conn.execute(
-                            "UPDATE committee_members SET status = 'ended', end_date = CURRENT_DATE "
-                            "WHERE position_id = $1 AND status = 'active'",
-                            sid,
-                        )
-                        await conn.execute(
-                            "INSERT INTO committee_members (org_id, user_id, position_id, status, start_date) "
-                            "VALUES ($1, $2, $3, 'active', CURRENT_DATE)",
-                            ctx.org_id,
-                            uid,
-                            sid,
-                        )
                     final_role = await conn.fetchval(
                         "SELECT r.name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = $1",
                         uid,

@@ -4,36 +4,6 @@ JS = r"""
 // record can have. All of it is data (GET /usecases): no use case, kind of record or kind of person is named here.
 const MEANING_WORDS = { raiser: 'Raised it (the person who asked)', handler: 'Handles it', backup: 'Backup (steps in when the handler does not)', informed: 'Kept informed', other: 'Something else' };
 
-async function renderUsecases(root) {
-  const mine = S.renderId;
-  let d;
-  try { d = await api.get('/usecases'); } catch (e) { fill(root, errorBox(e)); return; }
-  if (mine !== S.renderId) return;
-  if (!d.available) { fill(root, h('div', { class: 'card' }, h('div', { class: 'card-b' }, empty('Not set up yet', 'This organisation’s database needs one small update first (core-0027).')))); return; }
-  setTopAction({ label: 'Add a use case', run: () => newUsecaseModal(d) });
-  const again = () => { S.lookups = null; renderUsecases(root); };
-  const records = [...new Set([...d.usecases.map(u => u.record_type), ...Object.keys(d.kinds)])];
-  const ucCard = u => {
-    const save = async (patch, ok) => { try { await api.patch('/usecases/' + u.id, patch); Object.assign(u, patch); if (ok) toast(ok, 'ok'); S.lookups = null; } catch (e) { toast(e.message, 'bad'); } };
-    const name = h('input', { type: 'text', value: u.name, maxlength: 40, 'aria-label': 'Name' }), icon = h('input', { type: 'text', value: u.icon, maxlength: 8, style: { width: '64px' }, 'aria-label': 'Icon' });
-    const desc = h('input', { type: 'text', value: u.description, maxlength: 200, placeholder: 'One line about it', 'aria-label': 'About it' });
-    name.addEventListener('change', () => name.value.trim() && save({ name: name.value.trim() }, 'Renamed'));
-    icon.addEventListener('change', () => save({ icon: icon.value.trim() }));
-    desc.addEventListener('change', () => save({ description: desc.value.trim() }));
-    return h('div', { class: 'card' + (u.is_active ? '' : ' off') },
-      h('div', { class: 'card-h' }, h('span', { style: { fontSize: '20px' } }, u.icon || '•'), h('b', null, u.name), badge('keeps ' + u.record_type.replace(/_/g, ' ') + 's'),
-        h('span', { class: 'sp' }), h('label', { class: 'row small' }, u.is_active ? 'On' : 'Off', switchEl(u.is_active, v => save({ is_active: v }, v ? 'Switched on' : 'Switched off: its flows stay, it leaves the menu'), false, u.name))),
-      h('div', { class: 'card-b stack' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, icon, name), desc,
-        h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: u.keeps_photos, onchange: e => save({ keeps_photos: e.target.checked }, 'Saved') }), 'Its ' + u.record_type.replace(/_/g, ' ') + 's keep the photos people send'),
-        h('div', { class: 'muted small' }, u.flows + ' flow' + (u.flows === 1 ? '' : 's') + ' and ' + u.blocks + ' building block' + (u.blocks === 1 ? '' : 's') + ' are filed under it. A flow is filed in its editor, under “About it”.')));
-  };
-  fill(root,
-    h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: '14px' } }, d.usecases.length ? d.usecases.map(ucCard) : h('div', { class: 'card' }, h('div', { class: 'card-b' }, empty('No use cases yet', 'Add one, like Tickets or Visitors.')))),
-    h('h3', { style: { margin: '24px 0 4px' } }, 'People on a record'),
-    h('div', { class: 'muted small', style: { marginBottom: '10px' } }, 'The kinds of people each kind of record can have. Flows can tell them, and can let them act on their own records. A kind is never deleted, only switched off, because records keep it.'),
-    h('div', { class: 'stack' }, records.map(r => kindsEditor(r, d.kinds[r] || [], d.meanings || Object.keys(MEANING_WORDS), again))));
-}
-
 function kindsEditor(record, kinds, meanings, again) {
   const list = kinds.map(k => ({ ...k })), box = h('div', { class: 'card-b stack s8' }), msg = h('span', { class: 'small muted' });
   const word = record.replace(/_/g, ' ');
@@ -82,47 +52,88 @@ function newUsecaseModal(d) {
     } }] });
 }
 
-// ───────────────────────── Flows, one box per use case ─────────────────────────
-// A flow lives in the box it was made in. The box's switch decides whether the use case is in the chat menu; each flow
-// keeps its own switch. The menu builds itself from this (app/services/menu.py): nothing is written by hand.
-async function renderFlowBoxes(root) {
+// ───────────────────────── Flows and Building blocks, one box per use case ─────────────────────────
+// A flow or block lives in the box it was made in; click it (or Edit) to open it on the canvas. The box's switch decides whether
+// the use case is in the chat menu. The use case's own settings (name, icon, photos, people on a record) are behind ⚙ Settings
+// of its box, so there is no separate Use cases screen. The menu preview calls the same code the chat bot calls.
+const UCB = { open: {}, role: '' };   // use case id -> settings open; the role the preview is for
+
+function ucSettings(u, d, again) {
+  const save = async (patch, ok) => { try { await api.patch('/usecases/' + u.id, patch); Object.assign(u, patch); if (ok) toast(ok, 'ok'); S.lookups = null; } catch (e) { toast(e.message, 'bad'); } };
+  const name = h('input', { type: 'text', value: u.name, maxlength: 40, 'aria-label': 'Name' }), icon = h('input', { type: 'text', value: u.icon, maxlength: 8, style: { width: '64px' }, 'aria-label': 'Icon' });
+  const desc = h('input', { type: 'text', value: u.description, maxlength: 200, placeholder: 'One line about it', 'aria-label': 'About it' });
+  name.addEventListener('change', () => name.value.trim() && save({ name: name.value.trim() }, 'Renamed').then(again));
+  icon.addEventListener('change', () => save({ icon: icon.value.trim() }).then(again));
+  desc.addEventListener('change', () => save({ description: desc.value.trim() }, 'Saved'));
+  const word = u.record_type.replace(/_/g, ' ');
+  return h('div', { class: 'ucb-set stack' },
+    h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, icon, name), desc,
+    h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: u.keeps_photos, onchange: e => save({ keeps_photos: e.target.checked }, 'Saved') }), 'Its ' + word + 's keep the photos people send'),
+    kindsEditor(u.record_type, d.kinds[u.record_type] || [], d.meanings || Object.keys(MEANING_WORDS), again));
+}
+
+async function menuPreview() {
+  const box = h('aside', { class: 'ucb-phone' });
+  const draw = async () => {
+    let m;
+    try { m = await api.get('/menu-preview' + (UCB.role ? '?role_id=' + UCB.role : '')); } catch (e) { fill(box, h('div', { class: 'muted small' }, 'The preview is not available: ' + e.message)); return; }
+    UCB.role = m.role_id || '';
+    const pick = sel(m.roles.map(r => [String(r.id), r.name]), UCB.role, { 'aria-label': 'See the menu as' });
+    pick.addEventListener('change', () => { UCB.role = pick.value; draw(); });
+    fill(box, h('b', { class: 'small' }, 'What people see on WhatsApp'),
+      h('div', { class: 'muted small' }, 'Made by the chat bot’s own code from the switches here. Turn a use case or a flow off and it leaves.'),
+      field('See it as', pick),
+      h('div', { class: 'ucb-dev' }, h('div', { class: 'ucb-bar' }, 'Chat'), h('div', { class: 'ucb-chat' },
+        h('div', { class: 'ucb-b' }, 'What would you like to do?'), h('div', { class: 'ucb-menu' }, '☰ Menu'),
+        m.groups.length ? m.groups.map(g => h('div', { class: 'ucb-sec' }, h('b', null, g.title), g.flows.map(n => h('div', null, n)))) : h('div', { class: 'ucb-sec' }, 'Nothing here for this role.'))));
+  };
+  await draw();
+  return box;
+}
+
+async function renderBoxes(root, kind) {   // kind: 'flows' or 'blocks'
   const mine = S.renderId;
   let d;
   try { [d] = await Promise.all([api.get('/usecases'), ensureStudio()]); } catch (e) { fill(root, errorBox(e)); return; }
   if (mine !== S.renderId) return;
-  const again = async () => { S.lookups = null; await ensureStudio(); if (mine === S.renderId) renderFlowBoxes(root); };
+  const again = async () => { S.lookups = null; await ensureStudio(); if (mine === S.renderId) renderBoxes(root, kind); };
   setTopAction({ label: 'New use case', run: () => newUsecaseModal(d) });
-  const flowsOf = id => ST.flows.filter(w => String(w.usecase_id || '') === String(id || ''));
+  const inBox = id => ST.flows.filter(w => String(w.usecase_id || '') === String(id || ''));
   const moveSel = w => {
     const s = sel([['', 'Move to…'], ...d.usecases.filter(u => String(u.id) !== String(w.usecase_id || '')).map(u => [u.id, (u.icon ? u.icon + ' ' : '') + u.name])], '', { 'aria-label': 'Move ' + w.name + ' to another use case' });
     s.addEventListener('change', async () => { if (!s.value) return; try { await api.put('/workflows/' + w.id + '/usecase', { usecase_id: s.value }); toast('Moved', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } });
     return s;
   };
-  const flowRow = w => h('div', { class: 'ucb-row' + (w.is_active ? '' : ' off') },
+  const row = w => h('div', { class: 'ucb-row' + (w.is_active ? '' : ' off') },
     h('a', { href: '#/workflows?w=' + w.id, class: 'grow' }, w.name),
     w.kind === 'case_action' ? badge('button on a ticket') : null,
     moveSel(w),
+    h('a', { class: 'btn sm', href: '#/workflows?w=' + w.id }, 'Edit'),
     switchEl(w.is_active, async v => { try { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; toast(switchNote(w, v), 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } }, false, w.name));
   const box = u => {
-    const list = flowsOf(u ? u.id : null), flows = list.filter(w => w.kind !== 'block'), blocks = list.filter(w => w.kind === 'block');
-    if (!u && !list.length) return null;
-    const make = kind => () => { FV.intoUsecase = u ? u.id : null; newWorkflowModal(!!S.boot.caps.workflow_kind, kind); };
+    const list = inBox(u ? u.id : null), flows = list.filter(w => w.kind !== 'block'), blocks = list.filter(w => w.kind === 'block');
+    const items = kind === 'flows' ? flows : blocks;
+    if (!u && !items.length) return null;
+    const make = k => () => { FV.intoUsecase = u ? u.id : null; newWorkflowModal(!!S.boot.caps.workflow_kind, k); };
+    const count = kind === 'flows' ? flows.length + ' flow' + (flows.length === 1 ? '' : 's') + ' · ' + blocks.length + ' block' + (blocks.length === 1 ? '' : 's') : blocks.length + ' building block' + (blocks.length === 1 ? '' : 's');
+    const open = u && UCB.open[u.id];
     const head = u
-      ? h('div', { class: 'ucb-h' }, h('span', { class: 'ucb-ic' }, u.icon || '•'), h('b', null, u.name), h('span', { class: 'muted small' }, flows.length + ' flow' + (flows.length === 1 ? '' : 's') + ' · ' + blocks.length + ' block' + (blocks.length === 1 ? '' : 's')),
-          h('span', { class: 'sp' }), h('span', { class: 'muted small' }, u.is_active ? 'In the menu' : 'Off: not in the menu'),
+      ? h('div', { class: 'ucb-h' }, h('span', { class: 'ucb-ic' }, u.icon || '•'), h('b', null, u.name), h('span', { class: 'muted small' }, count),
+          h('span', { class: 'sp' }),
+          h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { UCB.open[u.id] = !open; renderBoxes(root, kind); } }, open ? 'Hide settings' : '⚙ Settings'),
+          h('span', { class: 'muted small' }, u.is_active ? 'In the menu' : 'Off: not in the menu'),
           switchEl(u.is_active, async v => { try { await api.patch('/usecases/' + u.id, { is_active: v }); u.is_active = v; toast(v ? u.name + ' is in the menu again' : u.name + ' left the menu; its flows are kept', 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } }, false, u.name))
       : h('div', { class: 'ucb-h' }, h('b', null, 'Not in a use case yet'), h('span', { class: 'muted small' }, 'Shown in the menu after the use cases. Move each one into its use case.'));
     return h('div', { class: 'card ucb' + (u && !u.is_active ? ' off' : '') }, head,
-      flows.length ? flows.map(flowRow) : h('div', { class: 'ucb-row muted small' }, 'No flows yet.'),
-      blocks.length ? h('details', { class: 'ucb-blocks' }, h('summary', null, 'Building blocks (' + blocks.length + ')'), blocks.map(flowRow)) : null,
-      u ? h('div', { class: 'ucb-row' }, h('button', { class: 'btn sm', type: 'button', onclick: make('workflow') }, '＋ New flow in ' + u.name), h('button', { class: 'btn sm ghost', type: 'button', onclick: make('block') }, '＋ New building block')) : null);
+      open ? ucSettings(u, d, again) : null,
+      items.length ? items.map(row) : h('div', { class: 'ucb-row muted small' }, kind === 'flows' ? 'No flows yet.' : 'No building blocks yet.'),
+      kind === 'flows' && blocks.length ? h('details', { class: 'ucb-blocks' }, h('summary', null, 'Building blocks (' + blocks.length + ')'), blocks.map(row)) : null,
+      u ? h('div', { class: 'ucb-row' }, kind === 'flows' ? [h('button', { class: 'btn sm', type: 'button', onclick: make('workflow') }, '＋ New flow in ' + u.name), h('button', { class: 'btn sm ghost', type: 'button', onclick: make('block') }, '＋ New building block')]
+        : h('button', { class: 'btn sm', type: 'button', onclick: make('block') }, '＋ New building block in ' + u.name)) : null);
   };
-  fill(root, d.usecases.map(box), box(null),
-    h('div', { class: 'muted small', style: { marginTop: '8px' } }, 'The chat menu shows the use cases that are on, with their flows that are on, to the people whose role may use them. Rename use cases and the people on their records in ', h('a', { href: href('usecases') }, 'Use cases'), '.'));
+  const boxes = h('div', { class: 'ucb-main' }, d.usecases.map(box), box(null));
+  fill(root, kind === 'flows' ? h('div', { class: 'ucb-layout' }, boxes, await menuPreview()) : boxes);
 }
-
-SECTIONS.usecases = {
-  title: 'Use cases', sub: 'What the chat bot is used for, like Tickets, Bookings and Visitors, and the people each kind of record can have.',
-  async render(root) { return renderUsecases(root); },
-};
+const renderFlowBoxes = root => renderBoxes(root, 'flows');
+const renderBlockBoxes = root => renderBoxes(root, 'blocks');
 """

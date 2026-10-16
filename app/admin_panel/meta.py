@@ -38,6 +38,12 @@ ADMIN_SECTIONS = {
 ADMIN_TABS = {"cases": {"list", "teams", "reminders"}}
 
 
+def shown_caps(caps: dict[str, bool]) -> dict[str, bool]:
+    """What the screens may offer. Seats (committee positions) are not offered any more: a role does that job, so the
+    dashboard never asks for one. Their rows stay in the database untouched."""
+    return {**caps, "seats": False}
+
+
 def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     """Which screens this org gets. Driven by what its database can do, not by org name.
     The page groups them (js_boot.NAV): Home; Your work (Tickets, Conversations); Your team (People, Roles & access);
@@ -85,8 +91,18 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
     sections.append({"key": "workflows", "label": "Flows"})
     if caps.get("workflow_kind"):
         sections.append({"key": "blocks", "label": "Building blocks"})
-    if caps.get("usecases"):
-        sections.append({"key": "usecases", "label": "Use cases"})
+    if caps.get("schema_editor"):
+        sections.append(
+            {
+                "key": "schema",
+                "label": "Data & schema",
+                "tabs": [
+                    {"key": "types", "label": "Kinds of record"},
+                    {"key": "ai", "label": "Describe a change"},
+                    {"key": "history", "label": "History"},
+                ],
+            }
+        )
     settings: dict = {"key": "settings", "label": "Settings"}
     if caps.get("events") or caps.get("audit"):
         settings["tabs"] = [
@@ -148,9 +164,9 @@ async def bootstrap(ctx: CtxDep):
             "has_logo": org["has_logo"],
             "channel": await people_channel(ctx.source_key),
         },
-        "caps": ctx.caps,
+        "caps": shown_caps(ctx.caps),
         "enums": {**enums, "closed": ctx.closed_values},
-        "sections": _sections(ctx.caps, ctx.level),
+        "sections": _sections(shown_caps(ctx.caps), ctx.level),
         "me": {
             "name": ctx.account_name,
             "email": ctx.account_email,
@@ -210,7 +226,7 @@ async def lookups(ctx: CtxDep):
         )
     )
     seats: list[dict] = []
-    if ctx.caps.get("seats"):
+    if shown_caps(ctx.caps).get("seats"):
         seat_kind = "kind" if ctx.caps.get("seat_kind") else "NULL::text AS kind"
         seats = rows(
             await fetch_all(

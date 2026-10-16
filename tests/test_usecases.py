@@ -79,11 +79,14 @@ def test_no_screen_or_engine_code_names_a_kind_of_person():
     assert not re.search(r"""["'](level2|watcher|helper|requester)["']""", src)
 
 
-def test_the_menu_has_use_cases_under_build_for_a_super_admin_only():
+def test_use_cases_have_no_screen_of_their_own_any_more():
+    """Their settings sit on the Flows and Building blocks boxes; an old #/usecases link goes to Flows."""
+    from app.admin_panel import ui
+
     caps = {"cases": True, "workflow_kind": True, "usecases": True}
-    assert "usecases" in [s["key"] for s in meta._sections(caps)]
-    assert "usecases" not in [s["key"] for s in meta._sections(caps, "admin")]
-    assert "usecases" not in [s["key"] for s in meta._sections({"cases": True})]
+    assert "usecases" not in [s["key"] for s in meta._sections(caps)]
+    assert "SECTIONS.usecases" not in ui.APP_JS
+    assert "r.section === 'usecases'" in ui.APP_JS  # the old link still lands somewhere
 
 
 # ------------------------------------------------------------ the migration

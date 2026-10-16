@@ -98,8 +98,9 @@ def test_every_row_is_checked_before_anything_is_saved(world):
             rows["Ravi Kumar"]["ok"] and rows["Ravi Kumar"]["phone"] == "+919876543210"
         )
         assert (
-            rows["Ravi Kumar"]["role_id"] and len(rows["Ravi Kumar"]["seat_ids"]) == 1
-        )
+            rows["Ravi Kumar"]["role_id"] and rows["Ravi Kumar"]["seat_ids"] == []
+        )  # a Seat column is ignored: seats are not used any more
+        assert not any("seat" in n.lower() for r in rows.values() for n in r["notes"])
         assert (
             not rows["Asha Rao"]["ok"]
             and "already here" in rows["Asha Rao"]["problems"][0]
@@ -121,7 +122,7 @@ def test_every_row_is_checked_before_anything_is_saved(world):
 
 
 @needs_pg
-def test_kept_rows_are_added_with_role_and_seat_and_a_bad_row_does_not_stop_the_rest(
+def test_kept_rows_are_added_with_their_role_seats_are_ignored_and_a_bad_row_does_not_stop_the_rest(
     world,
 ):
     async def work(conn):
@@ -141,54 +142,64 @@ def test_kept_rows_are_added_with_role_and_seat_and_a_bad_row_does_not_stop_the_
                         [seats["Secretary"]],
                     ),
                     row(3, "Asha Again", "ASHA@example.com", roles["member"]),
-                    row(
-                        4,
-                        "Mina Joshi",
-                        "mina@example.com",
-                        roles["member"],
-                        [seats["Secretary"]],
-                    ),
+                    row(4, "Mina Joshi", "mina@example.com", roles["member"]),
                 ]
             ),
         )
         assert [a["name"] for a in out["added"]] == ["Ravi Kumar", "Mina Joshi"]
         assert out["skipped"][0]["line"] == 3
-        holder = await conn.fetchval(
-            "SELECT u.name FROM committee_members m JOIN users u ON u.id = m.user_id "
-            "WHERE m.position_id = $1 AND m.status = 'active'",
+        held = await conn.fetchval(
+            "SELECT count(*) FROM committee_members WHERE position_id = $1 AND status = 'active'",
             seats["Secretary"],
         )
-        assert holder == "Ravi Kumar"  # the seat was taken, so Mina's was left alone
-        assert out["added"][1]["notes"] and "Ravi Kumar" in out["added"][1]["notes"][0]
-        assert (
-            await conn.fetchval(
-                "SELECT count(*) FROM admin_events WHERE area = 'people'"
-            )
-            == 3
+        assert held == 0  # a seat sent by an old screen is ignored
+        role = await conn.fetchval(
+            "SELECT r.name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.email = 'ravi@example.com'"
         )
-
-        out = await people_import.commit(
-            _ctx(),
-            people_import.CommitBody(
-                rows=[
-                    row(
-                        5,
-                        "Sunil Das",
-                        "sunil@example.com",
-                        roles["member"],
-                        [seats["Secretary"]],
-                    )
-                ],
-                replace_seats=True,
-            ),
-        )
-        assert not out["added"][0]["notes"]
-        assert (
-            await conn.fetchval(
-                "SELECT count(*) FROM committee_members WHERE position_id = $1 AND status = 'active'",
-                seats["Secretary"],
-            )
-            == 1
-        )
+        assert role == "committee"
 
     run(world, work)
+
+
+def test_an_excel_file_is_read_like_a_csv():
+    import io
+
+    import openpyxl
+
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["Name", "Email", "Phone", "Role"])
+    sheet.append(
+        ["Asha Rao", "asha@example.test", 9876543210, "owner"]
+    )  # a number typed as a number
+    sheet.append([None, None, None, None])  # an empty row is skipped
+    sheet.append(["Ravi Kumar", "ravi@example.test", "+91 98765 00002", "staff"])
+    buf = io.BytesIO()
+    book.save(buf)
+    columns, rows = people_import.read_upload(xlsx=buf.getvalue())
+    assert set(columns) >= {"name", "email", "phone", "role"}
+    assert [r[columns["phone"]] for r in rows] == ["9876543210", "+91 98765 00002"]
+    assert people_import.read_upload("Name,Email\nA,a@example.test")[1] == [
+        ["A", "a@example.test"]
+    ]
+
+
+def test_a_file_that_is_not_a_csv_or_excel_is_told_in_words():
+    with pytest.raises(ValueError, match="CSV or an Excel"):
+        people_import.read_upload("PK\x03\x04\x00\x00binary")
+    with pytest.raises(ValueError, match="cannot be read"):
+        people_import.read_upload(xlsx=b"not an excel file")
+
+
+def test_the_dashboard_never_offers_seats():
+    from app.admin_panel import meta
+
+    assert meta.shown_caps({"seats": True, "cases": True}) == {
+        "seats": False,
+        "cases": True,
+    }
+    assert "seats" not in [
+        t["key"]
+        for s in meta._sections(meta.shown_caps({"seats": True}))
+        for t in s.get("tabs", [])
+    ]

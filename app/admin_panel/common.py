@@ -83,7 +83,10 @@ SELECT
    AND to_regclass('public.record_people_kinds') IS NOT NULL
    AND EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = 'workflows'
-                  AND column_name = 'usecase_id'))             AS usecases
+                  AND column_name = 'usecase_id'))             AS usecases,
+  (to_regclass('public.record_types') IS NOT NULL
+   AND to_regclass('public.record_fields') IS NOT NULL
+   AND to_regclass('public.schema_changes') IS NOT NULL)      AS schema_editor
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -136,6 +139,9 @@ _CAP_MESSAGES = {
     "flow_triggers": (
         "This organisation's database cannot run flows on a schedule or after another flow yet. "
         "Run migration core-0026 first."
+    ),
+    "schema_editor": (
+        "This organisation's database cannot keep record types yet. Run migration core-0028 first."
     ),
     "usecases": (
         "This organisation's database has no use cases or kinds of people on a record yet. "

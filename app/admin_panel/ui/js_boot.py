@@ -7,11 +7,11 @@ const NAV = [
   ['Your work', ['cases', 'conversations']],
   ['Your team', ['people', 'access']],
   ['Chat bot', ['assistant']],
-  ['Build', ['usecases', 'workflows', 'blocks']],
+  ['Build', ['workflows', 'blocks', 'schema']],
   ['', ['settings']],
 ];
-const SETUP = new Set(['access', 'assistant', 'usecases', 'workflows', 'blocks', 'settings']);
-const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', blocks: 'layers', usecases: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
+const SETUP = new Set(['access', 'assistant', 'workflows', 'blocks', 'schema', 'settings']);
+const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', blocks: 'layers', schema: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
   ['Flow', 'One thing the chat bot can do for people, like filing a complaint.'],
@@ -30,6 +30,7 @@ function openWords(anchor, up) {
 // links and bookmarks from older versions of the dashboard keep working
 function remapRoute(r) {
   const t = r.tab, q = r.q;
+  if (r.section === 'usecases') return { section: 'workflows', tab: '', q: {} };   // the use case settings are on the Flows boxes now
   if (r.section === 'routing') return { section: 'cases', tab: t === 'categories' ? 'categories' : 'teams', q };
   if (r.section === 'rules') return { section: 'cases', tab: t || 'teams', q };   // Case rules is now part of Tickets
   if (r.section === 'people' && t === 'seats') return { section: 'access', tab: 'seats', q };

@@ -43,6 +43,12 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
 SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/usecases"),
+        ("GET", "/menu-preview"),
+        ("GET", "/schema"),
+        ("POST", "/schema/plan"),
+        ("POST", "/schema/apply"),
+        ("POST", "/schema/ai"),
+        ("GET", "/records/{record_type}"),
         ("POST", "/usecases"),
         ("PATCH", "/usecases/{usecase_id}"),
         ("PUT", "/record-kinds/{record_type}"),

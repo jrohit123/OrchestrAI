@@ -10,6 +10,7 @@ A kind's key is what every record stores, so it never changes and is never delet
 off. The kinds the system sets itself (who raised it, who handles it: added = false) keep their meaning and stay on;
 their label and description can still change. Nothing here touches a record or anybody's access."""
 
+import json
 import re
 from typing import Annotated
 from uuid import UUID
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from app.admin_panel.common import Ctx, CtxDep, PanelRoute, log_event, rows, tx
 from app.db import fetch_all, fetch_one
-from app.services import people_kinds
+from app.services import menu, people_kinds
 
 router = APIRouter(
     prefix="/admin/{org_slug}/api/v2", tags=["admin-panel"], route_class=PanelRoute
@@ -302,3 +303,50 @@ async def set_flow_usecase(
             conn=conn,
         )
     return {"ok": True}
+
+
+# ───────────────────────── the chat menu, as one kind of person sees it ─────────────────────────
+
+
+@router.get("/menu-preview")
+async def menu_preview(ctx: CtxDep, role_id: UUID | None = None):
+    """The chat menu the real code builds for someone with this role: the use cases that are on, with their flows that
+    are on and that the role may use. It calls the same code the chat bot calls, so the preview cannot disagree."""
+    roles = rows(
+        await fetch_all(
+            "SELECT id, name FROM roles WHERE org_id = $1 ORDER BY name",
+            ctx.org_id,
+            source_key=ctx.source_key,
+        )
+    )
+    if not roles:
+        return {"roles": [], "role_id": None, "groups": []}
+    pick = next(
+        (r for r in roles if role_id and str(r["id"]) == str(role_id)), roles[0]
+    )
+    got = await fetch_one(
+        "SELECT permissions FROM roles WHERE id = $1 AND org_id = $2",
+        pick["id"],
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    perms = got["permissions"] if got else []
+    if isinstance(perms, str):
+        try:
+            perms = json.loads(perms)
+        except ValueError:
+            perms = []
+    user = {
+        "permissions": list(perms or []),
+        "source_key": ctx.source_key,
+        "org_id": ctx.org_id,
+    }
+    groups = await menu.menu_groups(ctx.org_id, user)
+    return {
+        "roles": roles,
+        "role_id": str(pick["id"]),
+        "groups": [
+            {"title": g["title"], "flows": [w["name"] for w in g["flows"]]}
+            for g in groups
+        ],
+    }

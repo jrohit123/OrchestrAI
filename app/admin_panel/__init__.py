@@ -20,6 +20,7 @@ from app.admin_panel import (
     reminders,
     roles,
     routing,
+    schema,
     studio,
     triggers,
     usecases,
@@ -52,5 +53,6 @@ for _module in (
     whatsapp_flows,
     whatsapp_templates,
     usecases,
+    schema,
 ):
     router.include_router(_module.router)

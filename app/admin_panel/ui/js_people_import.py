@@ -13,20 +13,26 @@ function importPeopleModal(lk) {
 
   // ---- step 1: the file ----
   function stepUpload(message) {
-    const file = h('input', { type: 'file', accept: '.csv,.txt,text/csv', 'aria-label': 'Choose a CSV file' });
+    const file = h('input', { type: 'file', accept: '.csv,.txt,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'aria-label': 'Choose a CSV or Excel file' });
     const paste = h('textarea', { rows: 5, placeholder: 'Or paste the rows here, first row with the column names', 'aria-label': 'Paste CSV text' });
     const code = byNumber ? h('input', { type: 'text', value: savedCode, placeholder: '+91', style: { width: '90px' }, 'aria-label': 'Country code for 10-digit numbers' }) : null;
     const go = h('button', { class: 'btn primary', type: 'button' }, 'Read the file');
     const err = h('div', { class: 'badtx small' }, message || '');
     go.addEventListener('click', async () => {
       err.textContent = '';
-      let text = paste.value;
-      if (file.files[0]) text = await file.files[0].text();
-      if (!text.trim()) { err.textContent = 'Choose a file or paste the rows first.'; return; }
+      let text = paste.value, xlsx = null;
+      const f = file.files[0];
+      if (f && /\.xlsx$/i.test(f.name)) {   // an Excel file goes up as it is; the server reads its first sheet
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        xlsx = btoa(bin);
+      } else if (f && /\.xls$/i.test(f.name)) { err.textContent = 'This is an old Excel file (.xls). Save it as .xlsx or as a CSV, then choose it again.'; return; }
+      else if (f) text = await f.text();
+      if (!xlsx && !text.trim()) { err.textContent = 'Choose a file or paste the rows first.'; return; }
       go.disabled = true; go.textContent = 'Reading…';
       try {
         if (code) { try { localStorage.setItem('panel.countryCode', code.value.trim()); } catch (e) { /* private mode */ } }
-        const r = await api.post('/people/import/preview', { csv_text: text, country: code ? code.value.trim() : '' });
+        const r = await api.post('/people/import/preview', xlsx ? { file_b64: xlsx, file_name: f.name, country: code ? code.value.trim() : '' } : { csv_text: text, country: code ? code.value.trim() : '' });
         rows = r.rows.map(x => ({ ...x, use: x.ok })); holders = r.holders || {};
         stepReview();
       } catch (e) { err.textContent = e.message; go.disabled = false; go.textContent = 'Read the file'; }
@@ -34,7 +40,7 @@ function importPeopleModal(lk) {
     const sample = h('a', { href: '#', onclick: e => { e.preventDefault(); const a = h('a', { href: URL.createObjectURL(new Blob([IMPORT_SAMPLE], { type: 'text/csv' })), download: 'people-sample.csv' }); document.body.append(a); a.click(); a.remove(); } }, 'Download a sample file');
     fill(body,
       h('div', { class: 'stack' },
-        h('div', { class: 'muted small' }, 'One person per row. The first row names the columns: Name and Email are needed; Phone' + (byNumber ? '' : ' (ignored here)') + ', Role and Seat are optional. A person can have several seats, separated by ; in the Seat column. ', sample, '.'),
+        h('div', { class: 'muted small' }, 'One person per row. The first row names the columns: Name and Email are needed; Phone' + (byNumber ? '' : ' (ignored here)') + ' and Role are optional. A CSV or an Excel (.xlsx) file. ', sample, '.'),
         h('div', null, file),
         paste,
         code ? h('div', { class: 'row small' }, h('span', { class: 'muted' }, 'Country code for 10-digit numbers'), code, h('span', { class: 'muted' }, 'Numbers that already start with + are kept as they are.')) : null,
