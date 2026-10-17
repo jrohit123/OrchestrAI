@@ -5,29 +5,29 @@ CSS = r"""
 /* ───── the sign-in pages ───── */
 .lgn{min-height:100vh;display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);background:var(--bg)}
 .lgn-hero{position:relative;overflow:hidden;color:#fff;padding:38px 56px 34px;display:flex;flex-direction:column;gap:24px;
-  background:radial-gradient(640px 460px at 12% 8%,rgba(139,92,246,.55),transparent 62%),radial-gradient(560px 520px at 92% 88%,rgba(20,184,166,.32),transparent 62%),radial-gradient(520px 420px at 78% 0%,rgba(99,102,241,.45),transparent 60%),linear-gradient(160deg,#0e0b2b 0%,#1a1450 52%,#241d78 100%)}
+  background:radial-gradient(640px 460px at 12% 8%,rgba(46,140,240,.40),transparent 62%),radial-gradient(560px 520px at 92% 88%,rgba(37,211,102,.14),transparent 62%),radial-gradient(520px 420px at 78% 0%,rgba(26,111,212,.35),transparent 60%),linear-gradient(160deg,#0A1628 0%,#0f2b52 55%,#1a4a8a 100%)}
 .lgn-hero::before{content:"";position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.055) 1px,transparent 1px);background-size:46px 46px;-webkit-mask-image:radial-gradient(ellipse 80% 70% at 30% 25%,#000 25%,transparent 75%);mask-image:radial-gradient(ellipse 80% 70% at 30% 25%,#000 25%,transparent 75%)}
 .lgn-hero>*{position:relative}
 .lgn-orb{position:absolute!important;border-radius:50%;filter:blur(64px);opacity:.5;pointer-events:none;animation:lgnFloat 14s ease-in-out infinite}
-.lgn-orb.a{width:280px;height:280px;background:#7c3aed;top:-90px;right:10%}
+.lgn-orb.a{width:280px;height:280px;background:#1A6FD4;top:-90px;right:10%}
 .lgn-orb.b{width:240px;height:240px;background:#06b6d4;bottom:-70px;left:6%;animation-delay:-6s;opacity:.32}
 @keyframes lgnFloat{0%,100%{transform:translate(0,0)}50%{transform:translate(26px,-20px)}}
 .lgn-brand{display:flex;align-items:center;gap:11px;font-weight:750;font-size:19px;letter-spacing:-.01em}
-.lgn-mark{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;display:grid;place-items:center;box-shadow:0 10px 26px -8px rgba(99,102,241,.85);flex:none}
+.lgn-mark{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#1A6FD4,#2E8CF0);color:#fff;display:grid;place-items:center;box-shadow:0 10px 26px -8px rgba(26,111,212,.85);flex:none}
 .lgn-hero h1{font-size:clamp(30px,3.1vw,45px);line-height:1.08;letter-spacing:-.03em;max-width:20ch;font-weight:800;color:#fff}
-.lgn-hero h1 em{font-style:normal;background:linear-gradient(90deg,#a5b4fc,#67e8f9);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lgn-hero h1 em{font-style:normal;background:linear-gradient(90deg,#9CCBFF,#2E8CF0);-webkit-background-clip:text;background-clip:text;color:transparent}
 .lgn-lead{color:rgba(255,255,255,.78);font-size:16.5px;max-width:46ch;margin-top:12px}
 .lgn-stage{position:relative;height:320px;max-width:560px;margin-top:4px}
 .lgn-phone{position:absolute;left:0;top:0;width:300px;border-radius:22px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 30px 60px -20px rgba(0,0,0,.6);overflow:hidden;transform:rotate(-2deg)}
 .lgn-phone .hd{display:flex;align-items:center;gap:10px;padding:12px 14px;background:rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.12)}
-.lgn-phone .av{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#06b6d4);display:grid;place-items:center;font-weight:800;flex:none}
+.lgn-phone .av{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#1A6FD4,#2E8CF0);display:grid;place-items:center;font-weight:800;flex:none}
 .lgn-phone .hd b{display:block;font-size:13.5px;line-height:1.2}
 .lgn-phone .hd small{color:rgba(255,255,255,.65);font-size:11.5px}
 .lgn-phone .hd small::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:#34d399;margin-right:5px}
 .lgn-phone .bd{height:232px;padding:12px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
 .lgn-phone .b{max-width:88%;padding:8px 11px;border-radius:14px;font-size:13px;line-height:1.38;animation:lgnPop .3s ease both}
 .lgn-phone .b.in{align-self:flex-start;background:rgba(255,255,255,.14);border-bottom-left-radius:4px}
-.lgn-phone .b.out{align-self:flex-end;background:linear-gradient(135deg,#5b5bf0,#7c5cf5);border-bottom-right-radius:4px}
+.lgn-phone .b.out{align-self:flex-end;background:#1A6FD4;border-bottom-right-radius:4px}
 .lgn-phone .b.typing{display:flex;gap:4px;padding:11px 13px}
 .lgn-phone .b.typing i{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.85);animation:lgnDot 1s infinite}
 .lgn-phone .b.typing i:nth-child(2){animation-delay:.15s}.lgn-phone .b.typing i:nth-child(3){animation-delay:.3s}
@@ -47,12 +47,12 @@ CSS = r"""
 @keyframes lgnBob{0%,100%{translate:0 0}50%{translate:0 -7px}}
 .lgn-points{display:flex;gap:10px 24px;flex-wrap:wrap;margin-top:auto;padding-top:4px}
 .lgn-points div{display:flex;align-items:center;gap:9px;color:rgba(255,255,255,.88);font-size:13.5px}
-.lgn-points .ico{color:#a5b4fc}
+.lgn-points .ico{color:#9CCBFF}
 .lgn-orgs{display:flex;align-items:center;gap:8px;color:rgba(255,255,255,.62);font-size:12.5px}
 .lgn-orgs .logo{width:26px;height:26px;border-radius:8px;font-size:12px;display:grid;place-items:center;background:rgba(255,255,255,.16);color:#fff;font-weight:700}
 .lgn-main{position:relative;display:grid;align-content:center;justify-items:center;gap:18px;padding:44px 24px;background:radial-gradient(700px 420px at 100% 0%,color-mix(in srgb,var(--brand) 11%,transparent),transparent),var(--bg)}
 .lgn-theme{position:absolute;top:16px;right:16px}
-.lgn-mini{display:none;align-items:center;gap:12px;width:100%;max-width:450px;padding:14px 16px;border-radius:16px;color:#fff;background:linear-gradient(135deg,#1a1450,#3b2fb0 70%,#5b3fd6)}
+.lgn-mini{display:none;align-items:center;gap:12px;width:100%;max-width:450px;padding:14px 16px;border-radius:16px;color:#fff;background:linear-gradient(135deg,#0A1628,#1a4a8a 70%,#1A6FD4)}
 .lgn-mini b{display:block}
 .lgn-mini small{color:rgba(255,255,255,.75)}
 .lgn-card{width:100%;max-width:450px;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:var(--sh2);padding:30px 30px 24px;animation:lgnIn .5s cubic-bezier(.2,.8,.2,1) both}
@@ -63,12 +63,15 @@ CSS = r"""
 .lgn-card .notice{margin-bottom:14px;display:flex;gap:8px;align-items:flex-start}
 .lgn-in{position:relative}
 .lgn-in>.ico{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--faint);pointer-events:none}
-.lgn-in input{width:100%;padding:11px 42px 11px 40px;border-radius:12px}
+.lgn-in input{width:100%;padding:11px 42px 11px 40px;border-radius:9px}
+.lgn-by{display:flex;align-items:center;justify-content:center;gap:9px;color:var(--muted);font-size:12.5px}
+.lgn-by .brandchip{padding:5px 9px;border-radius:10px;box-shadow:0 1px 2px rgba(10,22,40,.08)}
+.lgn-by .brandchip img{height:30px}
 .lgn-in input:focus{border-color:var(--brand);box-shadow:0 0 0 4px color-mix(in srgb,var(--brand) 18%,transparent);outline:0}
 .lgn-eye{position:absolute;right:5px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--muted);width:34px;height:34px;border-radius:9px;display:grid;place-items:center}
 .lgn-eye:hover{background:var(--sunken);color:var(--ink)}
 .lgn-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:2px 0 16px;font-size:13px}
-.lgn-card .btn.primary.lgn-go{width:100%;justify-content:center;gap:8px;padding:12px 16px;font-size:15px;font-weight:650;border:0;border-radius:12px;background:linear-gradient(135deg,var(--brand),color-mix(in srgb,var(--brand) 55%,#7c3aed));color:var(--on-brand);box-shadow:0 12px 26px -12px color-mix(in srgb,var(--brand) 80%,transparent);transition:transform .15s,box-shadow .15s}
+.lgn-card .btn.primary.lgn-go{width:100%;justify-content:center;gap:8px;padding:12px 16px;font-size:15px;font-weight:650;border:0;border-radius:12px;background:var(--brand);color:var(--on-brand);box-shadow:0 12px 26px -12px color-mix(in srgb,var(--brand) 80%,transparent);transition:transform .15s,box-shadow .15s}
 .lgn-card .btn.primary.lgn-go:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 16px 30px -12px color-mix(in srgb,var(--brand) 85%,transparent)}
 .lgn-go .ico{transition:transform .15s}
 .lgn-go:hover:not(:disabled) .ico{transform:translateX(3px)}

@@ -196,7 +196,7 @@ const AUTH_CARDS = { signin: signInCard, signup1: signUp1Card, signup2: signUp2C
 // the page around a card: the story on the left (a plain banner on a phone), the card on the right
 function mountAuth(card, name) {
   const mini = h('div', { class: 'lgn-mini' }, h('span', { class: 'lgn-mark' }, icon('spark')), h('div', null, h('b', null, name), h('small', null, 'Your chat bot, under your control.')));
-  fill(document.getElementById('app'), h('div', { class: 'lgn' }, authHero(), h('main', { class: 'lgn-main' }, themeButton(), mini, card)));
+  fill(document.getElementById('app'), h('div', { class: 'lgn' }, authHero(), h('main', { class: 'lgn-main' }, themeButton(), mini, card, poweredBy('lgn-by'))));
   if (!storyOn) { storyOn = true; startStory(q1('.lgn-stage', heroNode)); }
   const target = q1('[data-focus]'); if (target) target.focus();
 }
@@ -224,6 +224,8 @@ async function signOut() {
 }
 
 // a plain, labelled Sign out button in the menu (it is also in the account menu)
+// "Powered by aitamate": under the sign-in card and at the bottom of the menu
+const poweredBy = cls => h('div', { class: cls }, h('span', { class: 'tx' }, 'Powered by'), h('span', { class: 'brandchip' }, h('img', { src: '/admin-assets/aitamate-logo.png', alt: 'aitamate', height: 24 })));
 const signOutButton = () => h('button', { type: 'button', title: 'Sign out', onclick: signOut }, icon('signout'), h('span', { class: 'tx' }, 'Sign out'));
 // the person's button at the bottom of the menu
 function accountChip() {

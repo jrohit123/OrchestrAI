@@ -254,7 +254,8 @@ function superShell() {
     nav, h('div', { class: 'grow' }),
     h('div', { class: 'sidefoot' }, accountChip(), signOutButton(),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
-      h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
+      h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark')),
+      poweredBy('poweredby')));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
     h('div', { class: 'crumbs', id: 'crumbs' }), h('div', { class: 'sp' }), h('span', { id: 'topact' }));

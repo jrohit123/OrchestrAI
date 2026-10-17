@@ -184,7 +184,8 @@ function buildShell(app) {
     h('div', { class: 'sidefoot' }, accountChip(), signOutButton(),
       h('button', { type: 'button', 'data-popkeep': '1', onclick: e => openWords(e.currentTarget, true) }, icon('help'), h('span', { class: 'tx' }, 'Help & words')),
       h('button', { type: 'button', onclick: () => { S.userRail = !S.userRail; applyRail(); } }, icon('panel'), h('span', { class: 'tx' }, 'Collapse menu')),
-      h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark'))));
+      h('button', { type: 'button', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, icon('moon'), h('span', { class: 'tx' }, 'Light / dark')),
+      poweredBy('poweredby')));
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'iconbtn menubtn', type: 'button', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('menu-open') }, icon('list')),
     h('a', { class: 'btn ghost sm sa-back', href: '/admin' }, icon('chevl', 'sm'), isSuper() ? 'All organisations' : 'My organisations'),

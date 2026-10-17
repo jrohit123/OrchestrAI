@@ -6,7 +6,7 @@ import html
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse
 
-from app.admin_panel.ui import APP_CSS, APP_JS, VERSION
+from app.admin_panel.ui import APP_CSS, APP_JS, VERSION, brand
 from app.db import get_all_source_keys
 
 router = APIRouter()
@@ -40,7 +40,7 @@ _SHELL = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="/admin-assets/aitamate-mark.png">
 <link rel="stylesheet" href="/admin-assets/panel.css?v={version}">
 </head>
 <body data-org="{org}">
@@ -59,7 +59,7 @@ _NOT_FOUND = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Page not found</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="/admin-assets/aitamate-mark.png">
 <link rel="stylesheet" href="/admin-assets/panel.css?v={version}">
 </head>
 <body>
@@ -144,6 +144,25 @@ def _asset(request: Request, kind: str, body: str, media_type: str) -> Response:
             headers={**headers, "Content-Encoding": "gzip"},
         )
     return Response(content=body, media_type=media_type, headers=headers)
+
+
+def _image(request: Request, data: bytes) -> Response:
+    """A brand image: cached a day, never changes within a version."""
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/admin-assets/aitamate-logo.png")
+async def aitamate_logo(request: Request):
+    return _image(request, brand.LOGO_PNG)
+
+
+@router.get("/admin-assets/aitamate-mark.png")
+async def aitamate_mark(request: Request):
+    return _image(request, brand.MARK_PNG)
 
 
 @router.get("/admin-assets/panel.css")

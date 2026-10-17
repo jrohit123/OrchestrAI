@@ -3,30 +3,30 @@ the flow canvas. Dark mode is the same tokens redefined, so it is written once a
 
 _LIGHT = r"""
   color-scheme:light;
-  --bg:#f3f4f8; --surface:#ffffff; --surface-2:#f8f9fc; --sunken:#edeff5;
-  --ink:#0f1320; --ink-2:#2f3647; --muted:#5b6578; --faint:#98a1b3;
-  --line:#e3e6ee; --line-2:#cdd3df;
-  --brand:#4338ca; --brand-soft:#eceeff; --brand-line:#c3c8ff; --on-brand:#ffffff;
+  --bg:#F7F9FC; --surface:#ffffff; --surface-2:#F3F7FC; --sunken:#EBF1F8;
+  --ink:#0A1628; --ink-2:#1F2E45; --muted:#5A6A7E; --faint:#94a3b8;
+  --line:#DDE4EE; --line-2:#C9D4E3;
+  --brand:#1A6FD4; --brand-soft:#EBF4FF; --brand-line:#B7D4F5; --on-brand:#ffffff;
   --ok:#15803d; --warn:#a15c07; --bad:#c0262d; --info:#1d4ed8;
   --on-ok:#ffffff; --on-bad:#ffffff;
-  --t-muted:#525c70; --t-ok:#126c34; --t-warn:#8d5006; --t-bad:#b2232a; --t-violet:#7135d8; --t-teal:#096a62; --t-pink:#af1f5f; --t-orange:#a33d08;
-  --k-trigger:#4f46e5; --k-look:#2563eb; --k-save:#059669; --k-tell:#ea580c; --k-approve:#db2777;
-  --k-other:#64748b; --k-block:#0d9488; --k-ai:#7c3aed; --k-stop:#dc2626;
-  --sh1:0 1px 2px rgba(15,19,32,.06);
-  --sh2:0 10px 30px -10px rgba(15,19,32,.22),0 2px 8px rgba(15,19,32,.06);
+  --t-muted:#525c70; --t-ok:#126c34; --t-warn:#8d5006; --t-bad:#b2232a; --t-violet:#0E6A86; --t-teal:#096a62; --t-pink:#af1f5f; --t-orange:#a33d08;
+  --k-trigger:#1A6FD4; --k-look:#2563eb; --k-save:#059669; --k-tell:#ea580c; --k-approve:#db2777;
+  --k-other:#64748b; --k-block:#0d9488; --k-ai:#0891B2; --k-stop:#dc2626;
+  --sh1:0 1px 2px rgba(10,22,40,.06);
+  --sh2:0 10px 30px -10px rgba(10,22,40,.22),0 2px 8px rgba(10,22,40,.06);
 """
 
 _DARK = r"""
   color-scheme:dark;
-  --bg:#0c0f16; --surface:#141923; --surface-2:#10141d; --sunken:#1b2230;
-  --ink:#e8ebf2; --ink-2:#c3c9d6; --muted:#97a1b3; --faint:#6b7587;
-  --line:#242c3b; --line-2:#323c50;
-  --brand:#9aa2ff; --brand-soft:#1d2140; --brand-line:#3a4190; --on-brand:#0c0f16;
-  --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --info:#7cb0ff;
-  --on-ok:#0c0f16; --on-bad:#0c0f16;
-  --t-muted:#97a1b3; --t-ok:#4ade80; --t-warn:#fbbf24; --t-bad:#f87171; --t-violet:#a78bfa; --t-teal:#2dd4bf; --t-pink:#f472b6; --t-orange:#fb923c;
-  --k-trigger:#8b93ff; --k-look:#6aa2ff; --k-save:#34d399; --k-tell:#fb923c; --k-approve:#f472b6;
-  --k-other:#94a3b8; --k-block:#2dd4bf; --k-ai:#a78bfa; --k-stop:#f87171;
+  --bg:#0A1628; --surface:#10213A; --surface-2:#0D1B30; --sunken:#16294A;
+  --ink:#E8EEF7; --ink-2:#C5D2E4; --muted:#93A4BC; --faint:#6B7D96;
+  --line:#1F3354; --line-2:#2A4166;
+  --brand:#5AA6F5; --brand-soft:#132C4F; --brand-line:#24497A; --on-brand:#0A1628;
+  --ok:#4ade80; --warn:#fbbf24; --bad:#fc8f8f; --info:#7cb0ff;
+  --on-ok:#0A1628; --on-bad:#0A1628;
+  --t-muted:#A9B6C9; --t-ok:#4ade80; --t-warn:#fbbf24; --t-bad:#fc8f8f; --t-violet:#67E8F9; --t-teal:#2dd4bf; --t-pink:#f472b6; --t-orange:#fb923c;
+  --k-trigger:#5AA6F5; --k-look:#6aa2ff; --k-save:#34d399; --k-tell:#fb923c; --k-approve:#f472b6;
+  --k-other:#94a3b8; --k-block:#2dd4bf; --k-ai:#22D3EE; --k-stop:#f87171;
   --sh1:0 1px 2px rgba(0,0,0,.4);
   --sh2:0 12px 32px -10px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4);
 """
@@ -84,7 +84,7 @@ _SHELL = r"""
 body.rail .app{--side-w:68px}
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:6px;padding:14px 12px;background:var(--surface);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden;z-index:35}
 .sbrand{display:flex;align-items:center;gap:10px;padding:2px 6px 10px}
-.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--brand),#7c3aed);color:#fff;font-weight:800;display:grid;place-items:center;flex:none;overflow:hidden}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#1A6FD4,#2E8CF0);color:#fff;font-weight:800;display:grid;place-items:center;flex:none;overflow:hidden}
 .logo img{width:100%;height:100%;object-fit:contain;background:#fff}
 .sbrand b{display:block;font-size:14px;line-height:1.2}
 .sbrand small{color:var(--muted);font-size:12px}
@@ -107,6 +107,12 @@ body.rail .app{--side-w:68px}
 .sidefoot a,.sidefoot button{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:10px;border:0;background:none;color:var(--ink-2);font-weight:550;text-align:left;text-decoration:none;white-space:nowrap}
 .sidefoot a:hover,.sidefoot button:hover{background:var(--sunken);text-decoration:none}
 .sidefoot .ico{color:var(--muted)}
+.poweredby{display:flex!important;align-items:center;gap:8px;padding:10px 10px 4px!important;margin-top:4px;border-top:1px solid var(--line);font-size:11.5px;font-weight:500!important;color:var(--muted)!important}
+.poweredby:hover{background:none!important}
+.brandchip{display:inline-flex;align-items:center;background:#fff;border-radius:8px;padding:3px 7px;line-height:0}
+.brandchip img{height:24px;width:auto;display:block}
+body.rail .poweredby .tx{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important}
+body.rail .poweredby .brandchip img{height:18px}
 body.rail .sbrand b,body.rail .sbrand small,body.rail .jump span,body.rail .jump .kbd,body.rail .navtag,body.rail .nav .ct{display:none!important}
 /* the words of the narrow menu are hidden by eye but stay for a screen reader: display:none would leave the icons with no name */
 body.rail .nav .tx,body.rail .sidefoot .tx{position:absolute!important;width:1px!important;height:1px!important;margin:-1px!important;padding:0!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}

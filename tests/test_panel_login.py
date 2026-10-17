@@ -252,6 +252,8 @@ def test_the_page_routes_are_the_known_ones():
         "/admin/{org_slug}",
         "/admin-assets/panel.css",
         "/admin-assets/panel.js",
+        "/admin-assets/aitamate-logo.png",  # Powered by aitamate (public: the sign-in page shows it)
+        "/admin-assets/aitamate-mark.png",  # the browser tab icon
     }
 
 
