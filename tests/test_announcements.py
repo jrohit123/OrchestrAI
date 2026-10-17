@@ -361,3 +361,86 @@ def test_a_planned_announcement_waits_and_can_be_cancelled_or_sent_now(
         assert len((await panel.setup(c))["audiences"]) == 5
 
     run(world, work)
+
+
+FLOW = MIGRATION.with_name("housing-0018_announcement_flow.sql")
+USECASES = """
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
+CREATE TABLE usecases (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL, key text NOT NULL,
+    name text NOT NULL, icon text NOT NULL DEFAULT '', description text NOT NULL DEFAULT '', record_type text,
+    keeps_photos boolean NOT NULL DEFAULT false, sort_order integer NOT NULL DEFAULT 0, is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE workflows ADD COLUMN IF NOT EXISTS workflow_type text, ADD COLUMN IF NOT EXISTS training_phrases jsonb DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS version integer DEFAULT 1, ADD COLUMN IF NOT EXISTS menu_section text,
+    ADD COLUMN IF NOT EXISTS usecase_id uuid, ADD COLUMN IF NOT EXISTS settings jsonb DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS response_template text, ADD COLUMN IF NOT EXISTS slash_command text,
+    ADD COLUMN IF NOT EXISTS command_description text;
+"""
+
+
+@needs_pg
+def test_the_flow_finds_the_people_shows_how_many_and_sends_through_the_same_path(
+    world, monkeypatch
+):
+    from app.services import step_interpreter
+
+    started = []
+    monkeypatch.setattr(ann, "start_now", lambda sk, aid: started.append(aid))
+
+    async def work(conn):
+        _, ids = await _world(conn)
+        await conn.execute(USECASES)
+        await conn.execute(FLOW.read_text(encoding="utf-8"))
+        await conn.execute(FLOW.read_text(encoding="utf-8"))  # twice changes nothing
+        perms = await conn.fetchval(
+            "SELECT permissions FROM roles WHERE name = 'committee'"
+        )
+        assert perms.count("send_announcement") == 1
+        assert "send_announcement" not in await conn.fetchval(
+            "SELECT permissions FROM roles WHERE name = 'owner'"
+        )
+        flow = dict(
+            await conn.fetchrow(
+                "SELECT * FROM workflows WHERE intent_key = 'send_announcement'"
+            )
+        )
+        user = {
+            "org_id": ORG,
+            "source_key": "alpha",
+            "user_id": str(ids["Anil"]),
+            "user_name": "Anil",
+        }
+        fields = {
+            "audience": "everyone who lives here",
+            "message": "Flag hoisting in 15 minutes",
+        }
+        seen = await step_interpreter.run_workflow_steps(
+            flow, fields, user, "+919000000001", dry_run=True
+        )
+        assert seen["status"] == "preview"
+        assert seen["preview"][0].startswith(
+            "Goes to 4 people: Anil, Farah, Ghost, Lata"
+        )
+        assert (
+            await conn.fetchval("SELECT count(*) FROM announcements") == 0
+        )  # a preview sends nothing
+        done = await step_interpreter.run_workflow_steps(
+            flow, fields, user, "+919000000001"
+        )
+        assert done["status"] == "done"
+        a = await conn.fetchrow("SELECT * FROM announcements")
+        assert (
+            a["body"] == "Flag hoisting in 15 minutes"
+            and a["audience_name"] == "Everyone who lives here"
+        )
+        assert a["created_by"] == "chat bot · Anil" and started == [a["id"]]
+        bad = await step_interpreter.run_workflow_steps(
+            flow,
+            {**fields, "audience": "martians"},
+            user,
+            "+919000000001",
+            dry_run=True,
+        )
+        assert "no ready choice called “martians”" in str(bad)
+
+    run(world, work)

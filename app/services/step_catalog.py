@@ -425,6 +425,58 @@ STEP_TYPES: list[dict] = [
         ],
     },
     {
+        "op": "people.find",
+        "label": "Find people by flat or role",
+        "group": "Look up and check",
+        "help": "Finds the people an announcement is for: a ready choice (for example Everyone who lives here) or ticks for living here, relation, primary member, wing and role. Keeps them, with how many they are, for the steps after.",
+        "params": [
+            {
+                "key": "audience",
+                "label": "Ready choice",
+                "kind": "value",
+                "help": "The name of a ready choice from the Announcements screen, or $fields.audience for what the person picked.",
+            },
+            {
+                "key": "filters",
+                "label": "Or the ticks",
+                "kind": "map_value",
+                "keys": "free",
+                "advanced": True,
+                "help": "lives (here, away), relations, primary (any, only, not), wings, roles. Used when no ready choice is named.",
+            },
+            {"key": "into", "label": "Call it", "kind": "alias", "default": "people"},
+        ],
+        "makes": "alias",
+    },
+    {
+        "op": "notify.group",
+        "label": "Send to a group",
+        "group": "Tell people",
+        "help": "Sends a message to the people found by “Find people”, in the background: WhatsApp's 24-hour rule and your approved template are handled, and who got it shows on the Announcements screen.",
+        "params": [
+            {
+                "key": "people",
+                "label": "The people",
+                "kind": "value",
+                "default": "$people",
+            },
+            {
+                "key": "message",
+                "label": "Message",
+                "kind": "value",
+                "required": True,
+                "help": "Usually $fields.message: what the person wrote.",
+            },
+            {"key": "title", "label": "Heading", "kind": "value", "advanced": True},
+            {
+                "key": "greet",
+                "label": "Start with Dear first name",
+                "kind": "bool",
+                "advanced": True,
+            },
+        ],
+    },
+    {
         "op": "notify.parties",
         "label": "Tell everyone on the case",
         "group": "Tell people",
@@ -504,6 +556,7 @@ STEP_BY_OP = {t["op"]: t for t in STEP_TYPES}
 ALIAS_MAKERS = {
     "case.categorize": ("into", "category", ("category_id", "category_label")),
     "case.route": ("into", "route", ("assigned_name", "route_minutes")),
+    "people.find": ("into", "people", ("people_count",)),
 }
 # aliases the engine also accepts, shown but never offered when adding a step
 LEGACY_OPS = {"sheets.insert_row", "sheets.update_row", "sheets.delete_row"}

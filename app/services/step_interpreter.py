@@ -34,6 +34,7 @@ import re
 
 from app.db import fetch_all, fetch_one
 from app.logging_config import bind_context, get_context_logger
+from app.services.announce_ops import ANNOUNCE_PRIMITIVES
 from app.services.case_ops import CASE_PRIMITIVES
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.otp_service import generate_and_send_otp
@@ -1955,6 +1956,9 @@ PRIMITIVES = {
     "run_workflow": _op_run_workflow,  # run another workflow as one step
 }
 PRIMITIVES.update(CASE_PRIMITIVES)  # the steps that know about cases (case_ops.py)
+PRIMITIVES.update(
+    ANNOUNCE_PRIMITIVES
+)  # find people by flat and send to a group (announce_ops.py)
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
