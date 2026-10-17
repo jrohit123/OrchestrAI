@@ -60,6 +60,10 @@ GROUPS: dict[str, tuple[str, str]] = {
         "Reminders about tickets",
         "Sent by the reminder plans at a share of a ticket's time to fix: a nudge to the person handling it, a note to the backup, a hand-over when nobody acted, an update to the person who raised it.",
     ),
+    "announce": (
+        "Announcements",
+        "The words around a message sent to many people at once from the Announcements screen.",
+    ),
     "error": ("Errors", "When something goes wrong."),
 }
 
@@ -121,6 +125,9 @@ VALUES: dict[str, tuple[str, str]] = {
     "total": ("how many approval levels there are", "3"),
     "ttl": ("how long a verified session lasts", "8h"),
     "wait_seconds": ("how many seconds to wait", "30"),
+    "first_name": ("the first name of the person it is for", "Rajeswari"),
+    "title": ("the heading of the announcement", "Flag hoisting"),
+    "file_name": ("the name of the attached file", "AGM-minutes-2026.pdf"),
 }
 
 _MESSAGES = [
@@ -1084,6 +1091,51 @@ _MESSAGES = [
         "🔴 {ticket} is still open after {open_for}. It is with {handler}.",
         values={n: VALUES[n][0] for n in ["ticket", "open_for", "handler"]},
         example={n: VALUES[n][1] for n in ["ticket", "open_for", "handler"]},
+    ),
+    Msg(
+        "announce.greeting",
+        "announce",
+        "Greeting",
+        "The first line of an announcement when “Start with Dear first name” is ticked.",
+        "Dear {first_name},",
+        values={n: VALUES[n][0] for n in ["first_name"]},
+        example={n: VALUES[n][1] for n in ["first_name"]},
+    ),
+    Msg(
+        "announce.sign_off",
+        "announce",
+        "Signed by",
+        "The last line of every announcement.",
+        "— {org_name} committee",
+        values={n: VALUES[n][0] for n in ["org_name"]},
+        example={n: VALUES[n][1] for n in ["org_name"]},
+    ),
+    Msg(
+        "announce.email_subject",
+        "announce",
+        "Email subject",
+        "The subject of the email sent to someone with no WhatsApp number.",
+        "📢 {title} · {org_name}",
+        values={n: VALUES[n][0] for n in ["title", "org_name"]},
+        example={n: VALUES[n][1] for n in ["title", "org_name"]},
+    ),
+    Msg(
+        "announce.file_emailed",
+        "announce",
+        "The file was emailed",
+        "Added under the announcement when the person's WhatsApp is closed and the attached file was emailed to them.",
+        "📎 The file {file_name} was sent to your email.",
+        values={n: VALUES[n][0] for n in ["file_name"]},
+        example={n: VALUES[n][1] for n in ["file_name"]},
+    ),
+    Msg(
+        "announce.file_ask",
+        "announce",
+        "The file could not be sent",
+        "Added under the announcement when the person's WhatsApp is closed and they have no email, so the attached file could not reach them.",
+        "📎 This came with a file ({file_name}). Ask the committee for a copy.",
+        values={n: VALUES[n][0] for n in ["file_name"]},
+        example={n: VALUES[n][1] for n in ["file_name"]},
     ),
 ]
 MESSAGES: dict[str, Msg] = {m.key: m for m in _MESSAGES}

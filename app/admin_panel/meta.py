@@ -32,6 +32,7 @@ ADMIN_SECTIONS = {
     "overview",
     "cases",
     "conversations",
+    "announcements",
     "people",
 }  # what an admin (not a super admin) sees
 # the tabs an admin sees inside those screens (a screen not listed here keeps all its tabs)
@@ -69,6 +70,8 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         sections.append({"key": "cases", "label": "Tickets", "tabs": tabs})
     if caps.get("audit"):
         sections.append({"key": "conversations", "label": "Conversations"})
+    if caps.get("announcements"):
+        sections.append({"key": "announcements", "label": "Announcements"})
     sections.append({"key": "people", "label": "People"})
     access_tabs = [{"key": "roles", "label": "Roles"}]
     if caps.get("seats"):
@@ -253,6 +256,10 @@ async def lookups(ctx: CtxDep):
             ctx, "residents", "residential_status"
         )
         enums["resident_statuses"] = await check_values(ctx, "residents", "status")
+        if ctx.caps.get("flat_people"):
+            enums["resident_relations"] = await check_values(
+                ctx, "residents", "relation"
+            )
     if ctx.caps.get("seat_kind"):
         enums["seat_kinds"] = await check_values(ctx, "committee_positions", "kind")
     usecases: list[dict] = []

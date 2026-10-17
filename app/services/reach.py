@@ -466,8 +466,10 @@ async def hold(
     sender: dict | None = None,
     settings: dict | None = None,
     replace: str | None = None,
+    track: dict | None = None,
 ) -> dict:
-    """The door is closed: keep the message, email it, and word what to tell the person who asked."""
+    """The door is closed: keep the message, email it, and word what to tell the person who asked. `track` is
+    carried with the kept message and handed back when it is finally sent (an announcement notes it)."""
     if settings is None:
         settings = await config_store.org_settings(source_key, org_id)
     person = await person_by_phone(to, source_key, org_id)
@@ -488,6 +490,7 @@ async def hold(
             "org_id": str(org_id),
             "org_name": org_name,
             "replace": replace,
+            "track": track,
         },
         settings,
     )
@@ -527,6 +530,7 @@ async def deliver_text(
     org_name: str = "",
     sender: dict | None = None,
     replace: str | None = None,
+    track: dict | None = None,
 ) -> dict:
     """Send `text` to a person who did not just write to the bot (a flow's "tell this person", a
     scheduled report). {"status": "sent"} or {"status": "held", "note": <what to tell the sender>}."""
@@ -551,7 +555,7 @@ async def deliver_text(
         return {"status": "sent", "answer": answer, "note": None}
     return await hold(
         to, text, source_key=source_key, org_id=org_id, org_name=org_name,
-        sender=sender, settings=settings, replace=replace,
+        sender=sender, settings=settings, replace=replace, track=track,
     )  # fmt: skip
 
 
@@ -662,12 +666,19 @@ async def deliver_waiting(phone: str, source_key: str, org_id) -> int:
             else item["text"]
         )
     try:
-        await _send_with_got_it(phone, "\n\n".join(lines), source_key, settings)
+        answer = await _send_with_got_it(
+            phone, "\n\n".join(lines), source_key, settings
+        )
     except Exception as e:
         logger.error(f"reach: could not send the kept messages to {_last4(phone)}: {e}")
         for item in items:  # keep them for the next time
             await _keep(phone, item, settings)
         return 0
+    if any(item.get("track") for item in items):
+        from app.services import announcements
+
+        for item in items:
+            await announcements.delivered_later(item.get("track"), answer)
     told: set = set()
     for item in items:
         mark = (item.get("sender_phone"), item.get("person_name"))

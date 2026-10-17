@@ -1,24 +1,31 @@
 JS = r"""
-// ───────────────────────── Import people from a CSV file ─────────────────────────
-// Step 1 choose the file, step 2 check every row and set each person's role and seats in a list (nothing is saved yet),
-// step 3 the result. The same screen for a super admin and an admin; the server checks every row again.
-const IMPORT_SAMPLE = 'Name,Email,Phone,Role,Seat\nAsha Rao,asha@example.com,+919876543210,Tenant,\nVikram Shah,vikram@example.com,+919812345678,Committee,Secretary\n';
+// ───────────────────────── Import people (and their flats) from a file ─────────────────────────
+// Step 1 choose the file. Step 2 check: people already here are found (by number, then email) and only what differs is
+// listed, each change with a tick (on, unless it needs a look); new people get a role. Nothing is saved until Save.
+// Step 3 the result. The server works the plan out again when saving, so the screen is never trusted.
+const IMPORT_SAMPLE = 'Name,Phone,Email,Wing,Flat,Relation,Primary member,Lives here,Role\n' +
+  'Asha Rao,+919876543210,asha@example.com,A,101,Owner,Yes,Yes,Owner\n' +
+  'Ravi Rao,+919876543211,,A,101,Owner\'s family,No,Yes,Owner\n' +
+  'Vikram Shah,+919812345678,vikram@example.com,B,204,Tenant,No,Yes,Tenant\n' +
+  'Asha Rao,+919876543210,asha@example.com,C,302,Owner,Yes,No,Owner\n';
+const IMP_STATUS = { new: ['New', 'brand'], update: ['Filled in or changed', 'info'], check: ['Please check', 'warn'], same: ['Already the same', 'ok'], skip: ['Left out', 'bad'] };
 function importPeopleModal(lk) {
   const byNumber = (S.boot.org.channel || 'telegram') !== 'telegram';
-  const hasSeats = (lk.seats || []).length > 0;
+  const flats = !!S.boot.caps.flat_people;
   const body = h('div', { class: 'imp' });
   const m = modal({ xwide: true, title: 'Import people from a file', body });
-  let rows = [], holders = {}, replace = false;
-  const savedCode = (() => { try { return localStorage.getItem('panel.countryCode') || ''; } catch (e) { return ''; } })();
+  const savedCode = (() => { try { return localStorage.getItem('panel.countryCode') || '+91'; } catch (e) { return '+91'; } })();
+  let plan = null;
 
   // ---- step 1: the file ----
   function stepUpload(message) {
+    m.setTitle('Import people from a file');
     const file = h('input', { type: 'file', accept: '.csv,.txt,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'aria-label': 'Choose a CSV or Excel file' });
-    const paste = h('textarea', { rows: 5, placeholder: 'Or paste the rows here, first row with the column names', 'aria-label': 'Paste CSV text' });
+    const paste = h('textarea', { rows: 4, placeholder: 'Or paste the rows here, first row with the column names', 'aria-label': 'Paste CSV text' });
     const code = byNumber ? h('input', { type: 'text', value: savedCode, placeholder: '+91', style: { width: '90px' }, 'aria-label': 'Country code for 10-digit numbers' }) : null;
-    const go = h('button', { class: 'btn primary', type: 'button' }, 'Read the file');
+    const goBtn = h('button', { class: 'btn primary', type: 'button' }, 'Read the file');
     const err = h('div', { class: 'badtx small' }, message || '');
-    go.addEventListener('click', async () => {
+    goBtn.addEventListener('click', async () => {
       err.textContent = '';
       let text = paste.value, xlsx = null;
       const f = file.files[0];
@@ -29,106 +36,108 @@ function importPeopleModal(lk) {
       } else if (f && /\.xls$/i.test(f.name)) { err.textContent = 'This is an old Excel file (.xls). Save it as .xlsx or as a CSV, then choose it again.'; return; }
       else if (f) text = await f.text();
       if (!xlsx && !text.trim()) { err.textContent = 'Choose a file or paste the rows first.'; return; }
-      go.disabled = true; go.textContent = 'Reading…';
+      goBtn.disabled = true; goBtn.textContent = 'Reading…';
       try {
         if (code) { try { localStorage.setItem('panel.countryCode', code.value.trim()); } catch (e) { /* private mode */ } }
-        const r = await api.post('/people/import/preview', xlsx ? { file_b64: xlsx, file_name: f.name, country: code ? code.value.trim() : '' } : { csv_text: text, country: code ? code.value.trim() : '' });
-        rows = r.rows.map(x => ({ ...x, use: x.ok })); holders = r.holders || {};
+        plan = await api.post('/people/import/preview', xlsx ? { file_b64: xlsx, file_name: f.name, country: code ? code.value.trim() : '' } : { csv_text: text, country: code ? code.value.trim() : '' });
         stepReview();
-      } catch (e) { err.textContent = e.message; go.disabled = false; go.textContent = 'Read the file'; }
+      } catch (e) { err.textContent = e.message; goBtn.disabled = false; goBtn.textContent = 'Read the file'; }
     });
     const sample = h('a', { href: '#', onclick: e => { e.preventDefault(); const a = h('a', { href: URL.createObjectURL(new Blob([IMPORT_SAMPLE], { type: 'text/csv' })), download: 'people-sample.csv' }); document.body.append(a); a.click(); a.remove(); } }, 'Download a sample file');
-    fill(body,
-      h('div', { class: 'stack' },
-        h('div', { class: 'muted small' }, 'One person per row. The first row names the columns: Name and Email are needed; Phone' + (byNumber ? '' : ' (ignored here)') + ' and Role are optional. A CSV or an Excel (.xlsx) file. ', sample, '.'),
-        h('div', null, file),
-        paste,
-        code ? h('div', { class: 'row small' }, h('span', { class: 'muted' }, 'Country code for 10-digit numbers'), code, h('span', { class: 'muted' }, 'Numbers that already start with + are kept as they are.')) : null,
-        err,
-        h('div', { class: 'row' }, go)));
+    fill(body, h('div', { class: 'stack' },
+      h('div', { class: 'small' }, h('b', null, 'One row per person' + (flats ? ' per flat' : '') + '. '),
+        'Columns: Name, Phone' + (byNumber ? '' : ' (ignored here)') + ', Email' + (flats ? ', Wing, Flat, Relation (Owner, Co-owner, Owner\'s family, Tenant, Tenant\'s family), Primary member (Yes/No), Lives here (Yes/No)' : '') + ', Role. ',
+        flats ? 'Someone with two flats gets two rows with the same number. ' : '', 'A CSV or an Excel (.xlsx) file. ', sample, '.'),
+      notice('People already here are found by their number (or email) and only filled in: nobody is added twice, an empty cell never removes anything, and people who are not in the file are left as they are. You check every change before it is saved.', 'info'),
+      h('div', null, file),
+      paste,
+      code ? h('div', { class: 'row small' }, h('span', { class: 'muted' }, 'Country code for 10-digit numbers'), code, h('span', { class: 'muted' }, 'Numbers that already start with + are kept as they are.')) : null,
+      err,
+      h('div', { class: 'row' }, goBtn)));
   }
 
-  // ---- step 2: check and assign ----
-  function seatButton(r) {
-    const b = h('button', { class: 'btn sm', type: 'button', 'data-popkeep': '1' });
-    const label = () => { b.textContent = r.seat_ids.length ? r.seat_ids.map(id => (lk.seats.find(s => s.id === id) || {}).name).filter(Boolean).join(', ') : 'No seat'; };
-    b.addEventListener('click', e => {
-      const list = h('div', { class: 'stack', style: { padding: '6px', maxHeight: '260px', overflow: 'auto' } }, lk.seats.map(s => {
-        const cb = h('input', { type: 'checkbox', checked: r.seat_ids.includes(s.id) });
-        cb.addEventListener('change', () => { r.seat_ids = cb.checked ? [...r.seat_ids, s.id] : r.seat_ids.filter(x => x !== s.id); label(); });
-        return h('label', { class: 'row small' }, cb, h('span', null, s.name), holders[s.id] ? h('span', { class: 'muted' }, ' · held by ' + holders[s.id]) : null);
-      }));
-      openPop(e.currentTarget, list, { width: 280 });
-    });
-    label();
-    return b;
-  }
+  // ---- step 2: check ----
   function stepReview() {
-    const roleOptions = [['', 'Choose a role…'], ...lk.roles.map(r => [r.id, roleLabel(r.name)])];
-    const bulkRole = sel(roleOptions, '', { 'aria-label': 'Role to give' });
-    const summary = h('div', { class: 'muted small' });
-    const tbody = h('tbody');
-    const countReady = () => rows.filter(r => r.use && r.role_id).length;
-    const addBtn = h('button', { class: 'btn primary', type: 'button' });
-    const refreshSummary = () => {
-      const bad = rows.filter(r => !r.ok).length, noRole = rows.filter(r => r.use && !r.role_id).length;
-      fill(summary, rows.length + ' rows read. ' + (bad ? bad + ' have a problem and are left out. ' : '') + (noRole ? noRole + ' still need a role.' : ''));
-      addBtn.textContent = 'Add ' + countReady() + ' ' + (countReady() === 1 ? 'person' : 'people'); addBtn.disabled = !countReady();
-    };
-    const drawRows = () => {
-      fill(tbody, rows.map(r => {
-        const use = h('input', { type: 'checkbox', checked: r.use, disabled: !r.ok, 'aria-label': 'Add ' + r.name });
-        use.addEventListener('change', () => { r.use = use.checked; refreshSummary(); });
-        const role = sel(roleOptions, r.role_id || '', { 'aria-label': 'Role for ' + r.name, disabled: !r.ok });
-        role.addEventListener('change', () => { r.role_id = role.value || null; refreshSummary(); tr.classList.toggle('needs', r.use && !r.role_id); });
-        const flags = [...r.problems.map(p => badge(p, 'bad')), ...r.notes.map(n => h('div', { class: 'muted small' }, n))];
-        const tr = h('tr', { class: r.ok ? (r.use && !r.role_id ? 'needs' : '') : 'off' },
-          h('td', null, use), h('td', { class: 'muted' }, r.line),
-          h('td', null, h('b', null, r.name || '—'), h('div', { class: 'muted small' }, r.email + (r.phone ? ' · ' + r.phone : ''))),
-          h('td', null, r.ok ? role : h('span', { class: 'muted' }, '—')),
-          hasSeats ? h('td', null, r.ok ? seatButton(r) : h('span', { class: 'muted' }, '—')) : null,
-          h('td', null, flags.length ? flags : badge('Ready', 'ok')));
-        return tr;
-      }));
-    };
-    const apply = (onlyEmpty) => {
-      if (!bulkRole.value) { toast('Choose the role to give first.', 'bad'); return; }
-      rows.forEach(r => { if (r.ok && r.use && (!onlyEmpty || !r.role_id)) r.role_id = bulkRole.value; });
-      drawRows(); refreshSummary();
-    };
-    const all = h('input', { type: 'checkbox', checked: true, 'aria-label': 'Select every row' });
-    all.addEventListener('change', () => { rows.forEach(r => { if (r.ok) r.use = all.checked; }); drawRows(); refreshSummary(); });
-    const rep = hasSeats ? h('label', { class: 'row small' }, h('input', { type: 'checkbox', onchange: e => { replace = e.target.checked; } }), h('span', null, 'If a seat already has someone, replace them (the earlier holder is kept in the history).')) : null;
-    const err = h('span', { class: 'badtx small' });
-    addBtn.addEventListener('click', async () => {
-      err.textContent = '';
-      const send = rows.filter(r => r.use && r.role_id);
-      if (rows.some(r => r.use && !r.role_id)) { err.textContent = 'Give every ticked person a role, or untick them.'; return; }
-      addBtn.disabled = true; addBtn.textContent = 'Adding…';
+    m.setTitle('Check before saving');
+    const skip = new Set(), use = new Set(), roles = {}, relations = {};
+    let show = '';
+    plan.people.forEach(p => { if (p.role_id) roles[p.key] = p.role_id; });
+    const roleOptions = [['', 'Choose a role…'], ...plan.roles.map(r => [r.id, roleLabel(r.name)])];
+    const isOn = c => c.needs_relation ? !!relations[c.line] : skip.has(c.id) ? false : (c.use || use.has(c.id));
+    const setOn = (c, on) => { if (c.use) { on ? skip.delete(c.id) : skip.add(c.id); } else { on ? use.add(c.id) : use.delete(c.id); } };
+    const chips = h('div', { class: 'chips' }), list = h('div', { class: 'stack s8' }), saveBtn = h('button', { class: 'btn primary', type: 'button' }), err = h('span', { class: 'badtx small' });
+    const counts = plan.counts;
+    const picked = () => plan.people.reduce((n, p) => n + (p.status === 'skip' ? 0 : p.changes.filter(isOn).length), 0);
+    const needsRole = () => plan.people.filter(p => !p.match && p.status !== 'skip' && p.changes.some(c => c.kind === 'new' && isOn(c)) && !roles[p.key]);
+    function drawChips() {
+      const chip = (k, label, n) => h('button', { type: 'button', class: 'chip' + (show === k ? ' on' : ''), onclick: () => { show = k; drawChips(); drawList(); } }, label + ' ', h('span', { style: { opacity: .7 } }, n));
+      fill(chips, chip('', 'Everyone', plan.people.length + plan.skipped.length),
+        Object.entries(IMP_STATUS).filter(([k]) => counts[k]).map(([k, [label]]) => chip(k, label, counts[k])));
+    }
+    function drawSave() {
+      const n = picked(), missing = needsRole().length;
+      saveBtn.textContent = n ? 'Save ' + plural(n, 'change') : 'Nothing to save';
+      saveBtn.disabled = !n;
+      fill(err, missing ? plural(missing, 'new person', 'new people') + ' still need a role.' : '');
+    }
+    function changeRow(p, c) {
+      const cb = h('input', { type: 'checkbox', checked: isOn(c), disabled: p.status === 'skip' || c.needs_relation, 'aria-label': 'Save: ' + c.label });
+      cb.addEventListener('change', () => { setOn(c, cb.checked); drawSave(); });
+      let what;
+      if (c.needs_relation) {
+        const rs = sel([['', 'Pick how they are linked…'], ...(c.relations || plan.relations)], relations[c.line] || '', { 'aria-label': 'Relation for ' + c.label });
+        rs.addEventListener('change', () => { if (rs.value) relations[c.line] = rs.value; else delete relations[c.line]; cb.checked = !!rs.value; drawSave(); });
+        what = h('div', null, rs, c.warn ? h('div', { class: 'warn' }, c.warn) : null);
+      } else {
+        what = h('div', null, c.old ? [h('span', { class: 'old' }, c.old), ' → '] : null, h('b', null, c.new || ''), c.old === null && c.kind !== 'new' ? h('span', { class: 'muted' }, c.kind === 'flat' ? ' (new flat)' : ' (was empty)') : null,
+          c.warn ? h('div', { class: 'warn' }, c.warn) : null);
+      }
+      return h('div', { class: 'imp-change' }, cb, h('span', { class: 'muted' }, c.kind === 'flat' ? 'Flat ' + c.label : c.label), what);
+    }
+    function drawList() {
+      const people = plan.people.filter(p => !show || p.status === show);
+      const out = people.map(p => {
+        const role = !p.match && p.status !== 'skip' ? sel(roleOptions, roles[p.key] || '', { 'aria-label': 'Role for ' + p.name }) : null;
+        if (role) role.addEventListener('change', () => { if (role.value) roles[p.key] = role.value; else delete roles[p.key]; drawSave(); });
+        return h('div', { class: 'imp-person' + (p.status === 'skip' ? ' off' : '') },
+          h('div', { class: 'row' }, h('b', null, p.name || '(no name)'), badge(...IMP_STATUS[p.status]),
+            p.match && p.match.name !== p.name ? h('span', { class: 'muted small' }, 'found: ' + p.match.name) : null,
+            h('span', { class: 'muted small' }, (p.phone || '') + (p.email ? ' · ' + p.email : '') + ' · line ' + p.lines.join(', ')),
+            h('span', { class: 'sp' }), role ? h('span', { class: 'row small' }, 'Role', role) : null),
+          p.changes.map(c => changeRow(p, c)),
+          p.status === 'same' ? h('div', { class: 'muted small' }, 'Nothing to change.') : null,
+          p.problems.map(x => h('div', { class: 'small', style: { color: 'var(--t-bad)' } }, x)),
+          p.notes.map(x => h('div', { class: 'muted small' }, x)));
+      });
+      if (!show || show === 'skip') out.push(...plan.skipped.map(s => h('div', { class: 'imp-person off' }, h('div', { class: 'row' }, h('b', null, s.name), badge('Left out', 'bad'), h('span', { class: 'muted small' }, 'line ' + s.line)), h('div', { class: 'small' }, s.reason))));
+      fill(list, out.length ? out : h('div', { class: 'muted' }, 'Nobody here.'));
+    }
+    saveBtn.addEventListener('click', async () => {
+      if (needsRole().length) { toast('Give every new person a role, or untick them.', 'bad'); return; }
+      const allSkip = [], allUse = [];
+      plan.people.forEach(p => p.changes.forEach(c => { if (c.needs_relation) return; if (c.use && !isOn(c)) allSkip.push(c.id); if (!c.use && isOn(c)) allUse.push(c.id); }));
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
       try {
-        const r = await api.post('/people/import/commit', { rows: send.map(x => ({ line: x.line, name: x.name, email: x.email, phone: x.phone, role_id: x.role_id, seat_ids: x.seat_ids })), replace_seats: replace });
+        const r = await api.post('/people/import/commit', { entries: plan.entries, skip: allSkip, use: allUse, roles, relations });
         stepDone(r);
-      } catch (e) { err.textContent = e.message; refreshSummary(); }
+      } catch (e) { fill(err, e.message); drawSave(); }
     });
     fill(body, h('div', { class: 'stack' },
-      summary,
-      h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Give everyone ticked'), bulkRole,
-        h('button', { class: 'btn sm', type: 'button', onclick: () => apply(true) }, 'only those without a role'), h('button', { class: 'btn sm', type: 'button', onclick: () => apply(false) }, 'all ticked rows')),
-      h('div', { class: 'tablewrap' }, h('table', { class: 't imp-t' },
-        h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Line'), h('th', null, 'Person'), h('th', null, 'Role'), hasSeats ? h('th', null, 'Seats') : null, h('th', null, 'Check'))), tbody)),
-      rep,
-      h('div', { class: 'row between' }, h('button', { class: 'btn', type: 'button', onclick: () => stepUpload() }, 'Choose another file'), h('span', { class: 'row' }, err, addBtn))));
-    drawRows(); refreshSummary();
+      h('div', { class: 'small' }, plural(plan.entries.length, 'row') + ' read. ', h('b', null, plural(counts.new, 'new person', 'new people')), ', ' + counts.update + ' filled in or changed, ' + counts.same + ' already the same' + (counts.check ? ', ' + counts.check + ' to check' : '') + (counts.skip ? ', ' + counts.skip + ' left out' : '') + '.'),
+      plan.flats ? null : (plan.columns.some(c => ['flat', 'wing', 'relation'].includes(c)) ? notice('This organisation does not keep flats yet, so the flat columns are left out.', 'warn') : null),
+      h('div', { class: 'muted small' }, 'Ticked changes are saved. A different value in the file wins over the saved one, unless it is marked to check.'),
+      chips, h('div', { class: 'imp-list' }, list),
+      h('div', { class: 'row between' }, h('button', { class: 'btn', type: 'button', onclick: () => stepUpload() }, 'Choose another file'), h('span', { class: 'row' }, err, saveBtn))));
+    drawChips(); drawList(); drawSave();
   }
 
   // ---- step 3: the result ----
   function stepDone(r) {
     m.setTitle('Import finished');
     fill(body, h('div', { class: 'stack' },
-      notice(r.added.length + ' ' + (r.added.length === 1 ? 'person was' : 'people were') + ' added.' + (r.skipped.length ? ' ' + r.skipped.length + ' were skipped.' : ''), r.added.length ? 'ok' : 'warn'),
-      r.skipped.length ? h('div', null, h('b', null, 'Skipped'), r.skipped.map(s => h('div', { class: 'small' }, 'Line ' + s.line + ' · ' + s.name + ': ' + s.reason))) : null,
-      r.added.some(a => a.notes.length) ? h('div', null, h('b', null, 'About seats'), r.added.filter(a => a.notes.length).map(a => h('div', { class: 'small' }, a.name + ': ' + a.notes.join(' ')))) : null,
-      h('div', { class: 'muted small' }, byNumber ? 'They link their chat the first time they write: with the email address you gave, or straight away when you gave a number.' : 'They link their chat the first time they write, with the email address you gave.'),
+      notice(plural(r.added.length, 'person', 'people') + ' added, ' + plural(r.updated.length, 'person', 'people') + ' filled in or changed' + (r.skipped.length ? ', ' + r.skipped.length + ' left out.' : '.'), r.added.length || r.updated.length ? 'ok' : 'warn'),
+      r.skipped.length ? h('div', null, h('b', null, 'Left out'), r.skipped.map(s => h('div', { class: 'small' }, 'Line ' + s.line + ' · ' + s.name + ': ' + s.reason))) : null,
+      r.added.length ? h('div', { class: 'muted small' }, byNumber ? 'New people link their chat the first time they write: straight away when you gave a number, or with their email address.' : 'New people link their chat the first time they write, with the email address you gave.') : null,
       h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => { m.close(); location.reload(); } }, 'Done'))));
   }
   stepUpload();

@@ -86,7 +86,16 @@ SELECT
                   AND column_name = 'usecase_id'))             AS usecases,
   (to_regclass('public.record_types') IS NOT NULL
    AND to_regclass('public.record_fields') IS NOT NULL
-   AND to_regclass('public.schema_changes') IS NOT NULL)      AS schema_editor
+   AND to_regclass('public.schema_changes') IS NOT NULL)      AS schema_editor,
+  (SELECT count(*) = 3 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'residents'
+      AND column_name IN ('relation', 'is_primary', 'lives_here'))  AS flat_people,
+  (to_regclass('public.announcements') IS NOT NULL
+   AND to_regclass('public.announcement_recipients') IS NOT NULL
+   AND to_regclass('public.announcement_audiences') IS NOT NULL
+   AND (SELECT count(*) = 3 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'residents'
+           AND column_name IN ('relation', 'is_primary', 'lives_here')))  AS announcements
 """
 
 # Everything the new case model adds. "case_model" is true only when all of it is there,
@@ -113,6 +122,13 @@ _CAP_MESSAGES = {
     ),
     "seats": "This organisation's database has no seats (committee positions).",
     "residents": "This organisation does not keep a resident list.",
+    "flat_people": (
+        "This organisation's database cannot keep who is in which flat yet. Run migration housing-0016 first."
+    ),
+    "announcements": (
+        "This organisation's database cannot send announcements yet. Run migrations housing-0016 and "
+        "housing-0017 first."
+    ),
     "audit": "This organisation has no chat log.",
     "targets": "This organisation has no response-time table.",
     "texts": (

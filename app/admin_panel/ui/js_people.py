@@ -4,7 +4,36 @@ const LEVELS = { 1: 'See only', 2: 'Can start', 3: 'Can work on', 4: 'Full contr
 const GRANT_STATE = { live: ['Live', 'ok'], scheduled: ['Starts later', 'info'], expired: ['Expired', ''], revoked: ['Revoked', ''] };
 // Remove this line when the chat bot starts reading special access.
 const ACCESS_NOTICE = 'Not active yet. What you add here is only a note: the chat bot does not read it, so it does not change what anyone can do. To let a role use a flow, tick it under Roles. To let someone act on complaints sent to them, make them the holder of a seat or name them in a rule under Case rules.';
-const homeText = x => (x.wing ? x.wing + '-' : '') + x.flat_no + ' · ' + pretty(x.residential_status);
+const flatName = x => (x.wing ? x.wing + '-' : '') + x.flat_no;
+const homeText = x => x.relation ? flatName(x) + ' · ' + pretty(x.relation) + (x.is_primary ? ' ★' : '') + (x.lives_here === false ? ' · lives elsewhere' : '')
+  : flatName(x) + ' · ' + pretty(x.residential_status);
+// the tags of one person in one flat: relation, primary member, lives here or not
+const homeTags = x => [badge(pretty(x.relation), 'info'), x.is_primary ? badge('★ Primary member', 'warn') : null, badge(x.lives_here ? 'Lives here' : 'Lives elsewhere', x.lives_here ? 'ok' : ''), x.status && x.status !== 'active' ? badge(pretty(x.status), 'bad') : null];
+// change how a person is in a flat, or link them to a new one (home = null)
+function homeModal(lk, personId, personName, home, done) {
+  const rels = (lk.enums.resident_relations || []).map(v => [v, pretty(v)]);
+  const wing = h('input', { type: 'text', value: home ? home.wing || '' : '', placeholder: 'e.g. A', maxlength: 40 });
+  const flat = h('input', { type: 'text', value: home ? home.flat_no : '', placeholder: 'e.g. 101', maxlength: 40 });
+  const rel = sel([['', 'Choose…'], ...rels], home ? home.relation : '');
+  const prim = h('input', { type: 'checkbox', checked: home ? home.is_primary : false });
+  const lives = h('input', { type: 'checkbox', checked: home ? home.lives_here : true });
+  const stat = home ? sel((lk.enums.resident_statuses || [home.status]).map(v => [v, pretty(v)]), home.status) : null;
+  modal({ title: (home ? 'Change ' : 'Add a flat for ') + personName + (home ? ' in ' + flatName(home) : ''),
+    body: h('div', null, h('div', { class: 'two' }, field('Wing', wing), field('Flat', flat)),
+      field('How they are linked to the flat', rel),
+      h('label', { class: 'row', style: { marginBottom: '6px' } }, prim, h('span', null, '★ Primary member of this flat (gets AGM notices)')),
+      h('div', { class: 'hint', style: { margin: '0 0 10px 26px' } }, 'Only one per flat, and never a tenant. Ticking it takes it from whoever had it.'),
+      h('label', { class: 'row', style: { marginBottom: '10px' } }, lives, h('span', null, 'Lives in this flat now')),
+      stat ? field('Status of this home', stat, 'Suspended or inactive on their last home also switches the person off.') : null),
+    actions: [{ label: 'Cancel' }, { label: home ? 'Save' : 'Add flat', primary: true, run: async () => {
+      if (!flat.value.trim()) throw new Error('Write the flat number.');
+      if (!rel.value) throw new Error('Choose how they are linked to the flat.');
+      const b = { wing: wing.value.trim() || null, flat_no: flat.value.trim(), relation: rel.value, is_primary: prim.checked, lives_here: lives.checked };
+      const r = home ? await api.patch('/people/' + personId + '/homes/' + home.id, { ...b, status: stat.value }) : await api.post('/people/' + personId + '/homes', b);
+      toast('Saved' + (r.took_primary_from && r.took_primary_from.length ? '. ' + r.took_primary_from.join(', ') + ' is no longer the primary member.' : ''), 'ok');
+      done();
+    } }] });
+}
 
 function kvEditor(initial, keyHints) {
   const rows = h('div', { class: 'stack' });
@@ -67,8 +96,17 @@ async function showPerson(id) {
         h('button', { class: 'btn sm', type: 'button', style: { marginTop: '6px' }, onclick: () => navigator.clipboard && navigator.clipboard.writeText('Hi ' + p.name.split(' ')[0] + ', you can now use the ' + S.boot.org.name + ' chat bot. Open its chat on ' + chatWord() + ' and send it your email address (' + (p.email || '') + ') once. It will link you to your account.').then(() => toast('Message copied. Send it to ' + p.name.split(' ')[0] + '.', 'ok')) }, icon('copy', 'sm'), 'Copy the message to send'))),
       h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Added'), fmtD(p.created_at)),
       d.chats && d.chats.turns ? h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '90px' } }, 'Chats'), plural(d.chats.turns, 'message'), ' · last ' + ago(d.chats.last_at), hasSection('conversations') ? h('a', { class: 'btn sm', href: href('conversations', '', { user: id }) }, 'View chats →') : null) : null)));
-    // homes
-    if (S.boot.caps.residents && d.homes.length && isSuper()) {
+    // homes: the flats this person is in, and how
+    if (S.boot.caps.residents && S.boot.caps.flat_people) {
+      body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Flats', h('button', { class: 'btn sm', type: 'button', onclick: () => homeModal(lk, id, p.name, null, reload) }, icon('plus', 'xs'), 'Add a flat')),
+        h('div', { class: 'card-b stack s8' }, d.homes.length ? d.homes.map(x => h('div', { class: 'row', style: { paddingBottom: '8px', borderBottom: '1px solid var(--line)' } },
+          h('b', { style: { minWidth: '70px' } }, flatName(x)), h('span', { class: 'chips' }, homeTags(x)), h('span', { class: 'sp' }),
+          h('button', { class: 'btn sm', type: 'button', onclick: () => homeModal(lk, id, p.name, x, reload) }, 'Change'),
+          h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Remove ' + p.name + ' from ' + flatName(x), onclick: async () => {
+            if (!await confirmBox('Remove ' + p.name + ' from ' + flatName(x) + '? Use this when they sold the flat or moved away for good. The person stays on the list.', { ok: 'Remove from flat', danger: true })) return;
+            try { await api.del('/people/' + id + '/homes/' + x.id); toast('Removed from ' + flatName(x), 'ok'); reload(); } catch (e) { toast(e.message, 'bad'); } } }, 'Remove'))) :
+          h('div', { class: 'muted' }, 'Not linked to any flat yet. Add one here, or import your list on the People screen.'))));
+    } else if (S.boot.caps.residents && d.homes.length && isSuper()) {
       body.push(h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Home'), h('div', { class: 'card-b stack' }, d.homes.map(x => {
         const type = sel((lk.enums.resident_types || [x.residential_status]).map(v => [v, pretty(v)]), x.residential_status, { 'aria-label': 'Kind of resident' });
         const stat = sel((lk.enums.resident_statuses || [x.status]).map(v => [v, pretty(v)]), x.status, { 'aria-label': 'Status of the home' });
@@ -218,7 +256,10 @@ async function renderPeopleTab(root, route) {
   search.addEventListener('input', debounce(() => update({ q: search.value }), 300));
   const roleChips = h('div', { class: 'chips' });
   const filtersBtn = h('button', { class: 'btn', type: 'button', 'data-popkeep': '1', onclick: e => openFilters(e.currentTarget) });
-  add(bar, [search, roleChips, filtersBtn, h('span', { class: 'sp' }), h('button', { class: 'btn', type: 'button', onclick: () => importPeopleModal(lk) }, 'Import from file'), hasSection('access') ? h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs')) : null]);
+  const byFlat = S.boot.caps.flat_people && q.view === 'flats';
+  const viewSeg = S.boot.caps.flat_people ? h('div', { class: 'seg' }, [['', 'By person'], ['flats', 'By flat']].map(([v, label]) => h('button', { type: 'button', class: (q.view || '') === v ? 'on' : '', onclick: () => go('people', '', v ? { view: v } : {}) }, label))) : null;
+  if (byFlat) { roleChips.hidden = true; filtersBtn.hidden = true; search.placeholder = 'Search flat or name'; }
+  add(bar, [search, viewSeg, roleChips, filtersBtn, h('span', { class: 'sp' }), h('button', { class: 'btn', type: 'button', onclick: () => importPeopleModal(lk) }, 'Import from file'), hasSection('access') ? h('a', { class: 'btn ghost sm', href: href('access') }, 'Manage roles', icon('arrowr', 'xs')) : null]);
   const extra = () => ['status', 'reachable', 'seat'].filter(k => q[k]).length;
   function openFilters(anchor) {
     openPop(anchor, h('div', { class: 'stack s8', style: { padding: '10px' } },
@@ -239,11 +280,24 @@ async function renderPeopleTab(root, route) {
     chips.style.display = list.length ? '' : 'none';
     fill(filtersBtn, icon('filter', 'sm'), extra() ? 'Filters · ' + extra() : 'Filters');
   }
+  async function loadFlats() {
+    const d = await api.get('/flats', { q: q.q });
+    if (mine !== S.renderId) return;
+    fill(out, h('div', { class: 'card-b stack' },
+      h('div', { class: 'row small' }, h('b', null, plural(d.total, 'flat')), d.no_primary ? badge(d.no_primary + ' with no primary member', 'warn') : null,
+        h('span', { class: 'muted' }, 'Click a person to see or change their flats.')),
+      d.rows.length ? h('div', { class: 'fl-grid' }, d.rows.map(f => h('div', { class: 'fl-card' },
+        h('h4', null, h('span', null, flatName(f)), h('span', { class: 'muted small' }, f.people.some(x => x.lives_here && x.status === 'active') ? f.people.filter(x => x.lives_here && x.status === 'active').length + ' living here' : 'nobody living here')),
+        f.people.map(x => h('div', { class: 'fl-who', onclick: () => x.user_id && go('people', '', { ...q, person: x.user_id }) },
+          h('span', null, x.name || h('span', { class: 'muted' }, '(not linked to a person)')), h('span', { class: 'fl-tags' }, homeTags(x))))))) :
+        empty('No flats yet', 'Import your list with the Wing, Flat, Relation, Primary member and Lives here columns, or add a flat from a person’s panel.')));
+  }
   async function load() {
     if (mine !== S.renderId) return;
     setQuery(q);
     drawBar();
     fill(out, h('div', { class: 'empty' }, 'Loading…'));
+    if (byFlat) { try { await loadFlats(); } catch (e) { fill(out, notice(e.message, 'bad')); } return; }
     try {
       const d = await api.get('/people', { q: q.q, role: q.role, status: q.status, reachable: q.reachable, seat: q.seat, page: q.page, page_size: 50 });
       fill(out, table([

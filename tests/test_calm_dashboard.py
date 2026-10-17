@@ -27,7 +27,7 @@ def _routes():
 
 
 def test_the_menu_is_grouped_like_the_approved_prototype_and_has_nothing_that_is_not_there_yet():
-    assert "['Your work', ['cases', 'conversations']]" in APP_JS
+    assert "['Your work', ['cases', 'conversations', 'announcements']]" in APP_JS
     assert "['Your team', ['people', 'access']]" in APP_JS
     assert "['Chat bot', ['assistant']]" in APP_JS
     assert "['Build', ['workflows', 'blocks', 'schema']]" in APP_JS

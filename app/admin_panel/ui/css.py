@@ -772,6 +772,7 @@ _STEPWIN = r"""
 @media (max-width:1000px){.sw{width:calc(100% - 12px);height:calc(100% - 12px)}.sw-b{display:flex;flex-direction:column;overflow:auto}.sw-p{overflow:visible;flex:none}.sw-pm{order:1;border:0}.sw-pr{order:2;border-top:1px solid var(--line)}.sw-pl{order:3;border-top:1px solid var(--line)}}
 """
 
+from app.admin_panel.ui.css_announce import CSS as _ANNOUNCE
 from app.admin_panel.ui.css_login import CSS as _LOGIN
 from app.admin_panel.ui.css_redesign import CSS as _REDESIGN
 
@@ -786,5 +787,6 @@ CSS = (
     + _KINDS
     + _STEPWIN
     + _REDESIGN
+    + _ANNOUNCE
     + _LOGIN
 )

@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from app.admin_panel import (
     activity,
     ai_instructions,
+    announcements,
     ask,
     auth_routes,
     case_buttons,
@@ -42,6 +43,7 @@ for _module in (
     ask,
     people,
     people_import,
+    announcements,
     roles,
     routing,
     reminders,

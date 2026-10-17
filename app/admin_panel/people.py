@@ -79,10 +79,15 @@ def _person_columns(ctx: Ctx) -> str:
     else:
         cols.append("'[]'::jsonb AS seats")
     if ctx.caps.get("residents"):
+        more = (
+            ", 'relation', h.relation, 'is_primary', h.is_primary, 'lives_here', h.lives_here"
+            if ctx.caps.get("flat_people")
+            else ""
+        )
         cols.append(
             "(SELECT COALESCE(jsonb_agg(jsonb_build_object('id', h.id, 'wing', h.wing, "
             "'flat_no', h.flat_no, 'residential_status', h.residential_status, "
-            "'status', h.status) ORDER BY h.created_at), '[]'::jsonb) "
+            f"'status', h.status{more}) ORDER BY h.wing, h.flat_no), '[]'::jsonb) "
             "FROM residents h WHERE h.user_id = u.id) AS homes"
         )
     else:
@@ -212,11 +217,14 @@ async def person_detail(ctx: CtxDep, user_id: UUID):
 
     homes: list[dict] = []
     if ctx.caps.get("residents"):
+        more = (
+            ", relation, is_primary, lives_here" if ctx.caps.get("flat_people") else ""
+        )
         homes = rows(
             await fetch_all(
-                "SELECT id, name, wing, flat_no, residential_status, status, "
+                f"SELECT id, name, wing, flat_no, residential_status, status{more}, "
                 "registration_date, suspension_date FROM residents "
-                "WHERE org_id = $1 AND user_id = $2 ORDER BY created_at",
+                "WHERE org_id = $1 AND user_id = $2 ORDER BY wing, flat_no",
                 ctx.org_id,
                 user_id,
                 source_key=ctx.source_key,
@@ -431,29 +439,93 @@ class HomePatch(BaseModel):
     status: str | None = None
     wing: str | None = Field(None, max_length=40)
     flat_no: str | None = Field(None, min_length=1, max_length=40)
+    relation: str | None = None
+    is_primary: bool | None = None
+    lives_here: bool | None = None
+
+
+class HomeNew(BaseModel):
+    wing: str | None = Field(None, max_length=40)
+    flat_no: str = Field(..., min_length=1, max_length=40)
+    relation: str
+    is_primary: bool = False
+    lives_here: bool = True
+
+
+async def _check_home(ctx: Ctx, changes: dict) -> dict:
+    """Checks the values of a home and puts the flat the way it is saved (trimmed, in capitals)."""
+    for key in ("residential_status", "status", "flat_no", "relation"):
+        if key in changes and not changes[key]:
+            raise HTTPException(status_code=400, detail=f"{key} cannot be empty.")
+    for key, what in (
+        ("residential_status", "Resident type"),
+        ("status", "Status"),
+        ("relation", "Relation"),
+    ):
+        if key in changes:
+            check_choice(changes[key], await check_values(ctx, "residents", key), what)
+    if "wing" in changes or "flat_no" in changes:
+        from app.admin_panel.people_import import flat_parts
+
+        wing, flat = flat_parts(changes.get("wing") or "", changes.get("flat_no") or "")
+        if "wing" in changes or wing:
+            changes["wing"] = wing
+        if "flat_no" in changes:
+            changes["flat_no"] = flat
+    return changes
+
+
+async def _save_home(conn, sql: str, *args):
+    """Runs one change of a home and turns the database's refusals into sentences."""
+    import asyncpg
+
+    try:
+        return await conn.fetchval(sql, *args)
+    except asyncpg.UniqueViolationError as e:
+        if "primary" in str(e):
+            raise HTTPException(
+                status_code=409,
+                detail="That flat already has a primary member. Untick it there first.",
+            ) from e
+        raise HTTPException(
+            status_code=409, detail="This person is already linked to that flat."
+        ) from e
+    except asyncpg.CheckViolationError as e:
+        raise HTTPException(
+            status_code=400, detail="A tenant cannot be the primary member of a flat."
+        ) from e
+
+
+async def _clear_primary(conn, ctx: Ctx, wing, flat, keep_id) -> list[str]:
+    """Takes "primary member" away from anyone else in the flat; returns their names for the log."""
+    gone = await conn.fetch(
+        "UPDATE residents h SET is_primary = false FROM users u WHERE u.id = h.user_id "
+        "AND h.org_id = $1 AND COALESCE(h.wing, '') = $2 AND h.flat_no = $3 AND h.is_primary "
+        "AND h.id IS DISTINCT FROM $4 RETURNING u.name",
+        ctx.org_id,
+        wing or "",
+        flat,
+        keep_id,
+    )
+    return [g["name"] for g in gone]
+
+
+def _where(wing, flat) -> str:
+    return (wing + "-" if wing else "") + flat
 
 
 @router.patch("/people/{user_id}/homes/{resident_id}")
 async def update_home(ctx: CtxDep, user_id: UUID, resident_id: UUID, body: HomePatch):
-    """Change a resident's type (tenant, owner...), status (active, left...) or flat. The
+    """Change how a person is linked to a flat (relation, primary member, lives here), the flat itself, or the
+    status of that home. Making someone the primary member takes it from whoever had it in that flat. The
     database's own trigger keeps the person's active flag in step with the status."""
     ctx.need("residents")
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=400, detail="Nothing to change.")
-    for key in ("residential_status", "status", "flat_no"):
-        if key in changes and not changes[key]:
-            raise HTTPException(status_code=400, detail=f"{key} cannot be empty.")
-    if "residential_status" in changes:
-        check_choice(
-            changes["residential_status"],
-            await check_values(ctx, "residents", "residential_status"),
-            "Resident type",
-        )
-    if "status" in changes:
-        check_choice(
-            changes["status"], await check_values(ctx, "residents", "status"), "Status"
-        )
+    if set(changes) & {"relation", "is_primary", "lives_here"}:
+        ctx.need("flat_people")
+    changes = await _check_home(ctx, changes)
     async with tx(ctx) as conn:
         before = await conn.fetchrow(
             "SELECT * FROM residents WHERE id = $1 AND user_id = $2 AND org_id = $3 "
@@ -464,11 +536,31 @@ async def update_home(ctx: CtxDep, user_id: UUID, resident_id: UUID, body: HomeP
         )
         if not before:
             raise HTTPException(status_code=404, detail="Home not found")
+        changes = {k: v for k, v in changes.items() if before[k] != v}
+        who = await conn.fetchrow(
+            "SELECT name, is_active FROM users WHERE id = $1", user_id
+        )
+        if not changes:
+            return {
+                "ok": True,
+                "user_is_active": who["is_active"],
+                "took_primary_from": [],
+            }
+        took = []
+        if changes.get("is_primary"):
+            took = await _clear_primary(
+                conn,
+                ctx,
+                changes.get("wing", before["wing"]),
+                changes.get("flat_no", before["flat_no"]),
+                resident_id,
+            )
         sets = [f"{col} = ${i + 2}" for i, col in enumerate(changes)]
         if changes.get("status") and changes["status"] != before["status"]:
             sets.append("suspension_date = CURRENT_DATE")
-        await conn.execute(
-            f"UPDATE residents SET {', '.join(sets)} WHERE id = $1",
+        await _save_home(
+            conn,
+            f"UPDATE residents SET {', '.join(sets)} WHERE id = $1 RETURNING id",
             resident_id,
             *changes.values(),
         )
@@ -480,14 +572,133 @@ async def update_home(ctx: CtxDep, user_id: UUID, resident_id: UUID, body: HomeP
             "people",
             "home",
             f"{who['name']}: "
-            + ", ".join(f"{k} {before[k]} → {v}" for k, v in changes.items()),
+            + ", ".join(f"{k} {before[k]} → {v}" for k, v in changes.items())
+            + (f" (no longer primary: {', '.join(took)})" if took else ""),
             target_type="resident",
             target_id=resident_id,
             before={k: before[k] for k in changes},
             after=changes,
             conn=conn,
         )
-    return {"ok": True, "user_is_active": who["is_active"]}
+    return {"ok": True, "user_is_active": who["is_active"], "took_primary_from": took}
+
+
+@router.post("/people/{user_id}/homes")
+async def add_home(ctx: CtxDep, user_id: UUID, body: HomeNew):
+    """Link a person to a flat."""
+    ctx.need("residents", "flat_people")
+    changes = await _check_home(ctx, body.model_dump())
+    async with tx(ctx) as conn:
+        who = await conn.fetchrow(
+            "SELECT name FROM users WHERE id = $1 AND org_id = $2", user_id, ctx.org_id
+        )
+        if not who:
+            raise HTTPException(status_code=404, detail="Person not found")
+        took = (
+            await _clear_primary(conn, ctx, changes["wing"], changes["flat_no"], None)
+            if changes["is_primary"]
+            else []
+        )
+        new_id = await _save_home(
+            conn,
+            "INSERT INTO residents (org_id, user_id, wing, flat_no, relation, is_primary, lives_here, "
+            "status, residential_status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL) RETURNING id",
+            ctx.org_id,
+            user_id,
+            changes["wing"],
+            changes["flat_no"],
+            changes["relation"],
+            changes["is_primary"],
+            changes["lives_here"],
+        )
+        await log_event(
+            ctx,
+            "people",
+            "home",
+            f"{who['name']}: added to {_where(changes['wing'], changes['flat_no'])} as {changes['relation']}"
+            + (f" (no longer primary: {', '.join(took)})" if took else ""),
+            target_type="resident",
+            target_id=new_id,
+            after=changes,
+            conn=conn,
+        )
+    return {"ok": True, "id": new_id, "took_primary_from": took}
+
+
+@router.delete("/people/{user_id}/homes/{resident_id}")
+async def remove_home(ctx: CtxDep, user_id: UUID, resident_id: UUID):
+    """Unlink a person from a flat (they sold it or moved away for good). The person stays; what the link said
+    is kept in the change log."""
+    ctx.need("residents")
+    async with tx(ctx) as conn:
+        gone = await conn.fetchrow(
+            "DELETE FROM residents WHERE id = $1 AND user_id = $2 AND org_id = $3 RETURNING *",
+            resident_id,
+            user_id,
+            ctx.org_id,
+        )
+        if not gone:
+            raise HTTPException(status_code=404, detail="Home not found")
+        who = await conn.fetchval("SELECT name FROM users WHERE id = $1", user_id)
+        await log_event(
+            ctx,
+            "people",
+            "home",
+            f"{who}: removed from {_where(gone['wing'], gone['flat_no'])}",
+            target_type="resident",
+            target_id=resident_id,
+            before=dict(gone),
+            conn=conn,
+        )
+    return {"ok": True}
+
+
+@router.get("/flats")
+async def list_flats(ctx: CtxDep, q: str | None = None):
+    """Every flat and who is in it, for the Flats view of the People screen."""
+    ctx.need("residents", "flat_people")
+    found = await fetch_all(
+        "SELECT h.id, h.wing, h.flat_no, h.relation, h.is_primary, h.lives_here, h.status, "
+        "u.id AS user_id, u.name, u.is_active FROM residents h LEFT JOIN users u ON u.id = h.user_id "
+        "WHERE h.org_id = $1 ORDER BY h.wing NULLS FIRST, h.flat_no, h.is_primary DESC, h.relation, u.name",
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+    flats: dict = {}
+    for r in found:
+        f = flats.setdefault(
+            (r["wing"] or "", r["flat_no"]),
+            {"wing": r["wing"], "flat_no": r["flat_no"], "people": []},
+        )
+        f["people"].append(
+            {
+                "id": str(r["id"]),
+                "user_id": str(r["user_id"]) if r["user_id"] else None,
+                "name": r["name"],
+                "relation": r["relation"],
+                "is_primary": r["is_primary"],
+                "lives_here": r["lives_here"],
+                "status": r["status"],
+                "is_active": r["is_active"],
+            }
+        )
+    out = list(flats.values())
+    if q:
+        t = q.strip().lower()
+        out = [
+            f
+            for f in out
+            if t in _where(f["wing"], f["flat_no"]).lower()
+            or any(t in (p["name"] or "").lower() for p in f["people"])
+        ]
+    return {
+        "rows": out,
+        "total": len(out),
+        "no_primary": sum(
+            1 for f in out if not any(p["is_primary"] for p in f["people"])
+        ),
+        "unlinked": sum(1 for f in out for p in f["people"] if not p["user_id"]),
+    }
 
 
 # ── seats (a named job: Chairman, Lift in-charge...) ─────────────────────────

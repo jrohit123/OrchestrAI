@@ -5,6 +5,7 @@ import hashlib
 
 from app.admin_panel.ui import (
     css,
+    js_announcements,
     js_assistant,
     js_auth,
     js_boot,
@@ -47,6 +48,7 @@ APP_JS = (
             js_overview_cases,
             js_people,
             js_people_import,
+            js_announcements,
             js_roles,
             js_routing,
             js_reminders,

@@ -737,6 +737,19 @@ async def _tick_flow_schedules():
     await _tick("flow_schedules", run_flow_schedules)
 
 
+async def run_announcements():
+    """Fires every minute: sends the announcements whose time has come (see services/announcements.py)."""
+    from app.services import announcements
+
+    tried = await announcements.run_due()
+    if tried:
+        logger.info(f"announcements: {tried} people reached this minute")
+
+
+async def _tick_announcements():
+    await _tick("announcements", run_announcements)
+
+
 async def _tick_cleanup():
     await _tick("cleanup", run_cleanup)
 
@@ -792,6 +805,13 @@ def start_scheduler():
         _tick_flow_schedules,
         trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
         id="flow_schedules",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _tick_announcements,
+        trigger=CronTrigger(minute="*", timezone="Asia/Kolkata"),
+        id="announcements",
         replace_existing=True,
         max_instances=1,
     )

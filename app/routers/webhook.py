@@ -139,6 +139,9 @@ async def receive_message(request: Request):
     await reach.handle_failed_reports(
         body
     )  # a send WhatsApp refused: keep it and email it
+    from app.services import announcements
+
+    await announcements.on_reports(body)  # delivered / read for an announcement
 
     try:
         entry = body["entry"][0]
@@ -167,6 +170,10 @@ async def receive_message(request: Request):
 
         # The person wrote to the bot, of whatever kind: WhatsApp's 24-hour door is open again.
         await reach.record_inbound(phone)
+        if msg_type == "interactive" and (msg.get("context") or {}).get("id"):
+            await announcements.on_got_it(
+                msg["context"]["id"]
+            )  # Got it under an announcement
 
         # ── Extract text ──
         attachments = None

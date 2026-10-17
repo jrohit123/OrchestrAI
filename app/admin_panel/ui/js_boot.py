@@ -4,14 +4,14 @@ JS = r"""
 // The server decides which screens exist for this organisation; this only says where each one goes.
 const NAV = [
   ['', ['overview']],
-  ['Your work', ['cases', 'conversations']],
+  ['Your work', ['cases', 'conversations', 'announcements']],
   ['Your team', ['people', 'access']],
   ['Chat bot', ['assistant']],
   ['Build', ['workflows', 'blocks', 'schema']],
   ['', ['settings']],
 ];
 const SETUP = new Set(['access', 'assistant', 'workflows', 'blocks', 'schema', 'settings']);
-const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', workflows: 'flow', blocks: 'layers', schema: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
+const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', announcements: 'megaphone', workflows: 'flow', blocks: 'layers', schema: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
   ['Flow', 'One thing the chat bot can do for people, like filing a complaint.'],
