@@ -1,0 +1,96 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "BOOKING",
+      "title": "Book a facility",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "facilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "Clubhouse",
+              "title": "Clubhouse"
+            }
+          ]
+        },
+        "times": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "18:00",
+              "title": "6:00 pm"
+            }
+          ]
+        },
+        "today": {
+          "type": "string",
+          "__example__": "2026-10-17"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Dropdown",
+            "name": "facility",
+            "label": "Which facility?",
+            "required": true,
+            "data-source": "${data.facilities}"
+          },
+          {
+            "type": "DatePicker",
+            "name": "booking_date",
+            "label": "Date",
+            "required": true,
+            "min-date": "${data.today}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "booking_time",
+            "label": "Time",
+            "required": true,
+            "data-source": "${data.times}"
+          },
+          {
+            "type": "Footer",
+            "label": "Book",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "workflow": "book_facility",
+                "facility": "${form.facility}",
+                "booking_date": "${form.booking_date}",
+                "booking_time": "${form.booking_time}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

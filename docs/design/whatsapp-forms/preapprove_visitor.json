@@ -1,0 +1,76 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "VISITOR",
+      "title": "Pre-approve a visitor",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "times": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "18:00",
+              "title": "6:00 pm"
+            }
+          ]
+        },
+        "today": {
+          "type": "string",
+          "__example__": "2026-10-17"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextInput",
+            "name": "visitor_name",
+            "label": "Visitor's name",
+            "input-type": "text",
+            "required": true
+          },
+          {
+            "type": "DatePicker",
+            "name": "visit_date",
+            "label": "Date of the visit",
+            "required": true,
+            "min-date": "${data.today}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "visit_hour",
+            "label": "About what time?",
+            "required": true,
+            "data-source": "${data.times}"
+          },
+          {
+            "type": "Footer",
+            "label": "Approve",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "workflow": "preapprove_visitor",
+                "visitor_name": "${form.visitor_name}",
+                "visit_date": "${form.visit_date}",
+                "visit_hour": "${form.visit_hour}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "TICKET_UPDATE",
+      "title": "Update a ticket",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "tickets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "CS-26-10-00006",
+              "title": "CS-26-10-00006 · Tap leaking"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Dropdown",
+            "name": "case_number",
+            "label": "Which ticket?",
+            "required": true,
+            "data-source": "${data.tickets}"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "action",
+            "label": "What do you want to do?",
+            "required": true,
+            "data-source": [
+              {
+                "id": "case_add_update",
+                "title": "Add an update"
+              },
+              {
+                "id": "case_close_with_note",
+                "title": "Close it"
+              }
+            ]
+          },
+          {
+            "type": "TextArea",
+            "name": "comment_text",
+            "label": "Note",
+            "helper-text": "What was done, or why it is closed",
+            "required": true
+          },
+          {
+            "type": "Footer",
+            "label": "Submit",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "workflow": "${form.action}",
+                "case_number": "${form.case_number}",
+                "comment_text": "${form.comment_text}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

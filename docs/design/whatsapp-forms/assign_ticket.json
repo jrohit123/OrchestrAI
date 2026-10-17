@@ -1,0 +1,91 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "ASSIGN",
+      "title": "Assign a ticket",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "tickets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "CS-26-10-00006",
+              "title": "CS-26-10-00006 · Tap leaking"
+            }
+          ]
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "Rajeswari",
+              "title": "Rajeswari"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Dropdown",
+            "name": "case_number",
+            "label": "Which ticket?",
+            "required": true,
+            "data-source": "${data.tickets}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "assignee_name",
+            "label": "Give it to",
+            "required": true,
+            "data-source": "${data.people}"
+          },
+          {
+            "type": "TextArea",
+            "name": "comment_text",
+            "label": "Note (optional)",
+            "required": false
+          },
+          {
+            "type": "Footer",
+            "label": "Assign",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "workflow": "case_pass_on",
+                "case_number": "${form.case_number}",
+                "assignee_name": "${form.assignee_name}",
+                "comment_text": "${form.comment_text}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

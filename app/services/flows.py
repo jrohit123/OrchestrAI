@@ -19,7 +19,7 @@ import uuid
 
 from app.db import fetch_all, fetch_one
 from app.logging_config import get_context_logger
-from app.services import config_store, menu, photos, whatsapp
+from app.services import config_store, flow_forms, menu, photos, whatsapp
 
 logger = get_context_logger(__name__)
 
@@ -195,6 +195,10 @@ async def start_form(user: dict, phone: str, text: str, command_args, say) -> bo
     was sent (the caller stops there); False to carry on with the chat questions."""
     if not is_whatsapp(phone) or command_args:
         return False
+    if await flow_forms.start(
+        user, phone, text, command_args
+    ):  # a workflow with its own form (whatsapp_flows.forms)
+        return True
     settings = await config_store.org_settings(user["source_key"], user["org_id"])
     cfg = flow_of(settings, "complaint")
     if not cfg or not _allowed(cfg, phone):
@@ -255,12 +259,16 @@ async def use_form(
     """A filled form: its answers go straight into the complaint workflow's draft and the usual summary ("Here's what
     I'll save... yes") is shown, with no language model reading anything. Returns (done, details): done is True when the
     summary was sent; otherwise details is what the chat bot should be told instead, as if typed after the command."""
-    from app.redis_client import set_session
     from app.services import agent
-    from app.services.draft_store import close_draft
-    from app.services.messaging import send_text
 
     data = form.get("data") or {}
+    if form.get("generic"):  # a form of any other workflow (flow_forms.py)
+        intent_key, fields, details, wf = await flow_forms.fields_of(user, data)
+        if not wf or not fields or not flow_forms.may_use(user, intent_key):
+            return False, details
+        return await _confirm_form(
+            user, phone, wf, fields, details, session, session_id, ttl
+        )
     settings = await config_store.org_settings(user["source_key"], user["org_id"])
     intent_key = str(
         (flow_of(settings, "complaint") or {}).get("workflow") or "file_a_complaint"
@@ -292,6 +300,27 @@ async def use_form(
         fields["description"] = f"{EXTRA_LABELS['category']}: {category}"
     if not fields.get("title") or not fields.get("location"):
         return False, details
+    return await _confirm_form(
+        user, phone, wf, fields, details, session, session_id, ttl
+    )
+
+
+async def _confirm_form(
+    user: dict,
+    phone: str,
+    wf,
+    fields: dict,
+    details: str,
+    session: dict,
+    session_id: str,
+    ttl: int,
+):
+    """The answers of a form go into the workflow's draft and the usual summary is sent. (done, details)."""
+    from app.redis_client import set_session
+    from app.services import agent
+    from app.services.draft_store import close_draft
+    from app.services.messaging import send_text
+
     await close_draft(
         user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
     )
@@ -357,6 +386,15 @@ async def read_answer(phone: str, inter: dict) -> tuple[str, list[str], dict | N
         shape = sorted(first) if isinstance(first, dict) else type(first).__name__
         logger.info(
             f"WhatsApp Flow answer photos: {len(_media_ids(data['photos']))} of shape {shape}"
+        )
+    if flow_forms.is_form_answer(
+        data
+    ):  # a filled form of a workflow (flow_forms.py), not a menu tap
+        key = str(data.get("workflow") or "").strip()
+        return (
+            (key, [], {"data": data, "generic": True})
+            if re.fullmatch(r"[A-Za-z0-9_]{1,80}", key)
+            else ("", [], None)
         )
     choice = str(data.get("workflow") or "").strip()
     if choice:

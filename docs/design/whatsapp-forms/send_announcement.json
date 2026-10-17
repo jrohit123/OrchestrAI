@@ -1,0 +1,68 @@
+{
+  "version": "6.2",
+  "screens": [
+    {
+      "id": "ANNOUNCEMENT",
+      "title": "Send an announcement",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "audiences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "Everyone who lives here",
+              "title": "Everyone who lives here"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Dropdown",
+            "name": "audience",
+            "label": "Who should get it?",
+            "required": true,
+            "data-source": "${data.audiences}"
+          },
+          {
+            "type": "TextArea",
+            "name": "message",
+            "label": "Message",
+            "helper-text": "For example: Flag hoisting starts at 8 am at the main lawn",
+            "required": true
+          },
+          {
+            "type": "TextBody",
+            "text": "You will see how many people it goes to before it is sent."
+          },
+          {
+            "type": "Footer",
+            "label": "Next",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "workflow": "send_announcement",
+                "audience": "${form.audience}",
+                "message": "${form.message}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
