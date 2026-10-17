@@ -1,0 +1,21 @@
+Name,Email,Phone,Role
+Asha Kulkarni (test),asha.kulkarni@example.test,+91 50000 00001,owner
+Rohan Mehta (test),rohan.mehta@example.test,+91 50000 00002,owner
+Priya Nair (test),priya.nair@example.test,+91 50000 00003,owner
+Vikram Shah (test),vikram.shah@example.test,+91 50000 00004,owner
+Neha Joshi (test),neha.joshi@example.test,+91 50000 00005,member
+Arjun Rao (test),arjun.rao@example.test,+91 50000 00006,member
+Kavita Desai (test),kavita.desai@example.test,+91 50000 00007,member
+Sameer Khan (test),sameer.khan@example.test,+91 50000 00008,tenant
+Fatima Sheikh (test),fatima.sheikh@example.test,+91 50000 00009,tenant
+David Fernandes (test),david.fernandes@example.test,+91 50000 00010,tenant
+Meera Iyer (test),meera.iyer@example.test,+91 50000 00011,committee
+Suresh Patil (test),suresh.patil@example.test,+91 50000 00012,committee
+Anil Gupta (test),anil.gupta@example.test,+91 50000 00013,committee
+Lakshmi Menon (test),lakshmi.menon@example.test,+91 50000 00014,committee
+Ravi Kumar (test),ravi.kumar@example.test,+91 50000 00015,staff
+Ganesh Pawar (test),ganesh.pawar@example.test,+91 50000 00016,staff
+Sunita More (test),sunita.more@example.test,+91 50000 00017,staff
+Imran Qureshi (test),imran.qureshi@example.test,+91 50000 00018,staff
+Pooja Bhatt (test),pooja.bhatt@example.test,+91 50000 00019,admin
+Nikhil Sawant (test),nikhil.sawant@example.test,+91 50000 00020,admin

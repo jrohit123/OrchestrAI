@@ -4,16 +4,30 @@
     {
       "name": "design-proto",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "docs/design"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs/design"
+      ],
       "port": 8765
     },
     {
       "name": "dashboard-local",
       "runtimeExecutable": "python",
       "runtimeArgs": [
-        "-m", "uvicorn", "dash_server:app",
-        "--app-dir", "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\d2e1d158-a80e-4c0d-badb-d5ac11287253\\scratchpad\\harness",
-        "--host", "127.0.0.1", "--port", "8770"
+        "-m",
+        "uvicorn",
+        "dash_server:app",
+        "--app-dir",
+        "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\d2e1d158-a80e-4c0d-badb-d5ac11287253\\scratchpad\\harness",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8770"
       ],
       "port": 8770
     },
@@ -21,9 +35,15 @@
       "name": "dashboard-login",
       "runtimeExecutable": "python",
       "runtimeArgs": [
-        "-m", "uvicorn", "dash_login:app",
-        "--app-dir", "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\8089dd14-8714-42b9-8660-22922972df30\\scratchpad",
-        "--host", "127.0.0.1", "--port", "8771"
+        "-m",
+        "uvicorn",
+        "dash_login:app",
+        "--app-dir",
+        "C:\\Users\\karti\\AppData\\Local\\Temp\\claude\\D--Orchestrator-AI\\8089dd14-8714-42b9-8660-22922972df30\\scratchpad",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8771"
       ],
       "port": 8771
     },
@@ -40,11 +60,45 @@
       "name": "dashboard-v2",
       "runtimeExecutable": "python",
       "runtimeArgs": [
-        "-m", "uvicorn", "ux_server:app",
-        "--app-dir", "D:\\Orchestrator AI\\docs\\ux\\tools",
-        "--host", "127.0.0.1", "--port", "8781"
+        "-m",
+        "uvicorn",
+        "ux_server:app",
+        "--app-dir",
+        "D:\\Orchestrator AI\\docs\\ux\\tools",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8781"
       ],
       "port": 8781
+    },
+    {
+      "name": "builder-v3",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8790",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs/design/builder-v3"
+      ],
+      "port": 8790
+    },
+    {
+      "name": "builder-v4",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8791",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs/design/builder-v4"
+      ],
+      "port": 8791
     }
   ]
 }
