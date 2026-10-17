@@ -146,6 +146,15 @@ class UserFacingStepError(StepError):
     """
 
 
+class StopBeforeAsking(UserFacingStepError):
+    """A step found, while the summary is being prepared, that saying yes could not work (for example nobody matches
+    an announcement). The person is told this message at once instead of being asked to confirm."""
+
+
+class Stopped(Exception):
+    """Raised by preview_workflow when a step stopped the request before the person is asked (the message is for them)."""
+
+
 async def _normalize_enum_values(table: str, values: dict, source_key: str) -> None:
     """
     Mutates `values` in place: for any column with a known CHECK-constraint
@@ -1929,6 +1938,10 @@ async def preview_workflow(
     except Exception as e:
         logger.warning(f"preview of '{workflow.get('intent_key')}' failed: {e}")
         return []
+    if result.get(
+        "stop"
+    ):  # a step says yes could not work: the person is told now (see StopBeforeAsking)
+        raise Stopped(result.get("message") or "")
     return result.get("preview", []) if result.get("status") == "preview" else []
 
 
@@ -2156,7 +2169,12 @@ async def _execute_steps(
             _, message = msg.split(":", 1)
             return {"status": "error", "message": message, "user_facing": True}
         if isinstance(e, UserFacingStepError):
-            return {"status": "error", "message": msg, "user_facing": True}
+            return {
+                "status": "error",
+                "message": msg,
+                "user_facing": True,
+                "stop": isinstance(e, StopBeforeAsking),
+            }
         return {"status": "error", "message": msg}
 
     if dry_run:

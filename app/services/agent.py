@@ -2240,7 +2240,22 @@ async def _confirm_by_code(
     lines = _build_confirm_summary_lines(schema, verified, display)
     if not lines:
         return None
-    lines += await _what_happens_next(wf, verified, user)
+    from app.services.step_interpreter import Stopped
+
+    try:
+        lines += await _what_happens_next(wf, verified, user)
+    except Stopped as stop:  # nothing to confirm: say why, and drop the draft
+        from app.services.draft_store import close_draft
+
+        await close_draft(
+            user["org_id"], user["user_id"], "cancelled", source_key=user["source_key"]
+        )
+        text = str(stop)
+        return (
+            text,
+            _with_history(history, message, text, limit),
+            {"pending_action": None},
+        )
 
     await upsert_draft(
         org_id=user["org_id"],
@@ -3865,9 +3880,28 @@ async def run_agent(
                 )
 
                 if summary_lines and workflow_row:
-                    summary_lines += await _what_happens_next(
-                        dict(workflow_row), confirm_draft.get("fields", {}), user
-                    )
+                    from app.services.step_interpreter import Stopped
+
+                    try:
+                        summary_lines += await _what_happens_next(
+                            dict(workflow_row), confirm_draft.get("fields", {}), user
+                        )
+                    except (
+                        Stopped
+                    ) as stop:  # nothing to confirm: say why, and drop the draft
+                        from app.services.draft_store import close_draft
+
+                        await close_draft(
+                            user["org_id"], user["user_id"], "cancelled",
+                            source_key=user["source_key"],
+                        )  # fmt: skip
+                        session_patch["pending_action"] = None
+                        stop_text = str(stop)
+                        history_to_save = _serialize_history(messages)
+                        history_to_save.append(
+                            {"role": "assistant", "content": stop_text}
+                        )
+                        return stop_text, history_to_save, session_patch
                 if summary_lines:
                     header = (
                         f"📝 *Here's what I'll save — {action_desc}:*"

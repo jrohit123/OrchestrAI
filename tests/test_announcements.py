@@ -442,5 +442,16 @@ def test_the_flow_finds_the_people_shows_how_many_and_sends_through_the_same_pat
             dry_run=True,
         )
         assert "no ready choice called “martians”" in str(bad)
+        # nobody matches: the person is told at once, before being asked to confirm
+        await conn.execute("UPDATE residents SET status = 'suspended'")
+        nobody = await step_interpreter.run_workflow_steps(
+            flow, fields, user, "+919000000001", dry_run=True
+        )
+        assert (
+            nobody["stop"]
+            and "Nobody matches “Everyone who lives here” yet" in nobody["message"]
+        )
+        with pytest.raises(step_interpreter.Stopped, match="Import from file"):
+            await step_interpreter.preview_workflow(flow, fields, user, "+919000000001")
 
     run(world, work)

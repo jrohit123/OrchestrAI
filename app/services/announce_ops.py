@@ -94,6 +94,12 @@ async def _op_find_people(params: dict, ctx: dict) -> dict:
         "audience_name": name,
     }
     ctx["fields"][f"{into}_count"] = len(people)
+    if not people:
+        what = f"“{name}”" if name else "these ticks"
+        raise si.StopBeforeAsking(
+            f"Nobody matches {what} yet, so there is nobody to send it to. "
+            "Link people to their flats on the dashboard first (People → Import from file), or pick another choice."
+        )
     shown = ", ".join(p["name"] for p in people[:8]) + (
         f" and {len(people) - 8} more" if len(people) > 8 else ""
     )
