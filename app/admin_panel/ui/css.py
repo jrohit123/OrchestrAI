@@ -107,7 +107,7 @@ body.rail .app{--side-w:68px}
 .sidefoot a,.sidefoot button{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:10px;border:0;background:none;color:var(--ink-2);font-weight:550;text-align:left;text-decoration:none;white-space:nowrap}
 .sidefoot a:hover,.sidefoot button:hover{background:var(--sunken);text-decoration:none}
 .sidefoot .ico{color:var(--muted)}
-.poweredby{display:flex!important;align-items:center;gap:8px;padding:10px 10px 4px!important;margin-top:4px;border-top:1px solid var(--line);font-size:11.5px;font-weight:500!important;color:var(--muted)!important}
+.poweredby{text-decoration:none!important;display:flex!important;align-items:center;gap:8px;padding:10px 10px 4px!important;margin-top:4px;border-top:1px solid var(--line);font-size:11.5px;font-weight:500!important;color:var(--muted)!important}
 .poweredby:hover{background:none!important}
 .brandchip{display:inline-flex;align-items:center;background:#fff;border-radius:8px;padding:3px 7px;line-height:0}
 .brandchip img{height:24px;width:auto;display:block}

@@ -64,7 +64,7 @@ CSS = r"""
 .lgn-in{position:relative}
 .lgn-in>.ico{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--faint);pointer-events:none}
 .lgn-in input{width:100%;padding:11px 42px 11px 40px;border-radius:9px}
-.lgn-by{display:flex;align-items:center;justify-content:center;gap:9px;color:var(--muted);font-size:12.5px}
+.lgn-by{text-decoration:none!important;display:flex;align-items:center;justify-content:center;gap:9px;color:var(--muted);font-size:12.5px}
 .lgn-by .brandchip{padding:5px 9px;border-radius:10px;box-shadow:0 1px 2px rgba(10,22,40,.08)}
 .lgn-by .brandchip img{height:30px}
 .lgn-in input:focus{border-color:var(--brand);box-shadow:0 0 0 4px color-mix(in srgb,var(--brand) 18%,transparent);outline:0}

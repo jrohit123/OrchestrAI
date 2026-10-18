@@ -225,7 +225,7 @@ async function signOut() {
 
 // a plain, labelled Sign out button in the menu (it is also in the account menu)
 // "Powered by aitamate": under the sign-in card and at the bottom of the menu
-const poweredBy = cls => h('div', { class: cls }, h('span', { class: 'tx' }, 'Powered by'), h('span', { class: 'brandchip' }, h('img', { src: '/admin-assets/aitamate-logo.png', alt: 'aitamate', height: 24 })));
+const poweredBy = cls => h('a', { class: cls, href: 'https://aitamate.com/', target: '_blank', rel: 'noopener', title: 'aitamate.com' }, h('span', { class: 'tx' }, 'Powered by'), h('span', { class: 'brandchip' }, h('img', { src: '/admin-assets/aitamate-logo.png', alt: 'aitamate', height: 24 })));
 const signOutButton = () => h('button', { type: 'button', title: 'Sign out', onclick: signOut }, icon('signout'), h('span', { class: 'tx' }, 'Sign out'));
 // the person's button at the bottom of the menu
 function accountChip() {
