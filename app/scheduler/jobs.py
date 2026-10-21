@@ -111,6 +111,7 @@ async def run_scheduled_reports():
             due = await fetch_all(
                 """
                 SELECT sr.*, u.name as user_name, u.role_id, u.email as user_email,
+                       u.phone as user_phone,
                        o.name as org_name, o.gst_rate,
                        r.permissions, r.name as role_name
                 FROM scheduled_reports sr
@@ -149,10 +150,17 @@ async def run_scheduled_reports():
 
     for row in all_due:
         report_id = str(row["id"])
-        phone = row["phone"]
+        # The person's chat as it is now (their WhatsApp number, or tg:<id> on Telegram), not the number saved
+        # in the report when it was made: an organisation can move channel (Baanganga went from WhatsApp to
+        # Telegram), and the old number may now belong to the same person in another organisation.
+        phone = (row.get("user_phone") or "").strip()
         query_text = row["query_text"]
         label = row["report_label"]
         delivery = row["delivery"]
+        if not phone and delivery in ("whatsapp", "both"):
+            delivery = (
+                "email"  # no chat linked now: email it, never the old saved number
+            )
 
         try:
             logger.info(f"Running '{label}' for {phone}")
