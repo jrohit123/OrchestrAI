@@ -77,6 +77,7 @@ function snapshot(force) {
   return true;
 }
 function commit(redraw, force) {          // force: this change is an undo step of its own, even when it follows another quickly
+  blSync();                               // the builder's boxes become the steps (no-op on the canvas)
   snapshot(!!force);
   EW.serverProblems = null;
   updateBar(); scheduleCheck();
@@ -119,7 +120,7 @@ function problemsFor(n) {
   const re = new RegExp('^Step ' + n + '\\b');
   return [...EW.check.errors.filter(m => re.test(m)).map(m => ['bad', m]), ...EW.check.warnings.filter(m => re.test(m)).map(m => ['warn', m])];
 }
-// (drawProblems, updateBar and refreshTitles are part of the canvas screen)
+// (drawEditor, drawPane, drawProblems and refreshTitles pick the builder or the canvas: js_builder.py)
 
 async function save() {
   const changes = {}, now = tidyWork(EW.work), was = tidyWork(EW.orig);

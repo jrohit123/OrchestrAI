@@ -34,6 +34,7 @@ import re
 
 from app.db import fetch_all, fetch_one
 from app.logging_config import bind_context, get_context_logger
+from app.services.ai_step import AI_PRIMITIVES
 from app.services.announce_ops import ANNOUNCE_PRIMITIVES
 from app.services.case_ops import CASE_PRIMITIVES
 from app.services.json_utils import parse_jsonb as _parse_jsonb
@@ -66,6 +67,28 @@ def _fix_stray_escapes(s: str) -> str:
         return s.encode().decode("unicode_escape").encode("latin1").decode("utf-8")
     except Exception:
         return s
+
+
+# {record.column} in a message: anything an earlier step found, saved or worked out, e.g.
+# {case.title}, {assignee.name}, {user.name}, {inserted.cases.case_number}. The older {field}
+# and {case_column} placeholders are filled in afterwards exactly as before.
+_DOTTED = re.compile(r"\{([a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)+)\}")
+
+
+def fill_dotted(template: str, ctx: dict | None) -> str:
+    """Fill the {record.column} placeholders from what the steps have so far. What they hold
+    goes in as plain text (its braces doubled), so the {field} filling after it cannot misread
+    it. Something not found reads as empty, like the other placeholders."""
+    if not template or not ctx or "." not in template:
+        return template
+
+    def one(m: re.Match) -> str:
+        value = _resolve_path(ctx, "$" + m.group(1))
+        if value is None or isinstance(value, (dict, list)):
+            return ""
+        return str(value).replace("{", "{{").replace("}", "}}")
+
+    return _DOTTED.sub(one, template)
 
 
 async def _load_schema_allowlist(source_key: str) -> dict:
@@ -340,6 +363,8 @@ def _step_enabled(step: dict, ctx: dict) -> bool:
         {"when": {"field": "$fields.action", "not_equals": "comment"}}
         {"when": {"and": [{"field": "$fields.action", "equals": "close"},
                           {"field": "$case.assigned_to_id", "exists": true}]}}
+        {"when": {"or": [...]}}     any one of them is true
+        {"when": {"not": {...}}}    the opposite (the builder's OTHERWISE lane of a joined rule)
 
     Guards only skip steps. They never alter step indices, so resume_step
     after an OTP/approval halt stays valid.
@@ -347,9 +372,17 @@ def _step_enabled(step: dict, ctx: dict) -> bool:
     cond = step.get("when")
     if not cond:
         return True
+    return _eval_guard(cond, ctx)
 
+
+def _eval_guard(cond: dict, ctx: dict) -> bool:
+    """A guard, with "and", "or" and "not" nested as deep as they come."""
     if "and" in cond:
-        return all(_eval_when_condition(c, ctx) for c in cond["and"])
+        return all(_eval_guard(c, ctx) for c in cond["and"])
+    if "or" in cond:
+        return any(_eval_guard(c, ctx) for c in cond["or"])
+    if "not" in cond:
+        return not _eval_guard(cond["not"], ctx)
     return _eval_when_condition(cond, ctx)
 
 
@@ -980,6 +1013,150 @@ async def _op_approval_gate(params: dict, ctx: dict) -> dict:
     return ctx
 
 
+# what ask_approval saves as the answer, whatever the buttons say
+APPROVE_WORD, REJECT_WORD = "Approve", "Reject"
+
+
+async def _approvers(params: dict, ctx: dict) -> list[dict]:
+    """The people who may answer an ask_approval: one person given as data (a record found
+    earlier, or a phone), or everyone in a role (the first to answer decides)."""
+    who = params.get("approver")
+    if who:
+        value = _resolve_path(ctx, who) if str(who).startswith("$") else who
+        if isinstance(value, dict):
+            if value.get("phone") and value.get("id"):
+                return [
+                    {
+                        "id": str(value["id"]),
+                        "name": value.get("name"),
+                        "phone": value["phone"],
+                    }
+                ]
+            value = value.get("phone")
+        if value:
+            row = await fetch_one(
+                "SELECT id, name, phone FROM users WHERE org_id = $1 AND phone = $2 AND is_active",
+                ctx["org_id"],
+                str(value),
+                source_key=ctx["source_key"],
+            )
+            return [dict(row, id=str(row["id"]))] if row else []
+        return []
+    role = params.get("role")
+    if not role:
+        return []
+    found = await fetch_all(
+        "SELECT u.id, u.name, u.phone FROM users u JOIN roles r ON r.id = u.role_id "
+        "WHERE u.org_id = $1 AND r.name = $2 AND u.is_active "
+        "AND COALESCE(u.phone, '') <> '' ORDER BY u.name",
+        ctx["org_id"],
+        role,
+        source_key=ctx["source_key"],
+    )
+    return [dict(r, id=str(r["id"])) for r in found]
+
+
+async def _op_ask_approval(params: dict, ctx: dict) -> dict:
+    """
+    Ask someone to approve, wait for the answer, then carry on either way.
+        {"op": "ask_approval", "params": {
+            "approver": "$manager",            a person found earlier (or a phone), or
+            "role": "committee",               everyone in a role: the first to answer decides
+            "message": "{user.name} wants the {facility} on {booking_date}",
+            "buttons": {"approve": "✅ Approve", "reject": "❌ Reject"},   optional wording
+            "into": "committee"}}              the answer is kept as $fields.committee
+    The answer is kept as "Approve" or "Reject" (and who answered as $fields.<into>_by), so an
+    If after this step decides what happens next. Unlike approval_gate, a "Reject" does not end
+    the flow. A building block cannot wait for an answer (nobody could resume it half way).
+    """
+    into = params.get("into") or "approval"
+    if ctx["fields"].get(into) in (APPROVE_WORD, REJECT_WORD):
+        return ctx  # answered already: this is the resumed run
+    if ctx.get("_call_stack") and len(ctx["_call_stack"]) > 1:
+        raise StepError(
+            "ask_approval: a building block cannot wait for an answer. Put this step in the "
+            "workflow that runs the block."
+        )
+    people = await _approvers(params, ctx)
+    user = ctx["user"]
+    people = [p for p in people if str(p["id"]) != str(user.get("user_id"))]
+    if not people:
+        raise UserFacingStepError(
+            await _say(ctx, "approval.nobody", intent=ctx["workflow"].get("name") or "")
+        )
+    message = _notify_message({"message_template": params.get("message") or ""}, ctx)
+    if not message.strip():
+        message = await _say(
+            ctx,
+            "approval.request_plain",
+            requester=user.get("user_name") or "",
+            intent=ctx["workflow"].get("name") or "",
+        )
+    if ctx.get("dry_run"):
+        ctx.setdefault("preview", []).append(
+            "It waits for "
+            + (people[0]["name"] if len(people) == 1 else f"one of {len(people)} people")
+            + " to approve or reject"
+        )
+        ctx["fields"][into] = APPROVE_WORD  # a rehearsal carries on as if approved
+        ctx["fields"][f"{into}_by"] = people[0]["name"]
+        return ctx
+
+    approval_context = {
+        "mode": "answer",
+        "into": into,
+        "approver_ids": [p["id"] for p in people],
+        "pending_action": {
+            **ctx["workflow"],
+            "fields": ctx["fields"],
+            "intent_key": ctx["workflow"]["intent_key"],
+            "resume_step": ctx.get("_step_index", 0) + 1,
+        },
+        "requester_id": user["user_id"],
+        "requester_phone": ctx.get("phone", ""),
+        "requester_name": user.get("user_name", ""),
+        "requester_email": user.get("email", ""),
+    }
+    row = await fetch_one(
+        "INSERT INTO pending_approvals (org_id, requester_id, approver_role, intent_key, context, status) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, 'pending') RETURNING id",
+        ctx["org_id"],
+        user["user_id"],
+        params.get("role") or "person",
+        ctx["workflow"]["intent_key"],
+        json.dumps(approval_context, default=str),
+        source_key=ctx["source_key"],
+    )
+    words = params.get("buttons") or {}
+    from app.services.messaging import send_buttons
+
+    for p in people:
+        await send_buttons(
+            to=p["phone"],
+            body=message,
+            buttons=[
+                {
+                    "id": f"action:approve:{row['id']}",
+                    "title": str(words.get("approve") or "✅ Approve")[:20],
+                },
+                {
+                    "id": f"action:reject:{row['id']}",
+                    "title": str(words.get("reject") or "❌ Reject")[:20],
+                },
+            ],
+        )
+    names = people[0]["name"] if len(people) == 1 else (params.get("role") or "")
+    ctx["_halt"] = "awaiting_approval"
+    ctx["_halt_message"] = await _say(ctx, "approval.waiting", approver=names or "")
+    return ctx
+
+
+async def _say(ctx: dict, key: str, **values) -> str:
+    from app.services.messages import say
+
+    return await say(ctx.get("source_key"), key, **values)
+
+
 async def _op_insert_row(params: dict, ctx: dict) -> dict:
     """
     Insert one row into any table.
@@ -1461,10 +1638,11 @@ def _notify_message(params: dict, ctx: dict) -> str:
         **ctx.get("generated", {}),
         **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
     }
+    text = fill_dotted(_fix_stray_escapes(params["message_template"]), ctx)
     try:
-        return _fix_stray_escapes(params["message_template"]).format(**all_vals)
+        return text.format(**all_vals)
     except (KeyError, IndexError):
-        return _fix_stray_escapes(params["message_template"])
+        return text
 
 
 async def _op_notify_user(params: dict, ctx: dict) -> dict:
@@ -1473,12 +1651,32 @@ async def _op_notify_user(params: dict, ctx: dict) -> dict:
     `to` resolves a $path to a phone (e.g. "$assignee.phone").
     `message_template` (from DB-stored step params) supports {field}
     placeholders drawn from fields/computed/generated/case context.
+    `buttons` (optional) {"Button text": "/command {case_case_number}"}: shown under the
+    message on Telegram, as notify.parties does; WhatsApp gets the message alone.
     """
-    from app.services import reach
+    from app.services import messaging, reach
 
     to_phone = _resolve_path(ctx, params["to"])
     if not to_phone:
         return ctx  # no phone on file — skip silently, don't fail the workflow
+
+    buttons = params.get("buttons") or {}
+    if buttons and str(to_phone).startswith("tg:"):
+        from app.services.case_ops import _fill
+
+        values = {
+            **ctx.get("fields", {}),
+            **{f"case_{k}": v for k, v in (ctx.get("case") or {}).items()},
+        }
+        await messaging.send_buttons(
+            to_phone,
+            _notify_message(params, ctx),
+            [
+                {"id": _fill(cmd, values, ctx)[:64], "title": str(title)[:40]}
+                for title, cmd in list(buttons.items())[:3]
+            ],
+        )
+        return ctx
 
     # WhatsApp only delivers a message the bot starts if the person wrote to it in the last 24
     # hours. When they did not, reach keeps the message, emails it, and says so here, so the
@@ -1954,6 +2152,7 @@ PRIMITIVES = {
     "compute": _op_compute,
     "otp_gate": _op_otp_gate,
     "approval_gate": _op_approval_gate,
+    "ask_approval": _op_ask_approval,  # the builder's "Get approval": carries on after either answer
     "require_permission": _op_require_permission,  # NEW
     "db.insert_row": _op_insert_row,
     "db.update_row": _op_update_row,
@@ -1972,6 +2171,7 @@ PRIMITIVES.update(CASE_PRIMITIVES)  # the steps that know about cases (case_ops.
 PRIMITIVES.update(
     ANNOUNCE_PRIMITIVES
 )  # find people by flat and send to a group (announce_ops.py)
+PRIMITIVES.update(AI_PRIMITIVES)  # the builder's "Ask the AI" (ai_step.py)
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
@@ -2139,7 +2339,8 @@ async def _execute_steps(
                 return {
                     "status": ctx["_halt"],
                     "resume_step": i + 1,
-                    "message": _gate_message(ctx["_halt"], user, ctx),
+                    "message": ctx.get("_halt_message")
+                    or _gate_message(ctx["_halt"], user, ctx),
                 }
 
     except VerificationError as e:
@@ -2191,7 +2392,7 @@ async def _execute_steps(
     all_vals = {**ctx["fields"], **ctx.get("computed", {}), **ctx.get("generated", {})}
     if template:
         try:
-            message = _fix_stray_escapes(template).format(**all_vals)
+            message = fill_dotted(_fix_stray_escapes(template), ctx).format(**all_vals)
         except (KeyError, IndexError):
             message = f"✅ {workflow.get('name', 'Action')} completed successfully."
     else:

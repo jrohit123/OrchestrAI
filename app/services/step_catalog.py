@@ -291,6 +291,14 @@ STEP_TYPES: list[dict] = [
                 "required": True,
                 "help": "Use {field_name} to put a value in.",
             },
+            {
+                "key": "buttons",
+                "label": "Buttons under the message",
+                "kind": "map_text",
+                "advanced": True,
+                "placeholders": ["Button text", "/command"],
+                "help": "Button text → command (at most 3, shown on Telegram).",
+            },
         ],
     },
     {
@@ -323,6 +331,81 @@ STEP_TYPES: list[dict] = [
         "help": "Waits for an approver when an amount is large.",
         "params": [
             {"key": "amount_field", "label": "Amount to check", "kind": "value"}
+        ],
+    },
+    {
+        "op": "ask_approval",
+        "label": "Get approval",
+        "group": "Approvals",
+        "help": "Asks a person, or everyone in a role, to approve. The flow carries on after either answer; an If after it decides what happens.",
+        "params": [
+            {
+                "key": "approver",
+                "label": "Who approves (a person found earlier)",
+                "kind": "value",
+                "required_unless": "role",
+            },
+            {
+                "key": "role",
+                "label": "Or everyone in this role",
+                "kind": "text",
+                "help": "The first one to answer decides.",
+            },
+            {
+                "key": "message",
+                "label": "What they see",
+                "kind": "longtext",
+                "help": "Use {field_name} or {record.column} to put a value in.",
+            },
+            {
+                "key": "into",
+                "label": "Call the answer",
+                "kind": "text",
+                "default": "approval",
+                "help": "The answer is Approve or Reject.",
+            },
+            {
+                "key": "buttons",
+                "label": "Button wording",
+                "kind": "map_text",
+                "advanced": True,
+                "placeholders": ["approve / reject", "✅ Approve"],
+            },
+        ],
+    },
+    {
+        "op": "ai.ask",
+        "label": "Ask the AI",
+        "group": "Other",
+        "help": "The AI does one job with text from the flow: writes a text, picks one choice, or pulls out details.",
+        "params": [
+            {
+                "key": "task",
+                "label": "What the AI does",
+                "kind": "choice",
+                "default": "write",
+                "options": [
+                    ["write", "Write a text"],
+                    ["pick", "Pick one from a list"],
+                    ["extract", "Pull out details"],
+                ],
+            },
+            {
+                "key": "instructions",
+                "label": "Your instructions",
+                "kind": "longtext",
+                "help": "Optional. Like a system prompt: how to do the job.",
+            },
+            {
+                "key": "prompt",
+                "label": "What to give the AI",
+                "kind": "longtext",
+                "required": True,
+                "help": "The text it works on. Use {field_name} or {record.column}.",
+            },
+            {"key": "into", "label": "Call the answer", "kind": "text"},
+            {"key": "choices", "label": "Choices", "kind": "list_text"},
+            {"key": "if_unsure", "label": "If none fits, use", "kind": "text"},
         ],
     },
     {
@@ -725,9 +808,15 @@ def _check_when(cond, label: str, ctx: dict, errors: list, warnings: list) -> No
     if not isinstance(cond, dict):
         errors.append(f"{label}: the 'only if' condition is not valid.")
         return
-    if "and" in cond:
-        for c in cond["and"] if isinstance(cond["and"], list) else []:
-            _check_when(c, label, ctx, errors, warnings)
+    for join in ("and", "or"):
+        if join in cond:
+            if not isinstance(cond[join], list) or not cond[join]:
+                errors.append(f"{label}: the 'only if' condition is not valid.")
+            for c in cond[join] if isinstance(cond[join], list) else []:
+                _check_when(c, label, ctx, errors, warnings)
+            return
+    if "not" in cond:
+        _check_when(cond["not"], label, ctx, errors, warnings)
         return
     field = cond.get("field")
     if not isinstance(field, str) or not field.startswith("$"):
@@ -815,12 +904,6 @@ def validate_steps(
     steps = normalize_steps(steps)
     if not isinstance(steps, list):
         return {"errors": ["The steps must be a list."], "warnings": []}
-    if kind == "block" and len(steps) > 1:
-        errors.append(
-            f"A building block is one step, and this one has {len(steps)}. To do several things, "
-            "make a building block for each one and run them one after another in a workflow."
-        )
-
     ctx = {
         "schema": schema,
         "aliases": {},
@@ -958,6 +1041,31 @@ def validate_steps(
             ctx["fields"].update(extra)
         elif op == "db.insert_row" and isinstance(params.get("table"), str):
             inserted.add(params["table"])
+        elif op == "ask_approval":
+            if kind == "block":
+                errors.append(
+                    f"{label}: a building block cannot wait for an approval. "
+                    "Put this step in the workflow that runs the block."
+                )
+            into = params.get("into") or "approval"
+            ctx["fields"].update({into, f"{into}_by"})
+        elif op == "ai.ask":
+            task = params.get("task") or "write"
+            if task == "extract":
+                found = [
+                    f.get("name")
+                    for f in params.get("fields") or []
+                    if isinstance(f, dict) and f.get("name")
+                ]
+                if not found:
+                    errors.append(f"{label}: say which details the AI should pull out.")
+                ctx["fields"].update(found)
+            elif not params.get("into"):
+                errors.append(f"{label}: 'Call the answer' is empty.")
+            else:
+                ctx["fields"].add(params["into"])
+            if task == "pick" and not params.get("choices"):
+                errors.append(f"{label}: give the AI the choices to pick from.")
         elif op in ("otp_gate", "approval_gate") and kind == "block":
             errors.append(
                 f"{label}: a building block cannot ask for a code or approval. "

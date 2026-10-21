@@ -58,9 +58,9 @@ class _Blank(dict):
         return ""
 
 
-def _fill(template: str, values: dict) -> str:
+def _fill(template: str, values: dict, ctx: dict | None = None) -> str:
     si = _si()
-    text = si._fix_stray_escapes(template or "")
+    text = si.fill_dotted(si._fix_stray_escapes(template or ""), ctx)
     try:
         return string.Formatter().vformat(text, (), _Blank(values))
     except (ValueError, IndexError, KeyError):
@@ -494,7 +494,7 @@ async def _op_notify_parties(params: dict, ctx: dict) -> dict:
         if not template:
             continue
         local = {**values, "recipient_name": who["name"]}
-        text = _fill(template, local)
+        text = _fill(template, local, ctx)
         try:
             went = True  # False when WhatsApp's 24-hour door is closed: the person is emailed instead
             if (

@@ -126,7 +126,12 @@ async def _op_send_to_group(params: dict, ctx: dict) -> dict:
             "Send to a group: find the people first (a “Find people” step)."
         )
     raw = params.get("message")
-    text = si._resolve_path(ctx, raw) if str(raw or "").startswith("$") else raw
+    if str(raw or "").startswith("$"):
+        text = si._resolve_path(ctx, raw)
+    else:  # a message typed in the builder may hold data: {name}, {case.title} …
+        from app.services.case_ops import _fill
+
+        text = _fill(raw, {**ctx.get("fields", {}), **ctx.get("computed", {})}, ctx)
     raw_title = params.get("title") or ""
     title = (
         si._resolve_path(ctx, raw_title)

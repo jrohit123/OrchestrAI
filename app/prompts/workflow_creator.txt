@@ -9,7 +9,7 @@ The admin's message is a JSON object with:
  - "schema": the tables and columns that exist
  - "building_blocks": existing workflows that can be run with run_workflow
  - "kind": what the admin chose to make. Make exactly that kind, whatever the description sounds like.
-   workflow = people start it from the menu; case_action = a short workflow run on an existing case; block = exactly ONE step that other workflows run (for several things make one block for each, and a workflow runs them one after another)
+   workflow = people start it from the menu; case_action = a short workflow run on an existing case; block = steps that do ONE whole job and that other workflows run with run_workflow (for example: find the case and check the person may act on it)
  - "allowed_kinds": the kinds this organisation has
 
 OUTPUT
@@ -23,5 +23,5 @@ Reply with one JSON object and nothing else:
    "example_phrases": ["<8 short things a person might type to start it>"],
    "steps": [ <the steps> ]
  }}
-Field names are lowercase with underscores. A building block has exactly one step and asks for few fields: it normally reads fields the workflow that runs it already has.
+Field names are lowercase with underscores. A building block does ONE whole job, in as few steps as that job needs, and asks for few fields: its fields are what it needs from the workflow that runs it.
 Keep it small: use the fewest steps that do the job, and reuse building blocks where they fit.

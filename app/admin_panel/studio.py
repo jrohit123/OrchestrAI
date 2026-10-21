@@ -29,6 +29,7 @@ from app.admin_panel.common import (
 from app.admin_panel.workflows import where_used
 from app.db import fetch_all, fetch_one
 from app.logging_config import get_context_logger
+from app.services import builder_model
 from app.services.flow_triggers import unfit_reasons
 from app.services.step_catalog import (
     FIELD_TYPES,
@@ -84,7 +85,7 @@ async def load_workflows(ctx: Ctx, exclude_id=None) -> dict[str, dict]:
     found = await fetch_all(
         "SELECT id, name, intent_key, is_active, steps, workflow_type, description, "
         "entity_schema"
-        + (", kind" if ctx.caps.get("workflow_kind") else "")
+        + (", kind, settings" if ctx.caps.get("workflow_kind") else "")
         + " FROM workflows WHERE org_id = $1",
         ctx.org_id,
         source_key=ctx.source_key,
@@ -99,6 +100,8 @@ async def load_workflows(ctx: Ctx, exclude_id=None) -> dict[str, dict]:
             "type": w["workflow_type"],
             "description": w["description"],
             "kind": w["kind"] if ctx.caps.get("workflow_kind") else "workflow",
+            # a building block's settings may name what it gives back (the builder shows it)
+            "settings": jb(w["settings"], {}) if ctx.caps.get("workflow_kind") else {},
         }
         for w in found
         if w["id"] != exclude_id
@@ -263,6 +266,63 @@ async def try_it(body: TryBody, ctx: CtxDep):
     return out
 
 
+# ── the plain-words builder ──────────────────────────────────────────────────
+# The builder shows the same steps as boxes (steps that share a guard as one If box) and saves
+# through PUT /workflows/{id}/definition like every other change. See builder_model.py.
+
+
+class BuilderBody(BaseModel):
+    boxes: list[dict]
+    entity_schema: dict = Field(default_factory=dict)
+    kind: str = "workflow"
+    intent_key: str | None = None
+
+
+class BuilderViewBody(BaseModel):
+    steps: list[dict]
+    entity_schema: dict = Field(default_factory=dict)
+    kind: str = "workflow"
+
+
+@router.post("/studio/builder/view")
+async def builder_view_of(body: BuilderViewBody, ctx: CtxDep):
+    """The boxes and the data panel for steps that are not saved yet (a draft, a copy)."""
+    return builder_model.builder_view(
+        body.steps,
+        body.entity_schema,
+        await load_schema(ctx),
+        await load_workflows(ctx),
+        body.kind,
+    )
+
+
+@router.post("/studio/builder/compile")
+async def builder_compile(body: BuilderBody, ctx: CtxDep):
+    """The boxes as the engine's steps, the data panel for them, and their problems in plain
+    words, exactly as saving would report them. Nothing is saved."""
+    try:
+        steps = builder_model.from_boxes(body.boxes)
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(status_code=422, detail=f"The boxes are not valid: {e}")
+    schema = await load_schema(ctx)
+    workflows = await load_workflows(ctx)
+    check = validate_steps(
+        steps,
+        schema=schema,
+        entity_schema=body.entity_schema,
+        kind=body.kind,
+        intent_key=body.intent_key,
+        workflows={k: v for k, v in workflows.items() if k != body.intent_key},
+    )
+    return {
+        "steps": steps,
+        "base_data": builder_model.base_data(body.entity_schema, body.kind),
+        "step_data": [builder_model.data_made_by(s, schema, workflows) for s in steps],
+        "errors": check["errors"],
+        "warnings": check["warnings"],
+    }
+
+
 # ── one workflow, for the editor ─────────────────────────────────────────────
 
 
@@ -288,7 +348,8 @@ async def workflow_detail(workflow_id: UUID, ctx: CtxDep):
         raise HTTPException(status_code=404, detail="Workflow not found")
     d = dict(w)
     steps = normalize_steps(jb(d["steps"], []))
-    names = {k: v["name"] for k, v in (await load_workflows(ctx)).items()}
+    workflows = await load_workflows(ctx)
+    names = {k: v["name"] for k, v in workflows.items()}
     versions = await fetch_all(
         "SELECT version, name, published_at, jsonb_array_length(COALESCE(steps, '[]'::jsonb)) AS step_count "
         "FROM workflow_versions WHERE workflow_id = $1 ORDER BY version DESC LIMIT 40",
@@ -320,6 +381,14 @@ async def workflow_detail(workflow_id: UUID, ctx: CtxDep):
         ],
         "used_in": await where_used(ctx, d["intent_key"], workflow_id),
         "versions": rows(versions),
+        # the same steps as the builder's boxes, with what is known before each step
+        "builder": builder_model.builder_view(
+            steps,
+            jb(d["entity_schema"], {}),
+            await load_schema(ctx),
+            workflows,
+            d.get("kind") or "workflow",
+        ),
     }
 
 

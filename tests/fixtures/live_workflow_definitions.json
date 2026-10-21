@@ -1,0 +1,3300 @@
+{
+ "godrej": {
+  "from_backup": "godrej_2026-10-16_1349.dump",
+  "workflows": [
+   {
+    "intent_key": "case_add_level2_people",
+    "name": "Add the level 2 people from the routing rule",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Adds the level 2 people to the ticket, when the routing rule named some.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "case.add_parties",
+      "when": {
+       "field": "$route.level2_ids",
+       "exists": true
+      },
+      "params": {
+       "role": "level2",
+       "case_id": "$inserted.cases.id",
+       "users_from": "$route.level2_ids"
+      }
+     }
+    ],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_apply_route",
+    "name": "Send the ticket to whoever handles it (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Gives a new ticket to the person the routing rules name, records it, and adds level 2 to the ticket. Needs Find who handles it first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$route.assignee_id",
+       "exists": true
+      },
+      "params": {
+       "set": {
+        "assigned_to_id": "$route.assignee_id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$inserted.cases.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "when": {
+       "field": "$route.assignee_id",
+       "exists": true
+      },
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$inserted.cases.id",
+        "payload": {
+         "by": "routing rule",
+         "to_name": "$route.assignee_name",
+         "to_user_id": "$route.assignee_id"
+        },
+        "activity_type": "assignment",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     },
+     {
+      "op": "case.add_parties",
+      "when": {
+       "field": "$route.level2_ids",
+       "exists": true
+      },
+      "params": {
+       "role": "level2",
+       "case_id": "$inserted.cases.id",
+       "users_from": "$route.level2_ids"
+      }
+     }
+    ],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_assign",
+    "name": "Give the ticket to someone (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Hands the ticket to one person and records it on the timeline. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "assignee",
+       "table": "users",
+       "where": {
+        "is_active": true
+       },
+       "name_from": "$fields.assignee_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "assigned_to_id": "$assignee.id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to_name": "$assignee.name",
+         "to_user_id": "$assignee.id"
+        },
+        "activity_type": "assignment",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "assignee_name": {
+      "type": "string",
+      "required": true,
+      "description": "Who the ticket goes to. If the person says me or myself, use their own name."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_check_access",
+    "name": "Check the person may act on the ticket",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Stops unless the person may act on the ticket that was found. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "case.authorize",
+      "params": {
+       "case": "$case"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "required": true,
+      "description": "The ticket number, for example CS-26-08-00017. Any format is accepted."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_clear_closed_time",
+    "name": "Clear the closing time",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "When the new status is not closed, clears the closing time. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.status",
+       "not_equals": "closed"
+      },
+      "params": {
+       "set": {
+        "closed_at": null
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": false,
+      "description": "An optional note."
+     },
+     "status": {
+      "enum": [
+       "reported",
+       "under_review",
+       "action_taken",
+       "closed"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new status."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_close",
+    "name": "Close a ticket (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Closes the ticket with a closing note and records it. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "status": "closed",
+        "closed_at": "NOW()"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "closed",
+         "closing_note": "$fields.note"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": true,
+      "description": "The closing note. Compulsory, so everyone knows what was done."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_comment",
+    "name": "Add a note to a ticket",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Puts a note on the ticket's timeline. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "text": "$fields.comment_text"
+        },
+        "activity_type": "comment",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "comment_text": {
+      "type": "string",
+      "required": true,
+      "description": "The note to record."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_create",
+    "name": "Create a ticket (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Saves a new ticket with its number, category and due time (the time the category allows, else from the priority).",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "tat",
+       "table": "priority_tat_rules",
+       "expose": {
+        "tat_minutes": "tat_minutes"
+       },
+       "name_from": "$fields.priority",
+       "match_column": "priority"
+      }
+     },
+     {
+      "op": "derive_field",
+      "params": {
+       "expr": "due_from_tat(tat_minutes, \"minutes\")",
+       "field": "due_date"
+      }
+     },
+     {
+      "op": "derive_field",
+      "when": {
+       "field": "$fields.route_minutes",
+       "exists": true
+      },
+      "params": {
+       "expr": "due_from_tat(route_minutes, \"minutes\")",
+       "field": "due_date"
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "cases",
+       "values": {
+        "title": "$fields.title",
+        "status": "reported",
+        "due_date": "$fields.due_date",
+        "location": "$fields.location",
+        "priority": "$fields.priority",
+        "description": "$fields.description",
+        "complainant_id": "$user.user_id"
+       },
+       "sequence": {
+        "pad": 5,
+        "field": "case_number",
+        "start": 1,
+        "prefix": "CS-{YY}-{MM}-"
+       }
+      }
+     },
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.category_id",
+       "exists": true
+      },
+      "params": {
+       "set": {
+        "category_id": "$fields.category_id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$inserted.cases.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$inserted.cases.id",
+        "payload": {
+         "to": "reported"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_due_from_new_priority",
+    "name": "Work out the due time again for the new priority",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Works out the due time again, counting from when the ticket was raised. Needs the ticket found and the response time looked up first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "derive_field",
+      "params": {
+       "expr": "due_from_tat(tat_minutes, \"minutes\", case_created_at)",
+       "field": "due_date"
+      }
+     }
+    ],
+    "entity_schema": {
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new priority."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_due_from_priority",
+    "name": "Work out the due time from the priority",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Sets the due time of a new ticket from the response time of its priority. Needs the response time looked up first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "derive_field",
+      "params": {
+       "expr": "due_from_tat(tat_minutes, \"minutes\")",
+       "field": "due_date"
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_due_from_route",
+    "name": "Work out the due time from the routing rule",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "When the routing rule gave a time, uses it instead of the one from the priority.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "derive_field",
+      "when": {
+       "field": "$fields.route_minutes",
+       "exists": true
+      },
+      "params": {
+       "expr": "due_from_tat(route_minutes, \"minutes\")",
+       "field": "due_date"
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_find",
+    "name": "Find a ticket (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Finds the ticket from its number (any format) and stops unless the person may act on it.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "case",
+       "table": "cases",
+       "expose": {
+        "resolved_case_number": "case_number"
+       },
+       "name_from": "$fields.case_number",
+       "normalize": "identifier",
+       "match_column": "case_number"
+      }
+     },
+     {
+      "op": "case.authorize",
+      "params": {
+       "case": "$case"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "required": true,
+      "description": "The ticket number, for example CS-26-08-00017. Any format is accepted."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_find_by_number",
+    "name": "Find a ticket by its number",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Finds the ticket from its number (any format) and keeps it for the steps after. Stops if there is no such ticket.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "case",
+       "table": "cases",
+       "expose": {
+        "resolved_case_number": "case_number"
+       },
+       "name_from": "$fields.case_number",
+       "normalize": "identifier",
+       "match_column": "case_number"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "required": true,
+      "description": "The ticket number, for example CS-26-08-00017. Any format is accepted."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_find_new_handler",
+    "name": "Find the person to give the ticket to",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Finds the person by name, among the people who are active.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "assignee",
+       "table": "users",
+       "where": {
+        "is_active": true
+       },
+       "name_from": "$fields.assignee_name",
+       "match_column": "name"
+      }
+     }
+    ],
+    "entity_schema": {
+     "assignee_name": {
+      "type": "string",
+      "required": true,
+      "description": "Who the ticket goes to. If the person says me or myself, use their own name."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_give_to_routed_person",
+    "name": "Give the new ticket to the person the routing rule names",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Gives a new ticket to the person the routing rules name, when they named one. Needs the ticket saved and the routing rule found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$route.assignee_id",
+       "exists": true
+      },
+      "params": {
+       "set": {
+        "assigned_to_id": "$route.assignee_id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$inserted.cases.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_look_up_response_time",
+    "name": "Look up the response time of the priority",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Finds how long the priority gets, from the response-time table, for the steps after.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "tat",
+       "table": "priority_tat_rules",
+       "expose": {
+        "tat_minutes": "tat_minutes"
+       },
+       "name_from": "$fields.priority",
+       "match_column": "priority"
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_assignment",
+    "name": "Record the assignment",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes the hand-over on the ticket timeline. Needs the ticket and the person found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to_name": "$assignee.name",
+         "to_user_id": "$assignee.id"
+        },
+        "activity_type": "assignment",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "assignee_name": {
+      "type": "string",
+      "required": true,
+      "description": "Who the ticket goes to. If the person says me or myself, use their own name."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_closed",
+    "name": "Record the closing and its note",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes the closing, with its note, on the ticket timeline. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "closed",
+         "closing_note": "$fields.note"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": true,
+      "description": "The closing note. Compulsory, so everyone knows what was done."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_priority",
+    "name": "Record the priority change",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes the new priority on the ticket timeline. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "$fields.priority"
+        },
+        "activity_type": "priority_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new priority."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_reported",
+    "name": "Record that the ticket was reported",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes \"reported\" on the ticket timeline. Needs the ticket saved first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$inserted.cases.id",
+        "payload": {
+         "to": "reported"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_routed_assignment",
+    "name": "Record the routing assignment",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes on the ticket timeline that the routing rule gave the ticket to that person. Runs only when the rule named one.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "when": {
+       "field": "$route.assignee_id",
+       "exists": true
+      },
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$inserted.cases.id",
+        "payload": {
+         "by": "routing rule",
+         "to_name": "$route.assignee_name",
+         "to_user_id": "$route.assignee_id"
+        },
+        "activity_type": "assignment",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_record_status",
+    "name": "Record the status change",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Writes the status change on the ticket timeline. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "$fields.status",
+         "note": "$fields.note"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": false,
+      "description": "An optional note."
+     },
+     "status": {
+      "enum": [
+       "reported",
+       "under_review",
+       "action_taken",
+       "closed"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new status."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_save_closed",
+    "name": "Mark the ticket closed",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Sets the ticket to closed and notes the time. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "status": "closed",
+        "closed_at": "NOW()"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": true,
+      "description": "The closing note. Compulsory, so everyone knows what was done."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_save_handler",
+    "name": "Give the ticket to that person",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Hands the ticket to the person that was found. Needs the ticket and the person found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "assigned_to_id": "$assignee.id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "assignee_name": {
+      "type": "string",
+      "required": true,
+      "description": "Who the ticket goes to. If the person says me or myself, use their own name."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_save_new",
+    "name": "Save the new ticket",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Saves a new ticket with its number, title, place, priority and due time.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "cases",
+       "values": {
+        "title": "$fields.title",
+        "status": "reported",
+        "due_date": "$fields.due_date",
+        "location": "$fields.location",
+        "priority": "$fields.priority",
+        "description": "$fields.description",
+        "complainant_id": "$user.user_id"
+       },
+       "sequence": {
+        "pad": 5,
+        "field": "case_number",
+        "start": 1,
+        "prefix": "CS-{YY}-{MM}-"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_save_priority",
+    "name": "Save the new priority and due time",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Changes the priority and the due time of the ticket. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "due_date": "$fields.due_date",
+        "priority": "$fields.priority"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new priority."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_save_status",
+    "name": "Save the new status",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Moves the ticket to another status. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "status": "$fields.status"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": false,
+      "description": "An optional note."
+     },
+     "status": {
+      "enum": [
+       "reported",
+       "under_review",
+       "action_taken",
+       "closed"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new status."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_set_category",
+    "name": "Put the new ticket in its category",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Puts the ticket in the category that was found, when there is one. Needs the ticket saved first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.category_id",
+       "exists": true
+      },
+      "params": {
+       "set": {
+        "category_id": "$fields.category_id"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$inserted.cases.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "required": true,
+      "description": "A short title for the problem."
+     },
+     "location": {
+      "type": "string",
+      "required": false,
+      "description": "Where it is."
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "How urgent it is."
+     },
+     "category_id": {
+      "type": "string",
+      "required": false,
+      "description": "The category's id, if one was chosen."
+     },
+     "description": {
+      "type": "string",
+      "required": false,
+      "description": "What happened, in the person's words."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_set_priority",
+    "name": "Change a ticket's priority (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Changes the priority and works out the due time again from when the ticket was raised.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "tat",
+       "table": "priority_tat_rules",
+       "expose": {
+        "tat_minutes": "tat_minutes"
+       },
+       "name_from": "$fields.priority",
+       "match_column": "priority"
+      }
+     },
+     {
+      "op": "derive_field",
+      "params": {
+       "expr": "due_from_tat(tat_minutes, \"minutes\", case_created_at)",
+       "field": "due_date"
+      }
+     },
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "due_date": "$fields.due_date",
+        "priority": "$fields.priority"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "$fields.priority"
+        },
+        "activity_type": "priority_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new priority."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_set_status",
+    "name": "Change a ticket's status (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Moves the ticket to another status and records it. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "params": {
+       "set": {
+        "status": "$fields.status"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.status",
+       "equals": "closed"
+      },
+      "params": {
+       "set": {
+        "closed_at": "NOW()"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.status",
+       "not_equals": "closed"
+      },
+      "params": {
+       "set": {
+        "closed_at": null
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "case_activity",
+       "values": {
+        "case_id": "$case.id",
+        "payload": {
+         "to": "$fields.status",
+         "note": "$fields.note"
+        },
+        "activity_type": "status_change",
+        "actor_user_id": "$user.user_id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": false,
+      "description": "An optional note."
+     },
+     "status": {
+      "enum": [
+       "reported",
+       "under_review",
+       "action_taken",
+       "closed"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new status."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_stamp_closed_time",
+    "name": "Note the time the ticket was closed",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "When the new status is closed, writes the closing time. Needs the ticket found first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "db.update_row",
+      "when": {
+       "field": "$fields.status",
+       "equals": "closed"
+      },
+      "params": {
+       "set": {
+        "closed_at": "NOW()"
+       },
+       "table": "cases",
+       "where": {
+        "id": "$case.id"
+       }
+      }
+     }
+    ],
+    "entity_schema": {
+     "note": {
+      "type": "string",
+      "required": false,
+      "description": "An optional note."
+     },
+     "status": {
+      "enum": [
+       "reported",
+       "under_review",
+       "action_taken",
+       "closed"
+      ],
+      "type": "string",
+      "required": true,
+      "description": "The new status."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_assignee",
+    "name": "Tell the person who now has the ticket (old, unused)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Sends the new handler a message about the ticket. Needs the ticket found and the person chosen first.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "notify.user",
+      "params": {
+       "to": "$assignee.phone",
+       "message_template": "📋 Case {case_case_number} is now with you\n\n{case_title}\n\nReply to check status or add updates."
+      }
+     }
+    ],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_everyone",
+    "name": "Tell everyone on the ticket, without buttons",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Messages everyone on the ticket except the person doing this, once each, without buttons. Runs unless tell_buttons is yes. The caller gives the wording.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "notify.parties",
+      "when": {
+       "field": "$fields.tell_buttons",
+       "not_equals": "yes"
+      },
+      "params": {
+       "case": "$case",
+       "with_photos": true,
+       "role_templates": {
+        "assignee": "$fields.tell_message_assignee"
+       },
+       "message_template": "$fields.tell_message"
+      }
+     }
+    ],
+    "entity_schema": {
+     "tell_buttons": {
+      "type": "string",
+      "required": false,
+      "description": "Say yes to put Add update, Pass on and Close buttons under the message."
+     },
+     "tell_message": {
+      "type": "string",
+      "required": true,
+      "description": "The message. Use {case_case_number}, {case_title}, {actor_name} or a field name in braces."
+     },
+     "tell_message_assignee": {
+      "type": "string",
+      "required": false,
+      "description": "A different message for the person who now has the ticket. Leave out to send everyone the same."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_everyone_with_buttons",
+    "name": "Tell everyone on the ticket, with buttons",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Messages everyone on the ticket except the person doing this, once each, with Add update, Pass on and Close buttons. Runs only when tell_buttons is yes. The caller gives the wording.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "notify.parties",
+      "when": {
+       "field": "$fields.tell_buttons",
+       "equals": "yes"
+      },
+      "params": {
+       "case": "$case",
+       "buttons": {
+        "✅ Close": "/close {case_case_number}",
+        "👤 Pass on": "/assign {case_case_number}",
+        "📝 Add update": "/update {case_case_number}"
+       },
+       "with_photos": true,
+       "role_templates": {
+        "assignee": "$fields.tell_message_assignee"
+       },
+       "message_template": "$fields.tell_message"
+      }
+     }
+    ],
+    "entity_schema": {
+     "tell_buttons": {
+      "type": "string",
+      "required": false,
+      "description": "Say yes to put Add update, Pass on and Close buttons under the message."
+     },
+     "tell_message": {
+      "type": "string",
+      "required": true,
+      "description": "The message. Use {case_case_number}, {case_title}, {actor_name} or a field name in braces."
+     },
+     "tell_message_assignee": {
+      "type": "string",
+      "required": false,
+      "description": "A different message for the person who now has the ticket. Leave out to send everyone the same."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_handler",
+    "name": "Tell the person who has the ticket (old, unused)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Sends the person the ticket is with now a message, unless they are the one acting. Give it tell_prefix and tell_text.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "when": {
+       "field": "$case.assigned_to_id",
+       "exists": true
+      },
+      "params": {
+       "into": "handler",
+       "table": "users",
+       "name_from": "$case.assigned_to_id",
+       "match_column": "id"
+      }
+     },
+     {
+      "op": "notify.user",
+      "when": {
+       "and": [
+        {
+         "field": "$handler.phone",
+         "exists": true
+        },
+        {
+         "field": "$handler.phone",
+         "not_equals": "$user.phone"
+        },
+        {
+         "field": "$handler.phone",
+         "not_equals": "$requester.phone"
+        }
+       ]
+      },
+      "params": {
+       "to": "$handler.phone",
+       "message_template": "ℹ️ Case {case_case_number} ({case_title}) {tell_prefix} {tell_text}"
+      }
+     }
+    ],
+    "entity_schema": {
+     "tell_text": {
+      "type": "string",
+      "required": true,
+      "description": "The rest of the message, for example a closing note."
+     },
+     "tell_prefix": {
+      "type": "string",
+      "required": true,
+      "description": "The words after the ticket number and title, for example 'was closed.'"
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_parties",
+    "name": "Tell everyone on the ticket (replaced)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Messages everyone on the ticket except the person doing this, once each. The caller gives the wording.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "notify.parties",
+      "when": {
+       "field": "$fields.tell_buttons",
+       "equals": "yes"
+      },
+      "params": {
+       "case": "$case",
+       "buttons": {
+        "✅ Close": "/close {case_case_number}",
+        "👤 Pass on": "/assign {case_case_number}",
+        "📝 Add update": "/update {case_case_number}"
+       },
+       "with_photos": true,
+       "role_templates": {
+        "assignee": "$fields.tell_message_assignee"
+       },
+       "message_template": "$fields.tell_message"
+      }
+     },
+     {
+      "op": "notify.parties",
+      "when": {
+       "field": "$fields.tell_buttons",
+       "not_equals": "yes"
+      },
+      "params": {
+       "case": "$case",
+       "with_photos": true,
+       "role_templates": {
+        "assignee": "$fields.tell_message_assignee"
+       },
+       "message_template": "$fields.tell_message"
+      }
+     }
+    ],
+    "entity_schema": {
+     "tell_buttons": {
+      "type": "string",
+      "required": false,
+      "description": "Say yes to put Add update, Pass on and Close buttons under the message."
+     },
+     "tell_message": {
+      "type": "string",
+      "required": true,
+      "description": "The message. Use {case_case_number}, {case_title}, {actor_name} or a field name in braces."
+     },
+     "tell_message_assignee": {
+      "type": "string",
+      "required": false,
+      "description": "A different message for the person who now has the ticket. Leave out to send everyone the same."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_tell_requester",
+    "name": "Tell the person who raised the ticket (old, unused)",
+    "kind": "block",
+    "workflow_type": "action",
+    "is_active": false,
+    "description": "Sends the person who raised the ticket a message, unless they are the one acting. Give it tell_prefix and tell_text, for example 'is now with' and a name.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "when": {
+       "field": "$case.complainant_id",
+       "exists": true
+      },
+      "params": {
+       "into": "requester",
+       "table": "users",
+       "name_from": "$case.complainant_id",
+       "match_column": "id"
+      }
+     },
+     {
+      "op": "notify.user",
+      "when": {
+       "and": [
+        {
+         "field": "$requester.phone",
+         "exists": true
+        },
+        {
+         "field": "$requester.phone",
+         "not_equals": "$user.phone"
+        }
+       ]
+      },
+      "params": {
+       "to": "$requester.phone",
+       "message_template": "ℹ️ Case {case_case_number} ({case_title}) {tell_prefix} {tell_text}"
+      }
+     }
+    ],
+    "entity_schema": {
+     "tell_text": {
+      "type": "string",
+      "required": true,
+      "description": "The rest of the message, for example a person's name or a closing note."
+     },
+     "tell_prefix": {
+      "type": "string",
+      "required": true,
+      "description": "The words after the ticket number and title, for example 'is now with'."
+     }
+    },
+    "gates": [],
+    "training_phrases": [],
+    "settings": {}
+   },
+   {
+    "intent_key": "book_facility",
+    "name": "Book a facility",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Ask to book a facility (clubhouse, party hall, squash court, swimming pool) for a date and time.",
+    "slash_command": "book",
+    "steps": [
+     {
+      "op": "compute",
+      "params": {}
+     }
+    ],
+    "entity_schema": {
+     "facility": {
+      "enum": [
+       "Clubhouse",
+       "Party hall",
+       "Squash court",
+       "Swimming pool"
+      ],
+      "type": "string",
+      "label": "Facility",
+      "read_by": "typed",
+      "question": "Which facility would you like to book?",
+      "required": true,
+      "description": "One of Clubhouse, Party hall, Squash court, Swimming pool"
+     },
+     "booking_date": {
+      "type": "string",
+      "label": "Date",
+      "read_by": "typed",
+      "question": "For which date? For example 18 Oct.",
+      "required": true,
+      "description": "The day of the booking"
+     },
+     "booking_time": {
+      "type": "string",
+      "label": "Time",
+      "read_by": "typed",
+      "question": "From what time until what time? For example 6 pm to 10 pm.",
+      "required": true,
+      "description": "Start and end time"
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "book the clubhouse",
+     "book the party hall",
+     "reserve the squash court",
+     "I want to book a facility"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "case_add_update",
+    "name": "Add an update to ticket",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Adds a note to a case, with photos if you send them, and tells everyone on the case.",
+    "slash_command": "update",
+    "steps": [
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_find_by_number"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_check_access"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_comment"
+      }
+     },
+     {
+      "op": "case.attach_photos",
+      "params": {
+       "case_id": "$case.id"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_buttons": "yes",
+        "tell_message": "📝 Case {case_case_number} ({case_title}): update from {actor_name}\n{comment_text}"
+       },
+       "workflow": "case_tell_everyone_with_buttons"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_buttons": "yes",
+        "tell_message": "📝 Case {case_case_number} ({case_title}): update from {actor_name}\n{comment_text}"
+       },
+       "workflow": "case_tell_everyone"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "label": "Case",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "case_number",
+         "title"
+        ],
+        "table": "cases",
+        "normalize": "identifier",
+        "match_column": "case_number"
+       }
+      },
+      "question": "Which case? Send the case number, for example CS-26-08-00017.",
+      "required": true,
+      "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+     },
+     "comment_text": {
+      "type": "string",
+      "label": "Update",
+      "read_by": "typed",
+      "question": "What is the update? Type the note.",
+      "required": true,
+      "description": "The note to add."
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "comment on {case_number}",
+     "add an update to {case_number}",
+     "add a note to case {case_number}",
+     "update case {case_number}",
+     "write a remark on {case_number}"
+    ],
+    "settings": {
+     "photos": true,
+     "who_can_use": [
+      "requester",
+      "assignee",
+      "level2",
+      "helper"
+     ]
+    }
+   },
+   {
+    "intent_key": "case_close_with_note",
+    "name": "Close ticket with a note",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Closes a case. The closing note is compulsory. Tells everyone on the case.",
+    "slash_command": "close",
+    "steps": [
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_find_by_number"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_check_access"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "note": "$fields.comment_text"
+       },
+       "workflow": "case_save_closed"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "note": "$fields.comment_text"
+       },
+       "workflow": "case_record_closed"
+      }
+     },
+     {
+      "op": "case.attach_photos",
+      "params": {
+       "case_id": "$case.id"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_message": "✅ Case {case_case_number} ({case_title}) was closed by {actor_name}.\nClosing note: {comment_text}"
+       },
+       "workflow": "case_tell_everyone_with_buttons"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_message": "✅ Case {case_case_number} ({case_title}) was closed by {actor_name}.\nClosing note: {comment_text}"
+       },
+       "workflow": "case_tell_everyone"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "label": "Case",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "case_number",
+         "title"
+        ],
+        "table": "cases",
+        "normalize": "identifier",
+        "match_column": "case_number"
+       }
+      },
+      "question": "Which case? Send the case number, for example CS-26-08-00017.",
+      "required": true,
+      "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+     },
+     "comment_text": {
+      "type": "string",
+      "label": "Closing note",
+      "read_by": "typed",
+      "question": "What was done? Type the closing note. It is compulsory.",
+      "required": true,
+      "description": "The closing note, so everyone knows what was done. Compulsory."
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "close {case_number}",
+     "resolve {case_number}",
+     "mark {case_number} as closed",
+     "the issue in {case_number} is fixed",
+     "close case {case_number} with a note"
+    ],
+    "settings": {
+     "photos": true,
+     "who_can_use": [
+      "assignee",
+      "level2"
+     ]
+    }
+   },
+   {
+    "intent_key": "case_pass_on",
+    "name": "Assign a ticket",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Gives a case to one person, keeps an optional note, and tells everyone on the case.",
+    "slash_command": "assign",
+    "steps": [
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_find_by_number"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_check_access"
+      }
+     },
+     {
+      "op": "case.add_parties",
+      "when": {
+       "field": "$case.assigned_to_id",
+       "exists": true
+      },
+      "params": {
+       "role": "helper",
+       "case_id": "$case.id",
+       "users_from": "$case.assigned_to_id"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_find_new_handler"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_save_handler"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_record_assignment"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "when": {
+       "field": "$fields.comment_text",
+       "exists": true
+      },
+      "params": {
+       "workflow": "case_comment"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_buttons": "yes",
+        "tell_message": "ℹ️ Case {case_case_number} ({case_title}) is now with {assignee_name}.",
+        "tell_message_assignee": "📋 Case {case_case_number} is now with you\n\n{case_title}\nWhere: {case_location}\nPassed on by {actor_name}."
+       },
+       "workflow": "case_tell_everyone_with_buttons"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "inputs": {
+        "tell_buttons": "yes",
+        "tell_message": "ℹ️ Case {case_case_number} ({case_title}) is now with {assignee_name}.",
+        "tell_message_assignee": "📋 Case {case_case_number} is now with you\n\n{case_title}\nWhere: {case_location}\nPassed on by {actor_name}."
+       },
+       "workflow": "case_tell_everyone"
+      }
+     }
+    ],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "label": "Case",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "case_number",
+         "title"
+        ],
+        "table": "cases",
+        "normalize": "identifier",
+        "match_column": "case_number"
+       }
+      },
+      "question": "Which case? Send the case number, for example CS-26-08-00017.",
+      "required": true,
+      "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+     },
+     "comment_text": {
+      "type": "string",
+      "label": "Note",
+      "read_by": "typed",
+      "question": "Any note for them?",
+      "required": false,
+      "description": "An optional note for them."
+     },
+     "assignee_name": {
+      "type": "string",
+      "label": "Give it to",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "name"
+        ],
+        "table": "users",
+        "where": {
+         "is_active": true
+        },
+        "match_column": "name"
+       }
+      },
+      "question": "Who should the case go to? Send their name, or say me.",
+      "required": true,
+      "description": "Who the case goes to. If the person says me or myself, use the person's own name."
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "assign {case_number} to {name}",
+     "give case {case_number} to {name}",
+     "hand this case over to {name}",
+     "assign this case to myself",
+     "pass {case_number} on to {name}"
+    ],
+    "settings": {
+     "who_can_use": [
+      "assignee",
+      "level2"
+     ]
+    }
+   },
+   {
+    "intent_key": "check_case_status",
+    "name": "Check Status",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "This workflow allows residents to check the status of their cases using the case number.",
+    "slash_command": "mystatus",
+    "steps": [],
+    "entity_schema": {
+     "case_number": {
+      "type": "string",
+      "label": "Case",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "case_number",
+         "title"
+        ],
+        "table": "cases",
+        "normalize": "identifier",
+        "match_column": "case_number"
+       }
+      },
+      "question": "Which case? Send the case number, for example CS-26-08-00017.",
+      "required": true,
+      "description": "The case number, for example CS-26-08-00017. Any format is accepted."
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "What is the status of case number {case_number}?",
+     "Can you tell me the priority of case {case_number}?",
+     "Who is assigned to case number {case_number}?",
+     "Show me the details for case {case_number}.",
+     "I want to check the status of my case {case_number}.",
+     "Please provide the status for case number {case_number}.",
+     "What is the current status of case {case_number}?",
+     "Give me the details of case number {case_number}."
+    ],
+    "settings": {
+     "who_can_use": [
+      "requester",
+      "assignee",
+      "level2",
+      "helper",
+      "watcher"
+     ]
+    }
+   },
+   {
+    "intent_key": "file_a_complaint",
+    "name": "File a complaint",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Files a new complaint. It is put in a category, sent to whoever the routing rules name, and everyone on the case is told.",
+    "slash_command": "complaint",
+    "steps": [
+     {
+      "op": "case.categorize",
+      "params": {
+       "text_from": [
+        "$fields.title",
+        "$fields.description"
+       ]
+      }
+     },
+     {
+      "op": "case.route",
+      "params": {}
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_look_up_response_time"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_due_from_priority"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_due_from_route"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_save_new"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_set_category"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_record_reported"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_give_to_routed_person"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_record_routed_assignment"
+      }
+     },
+     {
+      "op": "run_workflow",
+      "params": {
+       "workflow": "case_add_level2_people"
+      }
+     },
+     {
+      "op": "case.attach_photos",
+      "params": {
+       "case_id": "$inserted.cases.id"
+      }
+     },
+     {
+      "op": "notify.parties",
+      "params": {
+       "case": "$inserted.cases",
+       "buttons": {
+        "✅ Close": "/close {case_case_number}",
+        "👤 Pass on": "/assign {case_case_number}",
+        "📝 Add update": "/update {case_case_number}"
+       },
+       "with_photos": true,
+       "role_templates": {
+        "assignee": "🆕 A new case is with you: {case_case_number} — {case_title}\nWhere: {case_location} · Priority: {case_priority}\nRaised by {actor_name}."
+       },
+       "message_template": "🆕 New case {case_case_number}: {case_title}\nWhere: {case_location} · Priority: {case_priority}\nCategory: {category_label}\nRaised by {actor_name}."
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": false
+      }
+     }
+    ],
+    "entity_schema": {
+     "title": {
+      "type": "string",
+      "label": "Problem",
+      "read_by": "typed",
+      "question": "What is the problem? Send a short title, for example “Lift stuck on 5th floor”.",
+      "required": true,
+      "description": "Short summary of the complaint, e.g. \"Water leakage in Wing 2 basement\""
+     },
+     "location": {
+      "type": "string",
+      "label": "Where",
+      "read_by": "typed",
+      "question": "Where is it? Wing, flat or common area.",
+      "required": true,
+      "description": "Wing / flat / common area where the issue is"
+     },
+     "priority": {
+      "enum": [
+       "urgent",
+       "high",
+       "medium",
+       "low"
+      ],
+      "type": "string",
+      "label": "Priority",
+      "question": "How urgent is it?",
+      "required": true,
+      "description": "One of urgent, high, medium, low. ONLY set this if the user explicitly states an urgency level or uses clearly urgent language (for example emergency, immediately dangerous, fire). Never infer priority from the topic of the complaint alone. If not stated, leave it unset and ask the user, or default to medium only after telling them you are defaulting it."
+     },
+     "description": {
+      "type": "string",
+      "label": "Details",
+      "required": false,
+      "description": "Optional longer explanation of the issue"
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "register a complaint",
+     "file a complaint",
+     "report an issue",
+     "file a case",
+     "new complaint about {title}",
+     "book a complaint"
+    ],
+    "settings": {
+     "photos": true
+    }
+   },
+   {
+    "intent_key": "my_cases",
+    "name": "My Open Tickets",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "The open cases you raised or are on.",
+    "slash_command": "mytickets",
+    "steps": [],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [
+     "my cases",
+     "cases I am on",
+     "what is with me"
+    ],
+    "settings": {
+     "who_can_use": [
+      "requester",
+      "assignee",
+      "level2",
+      "helper",
+      "watcher"
+     ]
+    }
+   },
+   {
+    "intent_key": "preapprove_visitor",
+    "name": "Pre-approve a visitor",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Tell the gate that a visitor is coming: their name and when.",
+    "slash_command": "visitor",
+    "steps": [
+     {
+      "op": "compute",
+      "params": {}
+     }
+    ],
+    "entity_schema": {
+     "visit_time": {
+      "type": "string",
+      "label": "When",
+      "read_by": "typed",
+      "question": "When will they come? For example today 7 pm.",
+      "required": true,
+      "description": "Day and time of the visit"
+     },
+     "visitor_name": {
+      "type": "string",
+      "label": "Visitor",
+      "read_by": "typed",
+      "question": "What is your visitor's name?",
+      "required": true,
+      "description": "The visitor's name"
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "a guest is coming",
+     "pre-approve a visitor",
+     "my friend is visiting today",
+     "visitor coming"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "view_all_cases",
+    "name": "All Tickets",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "Lists the most recent cases/complaints for this society, newest first.",
+    "slash_command": "cases",
+    "steps": [],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [
+     "show all cases",
+     "sab cases dikhao",
+     "list complaints",
+     "open complaints",
+     "recent complaints",
+     "case list",
+     "sab shikayat dikhao",
+     "show recent cases",
+     "all complaints dikhao",
+     "complaints list"
+    ],
+    "settings": {}
+   }
+  ]
+ },
+ "baanganga": {
+  "from_backup": "baanganga_2026-10-16_1349.dump",
+  "workflows": [
+   {
+    "intent_key": "cancel_purchase_order",
+    "name": "Cancel Purchase Order",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Deletes a purchase order row from the Raw Materials Google Sheet.",
+    "slash_command": "cancel",
+    "steps": [
+     {
+      "op": "sheets.delete_row",
+      "params": {
+       "table": "sheet:PurchaseOrders",
+       "where": {
+        "po_id": "$fields.po_id"
+       }
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": false
+      }
+     }
+    ],
+    "entity_schema": {
+     "po_id": {
+      "type": "string",
+      "required": true
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "cancel PO-{po_id}",
+     "cancel purchase order {po_id}",
+     "{po_id} cancel karo",
+     "delete {po_id}",
+     "remove {po_id}",
+     "PO {po_id} galat hai hata do",
+     "{po_id} wrong order cancel it"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "check_stock",
+    "name": "Stock Check",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "Check current stock of an item by name or SKU.",
+    "slash_command": "stock",
+    "steps": [],
+    "entity_schema": {
+     "item_name": {
+      "type": "string",
+      "match": "ILIKE",
+      "table": "inventory",
+      "column": "name",
+      "format": "wildcard",
+      "required": false
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "What is the stock of {item_name}",
+     "Stock of {item_name}",
+     "How many {item_name} do we have",
+     "{item_name} ka stock kitna hai",
+     "{item_name} kitne bache hain",
+     "Check inventory for {item_name}",
+     "Do we have {item_name} in stock",
+     "{item_name} available hai kya",
+     "Stock check {item_name}",
+     "Kitna stock hai {item_name} ka"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "create_purchase_order",
+    "name": "Create Purchase Order",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Creates a raw-material purchase order against a supplier, stored in the Raw Materials Google Sheet.",
+    "slash_command": "po",
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "supplier",
+       "table": "sheet:Suppliers",
+       "name_from": "$fields.supplier_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "compute",
+      "params": {}
+     },
+     {
+      "op": "sheets.insert_row",
+      "params": {
+       "table": "sheet:PurchaseOrders",
+       "values": {
+        "qty": "$fields.qty",
+        "rate": "$fields.rate",
+        "total": "$computed.total",
+        "status": "pending",
+        "order_date": "TODAY",
+        "material_name": "$fields.material_name",
+        "supplier_name": "$fields.supplier_name",
+        "expected_delivery": "TODAY+7"
+       },
+       "sequence": {
+        "field": "po_id",
+        "start": 1003,
+        "prefix": "PO-"
+       }
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": false
+      }
+     }
+    ],
+    "entity_schema": {
+     "qty": {
+      "type": "float",
+      "required": true
+     },
+     "rate": {
+      "type": "float",
+      "required": true
+     },
+     "total": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "status": {
+      "type": "string",
+      "computed": true,
+      "required": false
+     },
+     "order_date": {
+      "type": "string",
+      "computed": true,
+      "required": false
+     },
+     "material_name": {
+      "type": "string",
+      "required": true
+     },
+     "supplier_name": {
+      "type": "string",
+      "match": "ILIKE",
+      "table": "sheet:Suppliers",
+      "column": "name",
+      "format": "wildcard",
+      "required": true
+     },
+     "expected_delivery": {
+      "type": "string",
+      "computed": true,
+      "required": false
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "create purchase order",
+     "PO banao",
+     "order raw material from {supplier_name}",
+     "raw material order {supplier_name}",
+     "{supplier_name} se material order karo",
+     "purchase order for {supplier_name}",
+     "buy gold from {supplier_name}",
+     "PO {supplier_name}",
+     "naya purchase order banao",
+     "raw material PO"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "create_sales_invoice",
+    "name": "Sales Invoice",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Creates a GST tax invoice for a customer and sends it as PDF.",
+    "slash_command": "invoice",
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "customer",
+       "table": "customers",
+       "expose": {
+        "customer_city": "city",
+        "customer_gstin": "gst_number"
+       },
+       "name_from": "$fields.customer_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "ai_price_interpret",
+      "params": {}
+     },
+     {
+      "op": "compute",
+      "params": {}
+     },
+     {
+      "op": "otp_gate",
+      "params": {
+       "amount_field": "$computed.total_amount"
+      }
+     },
+     {
+      "op": "approval_gate",
+      "params": {
+       "amount_field": "$computed.total_amount"
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "invoices",
+       "values": {
+        "items": "$fields.items",
+        "amount": "$computed.total_amount",
+        "org_id": "$org_id",
+        "status": "pending",
+        "due_date": "TODAY+30",
+        "created_by": "$user.user_id",
+        "customer_id": "$customer.id"
+       },
+       "sequence": {
+        "field": "invoice_number",
+        "start": 500,
+        "prefix": "INV-"
+       }
+      }
+     },
+     {
+      "op": "pdf.generate",
+      "params": {
+       "subtitle": ""
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": true
+      }
+     }
+    ],
+    "entity_schema": {
+     "items": {
+      "type": "array",
+      "required": true,
+      "item_schema": {
+       "gst": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "qty": {
+        "type": "integer",
+        "default": 1,
+        "required": false
+       },
+       "total": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "weight": {
+        "type": "float",
+        "required": false
+       },
+       "rate_text": {
+        "type": "string",
+        "required": false
+       },
+       "unit_price": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "description": {
+        "type": "string",
+        "required": true
+       },
+       "line_subtotal": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "making_charges": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "making_charge_pct": {
+        "type": "float",
+        "required": false
+       }
+      }
+     },
+     "subtotal": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "gst_amount": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "total_amount": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "customer_name": {
+      "type": "string",
+      "match": "ILIKE",
+      "table": "customers",
+      "column": "name",
+      "format": "wildcard",
+      "required": true
+     },
+     "making_charges_total": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "invoice banao",
+     "bill banao",
+     "invoice kar",
+     "bill kar",
+     "invoice dena",
+     "receipt banani hai",
+     "GST invoice chahiye",
+     "{customer_name} {amount} invoice",
+     "create invoice for {customer_name}",
+     "bill {customer_name} for {amount}"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "generate_aging_report",
+    "name": "Aging Report",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "Full aging analysis of all outstanding/overdue invoices, colour-coded by risk band (0-30 / 31-90 / 90+ days), delivered as a PDF automatically.",
+    "slash_command": "aging",
+    "steps": [],
+    "entity_schema": {
+     "customer_name": {
+      "type": "string",
+      "match": "ILIKE",
+      "table": "customers",
+      "column": "name",
+      "format": "wildcard",
+      "required": false
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "aging report",
+     "create aging report",
+     "aging report pdf",
+     "generate aging report",
+     "overdue report",
+     "outstanding aging analysis",
+     "risk report",
+     "dues aging",
+     "aging report bhejo",
+     "purana baaki dikhao",
+     "overdue invoices report",
+     "full outstanding report",
+     "collection report",
+     "aging analysis pdf",
+     "{customer_name} aging report"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "generate_price_quotation",
+    "name": "Price Quotation",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Generates a professional price quotation PDF for a customer from design code, weight, and a plain-English pricing statement.",
+    "slash_command": "quote",
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "customer",
+       "table": "customers",
+       "expose": {
+        "customer_city": "city",
+        "customer_gstin": "gst_number"
+       },
+       "name_from": "$fields.customer_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "ai_price_interpret",
+      "params": {}
+     },
+     {
+      "op": "compute",
+      "params": {}
+     },
+     {
+      "op": "otp_gate",
+      "params": {
+       "amount_field": "$computed.total_amount"
+      }
+     },
+     {
+      "op": "approval_gate",
+      "params": {
+       "amount_field": "$computed.total_amount"
+      }
+     },
+     {
+      "op": "db.insert_row",
+      "params": {
+       "table": "quotations",
+       "values": {
+        "items": "$fields.items",
+        "org_id": "$org_id",
+        "status": "sent",
+        "created_by": "$user.user_id",
+        "customer_id": "$customer.id",
+        "valid_until": "TODAY+7",
+        "total_amount": "$computed.total_amount"
+       },
+       "sequence": {
+        "field": "quotation_number",
+        "start": 1000,
+        "prefix": "QUO-"
+       }
+      }
+     },
+     {
+      "op": "pdf.generate",
+      "params": {
+       "subtitle": ""
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": true
+      }
+     }
+    ],
+    "entity_schema": {
+     "items": {
+      "type": "array",
+      "required": true,
+      "item_schema": {
+       "gst": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "qty": {
+        "type": "integer",
+        "default": 1,
+        "required": false
+       },
+       "total": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "weight": {
+        "type": "float",
+        "required": true
+       },
+       "rate_text": {
+        "type": "string",
+        "required": false
+       },
+       "metal_type": {
+        "type": "string",
+        "required": false
+       },
+       "unit_price": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "design_code": {
+        "type": "string",
+        "required": false
+       },
+       "design_name": {
+        "type": "string",
+        "required": false
+       },
+       "line_subtotal": {
+        "type": "float",
+        "computed": true,
+        "required": false
+       },
+       "making_charge_pct": {
+        "type": "float",
+        "computed": false,
+        "required": false,
+        "description": "Making charges as percentage of metal cost (e.g., 12 for 12%). Use this when user says \"making 12%\" or similar."
+       },
+       "making_charges_flat": {
+        "type": "float",
+        "computed": false,
+        "required": false,
+        "description": "Making charges as a flat amount in Rupees (e.g., 5000 for Rs.5000). Use this when the user says \"making 5000\" or similar without a percentage sign."
+       }
+      }
+     },
+     "subtotal": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "gst_amount": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "total_amount": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     },
+     "customer_name": {
+      "type": "string",
+      "match": "ILIKE",
+      "table": "customers",
+      "column": "name",
+      "format": "wildcard",
+      "required": true
+     },
+     "making_charges_total": {
+      "type": "float",
+      "computed": true,
+      "required": false
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "quote banao",
+     "quotation chahiye",
+     "estimate do",
+     "price batao",
+     "kitne ka padega",
+     "rate dikhao {design_code}",
+     "generate quotation for {customer_name}",
+     "{customer_name} ke liye quote",
+     "make a quotation for {customer_name}",
+     "quotation for {design_code}"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "pending_orders",
+    "name": "Pending Orders",
+    "kind": "workflow",
+    "workflow_type": "read",
+    "is_active": true,
+    "description": "List all orders that are not yet delivered or cancelled.",
+    "slash_command": "orders",
+    "steps": [],
+    "entity_schema": {},
+    "gates": [],
+    "training_phrases": [
+     "Show pending orders",
+     "Which orders are pending",
+     "Pending orders dikhao",
+     "Kitne orders pending hain",
+     "What orders are still open",
+     "List open orders",
+     "Orders not delivered yet",
+     "Baaki orders kaunse hain",
+     "Show me all pending customer orders",
+     "Any orders due for delivery"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "update_purchase_order_status",
+    "name": "Update Purchase Order Status",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "Updates the status of an existing purchase order in the Raw Materials Google Sheet.",
+    "slash_command": "postatus",
+    "steps": [
+     {
+      "op": "sheets.update_row",
+      "params": {
+       "set": {
+        "status": "$fields.new_status"
+       },
+       "table": "sheet:PurchaseOrders",
+       "where": {
+        "po_id": "$fields.po_id"
+       }
+      }
+     },
+     {
+      "op": "notify.whatsapp",
+      "params": {
+       "attach_pdf": false
+      }
+     }
+    ],
+    "entity_schema": {
+     "po_id": {
+      "type": "string",
+      "required": true
+     },
+     "new_status": {
+      "type": "string",
+      "required": true
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "mark PO-{po_id} as {new_status}",
+     "update PO {po_id} status",
+     "{po_id} ko {new_status} karo",
+     "PO {po_id} received hai",
+     "change status of {po_id}",
+     "{po_id} status update karo",
+     "mark {po_id} received",
+     "mark {po_id} delivered"
+    ],
+    "settings": {}
+   },
+   {
+    "intent_key": "zz_test_stock_alert",
+    "name": "ZZ test: stock alert",
+    "kind": "workflow",
+    "workflow_type": "action",
+    "is_active": true,
+    "description": "TEST ONLY. Sends a low-stock message about one item to one person, to see how WhatsApp behaves outside the 24 hours. Delete after the test.",
+    "slash_command": null,
+    "steps": [
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "person",
+       "table": "users",
+       "name_from": "$fields.person_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "resolve_entity",
+      "params": {
+       "into": "item",
+       "table": "inventory",
+       "expose": {
+        "stock_qty": "qty",
+        "stock_name": "name",
+        "stock_reorder": "reorder_level"
+       },
+       "name_from": "$fields.item_name",
+       "match_column": "name"
+      }
+     },
+     {
+      "op": "notify.user",
+      "params": {
+       "to": "$person.phone",
+       "message_template": "Low stock alert: {stock_name} has {stock_qty} left. Reorder level is {stock_reorder}."
+      }
+     }
+    ],
+    "entity_schema": {
+     "item_name": {
+      "type": "string",
+      "label": "Item",
+      "match": "ILIKE",
+      "table": "inventory",
+      "column": "name",
+      "format": "wildcard",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "name",
+         "qty"
+        ],
+        "table": "inventory",
+        "match_column": "name"
+       }
+      },
+      "question": "Which item is the alert about? Send its name, for example 18kt Diamond Bangle.",
+      "required": true,
+      "description": "The stock item the alert is about."
+     },
+     "person_name": {
+      "type": "string",
+      "label": "Send it to",
+      "match": "ILIKE",
+      "table": "users",
+      "column": "name",
+      "format": "wildcard",
+      "read_by": {
+       "lookup": {
+        "show": [
+         "name"
+        ],
+        "table": "users",
+        "where": {
+         "is_active": true
+        },
+        "match_column": "name"
+       }
+      },
+      "question": "Who should get the alert? Send their name.",
+      "required": true,
+      "description": "The person who gets the alert."
+     }
+    },
+    "gates": [],
+    "training_phrases": [
+     "send a stock alert for {item_name} to {person_name}",
+     "stock alert {item_name} {person_name}"
+    ],
+    "settings": {}
+   }
+  ]
+ }
+}

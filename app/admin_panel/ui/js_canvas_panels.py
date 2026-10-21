@@ -137,7 +137,7 @@ function multiPanel() {
 function triggerPanel() {
   const w = EW.work, tabs = [['start', 'Starts it'], ['asks', 'Asks for'], ['safe', 'Safeguards'], ['hist', 'History'], ['json', 'JSON']];
   const body = { start: detailsPane, asks: asksPane, safe: safePane, hist: historyPane, json: advancedPane }[CV.ttab] || detailsPane;
-  return [insHead('trigger', 'bolt', w.kind === 'block' ? 'Building block' : 'What starts it', w.kind === 'block' ? w.name : 'When someone…', w.kind === 'block' ? 'It has no trigger of its own and does exactly one thing. Other flows run it as one step.' : 'The words, the command, who may start it and what it asks for.'),
+  return [insHead('trigger', 'bolt', w.kind === 'block' ? 'Building block' : 'What starts it', w.kind === 'block' ? w.name : 'When someone…', w.kind === 'block' ? 'It has no trigger of its own and does one whole job. Other flows run it as one step.' : 'The words, the command, who may start it and what it asks for.'),
     insTabs(tabs, CV.ttab, k => { CV.ttab = k; }), h('div', { class: 'ib' }, body())];
 }
 function reportPanel() {
@@ -249,8 +249,8 @@ function updateBar() {
   if (ui.undo) ui.undo.disabled = !EW.undo.length;
   if (ui.dirty) ui.dirty.style.display = dirty ? '' : 'none';
 }
-function refreshTitles() { renderNodes(); }
-function drawProblems() {
+function cvRefreshTitles() { renderNodes(); }
+function cvDrawProblems() {
   if (!CV || !EW) return;
   const all = EW.serverProblems ? EW.serverProblems : EW.check.errors;
   if (CV.banner) fill(CV.banner, all.length ? notice([h('div', null, h('b', null, EW.serverProblems ? 'These need fixing before it can be saved:' : plural(all.length, 'problem') + ' to fix before it can be saved:'), h('ul', { style: { margin: '4px 0 0', paddingLeft: '18px' } }, all.slice(0, 6).map(m => { const n = /^Step (\d+)\b/.exec(m); return h('li', n ? { class: 'jump', title: 'Show this step', onclick: () => { const id = EW.ids[+n[1] - 1]; if (id !== undefined) cvOpen(String(id)); } } : null, m); })))], 'bad') : null);
@@ -269,7 +269,7 @@ function legendPop(anchor) {
     h('div', { class: 'ml' }, 'Wires and numbers'), h('div', { class: 'lgrow' }, 'Number on a box: when it runs'), h('div', { class: 'lgrow' }, 'Dot on a box: drag it onto another box to re-order, or onto empty space to add a step'), h('div', { class: 'lgrow' }, 'Point at a box: open, duplicate or delete it'), h('div', { class: 'lgrow' }, 'Point at a wire: add a step, or remove the link (the next step is parked)'), h('div', { class: 'lgrow' }, 'Dashed box: parked, it does not run'), h('div', { class: 'lgrow' }, 'Press N: add a step (after the box you chose)'),
     h('div', { class: 'lgrow muted' }, 'Dashed way around: skipped unless “only if” is true'), h('div', { class: 'lgrow', style: { color: 'var(--k-stop)' } }, 'Red dashed exit: stops and says…'), h('div', { class: 'lgrow', style: { color: 'var(--k-approve)' } }, 'Pink bar: waits for a person')], { width: 340, up: true });
 }
-function drawEditor() {
+function cvDrawEditor() {
   const root = ui.root, d = EW.d, read = isRead();
   if (!CV || CV.for !== EW) CV = newCanvas();
   CV.pal = null;
@@ -322,6 +322,7 @@ function drawEditor() {
     h('div', { class: 'actbar' }, ui.undo,
       h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore (this is version ' + d.version + ')', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { CV.panel = 'try'; renderInspector(); } }, icon('play', 'sm'), lbl('Try it')),
+      h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'Back to the list of boxes', onclick: () => setEditorView('builder') }, icon('list', 'sm'), lbl('Builder')),
       ui.discard, ui.save));
   fill(root, h('div', { class: 'wsp' }, head,
     h('div', { class: 'wsprow' },
@@ -348,7 +349,7 @@ function tidyFirst() {
   arrange('rows', { quiet: true });
   return true;
 }
-function drawPane() {
+function cvDrawPane() {
   if (!CV || !CV.nodesEl) return;
   const ok = new Set([...chain(), ...EW.pids.map(String)]);
   CV.sel = new Set([...CV.sel].filter(id => ok.has(id)));

@@ -12,7 +12,7 @@ settings, so what is shown is what runs. Nothing is executed and nothing is read
 import json
 
 # the only step that asks the assistant (a language model) anything while a workflow runs
-AI_OPS = {"ai_price_interpret"}
+AI_OPS = {"ai_price_interpret", "ai.ask"}
 
 
 def is_ai(op: str) -> bool:
@@ -332,6 +332,11 @@ def sql_for_step(step: dict) -> list[dict]:
 def tag_for(step: dict) -> dict:
     """Whether the step is done by code or by the assistant, and a short reason."""
     op = step.get("op")
+    if op == "ai.ask":
+        return {
+            "by": "ai",
+            "why": "The AI (a language model) does this one job with the text it is given.",
+        }
     if is_ai(op):
         return {
             "by": "ai",
@@ -426,6 +431,12 @@ def describe_step(step: dict, names: dict | None = None) -> str:
         return "Ask for a one-time code"
     if op == "approval_gate":
         return "Ask for approval"
+    if op == "ask_approval":
+        who = p.get("role") or _short(p.get("approver"))
+        return f"Ask {who} to approve, then carry on with the answer"
+    if op == "ai.ask":
+        job = {"write": "write a text", "pick": "pick one choice", "extract": "pull out details"}
+        return "Ask the AI to " + job.get(p.get("task") or "write", "do one job")
     if op == "ai_price_interpret":
         return "Read the typed prices"
     if op == "run_workflow":

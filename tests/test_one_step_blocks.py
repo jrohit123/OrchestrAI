@@ -90,14 +90,12 @@ def many(n):
     return [{"op": "notify.whatsapp", "params": {}} for _ in range(n)]
 
 
-def test_a_building_block_with_more_than_one_step_is_refused_in_plain_words():
-    errors = check(many(3), "block")
-    assert any("is one step" in e and "has 3" in e for e in errors), errors
-    assert any("one after another in a workflow" in e for e in errors)
+# Since the plain-words builder (2026-10-21) a block may hold several steps again: it does one
+# whole job and says what it needs. The blocks the migration below made stay one step each.
 
 
-@pytest.mark.parametrize("n", [0, 1])
-def test_a_building_block_with_one_step_or_none_yet_is_not_refused_for_its_size(n):
+@pytest.mark.parametrize("n", [0, 1, 3])
+def test_a_building_block_is_not_refused_for_its_size(n):
     assert not any("is one step" in e for e in check(many(n), "block"))
 
 
@@ -106,13 +104,14 @@ def test_other_kinds_may_have_as_many_steps_as_they_need(kind):
     assert not any("is one step" in e for e in check(many(5), kind))
 
 
-def test_the_ai_builder_is_told_a_block_is_exactly_one_step():
+def test_the_ai_builder_is_told_a_block_does_one_whole_job():
     creator = (ROOT / "app" / "prompts" / "workflow_creator.txt").read_text(
         encoding="utf-8"
     )
     dsl = (ROOT / "app" / "prompts" / "workflow_dsl.txt").read_text(encoding="utf-8")
-    assert "exactly ONE step" in creator
-    assert "exactly ONE step" in dsl
+    for text in (creator, dsl):
+        assert "ONE whole job" in text
+        assert "exactly ONE step" not in text
 
 
 # ------------------------------------------------------------ the migration

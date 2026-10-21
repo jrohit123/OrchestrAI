@@ -80,6 +80,13 @@ async def handle_approval_response(
         )
         return
 
+    # the builder's "Get approval" (ask_approval): either answer resumes the flow
+    early = approval["context"]
+    early = json.loads(early) if isinstance(early, str) else (early or {})
+    if early.get("mode") == "answer":
+        await _handle_answer(phone, action, approval, early, user)
+        return
+
     # Check approver role and permissions.
     # BUGFIX: this used to compare user["role_id"] (a uuid) against
     # approval["approver_role"], which step_interpreter._op_approval_gate has
@@ -294,6 +301,74 @@ async def handle_approval_response(
                 message=result.get("message", "?"),
             ),
         )
+
+
+async def _handle_answer(phone: str, action: str, approval, ctx: dict, user: dict):
+    """An answer to an ask_approval step. Only the people it was sent to may answer; the first
+    answer decides. The answer ("Approve" or "Reject") and who gave it are put in the flow's
+    fields, and the flow carries on from the step after, whichever the answer was."""
+    from app.services.action_executor import execute_pending_action
+    from app.services.identity import resolve_identity
+    from app.services.step_interpreter import APPROVE_WORD, REJECT_WORD
+
+    source_key = user["source_key"]
+    if str(user["user_id"]) not in {str(i) for i in ctx.get("approver_ids") or []}:
+        await send_text(phone, await say(source_key, "approval.not_allowed"))
+        return
+    if str(approval["requester_id"]) == str(user["user_id"]):
+        await send_text(phone, await say(source_key, "approval.own_request"))
+        return
+    answer = APPROVE_WORD if action == "action:approve" else REJECT_WORD
+    # the first answer decides: a second tap (or another approver) finds it handled
+    decided = await fetch_one(
+        "UPDATE pending_approvals SET status = $1, decided_by = $2, decided_at = NOW() "
+        "WHERE id = $3 AND status = 'pending' RETURNING id",
+        "approved" if answer == APPROVE_WORD else "rejected",
+        user["user_id"],
+        approval["id"],
+        source_key=source_key,
+    )
+    if not decided:
+        await send_text(phone, await say(source_key, "approval.already_handled"))
+        return
+    await execute(
+        "INSERT INTO audit_log (org_id, user_id, intent_key, outcome, steps_taken) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb)",
+        user["org_id"],
+        user["user_id"],
+        approval["intent_key"],
+        "approved" if answer == APPROVE_WORD else "rejected",
+        json.dumps(
+            {
+                "approval_id": str(approval["id"]),
+                "answer": answer,
+                "decided_by_name": user.get("user_name", ""),
+            }
+        ),
+        source_key=source_key,
+    )
+    await send_text(phone, await say(source_key, "approval.answer_ack", answer=answer))
+
+    pending = dict(ctx.get("pending_action") or {})
+    into = ctx.get("into") or "approval"
+    pending["fields"] = {
+        **(pending.get("fields") or {}),
+        into: answer,
+        f"{into}_by": user.get("user_name", ""),
+    }
+    requester_phone = ctx.get("requester_phone", "")
+    requester = await resolve_identity(requester_phone) if requester_phone else None
+    if not requester:
+        logger.warning(
+            f"approval {approval['id']}: the person who asked could not be found again; "
+            "the flow cannot carry on"
+        )
+        return
+    result = await execute_pending_action(
+        pending_action=pending, user=requester, phone=requester_phone
+    )
+    if result.get("message") and requester_phone:
+        await send_text(requester_phone, result["message"])
 
 
 async def _find_approver_for_role(

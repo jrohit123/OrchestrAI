@@ -73,7 +73,7 @@ async def list_workflows(ctx: CtxDep):
         await fetch_all(
             "SELECT w.id, w.name, w.intent_key, w.description, w.is_active, "
             "w.workflow_type, w.last_run, w.created_at, w.slash_command, w.menu_section, "
-            f"w.version, w.steps, {_kind_columns(ctx)}, {made} AS cases_made, "
+            f"w.version, w.steps, w.entity_schema, {_kind_columns(ctx)}, {made} AS cases_made, "
             f"{asked} AS last_asked "
             "FROM workflows w WHERE w.org_id = $1 ORDER BY w.created_at",
             ctx.org_id,
@@ -101,6 +101,8 @@ async def list_workflows(ctx: CtxDep):
             if isinstance(st, dict)
         ]
         w["settings"] = jb(w["settings"], {})
+        # what it asks for: for a building block, what a flow that uses it must give it
+        w["entity_schema"] = jb(w.get("entity_schema"), {})
         w["makes"] = aliases_made_by(steps)
         w["needs"] = aliases_needed_by(steps)
         w["uses"] = [

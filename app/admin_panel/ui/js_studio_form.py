@@ -8,7 +8,7 @@ const GROUP_ORDER = ['Look up and check', 'Save changes', 'Tell people', 'Approv
 const STEP_GLYPH = { resolve_entity: '◎', conflict_check: '⛔', require_permission: '✓', derive_field: 'ƒ', compute: '∑', 'db.insert_row': '＋', 'db.update_row': '✎', 'db.upsert_row': '⇅', 'db.delete_row': '✕', 'notify.user': '✉', 'notify.whatsapp': '✉', 'pdf.generate': '▤', otp_gate: '⚿', approval_gate: '☑', ai_price_interpret: '₹', run_workflow: '▣', 'case.categorize': '⌗', 'case.route': '➜', 'case.authorize': '✓', 'case.add_parties': '＋', 'case.attach_photos': '▤', 'notify.parties': '✉' };
 // the records some steps keep for the steps after them, which are not database tables
 const ALIAS_COLS = { route: ['assignee_id', 'assignee_name', 'assignee_phone', 'level2_ids', 'level2_names', 'target_minutes', 'rule_name', 'via'], category: ['id', 'key', 'label', 'path', 'default_priority', 'target_minutes'] };
-const AI_OPS = ['ai_price_interpret'];
+const AI_OPS = ['ai_price_interpret', 'ai.ask'];
 const isAiStep = s => AI_OPS.includes(s.op);
 const OPERATORS = [['equals', 'is'], ['not_equals', 'is not'], ['in', 'is one of'], ['not_in', 'is not one of'], ['exists_true', 'has a value'], ['exists_false', 'is empty'], ['gt', 'is more than'], ['gte', 'is at least'], ['lt', 'is less than'], ['lte', 'is at most']];
 
@@ -64,6 +64,8 @@ function vlabel(v) {
 function condText(c) {
   if (!c) return '';
   if (c.and) return c.and.map(condText).join(' and ');
+  if (c.or) return c.or.map(condText).join(' or ');
+  if (c.not) return 'not (' + condText(c.not) + ')';
   const f = vlabel(c.field).replace(/[‹›]/g, '');
   if ('equals' in c) return f + ' is ' + vlabel(c.equals);
   if ('not_equals' in c) return f + ' is not ' + vlabel(c.not_equals);
@@ -96,6 +98,10 @@ function describeStep(s) {
     'pdf.generate': () => 'Make the PDF',
     otp_gate: () => 'Ask for a one-time code',
     approval_gate: () => 'Ask for approval',
+    ask_approval: () => 'Ask ' + (p.role ? 'everyone in ' + pretty(p.role).toLowerCase() : vlabel(p.approver)) + ' to approve, then carry on with the answer',
+    'ai.ask': () => 'Ask the AI to ' + ({ write: 'write a text', pick: 'pick one choice', extract: 'pull out details' }[p.task || 'write'] || 'do one job'),
+    'notify.group': () => 'Send to a group',
+    'people.find': () => 'Find people by flat or role',
     ai_price_interpret: () => 'Read the typed prices',
     'case.categorize': () => 'Work out the category from the words in the complaint',
     'case.route': () => 'Find who handles it, who is level 2 and how long it may take',
@@ -132,8 +138,17 @@ const colsOf = t => (ST.catalog.tables[t] || []);
 
 // the field that last took focus: a click on a value in the step window goes into it
 let FOCUSED_VALUE = null;
-const takesValue = (el, take) => el.addEventListener('focus', () => { FOCUSED_VALUE = { el, take }; });
+// (the builder's data panel also drops a dragged value on any such field: el._take)
+const takesValue = (el, take) => { el._take = take; el.addEventListener('focus', () => { FOCUSED_VALUE = { el, take }; }); };
 // ----- a "value" control: pick what the person typed, a record found earlier, who they are… or type text -----
+// how a piece of data is written inside a message (the same rule as builder_model.token_for)
+function tokenFor(path) {
+  if (typeof path !== 'string' || !/^\$[a-z_][a-z0-9_]*(\.[a-z0-9_]+)+$/.test(path)) return '';
+  const p = path.slice(1).split('.');
+  if (p[0] === 'fields' && p.length === 2) return '{' + p[1] + '}';
+  if (p[0] === 'case' && p.length === 2) return '{case_' + p[1] + '}';
+  return '{' + p.join('.') + '}';
+}
 function valueOptions(env) {
   const groups = [];
   const f = [...env.fields].map(k => ['$fields.' + k, pretty(k)]);
@@ -214,7 +229,11 @@ function buildWhen(rows) {
   });
   return atoms.length === 0 ? null : atoms.length === 1 ? atoms[0] : { and: atoms };
 }
+// "any of" and "not" come from the builder's If boxes; these rows only know "all of", so such a
+// condition is shown, not edited, here (the builder edits it)
+const hasOrNot = c => !!c && typeof c === 'object' && ('or' in c || 'not' in c || (Array.isArray(c.and) && c.and.some(hasOrNot)));
 function conditionEditor(step, index, commit) {
+  if (hasOrNot(step.when)) return h('p', { class: 'muted small' }, 'Only if ' + condText(step.when) + '. Change it in the builder’s If box.');
   const env = envBefore(index);
   let rows = parseWhen(step.when);
   const box = h('div', { class: 'stack' });
@@ -291,10 +310,10 @@ function paramControl(p, step, index, commit, rerender) {
     case 'longtext': {
       const ta = h('textarea', { rows: 4, oninput: e => set(e.target.value, false), onchange: e => set(e.target.value, true) });
       ta.value = params[p.key] || '';
-      takesValue(ta, path => {                                   // only what the person typed and the case can go into a message
-        const m = /^\$fields\.(\w+)$/.exec(path) || /^\$case\.(\w+)$/.exec(path);
-        if (!m) { toast('This text can only use what the person typed, or the case.'); return; }
-        const ph = '{' + (path.startsWith('$case.') ? 'case_' : '') + m[1] + '}', a = ta.selectionStart == null ? ta.value.length : ta.selectionStart, b = ta.selectionEnd == null ? a : ta.selectionEnd;
+      takesValue(ta, path => {                                   // any data can go into a message: {answer}, {case_title}, {record.column}
+        const ph = tokenFor(path);
+        if (!ph) { toast('This cannot be put inside a text.'); return; }
+        const a = ta.selectionStart == null ? ta.value.length : ta.selectionStart, b = ta.selectionEnd == null ? a : ta.selectionEnd;
         ta.value = ta.value.slice(0, a) + ph + ta.value.slice(b); set(ta.value, true);
       });
       const names = [...env.fields, ...(env.aliases.case ? colsOf(env.aliases.case).map(c => 'case_' + c) : [])];

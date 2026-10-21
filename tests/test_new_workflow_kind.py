@@ -89,24 +89,14 @@ def test_the_draft_is_the_kind_that_was_chosen_whatever_the_assistant_says(
     assert got["proposal"]["kind"] == chosen
 
 
-def test_a_building_block_with_two_steps_is_sent_back_and_the_fixed_one_is_taken(
-    assistant,
-):
+def test_a_building_block_with_two_steps_is_offered_as_it_is(assistant):
+    # since the plain-words builder a block may hold several steps (one whole job)
     asked, answers = assistant
     answers.append(_answer("block", [STEP, STEP]))
-    answers.append(_answer("block", [STEP]))
     got = draft("block")
     assert got["proposal"]["kind"] == "block"
-    assert len(got["proposal"]["steps"]) == 1
-    assert "building block is one step" in asked[1]["extra"]
-
-
-def test_a_building_block_that_stays_two_steps_is_not_offered(assistant):
-    _, answers = assistant
-    answers.extend([_answer("block", [STEP, STEP]), _answer("block", [STEP, STEP])])
-    got = draft("block")
-    assert got["proposal"] is None
-    assert any("building block is one step" in p for p in got["problems"])
+    assert len(got["proposal"]["steps"]) == 2
+    assert len(asked) == 1  # nothing was sent back to be fixed
 
 
 def test_the_same_two_steps_are_fine_in_a_workflow(assistant):

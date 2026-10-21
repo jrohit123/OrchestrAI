@@ -11,7 +11,7 @@ const CV_SQ = 68, CV_CW = 116;                           // little tiles: the sq
 const CV_STAGE = { trigger: 'Start', look: 'Look up and check', block: 'Building blocks', save: 'Save changes', tell: 'Tell people', approve: 'Approvals', other: 'Other steps' };
 let CV = null;                                          // the view of the flow that is open (zoom, selection, what is expanded)
 const CV_KIND = { 'Look up and check': 'look', 'Save changes': 'save', 'Tell people': 'tell', 'Approvals': 'approve', 'Other': 'other' };
-const CV_ICON = { resolve_entity: 'search', conflict_check: 'stop', require_permission: 'shield', derive_field: 'bolt', compute: 'calc', 'db.insert_row': 'plus', 'db.update_row': 'edit', 'db.upsert_row': 'refresh', 'db.delete_row': 'trash', 'notify.user': 'mail', 'notify.whatsapp': 'chat', 'pdf.generate': 'file', otp_gate: 'key', approval_gate: 'usercheck', ai_price_interpret: 'spark', run_workflow: 'layers', 'case.categorize': 'tag', 'case.route': 'route', 'case.authorize': 'shield', 'case.add_parties': 'users', 'case.attach_photos': 'camera', 'notify.parties': 'send' };
+const CV_ICON = { resolve_entity: 'search', conflict_check: 'stop', require_permission: 'shield', derive_field: 'bolt', compute: 'calc', 'db.insert_row': 'plus', 'db.update_row': 'edit', 'db.upsert_row': 'refresh', 'db.delete_row': 'trash', 'notify.user': 'mail', 'notify.whatsapp': 'chat', 'pdf.generate': 'file', otp_gate: 'key', approval_gate: 'usercheck', ai_price_interpret: 'spark', run_workflow: 'layers', 'case.categorize': 'tag', 'case.route': 'route', 'case.authorize': 'shield', 'case.add_parties': 'users', 'case.attach_photos': 'camera', 'notify.parties': 'send', ask_approval: 'usercheck', 'ai.ask': 'spark', 'notify.group': 'megaphone', 'people.find': 'users' };
 // steps that stop the whole workflow with a message the person sees, and where that message is kept
 const CV_STOPS = {
   conflict_check: ['error_message', 'It already exists, so it stops.'],
@@ -690,8 +690,9 @@ function reorderAfter(aId, bId) {
 }
 
 // ----- adding, removing, parking, re-ordering steps -----
-const ONE_STEP = 'A building block is one step. To do several things, make a building block for each and run them one after another in a flow.';
-const oneStepOnly = () => EW.work.kind === 'block' && EW.work.steps.length >= 1;
+// a building block may hold several steps again (it does one whole job and says what it needs)
+const ONE_STEP = '';
+const oneStepOnly = () => false;
 function cvAddStep(op, at, given, pos) {
   if (oneStepOnly()) { toast(ONE_STEP, 'bad'); return; }
   const spec = catalogSpec(op), step = { op, params: {} };

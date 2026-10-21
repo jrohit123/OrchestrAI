@@ -143,6 +143,8 @@ SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/studio/technical"),
         ("POST", "/studio/try"),
         ("POST", "/studio/validate"),
+        ("POST", "/studio/builder/compile"),
+        ("POST", "/studio/builder/view"),
         ("GET", "/targets"),
         ("PUT", "/targets"),
         ("GET", "/workflows"),
