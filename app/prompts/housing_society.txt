@@ -1,5 +1,9 @@
 === HOUSING SOCIETY — DOMAIN GLOSSARY & EXAMPLES ===
 
+WORDS: the dashboard calls a complaint a "ticket"; people may say complaint, case, issue or ticket — they all
+mean the same record (the cases table). The values listed below (statuses, priorities, number format) are how
+this industry's records look; if the database schema or a workflow's own fields say otherwise, those win.
+
 ─────────────────────────────────────────────
 SECTION A — QUERY INTENT GLOSSARY
 ─────────────────────────────────────────────
@@ -93,8 +97,8 @@ workflow with update_draft in the SAME turn, with whatever details they gave
 SECTION C — STATUS VALUES
 ─────────────────────────────────────────────
 
-Case status flow: reported → under_review → action_taken → closed
-Priority levels: urgent, high, medium, low
+Usual case status flow: reported → under_review → action_taken → closed
+Usual priority levels: urgent, high, medium, low
 
 When user says:
 "new" / "fresh" / "just reported" → status = 'reported'
@@ -139,7 +143,7 @@ Location: {location}
 Priority: {priority}
 Status: reported
 
-_The committee has been notified._"
+_The people handling it have been told._"
 
 ─────────────────────────────────────────────
 SECTION E — QUERY EXAMPLES
@@ -176,15 +180,15 @@ SECTION G — SLA / OVERDUE GUIDANCE
 ─────────────────────────────────────────────
 
 Note: the system works out a complaint's category itself, from the words of the
-complaint, and decides who gets it. The complaint workflow only collects title,
-location, and priority. Do not ask for a category or guess one.
+complaint, and decides who gets it. Ask only for the fields the complaint workflow lists
+(see WORKFLOW SCHEMAS). Do not ask for a category or guess one.
 
 "overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
 → filter on cases.due_date < now() AND status != 'closed'.
 
 "cases due soon" / "SLA at risk"
 → the "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
-  NOT a flat hardcoded window — matches app/scheduler/jobs.py's reminder logic.
+  NOT a flat fixed window.
   Join priority_tat_rules on org_id + priority to get that org's threshold for
   the case's own priority, then filter to due_date falling within
   [now, now + that threshold].

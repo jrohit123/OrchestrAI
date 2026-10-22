@@ -478,7 +478,7 @@ TOOLS = [
                 "properties": {
                     "intent_key": {
                         "type": "string",
-                        "description": "The workflow intent_key (e.g., 'create_sales_invoice', 'generate_price_quotation')",
+                        "description": "The workflow intent_key (the key listed for the workflow under WORKFLOWS)",
                     },
                     "fields": {
                         "type": "object",
@@ -1100,9 +1100,11 @@ async def _build_system_prompt(user: dict) -> str:
         else ""
     )
 
-    from app.services import bot_name
+    from app.services import bot_name, platform_prompt
 
+    facts = await platform_prompt.facts(user.get("source_key"))
     return _AGENT_SYSTEM_WRAPPER_TEMPLATE.format(
+        platform=platform_prompt.apply(platform_prompt.PLATFORM, facts).strip(),
         bot_name=await bot_name.of(user.get("source_key")),
         org_name=user["org_name"],
         critical_tables_block=critical_tables_block,
@@ -1114,7 +1116,7 @@ async def _build_system_prompt(user: dict) -> str:
         org_defaults_line=org_defaults_line,
         sheets_block=sheets_block,
         workflow_schema_text=workflow_schema_text,
-        domain_prompt=domain_prompt,
+        domain_prompt=platform_prompt.apply(domain_prompt, facts),
     )
 
 
@@ -1277,6 +1279,9 @@ async def _llm_format_report(
         "glossary_json": json.dumps(glossary),
         "raw_data": raw_result,
     }
+    from app.services import platform_prompt
+
+    values = {**await platform_prompt.facts(source_key), **values}
     try:
         format_prompt = config_store.fill(await reply_style(source_key), values)
     except (

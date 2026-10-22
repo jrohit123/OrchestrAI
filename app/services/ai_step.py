@@ -82,7 +82,9 @@ async def _op_ai_ask(params: dict, ctx: dict) -> dict:
     if task not in _TASKS:
         raise si.StepError(f"Ask the AI: '{task}' is not a job it knows.")
     into = params.get("into")
-    fields = [f for f in params.get("fields") or [] if isinstance(f, dict) and f.get("name")]
+    fields = [
+        f for f in params.get("fields") or [] if isinstance(f, dict) and f.get("name")
+    ]
     if task in ("write", "pick") and not into:
         raise si.StepError("Ask the AI: say which field the answer goes in.")
     if task == "extract" and not fields:
@@ -98,7 +100,14 @@ async def _op_ai_ask(params: dict, ctx: dict) -> dict:
                 ctx["fields"][f["name"]] = stand_in
         else:
             ctx["fields"][into] = choices[0] if task == "pick" else stand_in
-        ctx.setdefault("preview", []).append("The AI will " + {"write": "write the text", "pick": "pick one of " + str(len(choices)) + " choices", "extract": "pull out " + ", ".join(f["name"] for f in fields)}[task])
+        ctx.setdefault("preview", []).append(
+            "The AI will "
+            + {
+                "write": "write the text",
+                "pick": "pick one of " + str(len(choices)) + " choices",
+                "extract": "pull out " + ", ".join(f["name"] for f in fields),
+            }[task]
+        )
         return ctx
 
     job = _TASKS[task]
@@ -110,14 +119,25 @@ async def _op_ai_ask(params: dict, ctx: dict) -> dict:
             for f in fields
         )
     own = _text(params.get("instructions") or "", ctx).strip()
-    system = _BASE + job + (f"\nThe organisation's own instructions:\n{own}" if own else "")
+    from app.services import platform_prompt
+
+    system = (
+        await platform_prompt.preamble(ctx.get("source_key"))
+        + "\n\n"
+        + _BASE
+        + job
+        + (f"\nThe organisation's own instructions:\n{own}" if own else "")
+    )
     user_text = _text(params.get("prompt") or "", ctx)
 
     from app.services.llm_router import chat_completion
 
     try:
         response = await chat_completion(
-            [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text},
+            ],
             max_tokens=800,
             temperature=float(params.get("temperature") or 0),
         )

@@ -917,6 +917,40 @@ def _prompt(name: str) -> str:
     return (_PROMPTS / name).read_text(encoding="utf-8").replace("{dsl}", dsl)
 
 
+async def _system(ctx, name: str) -> str:
+    """What the AI helper reads: the platform's own words for this organisation (platform.txt), then its job."""
+    from app.services import platform_prompt
+
+    return (await platform_prompt.preamble(ctx.source_key)) + "\n\n" + _prompt(name)
+
+
+async def _table_notes(ctx, tables: dict) -> dict:
+    """What each table holds, where the database says so (COMMENT ON TABLE): read by the AI helper and its
+    reviewer, so a table is chosen for its meaning and not because its name sounds close."""
+    try:
+        rows = await fetch_all(
+            "SELECT c.relname AS t, obj_description(c.oid, 'pg_class') AS note FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' "
+            "AND c.relname = ANY($1::text[])",
+            sorted(tables),
+            source_key=ctx.source_key,
+        )
+    except Exception as e:  # a courtesy: without notes the helper still works
+        logger.warning(f"studio chat: table notes not read: {e!r}")
+        return {}
+    return {r["t"]: r["note"] for r in rows if (r["note"] or "").strip()}
+
+
+def _conversation_text(history: list[dict], message: str) -> str:
+    """What the admin asked so far, for the reviewer."""
+    said = [
+        h["content"]
+        for h in history
+        if h.get("role") == "user" and isinstance(h.get("content"), str)
+    ]
+    return "\n".join([*said[-5:], message])
+
+
 # Now and then the assistant writes the special date values without quotes (NOW() instead of
 # "NOW()"), which is not valid JSON. That is the only slip repaired, and only when the answer
 # does not parse as it is, so a valid answer is never touched.
@@ -1061,7 +1095,8 @@ async def studio_chat(body: ChatBody, ctx: CtxDep):
             "building_blocks": [b for b in blocks if b["key"] != w["intent_key"]],
             "request": body.message,
         }
-        system = _prompt("workflow_editor.txt")
+        payload["table_notes"] = await _table_notes(ctx, tables)
+        system = await _system(ctx, "workflow_editor.txt")
         reply_text, problems = "", []
         extra = None
         for attempt in (1, 2):
@@ -1113,20 +1148,36 @@ async def studio_chat(body: ChatBody, ctx: CtxDep):
     # whatever the description sounds like.
     allowed = _kinds(ctx) or ["workflow"]
     kind = body.kind if body.kind in allowed else "workflow"
+    from app.services import flow_triggers as ft
+    from app.services.workflow_critic import critique_steps_logic
+
+    notes = await _table_notes(ctx, tables)
     payload = {
         "request": body.message,
         "schema": tables,
+        "table_notes": notes,
         "building_blocks": blocks,
         "allowed_kinds": allowed,
         "kind": kind,
+        "today": time.strftime("%Y-%m-%d"),
     }
-    system = _prompt("workflow_creator.txt")
+    system = await _system(ctx, "workflow_creator.txt")
     extra = None
     problems = []
     reply_text = ""
-    for attempt in (1, 2):
+    reviewed = False
+    for attempt in (1, 2, 3):
         raw = await _ask(system, payload, body.history, extra)
         out = _json_object(raw)
+        questions = (out or {}).get("questions")
+        if isinstance(questions, list) and not (out or {}).get("workflow"):
+            asked = [str(q).strip() for q in questions if str(q).strip()][:3]
+            if asked:  # the helper needs to know more first: the admin answers, and the conversation goes on
+                return {
+                    "reply": str(out.get("reply") or "").strip(),
+                    "questions": asked,
+                    "proposal": None,
+                }
         spec = (out or {}).get("workflow")
         if not isinstance(spec, dict):
             logger.warning(
@@ -1143,10 +1194,29 @@ async def studio_chat(body: ChatBody, ctx: CtxDep):
             steps, schema=schema, entity_schema=fields, kind=kind, workflows=workflows
         )
         problems = check["errors"] + _check_entity_schema(fields)
+        schedule = None
+        if spec.get("schedule"):
+            schedule, bad = ft.clean_cadence(spec.get("schedule"))
+            problems += [f"schedule: {b}" for b in bad]
+        if not problems and not reviewed:
+            # the reviewer reads the draft against what the admin asked (critic_steps_logic.txt): does it really do
+            # it, does it overwrite an answer, does it save into the system's own settings? Once; it fails open.
+            reviewed = True
+            problems = await critique_steps_logic(
+                {"steps": steps, "entity_schema": fields, "schedule": schedule},
+                _conversation_text(body.history, body.message),
+                notes,
+            )
+            if problems:
+                logger.info(
+                    f"studio chat: the reviewer sent the draft back: {problems}"
+                )
         if not problems:
             return {
                 "reply": reply_text,
                 "proposal": {
+                    "schedule": schedule,
+                    "schedule_words": ft.cadence_words(schedule) if schedule else None,
                     "name": str(spec.get("name") or "New workflow")[:120],
                     "kind": kind,
                     "description": str(spec.get("description") or "")[:1500],

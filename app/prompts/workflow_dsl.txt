@@ -23,6 +23,9 @@ Several tests: {"and": [ {...}, {...} ]}. A step without "when" always runs.
 
 RULES
 - Use only tables and columns listed under SCHEMA. Never invent one.
+- A table is right only when what it holds (its note in table_notes, or its name and columns) fits the job. A
+  table whose name merely sounds close is not enough.
+- Never overwrite a field the person was asked for (derive_field or compute into the same name) with a fixed value.
 - A step that uses $<alias> must come after the resolve_entity step whose "into" is that alias.
 - A record found by a step that has a "when" only exists in that situation. If another situation needs the same record, add a step that finds it there too.
 - Never change a step the admin did not ask about: keep its order and settings exactly as they are.

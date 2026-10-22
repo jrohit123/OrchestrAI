@@ -157,7 +157,7 @@ const KIND_EXAMPLE = {
 const KIND_TITLE = { workflow: 'New flow', block: 'New building block', case_action: 'New case button' };
 function newWorkflowModal(kinds, startKind) {
   const offered = kinds ? ['workflow', 'block', ...(S.boot.caps.cases ? ['case_action'] : [])] : ['workflow'];
-  let kind = offered.includes(startKind) ? startKind : 'workflow', mode = 'chat', proposal = null, history = [], typed = '', typedName = '';
+  let kind = offered.includes(startKind) ? startKind : 'workflow', mode = 'chat', proposal = null, history = [], asked = null, typed = '', typedName = '';
   const body = h('div', { class: 'stack' }), kindRow = h('div', { class: 'stack s8' }), seg = h('div', { class: 'nf-start' }), foot = h('div', { class: 'muted small' });
   const m = modal({ title: KIND_TITLE[kind], wide: true, body: h('div', null, kindRow, seg, h('div', { style: { height: '12px' } }), body, h('div', { style: { height: '14px' } }), foot), actions: null });
   const what = { workflow: 'flow', block: 'building block', case_action: 'case button' };
@@ -180,26 +180,36 @@ function newWorkflowModal(kinds, startKind) {
       : h('a', { href: '#', onclick: e => { e.preventDefault(); kind = 'workflow'; proposal = null; history = []; draw(); } }, '← Make a flow instead'));
     const err = h('div', { class: 'small', style: { color: 'var(--bad)' } });
     if (mode === 'chat') {
-      const text = h('textarea', { rows: 4, placeholder: KIND_EXAMPLE[kind] });
+      const text = h('textarea', { rows: 4, placeholder: asked ? 'Your answer' : KIND_EXAMPLE[kind] });
       text.value = typed; text.addEventListener('input', () => { typed = text.value; });
-      const go_ = h('button', { class: 'btn primary', type: 'button' }, proposal ? 'Draft it again' : 'Draft it');
+      const go_ = h('button', { class: 'btn primary', type: 'button' }, asked ? 'Answer' : proposal ? 'Draft it again' : 'Draft it');
       go_.addEventListener('click', async () => {
         if (text.value.trim().length < 5) { err.textContent = 'Say what it should do.'; return; }
         go_.disabled = true; err.textContent = ''; go_.textContent = 'Drafting…';
         try {
-          const r = await api.post('/studio/chat', { message: text.value.trim(), kind, history });
-          history = [{ role: 'user', content: text.value.trim() }, { role: 'assistant', content: r.reply }];
-          proposal = r.proposal; draw();
-          if (!r.proposal) body.prepend(notice((r.reply || '') + (r.problems && r.problems.length ? ' (' + r.problems.slice(0, 2).join(' ') + ')' : ''), 'warn'));
+          const said = text.value.trim();
+          const r = await api.post('/studio/chat', { message: said, kind, history });
+          // the conversation goes on: the helper may ask, the admin answers, then it drafts
+          const answer = [r.reply, ...(r.questions || [])].filter(Boolean).join(String.fromCharCode(10));
+          history = [...history, { role: 'user', content: said }, { role: 'assistant', content: answer }].slice(-12);
+          asked = r.questions && r.questions.length ? { reply: r.reply, questions: r.questions } : null;
+          proposal = r.proposal; typed = asked ? '' : typed; draw();
+          if (!r.proposal && !asked) body.prepend(notice((r.reply || '') + (r.problems && r.problems.length ? ' (' + r.problems.slice(0, 2).join(' ') + ')' : ''), 'warn'));
         } catch (e) { err.textContent = e.message; go_.disabled = false; go_.textContent = 'Draft it'; }
       });
-      fill(body, field('What should it do?', text), h('div', { class: 'row' }, go_, err),
+      fill(body, asked ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'The AI helper asks'), h('div', { class: 'card-b stack' }, asked.reply ? h('div', null, asked.reply) : null,
+          h('ol', { style: { margin: 0, paddingLeft: '20px' } }, asked.questions.map(q => h('li', null, q))))) : null,
+        field(asked ? 'Your answer' : 'What should it do?', text), h('div', { class: 'row' }, go_, err, history.length ? h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { history = []; asked = null; proposal = null; typed = ''; draw(); } }, 'Start over') : null),
         proposal ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Drafted: ' + proposal.name, badge(KIND_LABEL[proposal.kind] || pretty(proposal.kind), 'violet')),
           h('div', { class: 'card-b stack' }, proposal.description ? h('div', null, proposal.description) : null,
+            proposal.schedule_words ? h('div', null, h('b', null, 'Runs by itself: '), proposal.schedule_words) : null,
             Object.keys(proposal.entity_schema).length ? h('div', null, h('b', null, 'Asks for: '), Object.keys(proposal.entity_schema).map(k => pretty(k)).join(', ')) : null,
             h('ol', { style: { margin: 0, paddingLeft: '20px' } }, proposal.steps.map(s => h('li', null, describeStep(s)))),
             proposal.warnings.length ? notice(proposal.warnings.join(' '), 'warn') : null,
-            h('div', null, h('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try { await created(await api.post('/workflows', { name: proposal.name, kind: proposal.kind, description: proposal.description, entity_schema: proposal.entity_schema, training_phrases: proposal.training_phrases, steps: proposal.steps }), proposal.kind); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; } } }, 'Create it and open the editor')))) : null);
+            h('div', null, h('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try {
+              const made = await api.post('/workflows', { name: proposal.name, kind: proposal.kind, description: proposal.description, entity_schema: proposal.entity_schema, training_phrases: proposal.training_phrases, steps: proposal.steps });
+              if (proposal.schedule) { try { await api.put('/workflows/' + made.id + '/schedule', proposal.schedule); } catch (x) { toast('Created, but the schedule could not be set: ' + x.message + ' Set it under “When it starts”.', 'bad'); } }
+              await created(made, proposal.kind); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; } } }, 'Create it and open the editor')))) : null);
     } else if (mode === 'blank') {
       const name = h('input', { type: 'text', placeholder: kind === 'block' ? 'e.g. Add a note to a case' : 'e.g. Close a complaint' });
       name.value = typedName; name.addEventListener('input', () => { typedName = name.value; });

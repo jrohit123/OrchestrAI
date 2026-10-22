@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services import agent, config_store, prompt_loader
+from app.services import agent, config_store, platform_prompt, prompt_loader
 
 WF = {"name": "Stock list", "business_glossary": {"sku": "item code"}}
 
@@ -55,6 +55,7 @@ def test_without_a_saved_text_the_prompt_file_is_what_the_ai_is_told(monkeypatch
     asyncio.run(agent._llm_format_report(WF, "ROWS", "alpha"))
     template = prompt_loader.reply_style_built_in()
     assert chat["prompt"] == template.format(
+        **platform_prompt.defaults(),  # no database here: the platform facts keep their defaults
         workflow_name="Stock list",
         glossary_json='{"sku": "item code"}',
         raw_data="ROWS",

@@ -379,7 +379,7 @@ class AiBody(BaseModel):
 async def schema_ai_draft(ctx: CtxDep, body: Annotated[AiBody, Body()]):
     _need(ctx)
     world = await _world(ctx)
-    out = await schema_ai.draft(body.messages, world)
+    out = await schema_ai.draft(body.messages, world, ctx.source_key)
     if out["ops"]:
         plan = build_plan(_OPS.validate_python(out["ops"]), world)
         out["plan"] = _show(plan)

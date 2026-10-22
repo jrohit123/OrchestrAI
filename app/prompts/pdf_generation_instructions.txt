@@ -25,7 +25,7 @@ Total Rows    : {total_rows}{trunc_note}
 </style>
 Primary: {primary} | Light bg: {light_bg} | Text: {text_col} | Muted: {muted_col}
 
-CRITICAL — Use ONLY "Rs." for currency, NOT the ₹ symbol.
+CRITICAL — Write money as {currency} with {number_style}, for example {money_example}. Never use a currency symbol such as ₹ (the PDF font may not have it).
 
 ===== ALWAYS INCLUDE =====
 1. HEADER BLOCK (table-based, full width):
@@ -53,7 +53,7 @@ No markdown fences. No explanation. No preamble.
 ===DOCTYPE:report===
 ── REPORT (multi-row table) ──
 - Header row bg: {primary}, white text. Alternating row stripes (white / {light_bg})
-- All numeric amount/total columns: right-align, Indian comma formatting (Rs.X,XX,XXX)
+- All numeric amount/total columns: right-align, the money format given above
 - Summary row at bottom (bold, light blue bg): row count + SUM of any amount/total column
 - KEY INSIGHTS section: 2-4 bullet points synthesising notable patterns in the data
 ===DOCTYPE:invoice===
@@ -94,12 +94,12 @@ ITEM DETAILS CARD:
 
 PRICING BREAKDOWN TABLE (right-aligned, width 55%):
   Border: 1px solid #3B82F6
-  Row 1: Base Cost      | Rs.X from extra_context base_cost
-  Row 2: Additional Charges  | Rs.X from extra_context additional_charges
+  Row 1: Base Cost      | <money> from extra_context base_cost
+  Row 2: Additional Charges  | <money> from extra_context additional_charges
          sub-note: any percentage breakdown muted 9pt
-  Row 3: Subtotal        | Rs.X from extra_context subtotal
-  Row 4: GST (gst_pct%)  | Rs.X from extra_context gst_amount
-  TOTAL ROW bold background:#1E40AF white text 13pt | Rs.X from total_amount
+  Row 3: Subtotal        | <money> from extra_context subtotal
+  Row 4: GST (gst_pct%)  | <money> from extra_context gst_amount
+  TOTAL ROW bold background:#1E40AF white text 13pt | <money> from total_amount
 
 ALL values from extra_context. Do NOT recalculate. Indian comma formatting.
 
@@ -138,7 +138,7 @@ STRUCTURE:
 1. EXECUTIVE SUMMARY BOX (light blue bg, rounded corners, 8px padding):
    Show grand_total, high_risk_total, medium_risk_total from extra_context.
    If top_debtors in extra_context, list them here.
-   Format: "Total Outstanding: Rs.X | High Risk: Rs.X | Medium Risk: Rs.X"
+   Format: "Total Outstanding: <money> | High Risk: <money> | Medium Risk: <money>"
 
 2. THREE SECTION BLOCKS (render only non-empty buckets):
 

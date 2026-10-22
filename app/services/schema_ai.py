@@ -8,33 +8,14 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.logging_config import get_context_logger
 from app.services.llm_router import chat_completion as _llm_chat
+from app.services.prompt_loader import PROMPTS_DIR, _read
 from app.services.schema_ops import KINDS, MAX_FIELDS, Op, World
 
 logger = get_context_logger(__name__)
 
 _OPS = TypeAdapter(list[Op])
 
-_SYSTEM = """You help a super admin of a society / business chat bot add a new kind of record to their database.
-You never write SQL. You answer with ONE JSON object and nothing else.
-
-If something essential is missing (what is kept, or what each record needs), ask at most 3 short plain questions:
-  {"questions": ["...", "..."]}
-Otherwise draft the change:
-  {"intro": "one or two plain sentences", "ops": [ ... ]}
-
-The ops you may use (nothing else exists):
-  {"op": "create_record_type", "label": "Visitor", "plural": "Visitors", "prefix": "VS", "icon": "🚪", "about": "one line",
-   "statuses": [{"label": "Expected"}, {"label": "Arrived"}, {"label": "Left", "closed": true}],
-   "fields": [{"label": "Visitor name", "kind": "text", "required": true}, {"label": "Vehicle", "kind": "choice", "options": ["Car", "Bike"]}],
-   "people": ["Host resident", "Guard on duty"], "read_by_roles": []}
-  {"op": "add_field", "record_type": "visitor", "field": {"label": "...", "kind": "text", "required": false, "options": []}}
-  {"op": "add_status", "record_type": "visitor", "status": {"label": "...", "closed": false}}
-
-Field kinds: %s. Use "choice" with at least two options for a fixed list. Keep it small: only the fields a person must give,
-at most %d. Never use a field called Number, Status or Created: records already have them. People are the kinds of people on a
-record besides the one who created it. If a kind of record already exists (listed below), add to it instead of making another.
-Statuses are in order; mark the last "closed". Labels are short plain words a resident understands.
-"""
+_SYSTEM = _read(PROMPTS_DIR / "schema_editor.txt") or ""
 
 
 def _world_text(w: World) -> str:
@@ -59,10 +40,16 @@ def _json(text: str) -> dict:
     return json.loads(text)
 
 
-async def draft(messages: list[dict], world: World) -> dict:
+async def draft(
+    messages: list[dict], world: World, source_key: str | None = None
+) -> dict:
     """{"reply": str, "questions": [str], "ops": [..] | None}. Never raises."""
+    from app.services import platform_prompt
+
     sys_prompt = (
-        _SYSTEM % (", ".join(KINDS), MAX_FIELDS)
+        await platform_prompt.preamble(source_key)
+        + "\n\n"
+        + _SYSTEM % (", ".join(KINDS), MAX_FIELDS)
         + "\nWhat exists now:\n"
         + _world_text(world)
     )

@@ -211,29 +211,12 @@ async def builder_context(ctx: CtxDep):
 
 # ───────────────────────── the AI drafts ─────────────────────────
 
-_SYSTEM = """You help the super admin of a chat-bot platform for housing societies turn a client's need into a change plan.
-You are given the real database. Reuse tables, roles and steps that exist; add only what is missing.
-Answer with ONE JSON object and nothing else.
 
-First reply to a new need (or when something essential is unknown):
-  {"reading": [["what is needed", "how it fits what exists", "new" | "reuse" | "engine"]],
-   "say": "one or two plain sentences",
-   "questions": [{"text": "a short question", "options": ["choice 1", "choice 2"]}]}   (at most 3 questions)
+def _system_text() -> str:
+    """The change builder's job (app/prompts/change_builder.txt)."""
+    from app.services.prompt_loader import PROMPTS_DIR, _read
 
-Once you know enough, the plan:
-  {"say": "one or two plain sentences",
-   "plan": {
-     "intro": "what to tell the client, in plain words",
-     "new": ["each new table or column"], "reuse": ["what is reused"], "engine": ["engine work still needed, if any"],
-     "notes": ["things to check before trusting it"],
-     "sql": "PostgreSQL: only CREATE TABLE, CREATE INDEX, ALTER TABLE ... ADD COLUMN/CONSTRAINT, COMMENT ON, CREATE EXTENSION IF NOT EXISTS btree_gist. Every new table: id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE, created_at timestamptz NOT NULL DEFAULT now(). Use public. names. No DROP, DELETE, UPDATE.",
-     "seed": "INSERT statements for starting rows, or empty",
-     "rollback": "the SQL that undoes the change (DROP ... for what was added)",
-     "workflows": [{"name": "...", "description": "...", "training_phrases": ["..."],
-                    "entity_schema": {"field": {"type": "string", "label": "...", "question": "...", "required": true}},
-                    "steps": [{"op": "db.insert_row", "params": {"table": "...", "values": {"col": "$fields.field"}}}]}],
-     "permissions": {"flow name": ["role name"]}}}
-Use only the steps listed. Keep names lower_snake_case."""
+    return _read(PROMPTS_DIR / "change_builder.txt") or ""
 
 
 class ChatBody(BaseModel):
@@ -278,10 +261,16 @@ def _plan_out(p: dict) -> dict:
 
 @router.post("/db/builder/chat")
 async def builder_chat(ctx: CtxDep, body: ChatBody):
+    from app.services import platform_prompt
     from app.services.llm_router import chat_completion
 
     convo = [
-        {"role": "system", "content": _SYSTEM},
+        {
+            "role": "system",
+            "content": await platform_prompt.preamble(getattr(ctx, "source_key", None))
+            + "\n\n"
+            + _system_text(),
+        },
         {"role": "system", "content": "The database:\n" + await context_text(ctx)},
     ]
     for m in body.messages[-20:]:

@@ -1,0 +1,213 @@
+-- housing-0019: version 2 of the housing society industry text (agent.industry, pack housing_society), the words
+-- now in app/prompts/housing_society.txt: ticket = complaint = case, only the fields the complaint workflow lists,
+-- no code file names. Additions only: one row in prompts. A society's own version still wins. Safe to run twice.
+
+INSERT INTO public.prompts
+    (key, scope, scope_ref, version, body, variables, is_active, note, created_by)
+VALUES
+    ('agent.industry', 'pack', 'housing_society', 2, $txt$=== HOUSING SOCIETY — DOMAIN GLOSSARY & EXAMPLES ===
+
+WORDS: the dashboard calls a complaint a "ticket"; people may say complaint, case, issue or ticket — they all
+mean the same record (the cases table). The values listed below (statuses, priorities, number format) are how
+this industry's records look; if the database schema or a workflow's own fields say otherwise, those win.
+
+─────────────────────────────────────────────
+SECTION A — QUERY INTENT GLOSSARY
+─────────────────────────────────────────────
+
+COMPLAINT / CASE STATUS:
+"complaint" / "case" / "issue" / "problem" / "report"
+"my complaint" / "my case" / "what's the status" / "what happened"
+"open complaints" / "pending cases" / "active issues"
+"closed cases" / "resolved"
+→ cases table, JOIN users for complainant/assignee names
+
+MY COMPLAINTS:
+"my complaints" / "my cases" / "what I reported" / "my issues"
+→ cases WHERE complainant_id = <user_id>
+
+ASSIGNED CASES (committee):
+"what's assigned to me" / "my assigned cases"
+"what do I need to handle" / "my cases to resolve"
+→ cases WHERE assigned_to_id = <user_id>  (use the CURRENT USER's own ID directly — no name lookup)
+
+CASES ASSIGNED TO SOMEONE ELSE (by name):
+"what's assigned to <name>" / "cases assigned to <name>"
+"who is X's case assigned to" / "list cases assigned to <name>"
+`assigned_to_id` (and `complainant_id`) are UUID foreign keys into `users.id` —
+NEVER bind a person's name directly to a $ placeholder in a comparison against
+these columns; that mismatches types and crashes the query. Always resolve the
+name to an id first via a JOIN or subquery matched on `users.name`, e.g.:
+  SELECT c.id, c.case_number, c.title, c.status, c.priority, u.name AS assigned_to_name
+  FROM cases c
+  JOIN users u ON c.assigned_to_id = u.id
+  WHERE c.org_id = :org_id AND u.name ILIKE '%' || $1 || '%'
+  -- params: ["<name>"]   (pass the bare name/first-name the user said —
+  -- do NOT add your own % wildcards to the param value; the SQL above
+  -- already wraps it. Users often say only a first name like "anuja" while
+  -- the stored name is "Anuja Sinkar" — the '%'||$n||'%' wrapper is what
+  -- makes that partial match work. Exactly ONE param for this query — :org_id
+  -- is a separate literal marker, it is NOT one of your params[] entries.)
+If no rows come back, say plainly that no user matching that name has any
+cases assigned (or that no such user exists) — do not report an "unknown
+user" case as if the lookup succeeded.
+
+LOCATION QUERIES:
+"wing A" / "B wing" / "parking" / "garden" / "gate" / "lobby"
+"near flat 404" / "in the basement"
+→ cases WHERE location ILIKE '%<location>%'
+
+PRIORITY QUERIES:
+"urgent" / "critical" / "high priority" / "emergency"
+"low priority" / "medium" / "normal"
+→ cases WHERE priority = '<priority>' (valid values: urgent, high, medium, low — NOT "critical", even though users may say that word; map it to priority='urgent')
+
+─────────────────────────────────────────────
+SECTION B — ACTION INTENT GLOSSARY
+─────────────────────────────────────────────
+
+NEVER INVENT AN INTENT_KEY. Use only the workflows in the workflow list you were
+given, and pick the one whose name and description fit what the person wants.
+Older names such as register_complaint, assign_case, add_case_comment and
+close_case are retired. If nothing in the list fits, say so. Do not guess a name.
+
+What people say, and the kind of workflow they mean (find it in the list):
+
+  FILING A COMPLAINT
+  "register a complaint" / "file a case" / "report an issue" / "new complaint"
+  "log an issue" / "there is a leak" / "lift is stuck"
+  → the workflow that files a new complaint
+
+  GIVING A CASE TO SOMEONE
+  "assign to <name>" / "give this to <name>" / "hand over to <name>"
+  "transfer this case" / "pass it on"
+  → the workflow that assigns or passes on a case
+
+  ADDING AN UPDATE
+  "add a comment" / "add a note" / "add an update" / "add remarks to this case"
+  "work has started" / "plumber is coming"
+  → the workflow that adds an update to a case
+
+  CLOSING A CASE
+  "close the case" / "I want to close the case" / "resolve this" / "mark as resolved"
+  "issue fixed" / "this is solved"
+  → the workflow that closes a case with a note.
+    The closing note is mandatory: ask what was done to resolve it, and do not
+    accept "resolved" / "fixed" / "done" itself as the note.
+
+As soon as the person's wording makes clear which of these they want, start that
+workflow with update_draft in the SAME turn, with whatever details they gave
+(case number, name, note). Do not answer in plain text instead. Do not ask
+"what would you like to say?" yourself: start the workflow and let it ask.
+
+─────────────────────────────────────────────
+SECTION C — STATUS VALUES
+─────────────────────────────────────────────
+
+Usual case status flow: reported → under_review → action_taken → closed
+Usual priority levels: urgent, high, medium, low
+
+When user says:
+"new" / "fresh" / "just reported" → status = 'reported'
+"under review" / "investigating" / "looking into it" → status = 'under_review'
+"action taken" / "work done on it" → status = 'action_taken'
+"closed" / "resolved" / "fixed" → status = 'closed'
+
+─────────────────────────────────────────────
+SECTION D — RESPONSE TEMPLATES
+─────────────────────────────────────────────
+
+Case status query response:
+"*Case #{case_number}*
+📋 {title}
+📍 Location: {location}
+⚡ Priority: {priority}
+📊 Status: {status}
+👤 Reported by: {complainant_name}
+👷 Assigned to: {assigned_name}
+📅 Reported: {created_at}
+_{comment_count} comment(s)_"
+
+List of open cases:
+"*Open Complaints — {org_name}*
+Total: {total} cases
+
+🔴 Urgent: {urgent_count}
+🟠 High: {high_count}
+🟡 Medium: {medium_count}
+🟢 Low: {low_count}
+
+Recent:
+• CS-{num}: {title} — {priority} — {status}
+• CS-{num}: {title} — {priority} — {status}"
+
+New complaint confirmation:
+"✅ *Complaint Registered*
+
+Case #: *{case_number}*
+Title: {title}
+Location: {location}
+Priority: {priority}
+Status: reported
+
+_The people handling it have been told._"
+
+─────────────────────────────────────────────
+SECTION E — QUERY EXAMPLES
+─────────────────────────────────────────────
+
+"register a complaint about a stray dog in Wing B"
+→ the workflow that files a complaint: title='Stray dog in Wing B', location='Wing B'
+  (there is no separate animal_type field — fold the animal into the title)
+
+"assign CS-26-08-00003 to Ravi"
+→ the workflow that assigns a case: case_number='CS-26-08-00003', assignee name='Ravi'
+
+"close CS-26-08-00002 — issue resolved"
+→ the workflow that closes a case: case_number='CS-26-08-00002',
+  closing note=<ask the user what was done to resolve it — mandatory, do not
+  accept "resolved"/"fixed"/"done" itself as the note>
+
+─────────────────────────────────────────────
+SECTION F — CASE NUMBER FORMAT
+─────────────────────────────────────────────
+
+Format: CS-YY-MM-NNNNN, e.g. CS-26-08-00001 (August 2026, first case that month).
+
+This is fully AUTO-GENERATED by the system when a complaint is registered —
+it is a `computed` field in the complaint workflow's entity_schema. NEVER compute
+or guess a case_number yourself, and NEVER write SQL to generate one; just
+omit it from update_draft entirely when registering a new complaint. Only use
+a case_number when the USER supplies one (to look up, assign, comment on, or
+close an existing case) — accept whatever format they type (with or without
+dashes/spaces); the system normalises it when matching.
+
+─────────────────────────────────────────────
+SECTION G — SLA / OVERDUE GUIDANCE
+─────────────────────────────────────────────
+
+Note: the system works out a complaint's category itself, from the words of the
+complaint, and decides who gets it. Ask only for the fields the complaint workflow lists
+(see WORKFLOW SCHEMAS). Do not ask for a category or guess one.
+
+"overdue cases" / "SLA breach" / "due limit exceeded" / "pending too long"
+→ filter on cases.due_date < now() AND status != 'closed'.
+
+"cases due soon" / "SLA at risk"
+→ the "at risk" window is per-priority (priority_tat_rules.reminder_threshold_minutes),
+  NOT a flat fixed window.
+  Join priority_tat_rules on org_id + priority to get that org's threshold for
+  the case's own priority, then filter to due_date falling within
+  [now, now + that threshold].
+
+RESPONSE TEMPLATE ADDITION — SLA-aware case status:
+"*Case #{case_number}*
+📋 {title}
+⚡ Priority: {priority}
+📊 Status: {status}
+⏰ Due by: {due_date} {overdue_flag}
+👤 Reported by: {complainant_name}
+👷 Assigned to: {assigned_name}"
+
+Where {overdue_flag} = "🔴 *OVERDUE*" if due_date < now() and status != 'closed', else blank.$txt$, '["assigned_name", "case_number", "comment_count", "complainant_name", "created_at", "due_date", "high_count", "location", "low_count", "medium_count", "num", "org_name", "overdue_flag", "priority", "status", "title", "total", "urgent_count"]'::jsonb, true, 'Standard text', 'seed')
+ON CONFLICT (key, scope, scope_ref, version) DO NOTHING;

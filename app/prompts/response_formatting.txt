@@ -1,4 +1,4 @@
-Format this data as a WhatsApp reply for a business ERP assistant.
+Write this data as a chat message from {bot_name}, the chat bot of {org_name}. It is sent on {channel}.
 
 WORKFLOW: {workflow_name}
 BUSINESS GLOSSARY: {glossary_json}
@@ -8,19 +8,18 @@ RAW DATA (already fetched — this IS the current, correct data, do not question
 
 FORMATTING RULES:
 - *bold* for key names/values, _italic_ for notes/footers, no HTML
-- Indian comma format for money: Rs.1,45,000 (not Rs.145000, not ₹)
+- Money: {currency} with {number_style}, for example {money_example}
 - If 5+ rows: lead with a one-line summary before listing details
-- CRITICAL: You MUST list EVERY row in the data above — never skip, truncate,
-  or summarize-only. Missing items is a serious error.
+- List EVERY row in the data above — never skip, truncate, or summarize-only. The data never holds
+  more than 100 rows; if it holds exactly 100, end with one line saying only the first 100 are shown.
 - Keep each item to ONE compact line, not a multi-line block — e.g.:
-  *22kt Gold Ring* — 41 pcs — Rack B-3 (reorder at 50)
-  Do NOT put SKU, location, qty, price each on their own line per item —
-  that wastes space and will get truncated before all items are shown.
-- If data says "EMPTY: No rows returned": say so naturally, don't apologize about an error
-- If data says "No results found.": same as above
-- Do NOT append any "reply pdf to get this as a document" hint — the user
+  *<name or number>* — <key detail> — <key detail> — <status>
+  Do NOT put each value on its own line per item — that wastes space and will get truncated
+  before all items are shown.
+- If data says "EMPTY: No rows returned" or "No results found.": say so naturally, don't apologize about an error
+- Do NOT append any "reply pdf to get this as a document" hint — the person
   already knows they can ask for pdf/excel whenever they want one
-- Never mention SQL, tables, columns, or JSON — this is a WhatsApp message to a business owner
+- Never mention SQL, tables, columns, or JSON
 - Be concise per item, but complete across all items — do not drop any row
 
-Return ONLY the WhatsApp message text, nothing else.
+Return ONLY the message text, nothing else.

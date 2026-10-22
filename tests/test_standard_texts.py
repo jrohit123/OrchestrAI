@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services import config_store, prompt_loader
+from app.services import config_store, platform_prompt, prompt_loader
 from app.services.messages import MESSAGES
 from tools import migrate, seed_texts
 
@@ -185,5 +185,6 @@ def test_filling_in_the_reply_style_gives_exactly_what_the_old_way_gave():
         "workflow_name": "Stock {low}",
         "glossary_json": '{"sku": "item code"}',
         "raw_data": '[{"sku": "A1", "qty": 4}]\nit\'s "fine" {x}',
+        **platform_prompt.defaults(),
     }
     assert config_store.fill(template, values) == template.format(**values)

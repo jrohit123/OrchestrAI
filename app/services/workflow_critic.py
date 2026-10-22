@@ -111,7 +111,9 @@ async def critique_field_mappings(
     return problems
 
 
-async def critique_steps_logic(spec: dict, description_block: str) -> list[str]:
+async def critique_steps_logic(
+    spec: dict, description_block: str, table_notes: dict | None = None
+) -> list[str]:
     """Reviews steps[] against the original request for CRUD correctness —
     right op for the right intent, branching present when an action/mode
     field demands it, no silent duplicate-alias resolve_entity calls, no
@@ -127,6 +129,11 @@ async def critique_steps_logic(spec: dict, description_block: str) -> list[str]:
         entity_schema_json=json.dumps(
             spec.get("entity_schema") or {}, indent=2, default=str
         ),
+        table_notes=chr(10).join(
+            f"- {t}: {n}" for t, n in sorted((table_notes or {}).items())
+        )
+        or "(none given)",
+        schedule_json=json.dumps(spec.get("schedule"), default=str),
     )
     try:
         response = await _llm_chat(

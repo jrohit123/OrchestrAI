@@ -126,6 +126,7 @@ async def generate_pdf(
         extra_context=extra_context or {},
         pdf_config=pdf_config or {},
         canonical_fields=canonical_fields,
+        source_key=source_key,
     )
 
     # Logo injection is deliberately a plain post-processing step, same
@@ -272,7 +273,11 @@ async def _build_html(
     extra_context,
     pdf_config=None,
     canonical_fields=None,
+    source_key=None,
 ) -> str:
+    from app.services import platform_prompt
+
+    money = await platform_prompt.facts(source_key)
     today = datetime.now().strftime("%d %b %Y")
     today_long = datetime.now().strftime("%d %B %Y")
 
@@ -371,6 +376,9 @@ async def _build_html(
         today=today,
         layout_section=layout_section,
         wide_table_note=wide_table_note,
+        currency=money["currency"],
+        number_style=money["number_style"],
+        money_example=money["money_example"],
     )
 
     # Route through central LLM router (Gemini x3 → Groq → Cerebras → OpenAI)

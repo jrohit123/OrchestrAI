@@ -47,7 +47,8 @@ def test_the_ai_is_told_its_name():
     text = (
         Path(messages.__file__).parents[1] / "prompts" / "agent_system_wrapper.txt"
     ).read_text(encoding="utf-8")
-    assert text.startswith("You are {bot_name}, the chat bot of {org_name}.")
+    assert text.startswith("{platform}")  # the platform words come first (app/prompts/platform.txt)
+    assert "\nYou are {bot_name}, the chat bot of {org_name}." in text
 
 
 def test_only_super_admins_change_the_name():
