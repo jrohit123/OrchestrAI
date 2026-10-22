@@ -9,6 +9,7 @@ from app.admin_panel import (
     announcements,
     ask,
     auth_routes,
+    build,
     case_buttons,
     cases,
     database,
@@ -60,5 +61,6 @@ for _module in (
     database,
     footer_settings,
     schema,
+    build,
 ):
     router.include_router(_module.router)

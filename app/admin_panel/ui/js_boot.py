@@ -11,7 +11,7 @@ const NAV = [
   ['', ['settings']],
 ];
 const SETUP = new Set(['access', 'assistant', 'workflows', 'blocks', 'schema', 'settings']);
-const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', announcements: 'megaphone', workflows: 'flow', blocks: 'layers', schema: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
+const NAV_ICON = { overview: 'home', cases: 'cases', conversations: 'chat', people: 'users', announcements: 'megaphone', build: 'spark', workflows: 'flow', blocks: 'layers', schema: 'board', assistant: 'spark', rules: 'route', access: 'shield', settings: 'sliders' };
 // the few words a newcomer meets, said once and the same everywhere
 const GLOSSARY = [
   ['Flow', 'One thing the chat bot can do for people, like filing a complaint.'],
@@ -63,12 +63,12 @@ async function renderSection(sec, r) {
   const impl = SECTIONS[sec.key];
   const tab = sec.tabs ? (sec.tabs.find(t => t.key === r.tab) || sec.tabs[0]) : null;
   r.tab = tab ? tab.key : '';
-  const editing = sec.key === 'workflows' && !!r.q.w;
+  const editing = (sec.key === 'workflows' && !!r.q.w) || (sec.key === 'build' && !!r.q.f);
   S.editing = editing; applyRail();
   closePop(); setTopAction(null);
   S.leaveGuard = null; window.onbeforeunload = null;
   const group = SETUP.has(sec.key) ? [h('span', { class: 'muted' }, 'Set up')] : [];
-  setCrumbs(editing ? [...group, h('a', { href: href('workflows') }, 'Flows'), h('span', { id: 'crumbname' }, '…')]
+  setCrumbs(editing ? [...group, h('a', { href: href(sec.key) }, sec.key === 'build' ? 'Build with AI' : 'Flows'), h('span', { id: 'crumbname' }, '…')]
     : tab && tab !== sec.tabs[0] ? [...group, h('a', { href: href(sec.key) }, sec.label), h('span', null, tab.label)] : [...group, h('span', null, sec.label)]);
   const heading = impl.heading ? impl.heading(sec, r) : { title: sec.label, sub: impl.sub };
   const head = editing ? null : h('div', { class: 'ph' }, h('div', null, h('h1', null, heading.title), heading.sub ? h('div', { class: 'sub' }, heading.sub) : null), impl.actions ? impl.actions(r) : null);

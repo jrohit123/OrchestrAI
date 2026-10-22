@@ -779,6 +779,7 @@ _STEPWIN = r"""
 """
 
 from app.admin_panel.ui.css_announce import CSS as _ANNOUNCE
+from app.admin_panel.ui.css_build import CSS as _BUILD
 from app.admin_panel.ui.css_login import CSS as _LOGIN
 from app.admin_panel.ui.css_redesign import CSS as _REDESIGN
 
@@ -794,5 +795,6 @@ CSS = (
     + _STEPWIN
     + _REDESIGN
     + _ANNOUNCE
+    + _BUILD
     + _LOGIN
 )

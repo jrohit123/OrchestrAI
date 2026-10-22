@@ -902,7 +902,11 @@ def _rate_limit(source_key: str) -> None:
 
 def _step_types_text() -> str:
     lines = []
+    from app.services.step_catalog import BUILDER_OPS
+
     for t in STEP_TYPES:
+        if t["op"] in BUILDER_OPS:  # only "Build with AI" writes these
+            continue
         params = ", ".join(
             f"{p['key']} ({p['kind']}{', required' if p.get('required') else ''})"
             for p in t["params"]

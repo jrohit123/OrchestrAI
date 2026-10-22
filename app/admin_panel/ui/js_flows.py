@@ -175,7 +175,9 @@ function newWorkflowModal(kinds, startKind) {
   function draw() {
     m.setTitle(KIND_TITLE[kind]);
     fill(kindRow, kind === 'workflow' ? h('div', { class: 'muted' }, 'How do you want to start?') : h('div', { class: 'notice' }, icon('info'), h('div', null, h('b', null, KIND_LABEL[kind] + '. '), KIND_HELP[kind])));
-    fill(seg, start('chat', 'spark', 'Describe it', 'Say what it should do. The AI helper drafts it and you check it.', true), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
+    const build = kind === 'workflow' ? h('button', { type: 'button', class: 'nf-card', onclick: () => { m.close(); go('build', '', { f: 'new' }); } },
+      h('span', { class: 'gi' }, icon('spark')), h('b', { class: 't' }, 'Build with AI', ' ', badge('Easiest', 'brand')), h('span', { class: 's' }, 'Chat with the AI, one thing at a time. It asks you the choices, makes the lists it needs and shows the flow as a chart.')) : null;
+    fill(seg, build, start('chat', 'spark', 'Describe it', 'Say what it should do. The AI helper drafts it and you check it.', kind !== 'workflow'), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
     fill(foot, kind === 'workflow' ? (offered.length > 1 ? ['Making something else? ', offered.filter(k => k !== 'workflow').map((k, i) => [i ? ' · ' : null, h('a', { href: '#', onclick: e => { e.preventDefault(); kind = k; proposal = null; history = []; draw(); } }, 'A ' + what[k])])] : null)
       : h('a', { href: '#', onclick: e => { e.preventDefault(); kind = 'workflow'; proposal = null; history = []; draw(); } }, '← Make a flow instead'));
     const err = h('div', { class: 'small', style: { color: 'var(--bad)' } });

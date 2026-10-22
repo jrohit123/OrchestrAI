@@ -13,6 +13,13 @@ PREFIX = "/admin/{org_slug}/api/v2"
 # What an admin needs for Home, Cases and People.
 ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
     {
+        # Build with AI: admins build flows and the lists they need (adding only; see schema.schema_apply)
+        ("GET", "/build"),
+        ("GET", "/build/context"),
+        ("GET", "/build/{workflow_id}"),
+        ("POST", "/build/chat"),
+        ("POST", "/build/save"),
+        ("POST", "/schema/apply"),
         ("GET", "/bootstrap"),
         ("GET", "/nav-hints"),
         ("GET", "/lookups"),
@@ -70,7 +77,6 @@ SUPER_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/db/builder/validate"),
         ("POST", "/db/builder/apply"),
         ("POST", "/schema/plan"),
-        ("POST", "/schema/apply"),
         ("POST", "/schema/ai"),
         ("GET", "/records/{record_type}"),
         ("POST", "/usecases"),

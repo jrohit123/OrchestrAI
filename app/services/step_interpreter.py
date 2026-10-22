@@ -37,6 +37,7 @@ from app.logging_config import bind_context, get_context_logger
 from app.services.ai_step import AI_PRIMITIVES
 from app.services.announce_ops import ANNOUNCE_PRIMITIVES
 from app.services.case_ops import CASE_PRIMITIVES
+from app.services.flow_ops import FLOW_PRIMITIVES
 from app.services.json_utils import parse_jsonb as _parse_jsonb
 from app.services.otp_service import generate_and_send_otp
 from app.services.qa_verifier import VerificationError, verify_draft
@@ -265,6 +266,23 @@ async def _normalize_date_values(table: str, values: dict, source_key: str) -> N
         if not isinstance(val, str):
             continue
         col_type = types.get((table, col))
+        if col_type == "boolean":  # a yes / no column: "No", "yes", "true", "0" ...
+            word = val.strip().lower()
+            if word in ("yes", "y", "true", "1", "paid", "done"):
+                values[col] = True
+            elif word in ("no", "n", "false", "0", "unpaid", "not paid"):
+                values[col] = False
+            continue
+        if col_type == "time without time zone":
+            from app.services.flow_ops import parse_time
+
+            t = parse_time(val)
+            if t is None:
+                raise UserFacingStepError(
+                    f"'{val}' isn't a time I can understand for {col.replace('_', ' ')} — please send it like '6 pm' or '18:00'."
+                )
+            values[col] = t
+            continue
         if col_type not in (
             "date",
             "timestamp without time zone",
@@ -2172,6 +2190,7 @@ PRIMITIVES.update(
     ANNOUNCE_PRIMITIVES
 )  # find people by flat and send to a group (announce_ops.py)
 PRIMITIVES.update(AI_PRIMITIVES)  # the builder's "Ask the AI" (ai_step.py)
+PRIMITIVES.update(FLOW_PRIMITIVES)  # what "Build with AI" compiles to: decide once, say, tell, stop (flow_ops.py)
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
@@ -2335,6 +2354,10 @@ async def _execute_steps(
                     }
                 raise StepError(f"Unexpected failure in step '{op_name}': {e}")
 
+            if ctx.get("_stop"):
+                logger.info(f"Step {i + 1}/{len(steps)}: the flow stops here")
+                break
+
             if ctx.get("_halt"):
                 return {
                     "status": ctx["_halt"],
@@ -2385,7 +2408,7 @@ async def _execute_steps(
             from app.services.report_format import _when
 
             facts.append(f"Due by: {_when(due.isoformat())}")
-        return {"status": "preview", "preview": facts}
+        return {"status": "preview", "preview": facts, "said": list(ctx.get("_say", [])), "stopped": bool(ctx.get("_stop"))}
 
     # Build final success message from workflow's response_template
     template = workflow.get("response_template")
@@ -2407,6 +2430,9 @@ async def _execute_steps(
     ]  # what a step wants the person who asked to know
     if notes:
         message = message + "\n\n" + "\n".join(notes)
+    said = [t for t in ctx.get("_say", []) if t]  # flow.say: the flow wrote its own reply
+    if said:
+        message = "\n\n".join(said + notes)
     ctx["_final_message"] = message
 
     # Send WhatsApp notification if notify.whatsapp wasn't in steps

@@ -327,8 +327,11 @@ async def schema_plan(ctx: CtxDep, body: Annotated[OpsBody, Body()]):
 async def schema_apply(ctx: CtxDep, body: Annotated[OpsBody, Body()]):
     """Check, try, then apply in one transaction. The history gets a line whether or not it worked."""
     _need(ctx)
-    ctx.need_super("change the data")
     ops = _parse(body)
+    from app.admin_panel.build import add_only
+
+    if ctx.level != "super" and not add_only(ops):  # an admin may add lists, columns and statuses to their own organisation
+        ctx.need_super("change or hide what exists")
     plan, complaint = await _try(ctx, ops)
     if not plan.ok or complaint:
         raise HTTPException(

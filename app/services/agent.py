@@ -1213,6 +1213,32 @@ def _is_draft_stale(pending_action: dict | None, settings: dict | None = None) -
         return False
 
 
+async def _precheck_stops(intent_key: str, user: dict) -> str | None:
+    """What to tell the person when a flow's checks before the questions (workflows.settings.precheck, written by
+    "Build with AI") stop it, else None. They run as a preview: they only read. Any problem lets the flow go on, since
+    the same checks also start its steps."""
+    from app.services.step_interpreter import run_workflow_steps
+
+    try:
+        wf = await fetch_one(
+            "SELECT * FROM workflows WHERE intent_key = $1 AND org_id = $2 AND is_active",
+            intent_key,
+            user["org_id"],
+            source_key=user["source_key"],
+        )
+        pre = (_parse_jsonb((wf or {}).get("settings"), {}) or {}).get("precheck") if wf else None
+        if not pre:
+            return None
+        res = await run_workflow_steps(
+            {**dict(wf), "steps": pre, "gates": []}, {}, user, user.get("phone") or "", dry_run=True
+        )
+        if res.get("stopped"):
+            return "\n".join(res.get("said") or []) or "Sorry, you cannot do this right now."
+    except Exception as e:
+        logger.warning(f"precheck of {intent_key} skipped: {e!r}")
+    return None
+
+
 async def _validate_draft(
     intent_key: str, fields: dict, org_id: str, source_key: str
 ) -> dict:
@@ -1852,6 +1878,18 @@ async def _execute_tool(
                 "request. Tell the user exactly this: \"You don't have permission to "
                 'do that. Please ask a committee member or admin."'
             )
+
+        # A flow made with "Build with AI" may check something BEFORE any question (for example: a defaulter cannot
+        # book). On the first message of the flow those checks run, reading only; when they stop it, the person is
+        # told now instead of being asked questions first. The same checks also start the flow's steps.
+        if tool_input.get("intent_key") and (existing_draft is None or intent_switched):
+            stop_text = await _precheck_stops(intent_key, user)
+            if stop_text:
+                return (
+                    "STOP — do not collect any fields or start this request. Tell the user exactly this: \""
+                    + stop_text
+                    + '"'
+                )
 
         # Guard: the LLM must always pass an object. A malformed call (e.g.
         # passing an items array directly as `fields`) corrupts the stored

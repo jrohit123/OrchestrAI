@@ -50,9 +50,11 @@ def visitor(**kw) -> CreateRecordType:
 # ------------------------------------------------------------ no database needed
 
 
-def test_every_call_is_for_super_admins_only():
+def test_every_call_is_for_super_admins_only_but_an_admin_may_add_a_list():
     calls = {(m, r.path[len(access_rules.PREFIX):]) for r in schema.router.routes for m in r.methods}
-    assert calls <= access_rules.SUPER_CALLS and not (calls & access_rules.ADMIN_CALLS)
+    apply = ("POST", "/schema/apply")  # Build with AI: an admin adds lists, columns and statuses (see build.add_only)
+    assert apply in access_rules.ADMIN_CALLS
+    assert calls - {apply} <= access_rules.SUPER_CALLS and not ((calls - {apply}) & access_rules.ADMIN_CALLS)
 
 
 def test_data_and_schema_is_a_super_admin_screen_with_four_tabs():

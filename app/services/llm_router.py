@@ -109,6 +109,8 @@ PROVIDER_ORDER = _MODELS_CONFIG["provider_order"]
 OPENAI_MODELS = _MODELS_CONFIG["openai_models"]
 GEMINI_MODELS = _MODELS_CONFIG["gemini_models"]
 GROQ_MODELS = _MODELS_CONFIG["groq_models"]
+# the stronger model for jobs that write flows ("Build with AI"); everything else keeps the ladder above
+BUILDER_MODELS = _MODELS_CONFIG.get("builder_models", [])
 
 # Providers whose tool/function-calling is not dependable enough to drive
 # the agent's tool loop. They remain available for plain-text formatting.
@@ -164,7 +166,9 @@ if _openai_key:
         logger.warning(f"Failed to init OpenAI client: {e}")
 
 
-def _build_ladder(preferred_provider: str | None = None) -> list[_Attempt]:
+def _build_ladder(
+    preferred_provider: str | None = None, job: str | None = None
+) -> list[_Attempt]:
     """
     Ordered attempt list, driven entirely by PROVIDER_ORDER (from
     app/ai_models_config.json). Gemini keys are rotated so we don't always
@@ -186,6 +190,18 @@ def _build_ladder(preferred_provider: str | None = None) -> list[_Attempt]:
         ]
 
     ladder: list[_Attempt] = []
+    if job == "builder" and _openai_client:  # tried first; the usual ladder stays behind it
+        for model in BUILDER_MODELS:
+            ladder.append(
+                _Attempt(
+                    label=f"openai_{model}",
+                    client=_openai_client,
+                    model=model,
+                    provider="openai",
+                    key_group="openai",
+                    strip=("parallel_tool_calls",),
+                )
+            )
 
     for provider in order:
         if provider == "openai" and _openai_client:
@@ -242,6 +258,8 @@ async def chat_completion(
     temperature: float = 0.1,
     require_tools: bool = False,
     preferred_provider: str | None = None,
+    job: str | None = None,
+    response_format: dict | None = None,
 ) -> object:
     """
     Walk the provider ladder, skipping anything currently benched.
@@ -267,7 +285,9 @@ async def chat_completion(
         base_kwargs["tool_choice"] = tool_choice
         base_kwargs.setdefault("parallel_tool_calls", False)
 
-    ladder = _build_ladder(preferred_provider)
+    if response_format:
+        base_kwargs["response_format"] = response_format
+    ladder = _build_ladder(preferred_provider, job)
 
     # Pass 1: only providers that are not benched.
     # Pass 2: if literally everything is benched, ignore cooldowns and try

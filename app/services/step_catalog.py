@@ -631,9 +631,74 @@ STEP_TYPES: list[dict] = [
             },
         ],
     },
+    # what "Build with AI" compiles a plain flow into (flow_ops.py); written by flow_plain.py, not offered in the old editor
+    {
+        "op": "flow.decide",
+        "label": "Decide once",
+        "group": "Build with AI",
+        "help": "Checks a condition once and keeps yes or no under a name; the steps of each lane follow that answer.",
+        "params": [
+            {"key": "into", "label": "Keep the answer as", "kind": "text", "required": True},
+            {"key": "when", "label": "The check", "kind": "map_value", "keys": "free", "required": True},
+        ],
+    },
+    {
+        "op": "flow.say",
+        "label": "Reply to the person",
+        "group": "Build with AI",
+        "help": "Says something to the person who asked, in their own chat.",
+        "params": [{"key": "text", "label": "What to say", "kind": "longtext", "required": True}],
+    },
+    {
+        "op": "flow.tell",
+        "label": "Tell everyone in a role",
+        "group": "Build with AI",
+        "help": "Sends a message to everyone with a role, each in their own chat.",
+        "params": [
+            {"key": "role", "label": "Role", "kind": "text", "required": True},
+            {"key": "text", "label": "Message", "kind": "longtext", "required": True},
+        ],
+    },
+    {
+        "op": "flow.set",
+        "label": "Set a value",
+        "group": "Build with AI",
+        "help": "Keeps a value made from a text, for example Wing {$fields.wing}.",
+        "params": [
+            {"key": "field", "label": "Name of the value", "kind": "text", "required": True},
+            {"key": "value", "label": "The value", "kind": "text", "required": True},
+        ],
+    },
+    {
+        "op": "flow.lookup",
+        "label": "Look in a list",
+        "group": "Build with AI",
+        "help": "Looks for a row matching some values and keeps whether one was found (yes or no).",
+        "params": [
+            {"key": "table", "label": "Which list", "kind": "table", "required": True},
+            {"key": "match", "label": "Rows where", "kind": "map_value", "keys": "column", "table_key": "table", "required": True},
+            {"key": "into", "label": "Call it", "kind": "text", "required": True},
+        ],
+    },
+    {
+        "op": "flow.my_flat",
+        "label": "Find their flat",
+        "group": "Build with AI",
+        "help": "Finds the flat of the person who asked.",
+        "params": [],
+    },
+    {
+        "op": "flow.stop",
+        "label": "Stop here",
+        "group": "Build with AI",
+        "help": "Ends the flow; what was said so far is the reply.",
+        "params": [],
+    },
 ]
 
 STEP_BY_OP = {t["op"]: t for t in STEP_TYPES}
+# steps only "Build with AI" writes: valid everywhere, but not offered when adding a step in the old editor
+BUILDER_OPS = {t["op"] for t in STEP_TYPES if t["group"] == "Build with AI"}
 # steps that keep a record under a name, besides "Find a record":
 # {op: (setting that holds the name, default name, fields the step also fills in)}
 ALIAS_MAKERS = {
@@ -1034,6 +1099,14 @@ def validate_steps(
                 ctx["fields"].add(alias)
         elif op == "derive_field" and params.get("field"):
             ctx["fields"].add(params["field"])
+        elif op in ("flow.decide", "flow.set"):
+            ctx["fields"].add(params.get("into") or params.get("field") or "")
+        elif op == "flow.lookup" and params.get("into"):
+            ctx["aliases"][params["into"]] = params.get("table")
+            ctx["alias_when"][params["into"]] = _atoms(step.get("when"))
+            ctx["fields"].add(params["into"] + "_found")
+        elif op == "flow.my_flat":
+            ctx["fields"].add("_flat")
         elif op in ALIAS_MAKERS:
             key, default, extra = ALIAS_MAKERS[op]
             ctx["aliases"][params.get(key) or default] = None
