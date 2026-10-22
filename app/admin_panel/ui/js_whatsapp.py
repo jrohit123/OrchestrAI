@@ -1,5 +1,5 @@
 JS = r"""
-// ───────────────────────── WhatsApp Flows ─────────────────────────
+// ───────────────────────── WhatsApp Forms (Meta calls them Flows) ─────────────────────────
 // A list of the Flows in Meta; open one to edit its JSON, see it as a phone (drawn from the JSON itself, nothing fixed), save the
 // draft, send a test to a phone, and publish. A published Flow cannot be changed: make a copy to change it.
 
@@ -75,7 +75,7 @@ async function renderWhatsappFlows(root) {
   const box = h('div', { class: 'stack s16' });
   root.append(box);
   const show = async () => {
-    fill(box, h('div', { class: 'muted' }, 'Asking Meta for your Flows…'));
+    fill(box, h('div', { class: 'muted' }, 'Asking Meta for your Forms…'));
     let d;
     try { d = await api.get('/whatsapp-flows'); } catch (e) { fill(box, errorBox(e, show)); return; }
     const open = id => wfEditor(box, id, show);
@@ -89,37 +89,37 @@ async function renderWhatsappFlows(root) {
         h('div', { class: 'row' }, inp, h('button', { class: 'btn', type: 'button', onclick: async () => { try { await api.put('/whatsapp-flows/account', { account_id: inp.value }); toast('Saved', 'ok'); show(); } catch (e) { toast(e.message, 'bad'); } } }, 'Save number'))));
     }
     const create = () => {
-      const name = h('input', { type: 'text', placeholder: 'For example complaint_form_v2', 'aria-label': 'Flow name' });
-      const start = h('select', { 'aria-label': 'Start from' }, h('option', { value: 'sample' }, 'A sample test Flow (2 screens, ready to send)'), h('option', { value: 'blank' }, 'A blank screen'));
-      modal({ title: 'Create a Flow', body: h('div', { class: 'stack' }, h('div', null, h('div', { class: 'muted small' }, 'Name'), name), h('div', null, h('div', { class: 'muted small' }, 'Start from'), start)),
+      const name = h('input', { type: 'text', placeholder: 'For example complaint_form_v2', 'aria-label': 'Form name' });
+      const start = h('select', { 'aria-label': 'Start from' }, h('option', { value: 'sample' }, 'A sample test Form (2 screens, ready to send)'), h('option', { value: 'blank' }, 'A blank screen'));
+      modal({ title: 'Create a Form', body: h('div', { class: 'stack' }, h('div', null, h('div', { class: 'muted small' }, 'Name'), name), h('div', null, h('div', { class: 'muted small' }, 'Start from'), start)),
         actions: [{ label: 'Cancel' }, { label: 'Create', primary: true, run: async () => {
           const r = await api.post('/whatsapp-flows', { name: name.value, start: start.value });
           toast('Created as a draft', 'ok'); open(r.id); } }] });
     };
     fill(box, accountBox,
-      h('div', { class: 'row between' }, h('span', { class: 'muted small' }, 'These are the Flows in your WhatsApp business account.'), h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: show }, 'Refresh'), h('button', { class: 'btn primary', type: 'button', onclick: create, disabled: !d.account_known }, 'Create Flow'))),
+      h('div', { class: 'row between' }, h('span', { class: 'muted small' }, 'These are the Forms in your WhatsApp business account.'), h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: show }, 'Refresh'), h('button', { class: 'btn primary', type: 'button', onclick: create, disabled: !d.account_known }, 'Create Form'))),
       h('div', { class: 'card' }, d.flows.length ? table([
-        { label: 'Flow name', render: f => h('b', null, f.name) },
-        { label: 'Flow ID', render: f => h('span', { class: 'muted' }, f.id) },
+        { label: 'Form name', render: f => h('b', null, f.name) },
+        { label: 'Form ID', render: f => h('span', { class: 'muted' }, f.id) },
         { label: 'Status', render: f => badgeOf(f.status) },
         { label: 'Used by', render: f => h('span', { class: 'row' }, usedBy(f.id)) },
         { label: '', render: f => h('span', { class: 'row' }, h('button', { class: 'btn sm', type: 'button', onclick: () => open(f.id) }, 'Edit'),
           h('button', { class: 'btn sm danger', type: 'button', onclick: async () => {
-            if (!await confirmBox(f.status === 'PUBLISHED' ? 'Retire “' + f.name + '”? Meta cannot delete a published Flow, so it is switched off for good. Messages already sent with it stop working.' : 'Delete the draft “' + f.name + '”?', { ok: f.status === 'PUBLISHED' ? 'Retire' : 'Delete', danger: true })) return;
+            if (!await confirmBox(f.status === 'PUBLISHED' ? 'Retire “' + f.name + '”? Meta cannot delete a published Form, so it is switched off for good. Messages already sent with it stop working.' : 'Delete the draft “' + f.name + '”?', { ok: f.status === 'PUBLISHED' ? 'Retire' : 'Delete', danger: true })) return;
             try { await api.del('/whatsapp-flows/' + f.id); toast('Done', 'ok'); show(); } catch (e) { toast(e.message, 'bad'); } } }, f.status === 'PUBLISHED' ? 'Retire' : 'Delete')) },
-      ], d.flows) : h('div', { class: 'card-b' }, empty('No Flows yet', 'Press Create Flow to start from the sample.'))));
+      ], d.flows) : h('div', { class: 'card-b' }, empty('No Forms yet', 'Press Create Form to start from the sample.'))));
   };
   show();
 }
 
 // ---- one Flow ----
 async function wfEditor(box, id, back) {
-  fill(box, h('div', { class: 'muted' }, 'Opening the Flow…'));
+  fill(box, h('div', { class: 'muted' }, 'Opening the Form…'));
   let d;
   try { d = await api.get('/whatsapp-flows/' + id); } catch (e) { fill(box, errorBox(e, () => wfEditor(box, id, back))); return; }
   const live = d.status === 'PUBLISHED';
   let savedText = d.json_text, errors = d.errors || [], screenId = null, flow = null, parseError = '', last = null;
-  const area = h('textarea', { class: 'wf-code', spellcheck: 'false', 'aria-label': 'Flow JSON' });
+  const area = h('textarea', { class: 'wf-code', spellcheck: 'false', 'aria-label': 'Form JSON' });
   area.value = d.json_text;
   const gutter = h('pre', { class: 'wf-gut', 'aria-hidden': 'true' });
   const phone = h('div', { class: 'wf-phone' });
@@ -156,7 +156,7 @@ async function wfEditor(box, id, back) {
   };
   const drawErrors = () => {
     const mine = parseError ? [{ message: parseError }] : errors;
-    fill(errBox, h('div', { class: 'wf-eh' }, 'Flow JSON errors ', badge(String(mine.length), mine.length ? 'bad' : 'ok')),
+    fill(errBox, h('div', { class: 'wf-eh' }, 'Form JSON errors ', badge(String(mine.length), mine.length ? 'bad' : 'ok')),
       mine.length ? mine.map(e => h('div', { class: 'wf-e' }, (e.line ? 'Line ' + e.line + (e.column ? ':' + e.column : '') + '  ' : '') + e.message)) : h('div', { class: 'muted small' }, 'Nothing wrong found. Save to let Meta check it.'));
   };
   const drawStat = () => {
@@ -196,14 +196,14 @@ async function wfEditor(box, id, back) {
     if (!await save(true)) return;
     parse(); if (parseError || !flow || !flow.screens) { toast('Fix the JSON first.', 'bad'); return; }
     const phoneIn = h('input', { type: 'tel', inputmode: 'numeric', placeholder: '919876543210', 'aria-label': 'Phone number with country code' });
-    const msg = h('input', { type: 'text', value: 'Testing a WhatsApp Flow', maxlength: 1000 });
+    const msg = h('input', { type: 'text', value: 'Testing a WhatsApp Form', maxlength: 1000 });
     const btn = h('input', { type: 'text', value: 'Open', maxlength: 20 });
     const scr = h('select', null, flow.screens.map(s => h('option', { value: s.id }, s.id)));
     const dataBox = h('textarea', { class: 'wf-code small', spellcheck: 'false', rows: 5 });
     const example = () => { const s = flow.screens.find(x => x.id === scr.value) || {}; const o = {}; Object.entries(s.data || {}).forEach(([k, v]) => { if (v && v.__example__ !== undefined) o[k] = v.__example__; }); dataBox.value = JSON.stringify(o, null, 2); };
     scr.addEventListener('change', example); example();
     modal({ wide: true, title: 'Send a test to a phone', body: h('div', { class: 'stack' },
-      notice(live ? 'This Flow is published.' : 'This Flow is a draft: it is sent in test mode, only for testing.', null),
+      notice(live ? 'This Form is published.' : 'This Form is a draft: it is sent in test mode, only for testing.', null),
       h('div', null, h('div', { class: 'muted small' }, 'Phone number, with country code'), phoneIn),
       h('div', { class: 'wf-grid' }, h('div', null, h('div', { class: 'muted small' }, 'Message'), msg), h('div', null, h('div', { class: 'muted small' }, 'Button words'), btn)),
       h('div', null, h('div', { class: 'muted small' }, 'First screen'), scr),
@@ -216,22 +216,22 @@ async function wfEditor(box, id, back) {
   };
   const publish = async () => {
     if (!await save(true)) return;
-    if (errors.length) { toast('Fix the errors first. Meta will not publish a Flow with problems.', 'bad'); return; }
-    if (!await confirmBox('Publish this Flow? After this it cannot be changed (you can make a copy and change that).', { ok: 'Publish' })) return;
+    if (errors.length) { toast('Fix the errors first. Meta will not publish a Form with problems.', 'bad'); return; }
+    if (!await confirmBox('Publish this Form? After this it cannot be changed (you can make a copy and change that).', { ok: 'Publish' })) return;
     try { await api.post('/whatsapp-flows/' + id + '/publish'); toast('Published', 'ok'); wfEditor(box, id, back); } catch (e) { toast(e.message, 'bad'); }
   };
   const use = (kind, word) => async () => {
-    if (!await confirmBox('Make the chat bot use this Flow for its ' + word + '? People get it from the next message on.', { ok: 'Use it' })) return;
+    if (!await confirmBox('Make the chat bot use this Form for its ' + word + '? People get it from the next message on.', { ok: 'Use it' })) return;
     try { await api.put('/whatsapp-flows/use', { kind, flow_id: id }); toast('Done', 'ok'); wfEditor(box, id, back); } catch (e) { toast(e.message, 'bad'); }
   };
   const remove = async () => {
-    if (!await confirmBox(live ? 'Retire this published Flow? Messages already sent with it stop working.' : 'Delete this draft?', { ok: live ? 'Retire' : 'Delete', danger: true })) return;
+    if (!await confirmBox(live ? 'Retire this published Form? Messages already sent with it stop working.' : 'Delete this draft?', { ok: live ? 'Retire' : 'Delete', danger: true })) return;
     try { await api.del('/whatsapp-flows/' + id); toast('Done', 'ok'); back(); } catch (e) { toast(e.message, 'bad'); }
   };
   const format = () => { try { area.value = JSON.stringify(JSON.parse(area.value), null, 2); area.dispatchEvent(new Event('input')); } catch (e) { toast('Not valid JSON yet.', 'bad'); } };
 
   const top = h('div', { class: 'row between' },
-    h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: back }, '← Flows'), h('b', null, d.name), h('span', { class: 'muted small' }, id), stat),
+    h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: back }, '← Forms'), h('b', null, d.name), h('span', { class: 'muted small' }, id), stat),
     h('span', { class: 'row' },
       h('button', { class: 'btn', type: 'button', onclick: () => save(false) }, live ? 'Save as new draft' : 'Save'),
       h('button', { class: 'btn', type: 'button', onclick: sendTest }, 'Send test'),
@@ -247,7 +247,7 @@ async function wfEditor(box, id, back) {
       } }, '⋯'),
       h('button', { class: 'btn danger', type: 'button', onclick: remove }, live ? 'Retire' : 'Delete')));
   fill(box, top,
-    live ? notice('This Flow is published. Meta never changes a published Flow, so your edits are saved as a new draft (press Save as new draft). Publish that draft, then use it as the chat bot’s menu or form from the ⋯ menu.', null) : null,
+    live ? notice('This Form is published. Meta never changes a published Form, so your edits are saved as a new draft (press Save as new draft). Publish that draft, then use it as the chat bot’s menu or form from the ⋯ menu.', null) : null,
     h('div', { class: 'wf-edit' },
       h('div', { class: 'card' }, h('div', { class: 'card-h row between' }, h('span', null, 'Editor'), modeBar), builderBox, codeWrap, errBox),
       h('div', { class: 'wf-side' }, h('div', { class: 'row between', style: { marginBottom: '8px' } }, h('b', null, 'Preview'), screenSel), phone, result)));

@@ -36,7 +36,7 @@ class JsonBody(BaseModel):
 class SendTest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     phone: str
-    message: str = "Testing a WhatsApp Flow"
+    message: str = "Testing a WhatsApp Form"
     button: str = "Open"
     screen: str
     data: dict | None = None
@@ -55,7 +55,7 @@ class AccountBody(BaseModel):
 
 def _id(value: str) -> str:
     if not re.fullmatch(r"\d{5,25}", value or ""):
-        raise HTTPException(400, "That is not a Flow number.")
+        raise HTTPException(400, "That is not a Form number.")
     return value
 
 
@@ -88,7 +88,7 @@ async def _need_account(ctx) -> str:
     if not account:
         raise HTTPException(
             400,
-            "Meta needs the number of your WhatsApp business account. Paste it in the box on the Flows list once.",
+            "Meta needs the number of your WhatsApp business account. Paste it in the box on the Forms list once.",
         )
     return account
 
@@ -161,7 +161,7 @@ async def use_flow(ctx: CtxDep, body: UseBody):
     found = await _run(flow_admin.details(flow_id))
     if found["status"] != "PUBLISHED":
         raise HTTPException(
-            400, "Only a published Flow can be used by the chat bot. Publish it first."
+            400, "Only a published Form can be used by the chat bot. Publish it first."
         )
 
     def change(wf: dict):
@@ -172,7 +172,7 @@ async def use_flow(ctx: CtxDep, body: UseBody):
         wf[body.kind] = mine
 
     await _write(
-        ctx, change, f"The chat bot now uses Flow {flow_id} for its {body.kind}"
+        ctx, change, f"The chat bot now uses Form {flow_id} for its {body.kind}"
     )
     return {"ok": True}
 
@@ -181,7 +181,7 @@ async def use_flow(ctx: CtxDep, body: UseBody):
 async def new_flow(ctx: CtxDep, body: NewFlow):
     name = re.sub(r"[^A-Za-z0-9_ -]", "", body.name).strip().replace(" ", "_")
     if not name:
-        raise HTTPException(400, "Give the Flow a name (letters, digits and _).")
+        raise HTTPException(400, "Give the Form a name (letters, digits and _).")
     account = await _need_account(ctx)
     layout = flow_admin.SAMPLE if body.start == "sample" else flow_admin.BLANK
     flow_id, errors = await _run(flow_admin.create(account, name, layout))
@@ -221,7 +221,7 @@ async def save_json(ctx: CtxDep, flow_id: str, body: JsonBody):
         ctx,
         "settings",
         "whatsapp_flows",
-        f"Saved the draft of WhatsApp Flow {flow_id}",
+        f"Saved the draft of WhatsApp Form {flow_id}",
         target_type="orgs",
         target_id=ctx.org_id,
     )
@@ -230,7 +230,7 @@ async def save_json(ctx: CtxDep, flow_id: str, body: JsonBody):
 
 @router.post("/whatsapp-flows/{flow_id}/send-test")
 async def send_test(ctx: CtxDep, flow_id: str, body: SendTest):
-    """Send the Flow to one phone, as a draft when it is not published yet, the way Meta's own "Send" does. The phone must
+    """Send the Form to one phone, as a draft when it is not published yet, the way Meta's own "Send" does. The phone must
     have written to the number in the last 24 hours (WhatsApp's rule for anything that is not an approved template)."""
     flow_id = _id(flow_id)
     phone = re.sub(r"\D", "", body.phone)
@@ -243,7 +243,7 @@ async def send_test(ctx: CtxDep, flow_id: str, body: SendTest):
     try:
         await whatsapp.send_flow(
             phone,
-            body=body.message[:1024] or "Testing a WhatsApp Flow",
+            body=body.message[:1024] or "Testing a WhatsApp Form",
             flow_id=flow_id,
             cta=(body.button or "Open")[:20],
             screen=body.screen,
@@ -275,7 +275,7 @@ async def publish(ctx: CtxDep, flow_id: str):
         ctx,
         "settings",
         "whatsapp_flows",
-        f"Published WhatsApp Flow {flow_id}",
+        f"Published WhatsApp Form {flow_id}",
         target_type="orgs",
         target_id=ctx.org_id,
     )
@@ -309,7 +309,7 @@ async def delete_flow(ctx: CtxDep, flow_id: str):
     settings = await _settings(ctx)
     if any(str(_cfg(settings, k).get("flow_id") or "") == flow_id for k in KINDS):
         raise HTTPException(
-            400, "The chat bot uses this Flow. Point it at another one first."
+            400, "The chat bot uses this Form. Point it at another one first."
         )
     found = await _run(flow_admin.details(flow_id))
     if found["status"] == "PUBLISHED":
@@ -320,7 +320,7 @@ async def delete_flow(ctx: CtxDep, flow_id: str):
         ctx,
         "settings",
         "whatsapp_flows",
-        f"Removed WhatsApp Flow {flow_id}",
+        f"Removed WhatsApp Form {flow_id}",
         target_type="orgs",
         target_id=ctx.org_id,
     )

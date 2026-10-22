@@ -59,7 +59,7 @@ async def _need_account(ctx) -> str:
     if not account:
         raise HTTPException(
             400,
-            "Meta needs the number of your WhatsApp business account. Paste it once on the WhatsApp Flows tab.",
+            "Meta needs the number of your WhatsApp business account. Paste it once on the WhatsApp Forms tab.",
         )
     return account
 

@@ -58,7 +58,7 @@ async function renderWhatsappTemplates(root) {
     fill(box, h('div', { class: 'muted' }, 'Asking Meta for your templates…'));
     let d;
     try { d = await api.get('/whatsapp-templates'); } catch (e) { fill(box, errorBox(e, show)); return; }
-    if (!d.account_known) { fill(box, notice('Meta’s number for your WhatsApp business account is needed first. Open the WhatsApp Flows tab and paste it once; it is used here too.', 'warn')); return; }
+    if (!d.account_known) { fill(box, notice('Meta’s number for your WhatsApp business account is needed first. Open the WhatsApp Forms tab and paste it once; it is used here too.', 'warn')); return; }
     const reasonOf = t => t.reason ? (TPL_WHY[t.reason] || pretty(String(t.reason).toLowerCase())) : '';
     const act = async (fn, ok) => { try { await fn(); if (ok) toast(ok, 'ok'); show(); } catch (e) { toast(e.message, 'bad'); } };
     const remove = async t => {
