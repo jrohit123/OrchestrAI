@@ -64,3 +64,24 @@ def test_the_ai_may_not_change_a_step_kept_from_the_flows_editor():
     changed = {"steps": [{**kept, "step": {"op": "run_workflow", "params": {"workflow": "something_else"}}}]}
     assert build._engine_changed(moved, current) == [] and build._engine_changed({"steps": []}, current) == []
     assert build._engine_changed(changed, current)
+
+
+def test_a_report_keeps_what_it_looks_up_whatever_the_ai_sends():
+    current = {"start": {"type": "chat", "words": "all"}, "asks": [], "steps": [], "report": {"words": "Lists cases", "format": "list"}}
+    out = build._clean({"start": {"type": "chat", "words": "all"}, "asks": [], "steps": [{"a": "say", "text": "x"}]}, current)
+    assert out["report"] == current["report"] and out["steps"] == []
+
+
+def test_only_a_super_admin_opens_a_building_block():
+    import pytest
+    from fastapi import HTTPException
+
+    class C:
+        level = "admin"
+
+        def need_super(self, what):
+            raise HTTPException(403, what)
+
+    with pytest.raises(HTTPException):
+        build._need_block_rights(C(), {"kind": "block"})
+    build._need_block_rights(C(), {"kind": "workflow"})

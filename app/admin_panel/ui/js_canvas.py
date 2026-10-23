@@ -177,7 +177,7 @@ function cvStepCard(s, i, k) {
     s.note ? h('div', { class: 'nd-note' }, icon('file', 'sm'), s.note) : null,
     flow ? h('div', { class: 'nd-foot' },
       n ? h('button', { class: 'nd-exp', type: 'button', onclick: e => { e.stopPropagation(); cvToggle(flow); } }, icon(open ? 'chevd' : 'chevr', 'xs'), 'Inside · ' + plural(n, 'step')) : h('span', null, 'No steps yet'),
-      h('span', null, '·'), h('a', { href: '#/workflows?w=' + flow.id, onclick: e => e.stopPropagation(), 'data-tip': 'Open the building block to change it' }, 'Open this block')) : null,
+      h('span', null, '·'), h('a', { href: '#/workflows?f=' + flow.id, onclick: e => e.stopPropagation(), 'data-tip': 'Open the building block to change it' }, 'Open this block')) : null,
     open ? h('div', { class: 'nd-inside' }, CV.peek[flow.id]
       ? CV.peek[flow.id].map(x => h('div', { class: 'nd-irow k-' + cvKey(x) }, h('i'), h('span', null, describeStep(x)), cvStopText(x) ? h('em', null, 'can stop') : null, x.when ? h('em', { class: 'when' }, 'only if') : null))
       : h('div', { class: 'muted small' }, 'Loading…')) : null,

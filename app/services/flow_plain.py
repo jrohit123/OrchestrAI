@@ -376,15 +376,20 @@ def from_workflow(row: dict, names: dict, schedule: dict | None = None) -> tuple
     def jb(v, d):
         if v is None:
             return d
-        return json.loads(v) if isinstance(v, str) else v
+        try:
+            return json.loads(v) if isinstance(v, str) else v
+        except ValueError:
+            return None
 
-    if row.get("workflow_type") == "read":
-        return None, "It answers with a saved report, so it has no steps to show."
-    if (row.get("kind") or "workflow") != "workflow":
-        return None, "It is a building block or a button on a case; only flows people start open here."
-    steps = normalize_steps(jb(row.get("steps"), []))
-    if not isinstance(steps, list) or not steps:
-        return None, "It has no steps yet."
+    kind = row.get("kind") or "workflow"
+    report = row.get("workflow_type") == "read"
+    raw = row.get("steps")
+    steps = [] if report else normalize_steps(jb(raw, []))
+    unreadable = not isinstance(steps, list) or any(not isinstance(x, dict) for x in steps)
+    if not report and not steps and raw not in (None, "", "[]", []):
+        unreadable = True  # there is something there, but not steps: never shown (or saved) as an empty flow
+    if unreadable:
+        return None, "Its steps could not be read, so it stays in the Advanced editor."
     schema = jb(row.get("entity_schema"), {}) or {}
     asks, labels, used = [], {}, set()
     for key, spec in schema.items():
@@ -394,30 +399,40 @@ def from_workflow(row: dict, names: dict, schedule: dict | None = None) -> tuple
             label = f"{label} ({key})"[:40]
         used.add(label)
         labels[key] = label
-        typ, kind = str(spec.get("type") or "string"), "text"
+        typ, akind = str(spec.get("type") or "string"), "text"
         if spec.get("enum"):
-            kind = "choice"
+            akind = "choice"
         elif typ == "date" or spec.get("format") == "date":
-            kind = "date"
+            akind = "date"
         elif typ == "boolean":
-            kind = "yesno"
+            akind = "yesno"
         elif typ in ("integer", "float", "number"):
-            kind = "number"
-        a = {"label": label, "q": str(spec.get("question") or spec.get("description") or label), "kind": kind, "key": key, "spec": spec}
-        if kind == "choice":
+            akind = "number"
+        a = {"label": label, "q": str(spec.get("question") or spec.get("description") or label), "kind": akind, "key": key, "spec": spec}
+        if akind == "choice":
             a["options"] = [str(o) for o in spec["enum"]]
         if spec.get("required") is False:
             a["optional"] = True
         a["seen"] = _seen(a)
         asks.append(a)
     phrases = [str(p) for p in jb(row.get("training_phrases"), []) or []]
-    start = {"type": "time", **schedule} if schedule else {"type": "chat", "words": ", ".join(phrases), "phrases": phrases}
+    if schedule:
+        start = {"type": "time", **schedule}
+    elif kind == "block":  # runs inside other flows
+        start = {"type": "block", "phrases": phrases}
+    elif kind == "case_action":  # a button on a ticket
+        start = {"type": "button", "phrases": phrases}
+    else:
+        start = {"type": "chat", "words": ", ".join(phrases), "phrases": phrases}
     plain = {
         "start": start,
         "before": [],
         "asks": asks,
         "steps": [{"a": "engine", "step": st, "words": engine_words(st, names, labels)[0], "when_words": guard_words(st.get("when"), labels)} for st in steps],
     }
+    if report:  # a saved report: no steps, one saved question answered and written up
+        plain["report"] = {"words": str(row.get("description") or row.get("name") or "the saved question"),
+                           "format": "list" if row.get("response_format") == "list" else "ai"}  # fmt: skip
     out = compile_flow(plain, {})
     same = (
         json.dumps(out["steps"], sort_keys=True, default=str) == json.dumps(steps, sort_keys=True, default=str)

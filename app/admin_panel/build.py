@@ -107,23 +107,31 @@ async def build_list(ctx: CtxDep):
     for f in flows:
         st = jb(f.get("settings"), {}) or {}
         if st.get("plain"):
-            rows.append({"id": str(f["id"]), "name": f["name"], "is_active": f["is_active"], "version": f["version"], "start": st["plain"].get("start") or {}})
-        elif (f.get("kind") or "workflow") == "workflow" and f.get("workflow_type") != "read":
+            if (f.get("kind") or "workflow") != "block" or ctx.level == "super":
+                rows.append({"id": str(f["id"]), "name": f["name"], "is_active": f["is_active"], "version": f["version"], "start": st["plain"].get("start") or {}})
+        elif (f.get("kind") or "workflow") != "block" or ctx.level == "super":
             plain, why = flow_plain.from_workflow(f, names)
             others.append({"id": str(f["id"]), "name": f["name"], "is_active": f["is_active"], "ok": plain is not None, "why": why})
     return {"rows": rows, "others": others}
 
 
+def _need_block_rights(ctx, row) -> None:
+    """A building block is used by many flows: only a super admin opens or changes one."""
+    if (row.get("kind") or "workflow") == "block":
+        ctx.need_super("change a building block")
+
+
 @router.get("/build/{workflow_id}")
 async def build_get(workflow_id: UUID, ctx: CtxDep):
     row = await fetch_one(
-        "SELECT id, name, version, is_active, settings FROM workflows WHERE id = $1 AND org_id = $2",
+        "SELECT id, name, version, is_active, settings, to_jsonb(w)->>'kind' AS kind, workflow_type FROM workflows w WHERE id = $1 AND org_id = $2",
         workflow_id,
         ctx.org_id,
         source_key=ctx.source_key,
     )
     if not row:
         raise HTTPException(404, "Flow not found")
+    _need_block_rights(ctx, dict(row))
     st = jb(row["settings"], {}) or {}
     if not st.get("plain"):
         raise HTTPException(409, "This flow was not made with “Build with AI”. Open it in the editor.")
@@ -143,6 +151,7 @@ async def build_convert(workflow_id: UUID, ctx: CtxDep):
     row = next((f for f in flows if f["id"] == workflow_id), None)
     if not row:
         raise HTTPException(404, "Flow not found")
+    _need_block_rights(ctx, row)
     st = jb(row.get("settings"), {}) or {}
     if st.get("plain"):
         return {"ok": True, "already": True}
@@ -302,11 +311,15 @@ def _clean(flow: dict | None, current: dict | None) -> dict | None:
     if not isinstance(flow, dict):
         return None
     out = {
-        "start": flow.get("start") if isinstance(flow.get("start"), dict) else (current or {}).get("start") or {"type": "chat", "words": ""},
+        "start": (current or {}).get("start") if ((current or {}).get("start") or {}).get("type") in ("block", "button")
+        else flow.get("start") if isinstance(flow.get("start"), dict) else (current or {}).get("start") or {"type": "chat", "words": ""},
         "asks": [a for a in flow.get("asks") or [] if isinstance(a, dict) and a.get("label")],
         "steps": _known_steps(flow.get("steps")),
         "before": _known_steps(flow.get("before")),
     }  # fmt: skip
+    report = flow.get("report") or (current or {}).get("report")
+    if isinstance(report, dict):
+        out["report"], out["steps"], out["before"] = report, [], []
     for a in out["asks"]:
         a["label"] = str(a["label"])[:40]
         if a.get("kind") not in flow_plain.KINDS:
@@ -342,6 +355,11 @@ async def build_chat(body: ChatBody, ctx: CtxDep):
         .replace("{today}", time.strftime("%Y-%m-%d"))
     )
     current = body.flow or {"start": {"type": "chat", "words": ""}, "asks": [], "steps": []}
+    if current.get("report"):  # a report answers one saved question: the AI does not rewrite that question
+        return {"info": {}, "flow": None, "new_lists": [], "problems": [], "changes": [], "questions": [],
+                "reply": "This is a report: it looks up one saved question and replies with what it finds. Here you can change its "
+                         "name, the words that start it and its questions (in the Card); what it looks up is changed in the "
+                         "Advanced editor."}  # fmt: skip
     talk = [
         {"role": h["role"], "content": str(h.get("content") or "")[:1500]}
         for h in body.history[-12:]
@@ -440,6 +458,7 @@ class TryBody(BaseModel):
     as_user: UUID
     fields: dict = Field(default_factory=dict)
     part: str = "all"  # "before": only the checks before the questions
+    workflow_id: UUID | None = None  # a report: its saved question is read from the flow
 
 
 @router.post("/build/try")
@@ -457,6 +476,8 @@ async def build_try(body: TryBody, ctx: CtxDep):
     user = await chat_user(ctx, user_id=body.as_user)
     if not user:
         raise HTTPException(404, "That person was not found, or has no role.")
+    if plain.get("report"):
+        return await _try_report(ctx, body, plain, user)
     out = flow_plain.compile_flow(plain, c["lists"])
     steps = out["precheck"] if body.part == "before" else out["steps"]
     keys = {a["label"]: flow_plain.ask_key(a) for a in plain.get("asks") or []}
@@ -497,9 +518,10 @@ async def build_save(body: SaveBody, ctx: CtxDep):
         base = row["version"]
     else:
         wid = body.workflow_id
-        row = await fetch_one("SELECT version, settings FROM workflows WHERE id = $1 AND org_id = $2", wid, ctx.org_id, source_key=ctx.source_key)
+        row = await fetch_one("SELECT version, settings, to_jsonb(w)->>'kind' AS kind FROM workflows w WHERE id = $1 AND org_id = $2", wid, ctx.org_id, source_key=ctx.source_key)
         if not row:
             raise HTTPException(404, "Flow not found")
+        _need_block_rights(ctx, dict(row))
         base = body.base_version if body.base_version is not None else row["version"]
     old = jb(row["settings"], {}) or {}
     note = body.note or ("First version" if body.workflow_id is None else "Changes")
@@ -508,7 +530,9 @@ async def build_save(body: SaveBody, ctx: CtxDep):
     settings.pop("plain_draft", None)
     changes = {"name": body.name, "settings": settings}
     if body.workflow_id is not None:
-        changes.update(steps=out["steps"], entity_schema=out["entity_schema"], training_phrases=out["training_phrases"])
+        changes.update(entity_schema=out["entity_schema"], training_phrases=out["training_phrases"])
+        if not plain.get("report"):  # a report keeps its saved question and has no steps
+            changes["steps"] = out["steps"]
     saved = await _save(ctx, wid, base, changes, "build")
     start = plain.get("start") or {}
     if start.get("type") == "time" and ctx.caps.get("flow_triggers"):
@@ -521,6 +545,36 @@ async def build_save(body: SaveBody, ctx: CtxDep):
             detail = getattr(e, "detail", None) or str(e)
             raise HTTPException(422, {"error": "Saved, but the time it runs could not be set:", "problems": detail.get("problems", [str(detail)]) if isinstance(detail, dict) else [str(detail)]}) from e
     return {"id": str(wid), "version": saved.get("version"), "warnings": saved.get("warnings", [])}
+
+
+async def _try_report(ctx, body: "TryBody", plain: dict, user: dict) -> dict:
+    """A report's answer, as this person would get it now (a report only reads)."""
+    from app.services import agent
+
+    if not body.workflow_id:
+        return {"status": "error", "message": "Make it live once, then try it."}
+    wf = await fetch_one("SELECT * FROM workflows WHERE id = $1 AND org_id = $2", body.workflow_id, ctx.org_id, source_key=ctx.source_key)
+    if not wf or not wf["sql_template"]:
+        return {"status": "error", "message": "This report has no saved question."}
+    keys = {a["label"]: flow_plain.ask_key(a) for a in plain.get("asks") or []}
+    fields = {keys.get(k) or flow_plain._key(k): v for k, v in body.fields.items() if v not in (None, "")}
+    from app.services.query_engine import execute_query
+
+    wf = dict(wf)
+    try:  # the same as the chat bot's report (agent._run_report_by_code), without touching the person's chat draft
+        raw = await execute_query(
+            sql=wf["sql_template"],
+            params=agent._resolve_sql_params(jb(wf.get("sql_params_order"), []) or [], user, fields),
+            user=user,
+            response_format="generic",
+            business_glossary=jb(wf.get("business_glossary"), {}) or {},
+            trusted=await agent._report_runs_with_its_own_data(user, wf["intent_key"]),
+        )
+        text = agent.format_list(wf["name"], raw) if (wf.get("response_format") or "") == "list" else await agent._llm_format_report(wf, raw, user["source_key"])
+    except Exception as e:
+        logger.warning(f"build try report failed: {e!r}")
+        return {"status": "error", "message": "It could not be tried: " + str(e)[:300]}
+    return {"status": "preview", "facts": ["🔎 Looked up: " + plain["report"].get("words", ""), "Reply: " + str(text)], "said": [str(text)], "stopped": False}
 
 
 def add_only(ops: list) -> bool:

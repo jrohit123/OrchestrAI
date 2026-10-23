@@ -116,12 +116,12 @@ const bdIsDraft = () => !BD.id || JSON.stringify(BD.plain) !== JSON.stringify(BD
 function bdTop(box) {
   const name = h('input', { type: 'text', class: 'bd-name', value: BD.name, placeholder: 'Name of the flow', 'aria-label': 'Name of the flow',
     onchange: e => { BD.name = e.target.value; bdKeep(); BD.paintSide(); } });
-  const st = BD.plain.start || {}, nSteps = bdCount(BD.plain.steps) + bdCount(BD.plain.before), tried = BD.tried === JSON.stringify(BD.plain);
+  const st = BD.plain.start || {}, nSteps = BD.plain.report ? 1 : bdCount(BD.plain.steps) + bdCount(BD.plain.before), tried = BD.tried === JSON.stringify(BD.plain);
   const ready = !BD.problems.length && !BD.pending.length && nSteps > 0;
   const items = [
     { k: 'start', cls: 'ok', t: 'When it starts', s: bdStartWords(st) },
-    { k: 'asks', cls: BD.plain.asks.length || st.type === 'time' ? 'ok' : 'todo', t: 'What it asks', s: BD.plain.asks.length ? BD.plain.asks.map(a => a.label).join(', ') : st.type === 'time' ? 'Nothing (it runs by itself)' : 'Add the questions' },
-    { k: 'steps', cls: !nSteps ? 'todo' : BD.problems.length || BD.pending.length ? 'bad' : 'ok', t: 'What happens', s: !nSteps ? 'Add the steps' : nSteps + ' steps' + (BD.problems.length ? ' · ' + BD.problems.length + ' to fix' : BD.pending.length ? ' · lists to create' : ' · all fit') },
+    { k: 'asks', cls: BD.plain.asks.length || st.type !== 'chat' || BD.plain.report ? 'ok' : 'todo', t: 'What it asks', s: BD.plain.asks.length ? BD.plain.asks.map(a => a.label).join(', ') : st.type === 'time' ? 'Nothing (it runs by itself)' : st.type !== 'chat' || BD.plain.report ? 'Nothing' : 'Add the questions' },
+    { k: 'steps', cls: !nSteps ? 'todo' : BD.problems.length || BD.pending.length ? 'bad' : 'ok', t: 'What happens', s: BD.plain.report ? 'Looks up and replies' : !nSteps ? 'Add the steps' : nSteps + ' steps' + (BD.problems.length ? ' · ' + BD.problems.length + ' to fix' : BD.pending.length ? ' · lists to create' : ' · all fit') },
     { k: 'try', cls: tried ? 'ok' : 'todo', t: 'Try it', s: tried ? 'Tried this version' : 'Run it once' },
     { k: 'live', cls: !bdIsDraft() ? 'ok' : ready ? 'todo' : 'bad', t: 'Make it live', s: !bdIsDraft() ? 'Live, version ' + BD.version + (BD.isActive ? '' : ' (switched off)') : ready ? 'Ready' : 'Not ready yet' },
   ];
@@ -142,11 +142,13 @@ function bdTop(box) {
   fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('workflows') }, '← Flows'), name, tools), spine, banner);
 }
 function bdLiveBtn(ready) {
-  const why = !bdCount(BD.plain.steps) && !bdCount(BD.plain.before) ? 'Nothing to make live yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
+  const why = !BD.plain.report && !bdCount(BD.plain.steps) && !bdCount(BD.plain.before) ? 'Nothing to make live yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
   return h('button', { class: 'btn sm primary', type: 'button', disabled: !!why || BD.busy, title: why, onclick: bdPublish }, 'Make it live');
 }
 const bdCount = l => (l || []).reduce((n, s) => n + 1 + bdCount(s.yes) + bdCount(s.no), 0);
 function bdStartWords(st) {
+  if (st.type === 'block') return 'Runs inside other flows (a building block)';
+  if (st.type === 'button') return 'When someone taps its button on a ticket';
   if (st.type === 'time') {
     const when = st.every === 'week' && (st.days || []).length ? ' on ' + st.days.map(d => BD_DAYS[d] || d).join(', ') : st.every === 'month' && st.day_of_month ? ' on day ' + st.day_of_month : '';
     return 'By itself, every ' + (st.every || 'day') + when + (st.time ? ' at ' + st.time : '');
@@ -288,7 +290,9 @@ function bdChips(path, field, known) {
 }
 function bdCard() {
   const p = BD.plain, st = p.start || {};
+  const fixed = st.type === 'block' || st.type === 'button', rep = p.report;
   const start = h('section', { class: 'bd-sec', id: 'bd-sec-start' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '1'), h('b', null, 'When it starts'), h('span', { class: 'hint' }, 'The trigger')),
+    fixed ? h('div', { class: 'bd-sec-b bd-sentence' }, h('b', null, bdStartWords(st)), st.type === 'block' ? h('span', { class: 'muted small' }, 'Changing it changes every flow that uses it.') : null) :
     h('div', { class: 'bd-sec-b bd-sentence' }, h('span', null, 'Start when'),
       bdSel([['chat', 'someone writes to the chat bot'], ['time', 'it is time (a schedule)']], st.type || 'chat', v => bdChange(d => { d.start = v === 'time' ? { type: 'time', every: 'day', time: '09:00' } : { type: 'chat', words: '' }; })),
       st.type === 'time' ? [h('span', null, ': every'), bdSel([['day', 'day'], ['week', 'week'], ['month', 'month']], st.every || 'day', v => bdChange(d => { d.start.every = v; if (v === 'week') d.start.days = d.start.days || [0]; if (v === 'month') d.start.day_of_month = d.start.day_of_month || 1; })),
@@ -301,7 +305,7 @@ function bdCard() {
   scan(p.before); scan(p.steps);
   const asks = h('section', { class: 'bd-sec', id: 'bd-sec-asks' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '2'), h('b', null, 'What should the person tell us?'), h('span', { class: 'hint' }, 'Their name, phone, role and flat are known already')),
     h('div', { class: 'bd-sec-b' },
-      h('div', { class: 'bd-sub' }, h('b', null, 'Checks before the questions'), h('span', { class: 'muted small' }, ' run on their first message; they can use Name, Phone, Role, Flat and lists'), bdList(p.before, 'before', 0)),
+      fixed || rep ? null : h('div', { class: 'bd-sub' }, h('b', null, 'Checks before the questions'), h('span', { class: 'muted small' }, ' run on their first message; they can use Name, Phone, Role, Flat and lists'), bdList(p.before, 'before', 0)),
       h('div', { class: 'bd-sub' }, h('b', null, 'The questions'), p.asks.map((a, i) => h('div', { class: 'bd-q-row' },
         bdInp(a.label, v => bdChange(d => { const old = d.asks[i].label; d.asks[i].label = v; bdRename(d, old, v); }), { class: 'bd-lab', 'aria-label': 'Short name' }),
         h('div', { class: 'grow' }, h('div', { class: 'bd-row' }, bdInp(a.q, v => bdChange(d => { d.asks[i].q = v; }), { style: { flex: '1', minWidth: '160px' }, 'aria-label': 'Question' }),
@@ -313,8 +317,13 @@ function bdCard() {
         h('div', { class: 'bd-tools' }, h('button', { type: 'button', disabled: !i, title: 'Move up', onclick: () => bdChange(d => { [d.asks[i - 1], d.asks[i]] = [d.asks[i], d.asks[i - 1]]; }) }, '↑'),
           h('button', { type: 'button', class: 'del', title: 'Remove', onclick: () => bdChange(d => { d.asks.splice(i, 1); }) }, '×')))),
         h('button', { type: 'button', class: 'bd-add', onclick: () => bdChange(d => { d.asks.push({ label: 'New answer', q: 'Your question?', kind: 'text' }); }) }, '+ Add a question'))));
-  const steps = h('section', { class: 'bd-sec', id: 'bd-sec-steps' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '3'), h('b', null, 'What happens'), h('span', { class: 'hint' }, 'After the questions, top to bottom')),
-    h('div', { class: 'bd-sec-b' }, bdList(p.steps, 'steps', 0)));
+  const steps = rep ? h('section', { class: 'bd-sec', id: 'bd-sec-steps' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '3'), h('b', null, 'What it does'), h('span', { class: 'hint' }, 'A report')),
+      h('div', { class: 'bd-sec-b stack' }, h('div', { class: 'bd-sentence' }, h('span', { class: 'ic' }, '🔎'), h('b', null, 'Looks up: '), rep.words),
+        h('div', { class: 'bd-sentence' }, h('span', { class: 'ic' }, '💬'), h('b', null, 'Replies '), rep.format === 'list' ? 'with the list it found' : 'with what it found, written up by the AI'),
+        h('div', { class: 'muted small' }, 'What it looks up is a saved question.' + (isSuper() ? ' Change it in the Advanced editor.' : ' A super admin changes it.')),
+        isSuper() && BD.id ? h('div', null, h('button', { type: 'button', class: 'bd-pill', onclick: () => openAdvanced(BD.id) }, 'Open in the Advanced editor')) : null))
+    : h('section', { class: 'bd-sec', id: 'bd-sec-steps' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '3'), h('b', null, 'What happens'), h('span', { class: 'hint' }, fixed ? 'Top to bottom' : 'After the questions, top to bottom')),
+      h('div', { class: 'bd-sec-b' }, bdList(p.steps, 'steps', 0)));
   return h('div', null, start, asks, steps);
 }
 function bdRename(d, old, now) {   // renaming an answer renames it wherever it is used
@@ -437,7 +446,8 @@ function bdMap() {
   return h('div', { class: 'mp' }, node('start', '▶ Starts', bdStartWords(p.start || {}), 'start'),
     (p.before || []).length ? [L(), h('div', { class: 'mp-band' }, 'Before the questions'), seq(p.before, 'before')] : null,
     p.asks.length ? [L(), node('asks', '❓ Asks', p.asks.map(a => a.label).join(' · '))] : null,
-    seq(p.steps, 'steps'), L(), h('div', { class: 'mp-node end' }, '■ Done'), h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it in the Card.'));
+    p.report ? [L(), node('steps', '🔎 Looks up', p.report.words), L(), node('steps', '💬 Replies', p.report.format === 'list' ? 'With the list it found' : 'With what it found, written up by the AI')] : seq(p.steps, 'steps'),
+    L(), h('div', { class: 'mp-node end' }, '■ Done'), h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it in the Card.'));
 }
 
 // ----- the simple chart: one plain line per box, checks as Yes / No side by side; click a box to change it -----
@@ -454,6 +464,8 @@ function bdQ(s) {
 function bdWords(s) {
   const blocks = (BD.ctx && BD.ctx.blocks) || {};
   return ({ say: 'Reply to them: “' + (s.text || '').slice(0, 70) + ((s.text || '').length > 70 ? '…' : '') + '”', tell: 'Tell ' + (s.role || '?'), set: (s.name || '?') + ' = ' + (s.value || ''),
+    _look: 'Look up: ' + ((BD.plain.report || {}).words || 'the saved question'),
+    _reply: (BD.plain.report || {}).format === 'list' ? 'Reply with the list it found' : 'Reply with what it found (written up by the AI)',
     engine: (s.words || 'A step') + (s.when_words ? ' (only when ' + s.when_words + ')' : ''),
     _ask: 'Ask: ' + BD.plain.asks.map(a => a.label).join(', '), find: 'Look in ' + (s.list || '?'), save: 'Save in ' + (s.list || '?'), approve: 'Ask ' + (s.role || '?') + ' to approve', block: 'Run “' + (blocks[s.key] || s.key) + '”' })[s.a] || s.a;
 }
@@ -481,10 +493,11 @@ function bdChart(plain) {
     if (end) out.push(A(), box('Done', 'ch-end'));
     return out;
   };
-  if (!plain.asks.length && !plain.steps.length && !(plain.before || []).length) return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow will appear here'), h('div', { class: 'muted' }, 'Start by telling the AI what it should do.'));
+  if (!plain.report && !plain.asks.length && !plain.steps.length && !(plain.before || []).length) return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow will appear here'), h('div', { class: 'muted' }, 'Start by telling the AI what it should do.'));
   // each step remembers where it is, so a click opens it in the Card
   const tag = (l, base) => (l || []).map((s, i) => ({ ...s, __p: base + '.' + i, yes: tag(s.yes, base + '.' + i + '.yes'), no: tag(s.no, base + '.' + i + '.no') }));
-  const all = [...tag(plain.before, 'before'), ...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), ...tag(plain.steps, 'steps')];
+  const all = plain.report ? [...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), { a: '_look', __p: 'steps' }, { a: '_reply', __p: 'steps' }]
+    : [...tag(plain.before, 'before'), ...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), ...tag(plain.steps, 'steps')];
   return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow at a glance'), box('▶ ' + bdStartWords(plain.start || {}), 'ch-start', 'start'), seq(all, true),
     h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it.'));
 }
@@ -530,7 +543,7 @@ async function btStart(auto) {
   try {
     if (BD.problems.length || BD.pending.length) { btSay('sys', BD.pending.length ? 'Create the new lists first, then try it.' : 'Fix what is not ready first: ' + BD.problems[0].text); BT.running = false; return; }
     if (!BT.as) { btSay('sys', 'There is nobody to try it as yet. Add people first.'); BT.running = false; return; }
-    if (st.type === 'time') { btSay('sys', 'It runs by itself: ' + bdStartWords(st) + '.'); await btAsk(['▶ Run it now (rehearsal)'], '▶ Run it now (rehearsal)'); chk(); }
+    if (st.type === 'time' || st.type === 'block' || st.type === 'button') { btSay('sys', bdStartWords(st) + '.'); await btAsk(['▶ Run it now (rehearsal)'], '▶ Run it now (rehearsal)'); chk(); }
     else { const w = String(st.words || 'hi').split(',')[0].trim() || 'hi'; btSay('sys', 'Write something like “' + w + '”, or press ⚡ Sample answers.'); await btAsk(null, w); chk(); btSay('bot', 'Sure, I can help with “' + (BD.name || 'this') + '”.'); }
     if ((plain.before || []).length) {
       const r = await api.post('/build/try', { plain, as_user: BT.as, part: 'before' }); chk();
@@ -545,7 +558,7 @@ async function btStart(auto) {
       if (!/^skip$/i.test(v)) fields[a.label] = v;
     }
     btSay('sys', 'Running the flow…');
-    const r = await api.post('/build/try', { plain, as_user: BT.as, fields, part: 'all' }); chk();
+    const r = await api.post('/build/try', { plain, as_user: BT.as, fields, part: 'all', workflow_id: BD.id }); chk();
     BT.msgs.pop();
     btShow(r);
     if (r.status === 'preview') { BD.tried = JSON.stringify(BD.plain); bdKeep(); const top = document.querySelector('.bd-spine'); if (top) BD.paintSide(); }

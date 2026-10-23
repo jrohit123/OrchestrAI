@@ -151,7 +151,7 @@ function blDrawEditor() {
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { EW.bl.tab = 'try'; blDrawSide(); } }, icon('play', 'sm'), lbl('Try it')),
       h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The same flow drawn as a map of boxes and wires', onclick: () => setEditorView('map') }, icon('map', 'sm'), lbl('Map view')),
       // back to the plain editor (chat, Card, chart): every flow people start opens there
-      EW.work.kind === 'block' ? null : h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
+      h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
       ui.discard, ui.save));
   EW.bl.banner = h('div', { class: 'cvprob' });
   EW.bl.selbar = h('div', { class: 'bl-selbar' });
@@ -476,7 +476,7 @@ function blBlockPane(s, i) {
     (f.description || '') + (EW.work.entity_schema && EW.work.entity_schema[k] ? ' Left empty, it uses this flow’s own answer.' : ''));
   const outs = ((flow.settings || {}).outputs || []);
   return h('div', { class: 'stack' }, pick,
-    flow.description ? h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, flow.description, ' ', h('a', { href: '#/workflows?w=' + flow.id }, 'Open the block'))) : h('a', { class: 'small', href: '#/workflows?w=' + flow.id }, 'Open the block'),
+    flow.description ? h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, flow.description, ' ', h('a', { href: '#/workflows?f=' + flow.id }, 'Open the block'))) : h('a', { class: 'small', href: '#/workflows?f=' + flow.id }, 'Open the block'),
     needs.length ? h('div', { class: 'stack' }, h('div', { class: 'bl-sub' }, 'Fill in what it needs'), needs.map(need)) : h('div', { class: 'muted small' }, 'It needs nothing: it uses what this flow already has.'),
     h('div', { class: 'bl-sub' }, 'It gives back'),
     outs.length ? h('div', { class: 'chips' }, outs.map(o => h('span', { class: 'chip' }, (flow.name) + ' – ' + o.label))) : h('div', { class: 'muted small' }, 'Everything its steps find. The boxes below can use it.'));

@@ -193,7 +193,21 @@ def test_an_older_step_in_a_lane_keeps_its_own_condition_too():
     assert last["when"] == {"and": [{"field": "$fields._if_1", "equals": "yes"}, {"field": "$route.assignee_id", "exists": True}]}
 
 
-def test_blocks_reports_and_empty_flows_stay_in_the_flows_editor():
-    assert flow_plain.from_workflow({**OLD_COMPLAINT, "kind": "block"}, {})[0] is None
-    assert flow_plain.from_workflow({**OLD_COMPLAINT, "workflow_type": "read"}, {})[0] is None
-    assert flow_plain.from_workflow({**OLD_COMPLAINT, "steps": []}, {})[0] is None
+def test_unreadable_steps_stay_in_the_advanced_editor():
+    assert flow_plain.from_workflow({**OLD_COMPLAINT, "steps": "not json"}, {})[0] is None
+
+
+def test_a_report_opens_with_what_it_looks_up_and_keeps_its_saved_question():
+    report = {"intent_key": "view_all_cases", "name": "All Tickets", "kind": "workflow", "workflow_type": "read",
+              "description": "Lists the most recent cases", "response_format": "list", "training_phrases": ["show all cases"],
+              "entity_schema": {}, "steps": [], "sql_template": "SELECT 1"}  # fmt: skip
+    plain, why = flow_plain.from_workflow(report, {})
+    assert why is None and plain["report"] == {"words": "Lists the most recent cases", "format": "list"} and plain["steps"] == []
+    assert flow_plain.compile_flow(plain, {})["training_phrases"] == ["show all cases"]
+
+
+def test_a_building_block_and_a_ticket_button_keep_their_start():
+    block, _ = flow_plain.from_workflow({**OLD_COMPLAINT, "kind": "block", "training_phrases": []}, {})
+    button, _ = flow_plain.from_workflow({**OLD_COMPLAINT, "kind": "case_action"}, {})
+    assert block["start"]["type"] == "block" and button["start"]["type"] == "button"
+    assert flow_plain.compile_flow(button, {})["training_phrases"] == OLD_COMPLAINT["training_phrases"]

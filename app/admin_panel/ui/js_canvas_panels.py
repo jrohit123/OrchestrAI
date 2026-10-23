@@ -172,7 +172,7 @@ function settingsTab(s, i, again) {
   }
   if (!spec.params.length) box.append(h('div', { class: 'muted small' }, 'Nothing to set for this step.'));
   const flow = s.op === 'run_workflow' ? ST.byKey[(s.params || {}).workflow] : null;
-  if (flow) box.append(h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, h('b', null, 'A building block.'), ' Change it by opening it. It then changes in every flow that uses it. ', h('a', { href: '#/workflows?w=' + flow.id }, 'Open this block'))));
+  if (flow) box.append(h('div', { class: 'notice teal' }, icon('layers'), h('div', { class: 'small' }, h('b', null, 'A building block.'), ' Change it by opening it. It then changes in every flow that uses it. ', h('a', { href: '#/workflows?f=' + flow.id }, 'Open this block'))));
   return box;
 }
 function onlyIfTab(s, i) {
@@ -324,7 +324,7 @@ function cvDrawEditor() {
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { CV.panel = 'try'; renderInspector(); } }, icon('play', 'sm'), lbl('Try it')),
       h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'Back to the list of boxes', onclick: () => setEditorView('builder') }, icon('list', 'sm'), lbl('Builder')),
       // back to the plain editor (chat, Card, chart): every flow people start opens there
-      EW.work.kind === 'block' ? null : h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
+      h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
       ui.discard, ui.save));
   fill(root, h('div', { class: 'wsp' }, head,
     h('div', { class: 'wsprow' },
