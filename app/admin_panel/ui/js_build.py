@@ -1,6 +1,6 @@
 JS = r"""
-// ───────────────────────── Build with AI ─────────────────────────
-// #/build (the list) and #/build?f=new or =<id> (one flow). On the left the chat with the AI; on the right the
+// ───────────────────────── Flows: the plain editor ("Build with AI") ─────────────────────────
+// #/workflows?f=new or =<id>: one flow (an admin's #/workflows lists them). On the left the chat with the AI; on the right the
 // progress bar, draft / live, and four views of the same plain flow: Card (edit every step), Map, Simple chart and
 // Try it (a rehearsal on the real engine). The plain flow is what the AI and the admin edit; "Make it live" turns it
 // into engine steps on the server (build.py, flow_plain.py).
@@ -28,30 +28,24 @@ const bdGet = (o, p) => p.split('.').reduce((x, k) => x == null ? x : x[k], o);
 function bdSetPath(o, p, v) { const ks = p.split('.'), last = ks.pop(); bdGet(o, ks.join('.'))[last] = v; }
 const bdLabelKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
-SECTIONS.build = {
-  title: 'Build with AI', sub: 'Make a flow by chatting with the AI. It asks you the choices, makes the lists it needs and shows the flow as a simple chart.',
-  async render(root, route) {
-    S.leaveGuard = null; window.onbeforeunload = null;
-    if (route.q.f) return renderBuild(root, route);
-    setTopAction({ label: 'New flow', icon: 'spark', run: () => go('build', '', { f: 'new' }) });
+// An admin's Flows screen (a super admin's is the Flows boxes, js_usecases.py / js_flows.py): every flow, opened in the
+// plain editor; a flow from the canvas editor is opened in plain words the first time, without changing it.
+async function renderBuildList(root) {
+    setTopAction({ label: 'New flow', icon: 'spark', run: () => go('workflows', '', { f: 'new' }) });
     const d = await api.get('/build');
-    const card = w => h('a', { class: 'card bd-card', href: href('build', '', { f: w.id }) },
+    const card = w => h('a', { class: 'card bd-card', href: href('workflows', '', { f: w.id }) },
       h('b', null, w.name), h('div', { class: 'muted small' }, (w.start && w.start.type === 'time' ? 'Runs by itself' : 'When someone writes' + (w.start && w.start.words ? ' “' + String(w.start.words).split(',')[0].trim() + '”' : ''))),
       h('div', null, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : '')));
     // a flow made in the Flows editor opens here after one check: its steps stay exactly as they are
     const other = w => h('div', { class: 'card bd-card' + (w.ok ? '' : ' bd-card-off') }, h('b', null, w.name),
-      w.ok ? h('div', { class: 'muted small' }, 'Made in the Flows editor. Opening it here changes nothing it does.') : h('div', { class: 'muted small' }, w.why),
-      h('div', { class: 'row' }, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : ''), w.ok ? h('button', { class: 'btn sm primary', type: 'button', onclick: async e => {
-        e.target.disabled = true;
-        try { await api.post('/build/' + w.id + '/convert'); go('build', '', { f: w.id }); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; }
-      } }, 'Open in Build with AI') : null));
+      w.ok ? h('div', { class: 'muted small' }, 'Opening it changes nothing it does.') : h('div', { class: 'muted small' }, w.why),
+      h('div', { class: 'row' }, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : ''), w.ok ? h('button', { class: 'btn sm primary', type: 'button', onclick: () => go('workflows', '', { f: w.id }) }, 'Open') : null));
     fill(root, h('div', { class: 'stack' },
       d.rows.length ? h('div', { class: 'bd-cards' }, d.rows.map(card))
-        : h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, h('b', null, 'No flows made here yet.'), h('div', { class: 'muted' }, 'Press New flow and tell the AI what the chat bot should do, or open one of your flows below.'))),
-      (d.others || []).length ? [h('h3', { class: 'bd-h3' }, 'Your other flows'), h('div', { class: 'muted small' }, 'Open one here to see it as a chart, try it, and change it by chatting or by hand.'),
+        : h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, h('b', null, 'No flows yet.'), h('div', { class: 'muted' }, 'Press New flow and tell the AI what the chat bot should do.'))),
+      (d.others || []).length ? [h('h3', { class: 'bd-h3' }, 'More flows'), h('div', { class: 'muted small' }, 'Open one to see it as a chart, try it, and change it by chatting or by hand.'),
         h('div', { class: 'bd-cards' }, d.others.map(other))] : null));
-  },
-};
+}
 
 async function renderBuild(root, r) {
   const mine = S.renderId;
@@ -59,6 +53,13 @@ async function renderBuild(root, r) {
     problems: [], info: {}, busy: false, view: 'card', undo: [], tried: null, draftSaved: true });
   BD.ctx = await api.get('/build/context');
   if (BD.id) {
+    try { await api.post('/build/' + BD.id + '/convert'); }
+    catch (e) {
+      if (mine !== S.renderId) return;
+      if (isSuper()) { location.replace(href('workflows', '', { w: BD.id })); return; }
+      fill(root, h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, h('b', null, 'This flow cannot be opened here yet.'), h('div', { class: 'muted' }, e.message), h('div', null, h('a', { class: 'btn', href: href('workflows') }, '← Flows')))));
+      return;
+    }
     const f = await api.get('/build/' + BD.id);
     Object.assign(BD, { name: f.name, version: f.version, live: f.plain, plain: JSON.parse(JSON.stringify(f.draft || f.plain)), versions: f.history || [], isActive: f.is_active });
   }
@@ -68,7 +69,7 @@ async function renderBuild(root, r) {
   } catch (e) {}
   BD.plain.before = BD.plain.before || [];
   if (mine !== S.renderId) return;
-  const crumb = document.getElementById('crumbname'); if (crumb) crumb.textContent = BD.name || 'Build with AI';
+  const crumb = document.getElementById('crumbname'); if (crumb) crumb.textContent = BD.name || 'New flow';
   S.leaveGuard = () => BD.draftSaved || confirm('Leave now? The last change is still being kept.');
   const chatBox = h('div', { class: 'bd-chat' }), side = h('div', { class: 'bd-side' }), top = h('div');
   fill(root, h('div', { class: 'bd' }, top, h('div', { class: 'bd-grid' }, chatBox, side)));
@@ -133,12 +134,12 @@ function bdTop(box) {
   if (!BD.id) banner = h('div', { class: 'bd-banner draft' }, h('span', null, '✏️ ', h('b', null, 'New draft.'), ' Nobody can use it until you make it live.'), h('span', { class: 'bd-sp' }), bdLiveBtn(ready));
   else if (bdIsDraft()) banner = h('div', { class: 'bd-banner draft' }, h('span', null, '✏️ ', h('b', null, 'Draft' + (BD.draftSaved ? '' : ' (keeping…)') + '.'), ' People still get live version ' + BD.version + '.'), h('span', { class: 'bd-sp' }),
     h('button', { class: 'btn sm', type: 'button', onclick: bdDiscard }, 'Throw away draft'), bdLiveBtn(ready));
-  else banner = h('div', { class: 'bd-banner live' }, h('span', null, '✅ ', h('b', null, 'Live, version ' + BD.version + '.'), BD.isActive ? ' People use this one. Any change starts a draft.' : ' It is switched off: ' + (isSuper() ? 'switch it on and choose who can use it in the Flows editor.' : 'a super admin switches it on.')),
-    h('span', { class: 'bd-sp' }), isSuper() ? h('button', { class: 'btn sm', type: 'button', onclick: () => openWorkflow(BD.id) }, 'Who can use it') : null);
+  else banner = h('div', { class: 'bd-banner live' }, h('span', null, '✅ ', h('b', null, 'Live, version ' + BD.version + '.'), BD.isActive ? ' People use this one. Any change starts a draft.' : ' It is switched off: ' + (isSuper() ? 'switch it on and choose who can use it (Who can use it).' : 'a super admin switches it on.')),
+    h('span', { class: 'bd-sp' }), isSuper() ? h('button', { class: 'btn sm', type: 'button', onclick: () => openAdvanced(BD.id) }, 'Who can use it') : null);
   const tools = h('div', { class: 'bd-tools' },
     h('button', { class: 'btn sm', type: 'button', disabled: !BD.undo.length, onclick: bdUndo }, 'Undo'),
     BD.id ? h('button', { class: 'btn sm', type: 'button', onclick: bdVersions }, 'Versions (' + BD.versions.length + ')') : null);
-  fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('build') }, '← All'), name, tools), spine, banner);
+  fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('workflows') }, '← Flows'), name, tools), spine, banner);
 }
 function bdLiveBtn(ready) {
   const why = !bdCount(BD.plain.steps) && !bdCount(BD.plain.before) ? 'Nothing to make live yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
@@ -191,7 +192,7 @@ function bdPublish() {
       if (first) { try { sessionStorage.removeItem(bdKey()); } catch (e) {} }
       BD.id = r.id; BD.version = r.version; BD.live = JSON.parse(JSON.stringify(BD.plain)); BD.draftSaved = true;
       const f = await api.get('/build/' + r.id); BD.versions = f.history || []; BD.isActive = f.is_active;
-      history.replaceState(null, '', href('build', '', { f: r.id })); bdKeep(); BD.paintSide();
+      history.replaceState(null, '', href('workflows', '', { f: r.id })); bdKeep(); BD.paintSide();
       toast(first ? 'Saved as version 1. ' + (isSuper() ? 'Switch it on and choose who can use it.' : 'A super admin switches it on.') : 'Live: version ' + r.version + '.', 'ok');
     } }] });
 }
@@ -360,8 +361,8 @@ function bdStep(s, p, i, n, depth) {
   else if (s.a === 'stop') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Stop here'), h('span', { class: 'muted small' }, 'nothing after this runs'))];
   else if (s.a === 'engine') body = [h('div', { class: 'bd-sentence' }, h('b', null, s.words || 'A step')),
     s.when_words ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'Only when '), s.when_words) : null,
-    h('div', { class: 'muted small' }, 'Kept exactly as it was made in the Flows editor. You can move or remove it here' + (isSuper() ? '; its settings change in the Flows editor.' : '.')),
-    isSuper() && BD.id ? h('button', { type: 'button', class: 'bd-pill', onclick: () => openWorkflow(BD.id) }, 'Open in the Flows editor') : null];
+    h('div', { class: 'muted small' }, 'Kept exactly as it was made in the Advanced editor. You can move or remove it here' + (isSuper() ? '; its settings change in the Advanced editor.' : '.')),
+    isSuper() && BD.id ? h('button', { type: 'button', class: 'bd-pill', onclick: () => openAdvanced(BD.id) }, 'Open in the Advanced editor') : null];
   else if (s.a === 'if') {
     const tests = (s.tests || []).map((t, j) => {
       const ask = BD.plain.asks.find(a => a.label === t.q), yn = / found$/.test(t.q || '');

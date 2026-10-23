@@ -150,6 +150,8 @@ function blDrawEditor() {
       h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore (this is version ' + d.version + ')', onclick: () => blSelect('hist') }, icon('hist', 'sm')),
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { EW.bl.tab = 'try'; blDrawSide(); } }, icon('play', 'sm'), lbl('Try it')),
       h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The same flow drawn as a map of boxes and wires', onclick: () => setEditorView('map') }, icon('map', 'sm'), lbl('Map view')),
+      // back to the plain editor (chat, Card, chart): every flow people start opens there
+      EW.work.kind === 'block' ? null : h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
       ui.discard, ui.save));
   EW.bl.banner = h('div', { class: 'cvprob' });
   EW.bl.selbar = h('div', { class: 'bl-selbar' });

@@ -105,10 +105,10 @@ async function renderBoxes(root, kind) {   // kind: 'flows' or 'blocks'
     return s;
   };
   const row = w => h('div', { class: 'ucb-row' + (w.is_active ? '' : ' off') },
-    h('a', { href: '#/workflows?w=' + w.id, class: 'grow' }, w.name),
+    h('a', { href: '#/workflows?f=' + w.id, class: 'grow' }, w.name),
     w.kind === 'case_action' ? badge('button on a ticket') : null,
     moveSel(w),
-    h('a', { class: 'btn sm', href: '#/workflows?w=' + w.id }, 'Edit'),
+    h('a', { class: 'btn sm', href: '#/workflows?f=' + w.id }, 'Edit'),
     switchEl(w.is_active, async v => { try { await api.post('/workflows/' + w.id + '/active', { is_active: v }); w.is_active = v; toast(switchNote(w, v), 'ok'); again(); } catch (e) { toast(e.message, 'bad'); } }, false, w.name));
   const box = u => {
     const list = inBox(u ? u.id : null), flows = list.filter(w => w.kind !== 'block'), blocks = list.filter(w => w.kind === 'block');

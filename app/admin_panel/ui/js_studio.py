@@ -7,7 +7,9 @@ async function ensureStudio() {
   ST.catalog = cat; ST.flows = fl.rows; ST.roles = fl.roles;
   ST.byKey = Object.fromEntries(fl.rows.map(w => [w.intent_key, w]));
 }
-function openWorkflow(id) { go('workflows', '', { w: id }); }
+// a flow opens in the plain editor (js_build.py); the canvas editor stays as the Advanced editor for super admins
+function openWorkflow(id) { go('workflows', '', { f: id }); }
+function openAdvanced(id) { go('workflows', '', { w: id }); }
 
 // ───────────────────────── Workflows: the editor ─────────────────────────
 const EDIT_KEYS = ['name', 'description', 'steps', 'entity_schema', 'gates', 'training_phrases', 'slash_command', 'kind', 'settings', 'response_format'];
@@ -211,7 +213,7 @@ function detailsPane() {
       w.kind === 'workflow' || !kinds ? field('Command', h('input', { type: 'text', value: w.slash_command, placeholder: 'e.g. assign (people type /assign)', oninput: e => { w.slash_command = e.target.value.trim().replace(/^\//, ''); commit(false); } })) : null,
       w.kind === 'workflow' || !kinds ? field('Things a person might type to start it', phrases, 'Press Enter after each one. Eight or more works best.') : null)),
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Who can use it'), h('div', { class: 'card-b' }, access, uc.people)),
-    d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id }, u.name)))) : null);
+    d.used_in.length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Where it is used'), h('div', { class: 'card-b chips' }, d.used_in.map(u => h('a', { class: 'badge violet', href: '#/workflows?f=' + u.id }, u.name)))) : null);
 }
 
 // ----- how it starts: someone does it, on a schedule, or after another flow -----
@@ -509,7 +511,9 @@ SECTIONS.workflows = {
   title: 'Flows', sub: 'A flow is one thing the chat bot can do for people, like filing a complaint or closing a case.',
   async render(root, route) {
     S.leaveGuard = null; window.onbeforeunload = null; EW = null;
-    if (route.q.w) return renderEditor(root, route.q.w);
+    if (route.q.f) return renderBuild(root, route);          // the plain editor: chat, Card, Map, chart, Try it (js_build.py)
+    if (route.q.w && isSuper()) return renderEditor(root, route.q.w);   // the Advanced editor
+    if (!isSuper()) return renderBuildList(root);             // an admin's Flows: the flows and "+ New flow"
     if (S.boot.caps.usecases) return renderFlowBoxes(root);   // one box per use case (js_usecases.py)
     return renderFlows(root, route, S.boot.caps.workflow_kind ? 'flow' : null);
   },

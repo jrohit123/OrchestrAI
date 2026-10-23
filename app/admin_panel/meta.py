@@ -34,8 +34,8 @@ ADMIN_SECTIONS = {
     "conversations",
     "announcements",
     "people",
-    "build",
-}  # what an admin (not a super admin) sees
+    "workflows",
+}  # what an admin (not a super admin) sees: Flows opens the plain editor (build.py) for them
 # the tabs an admin sees inside those screens (a screen not listed here keeps all its tabs)
 ADMIN_TABS = {"cases": {"list", "teams", "reminders"}}
 
@@ -92,7 +92,6 @@ def _sections(caps: dict[str, bool], level: str = "super") -> list[dict]:
         sections.append(
             {"key": "assistant", "label": "Chat bot", "tabs": assistant_tabs}
         )
-    sections.append({"key": "build", "label": "Build with AI"})
     sections.append({"key": "workflows", "label": "Flows"})
     if caps.get("workflow_kind"):
         sections.append({"key": "blocks", "label": "Building blocks"})

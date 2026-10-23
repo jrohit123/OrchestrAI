@@ -47,7 +47,7 @@ async function renderFlows(root, route, only) {
       ? h('div', { class: 'row small flat' }, icon('users', 'xs'), h('span', null, roles.slice(0, 3).join(', ') + (roles.length > 3 ? ' +' + (roles.length - 3) : '') + (party ? (roles.length ? ' + ' : '') + 'people on the case' : '')))
       : h('div', { class: 'row small' }, badge('Nobody can use it yet', 'warn'));
     const meta = isBlock(w)
-      ? (used.length ? h('div', { class: 'chips' }, used.slice(0, 4).map(u => h('a', { class: 'badge violet', href: '#/workflows?w=' + u.id, onclick: e => e.stopPropagation() }, u.name)), used.length > 4 ? h('span', { class: 'chip sunk' }, '+' + (used.length - 4)) : null)
+      ? (used.length ? h('div', { class: 'chips' }, used.slice(0, 4).map(u => h('a', { class: 'badge violet', href: '#/workflows?f=' + u.id, onclick: e => e.stopPropagation() }, u.name)), used.length > 4 ? h('span', { class: 'chip sunk' }, '+' + (used.length - 4)) : null)
         : h('div', { class: 'row small' }, badge('Not used yet', 'warn'), h('span', { class: 'muted' }, 'Safe to switch off and delete.')))
       : who;
     const go_ = () => openWorkflow(w.id);
@@ -55,7 +55,7 @@ async function renderFlows(root, route, only) {
     // the name is the link (the keyboard and screen readers use it); a click anywhere else on the card opens it too
     return h('article', { class: 'card fcard' + (w.is_active ? '' : ' off'), onclick: e => { if (!e.target.closest('a,button,input,label')) go_(); } },
       h('div', { class: 'row between flat', style: { alignItems: 'flex-start' } },
-        h('div', { class: 'grow' }, h('h2', { class: 'fname' }, h('a', { href: '#/workflows?w=' + w.id }, w.name)), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
+        h('div', { class: 'grow' }, h('h2', { class: 'fname' }, h('a', { href: '#/workflows?f=' + w.id }, w.name)), h('div', { class: 'muted small', style: { overflowWrap: 'anywhere' } }, w.description || (isBlock(w) ? w.intent_key : ''))),
         h('label', { class: 'row small flat', style: { gap: '6px' } }, w.is_active ? 'On' : 'Off', power(w))),
       how,
       meta,
@@ -175,7 +175,7 @@ function newWorkflowModal(kinds, startKind) {
   function draw() {
     m.setTitle(KIND_TITLE[kind]);
     fill(kindRow, kind === 'workflow' ? h('div', { class: 'muted' }, 'How do you want to start?') : h('div', { class: 'notice' }, icon('info'), h('div', null, h('b', null, KIND_LABEL[kind] + '. '), KIND_HELP[kind])));
-    const build = kind === 'workflow' ? h('button', { type: 'button', class: 'nf-card', onclick: () => { m.close(); go('build', '', { f: 'new' }); } },
+    const build = kind === 'workflow' ? h('button', { type: 'button', class: 'nf-card', onclick: () => { m.close(); go('workflows', '', { f: 'new' }); } },
       h('span', { class: 'gi' }, icon('spark')), h('b', { class: 't' }, 'Build with AI', ' ', badge('Easiest', 'brand')), h('span', { class: 's' }, 'Chat with the AI, one thing at a time. It asks you the choices, makes the lists it needs and shows the flow as a chart.')) : null;
     fill(seg, build, start('chat', 'spark', 'Describe it', 'Say what it should do. The AI helper drafts it and you check it.', kind !== 'workflow'), start('copy', 'copy', 'Copy one you have', 'Start from a ' + what[kind] + ' that already works, then change it.'), start('blank', 'plus', 'Start blank', 'An empty ' + what[kind] + '. You add the steps yourself.'));
     fill(foot, kind === 'workflow' ? (offered.length > 1 ? ['Making something else? ', offered.filter(k => k !== 'workflow').map((k, i) => [i ? ' · ' : null, h('a', { href: '#', onclick: e => { e.preventDefault(); kind = k; proposal = null; history = []; draw(); } }, 'A ' + what[k])])] : null)

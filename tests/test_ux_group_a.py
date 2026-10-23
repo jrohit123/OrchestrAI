@@ -102,7 +102,7 @@ def test_the_page_names_the_boxes_it_used_to_leave_without_one():
 def test_a_flow_card_is_a_heading_with_a_link_and_a_named_switch_not_a_button_holding_a_button():
     assert "role: 'link', 'aria-label': 'Open ' + w.name" not in APP_JS
     assert (
-        "h('h2', { class: 'fname' }, h('a', { href: '#/workflows?w=' + w.id }, w.name))"
+        "h('h2', { class: 'fname' }, h('a', { href: '#/workflows?f=' + w.id }, w.name))"
         in APP_JS
     )
     assert (

@@ -617,7 +617,7 @@ def keys(caps):
 
 def test_a_housing_organisation_gets_the_whole_menu_in_the_new_order():
     assert keys(HOUSING) == [
-        "overview", "cases", "conversations", "people", "access", "assistant", "build", "workflows", "settings",
+        "overview", "cases", "conversations", "people", "access", "assistant", "workflows", "settings",
     ]  # fmt: skip
     tabs = {
         s["key"]: [t["key"] for t in s.get("tabs", [])] for s in meta._sections(HOUSING)
@@ -647,7 +647,6 @@ def test_an_organisation_without_cases_has_no_case_screens():
         "people",
         "access",
         "assistant",
-        "build",
         "workflows",
         "settings",
     ]
@@ -664,7 +663,6 @@ def test_set_up_screens_that_the_database_cannot_do_are_left_out_and_never_shown
         "people",
         "access",
         "assistant",
-        "build",
         "workflows",
         "settings",
     ]
@@ -678,7 +676,7 @@ def test_set_up_screens_that_the_database_cannot_do_are_left_out_and_never_shown
 
 def test_an_admin_gets_the_day_to_day_screens_only():
     admin = meta._sections(HOUSING, "admin")
-    assert [s["key"] for s in admin] == ["overview", "cases", "conversations", "people", "build"]
+    assert [s["key"] for s in admin] == ["overview", "cases", "conversations", "people", "workflows"]
     assert [t["key"] for t in admin[1]["tabs"]] == [
         "list",
         "teams",

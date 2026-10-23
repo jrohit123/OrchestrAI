@@ -323,6 +323,8 @@ function cvDrawEditor() {
       h('button', { class: 'btn sm ghost icon', type: 'button', 'aria-label': 'Earlier versions', 'data-tip': 'Earlier versions: see or restore (this is version ' + d.version + ')', onclick: () => { CV.sel = new Set(['trigger']); CV.panel = 'insp'; CV.ttab = 'hist'; renderNodes(); renderInspector(); } }, icon('hist', 'sm')),
       read ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => { CV.panel = 'try'; renderInspector(); } }, icon('play', 'sm'), lbl('Try it')),
       h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'Back to the list of boxes', onclick: () => setEditorView('builder') }, icon('list', 'sm'), lbl('Builder')),
+      // back to the plain editor (chat, Card, chart): every flow people start opens there
+      EW.work.kind === 'block' ? null : h('button', { class: 'btn sm ghost', type: 'button', 'data-tip': 'The plain editor: chat with the AI, the Card, the simple chart and Try it', onclick: () => openWorkflow(EW.id) }, icon('spark', 'sm'), lbl('Plain editor')),
       ui.discard, ui.save));
   fill(root, h('div', { class: 'wsp' }, head,
     h('div', { class: 'wsprow' },

@@ -656,6 +656,19 @@ async def _save(
     return {"ok": True, "version": new_version, "warnings": warnings}
 
 
+async def _forget_plain(ctx: Ctx, workflow_id: UUID) -> None:
+    """The steps were changed here (the Advanced editor), so the plain-words copy the plain editor keeps
+    (build.py) is out of date: it is dropped and made again from the new steps the next time the flow is opened
+    there. Its version history (plain_history) is kept."""
+    await fetch_one(
+        "UPDATE workflows SET settings = coalesce(settings, '{}'::jsonb) - 'plain' - 'plain_draft' - 'precheck' "
+        "WHERE id = $1 AND org_id = $2 AND settings ? 'plain' RETURNING id",
+        workflow_id,
+        ctx.org_id,
+        source_key=ctx.source_key,
+    )
+
+
 @router.put("/workflows/{workflow_id}/definition")
 async def save_definition(workflow_id: UUID, body: DefinitionBody, ctx: CtxDep):
     changes = body.model_dump(exclude_unset=True)
@@ -665,7 +678,10 @@ async def save_definition(workflow_id: UUID, body: DefinitionBody, ctx: CtxDep):
     for key in ("name", "steps", "entity_schema", "gates", "training_phrases"):
         if key in changes and changes[key] is None:
             raise HTTPException(status_code=400, detail=f"'{key}' cannot be empty.")
-    return await _save(ctx, workflow_id, base, changes, "edit")
+    saved = await _save(ctx, workflow_id, base, changes, "edit")
+    if {"steps", "entity_schema", "training_phrases"} & set(changes):
+        await _forget_plain(ctx, workflow_id)
+    return saved
 
 
 # ── where the boxes sit on the canvas ────────────────────────────────────────
@@ -765,7 +781,9 @@ async def restore_version(workflow_id: UUID, body: RestoreBody, ctx: CtxDep):
         "entity_schema": v["entity_schema"],
         "gates": v["gates"],
     }
-    return await _save(ctx, workflow_id, body.base_version, changes, "restore")
+    saved = await _save(ctx, workflow_id, body.base_version, changes, "restore")
+    await _forget_plain(ctx, workflow_id)
+    return saved
 
 
 # ── creating ─────────────────────────────────────────────────────────────────
