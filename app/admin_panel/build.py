@@ -19,7 +19,7 @@ gets one more go with the problems in plain words."""
 import json
 import time
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -103,6 +103,7 @@ def _block_info(flows: list[dict]) -> dict:
         steps = [s for s in jb(f.get("steps"), []) or [] if isinstance(s, dict)]
         out[f["intent_key"]] = {
             "id": str(f["id"]), "name": f["name"], "about": f.get("description") or "", "used_by": uses.get(f["intent_key"], 0),
+            "own": bool((jb(f.get("settings"), {}) or {}).get("copy_for")),
             "steps": [{"op": s.get("op"), "words": flow_plain.engine_words(s, names, labels)[0], "when_words": flow_plain.guard_words(s.get("when"), labels)} for s in steps],
         }  # fmt: skip
     return out
@@ -149,9 +150,43 @@ async def build_list(ctx: CtxDep):
 
 
 def _need_block_rights(ctx, row) -> None:
-    """A building block is used by many flows: only a super admin opens or changes one."""
-    if (row.get("kind") or "workflow") == "block":
+    """A building block is used by many flows: only a super admin opens or changes one. A flow's own copy of a block
+    (made with "Make a copy just for this flow") is used by that flow only, so its admins may change it."""
+    if (row.get("kind") or "workflow") == "block" and not (jb(row.get("settings"), {}) or {}).get("copy_for"):
         ctx.need_super("change a building block")
+
+
+class CopyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/build/{workflow_id}/copy_block")
+async def build_copy_block(workflow_id: UUID, body: CopyBody, ctx: CtxDep):
+    """A copy of a shared building block for this flow only: the flow's step is then pointed at the copy (in its draft),
+    so changing the copy never touches the other flows. The copy starts exactly the same as the block."""
+    flow = await fetch_one("SELECT id, name FROM workflows WHERE id = $1 AND org_id = $2", workflow_id, ctx.org_id, source_key=ctx.source_key)
+    if not flow:
+        raise HTTPException(404, "Flow not found")
+    block = await fetch_one(
+        "SELECT name FROM workflows w WHERE org_id = $1 AND intent_key = $2 AND to_jsonb(w)->>'kind' = 'block'",
+        ctx.org_id, body.key, source_key=ctx.source_key,
+    )  # fmt: skip
+    if not block:
+        raise HTTPException(404, "That building block was not found")
+    key = f"{body.key[:80]}__own_{uuid4().hex[:6]}"
+    name = f"{block['name'][:70]} (copy for {flow['name'][:40]})"
+    # every column copied as it is, except what makes it a new, separate block of this flow
+    row = await fetch_one(
+        "INSERT INTO workflows SELECT (jsonb_populate_record(NULL::workflows, to_jsonb(w) || jsonb_build_object("
+        "'id', gen_random_uuid(), 'intent_key', $3::text, 'name', $4::text, 'version', 1, 'created_at', now(), 'slash_command', NULL, "
+        "'settings', (coalesce(w.settings, '{}'::jsonb) - 'plain' - 'plain_draft' - 'plain_history') || jsonb_build_object('copy_for', $5::text, 'copy_of', $2::text)))).* "
+        "FROM workflows w WHERE w.org_id = $1 AND w.intent_key = $2 RETURNING id",
+        ctx.org_id, body.key, key, name, str(workflow_id),
+        source_key=ctx.source_key,
+    )  # fmt: skip
+    logger.info(f"build: copied block {body.key} as {key} for flow {workflow_id}")
+    return {"key": key, "id": str(row["id"]), "name": name}
 
 
 @router.get("/build/{workflow_id}")

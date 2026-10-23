@@ -85,3 +85,34 @@ def test_only_a_super_admin_opens_a_building_block():
     with pytest.raises(HTTPException):
         build._need_block_rights(C(), {"kind": "block"})
     build._need_block_rights(C(), {"kind": "workflow"})
+
+
+def test_an_admin_may_change_a_flows_own_copy_of_a_block_but_not_the_shared_one():
+    import pytest
+    from fastapi import HTTPException
+
+    class C:
+        level = "admin"
+
+        def need_super(self, what):
+            raise HTTPException(403, what)
+
+    build._need_block_rights(C(), {"kind": "block", "settings": {"copy_for": "a-flow-id"}})
+    build._need_block_rights(C(), {"kind": "block", "settings": '{"copy_for": "a-flow-id"}'})
+    with pytest.raises(HTTPException):
+        build._need_block_rights(C(), {"kind": "block", "settings": {}})
+    assert ("POST", "/build/{workflow_id}/copy_block") in access_rules.ADMIN_CALLS
+
+
+def test_a_block_says_what_it_does_how_many_flows_use_it_and_whether_it_is_a_copy():
+    flows = [
+        {"id": 1, "intent_key": "tell", "name": "Tell everyone", "kind": "block", "description": "Messages everyone.", "settings": {},
+         "entity_schema": {}, "steps": [{"op": "notify.parties", "params": {}, "when": {"field": "$fields.buttons", "equals": "yes"}}]},
+        {"id": 2, "intent_key": "tell__own_1", "name": "Tell everyone (copy)", "kind": "block", "settings": {"copy_for": "x"}, "entity_schema": {}, "steps": []},
+        {"id": 3, "intent_key": "assign", "name": "Assign", "kind": "workflow", "steps": [{"op": "run_workflow", "params": {"workflow": "tell"}}]},
+        {"id": 4, "intent_key": "close", "name": "Close", "kind": "workflow", "steps": [{"op": "run_workflow", "params": {"workflow": "tell"}}]},
+    ]  # fmt: skip
+    info = build._block_info(flows)
+    assert info["tell"]["used_by"] == 2 and info["tell"]["about"] == "Messages everyone." and not info["tell"]["own"]
+    assert info["tell"]["steps"][0]["when_words"] == "Buttons is yes"
+    assert info["tell__own_1"]["own"] and info["tell__own_1"]["used_by"] == 0

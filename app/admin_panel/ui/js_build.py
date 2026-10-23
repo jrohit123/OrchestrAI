@@ -357,11 +357,24 @@ function bdBlockBody(s, p, B) {
   return [h('div', { class: 'bd-sentence' }, h('b', null, B.name)), B.about ? h('div', { class: 'muted small' }, B.about) : null,
     given.length ? h('div', { class: 'bd-given' }, h('b', null, 'This flow gives it: '), given.map(([k, v]) => bdPretty(k) + ' = ' + short(v)).join(' · ')) : null,
     B.steps.length ? h('button', { type: 'button', class: 'bd-toggle', onclick: () => { open ? BD.open.delete(p) : BD.open.add(p); BD.paintSide(); } },
-      (open ? '▾ Hide' : '▸ Show') + ' its ' + B.steps.length + ' step' + (B.steps.length > 1 ? 's' : '') + ' · shared with ' + others + ' other flow' + (others === 1 ? '' : 's')) : null,
+      (open ? '▾ Hide' : '▸ Show') + ' its ' + B.steps.length + ' step' + (B.steps.length > 1 ? 's' : '') + (B.own ? ' · this flow’s own copy' : ' · shared with ' + others + ' other flow' + (others === 1 ? '' : 's'))) : null,
     open ? h('ol', { class: 'bd-inside' }, B.steps.map(x => h('li', { style: '--c:' + BD_CATS[BD_OPCAT[x.op] || (/^notify\./.test(x.op || '') ? 'message' : /^(db|case)\./.test(x.op || '') ? 'save' : 'info')][0] },
       x.when_words ? h('span', { class: 'bd-only' }, 'only when ' + x.when_words + ': ') : null, x.words))) : null,
-    open ? h('div', { class: 'muted small' }, isSuper() ? 'These steps are shared: changing them changes every flow that uses this block. ' : 'These steps are shared between flows: a super admin changes them.',
-      isSuper() && B.id ? h('a', { href: href('workflows', '', { f: B.id }) }, 'Open the building block') : null) : null];
+    B.own ? h('div', { class: 'small' }, '🧩 This flow’s own copy: changing its steps touches no other flow. ', B.id ? h('a', { href: href('workflows', '', { f: B.id }) }, 'Open it to change its steps') : null)
+      : [h('div', { class: 'muted small' }, isSuper() ? 'Its steps are shared: changing them changes every flow that uses this block. ' : 'Its steps are shared between flows: a super admin changes them, or make a copy just for this flow.',
+        isSuper() && B.id ? h('a', { href: href('workflows', '', { f: B.id }) }, 'Open the building block') : null),
+        h('button', { type: 'button', class: 'btn sm', onclick: () => bdCopyBlock(p, B) }, '🧩 Make a copy just for this flow')]];
+}
+// a copy of a shared block for this flow only: the step points at the copy (a draft until made live)
+async function bdCopyBlock(p, B) {
+  if (!BD.id) { toast('Make the flow live once first; then you can make a copy of a block.', 'bad'); return; }
+  if (!await confirmBox('Make a copy of “' + B.name + '” just for this flow? The other flows keep using the shared one, and you can change the copy’s steps.', { ok: 'Make a copy' })) return;
+  try {
+    const r = await api.post('/build/' + BD.id + '/copy_block', { key: B.key });
+    BD.ctx = await api.get('/build/context');
+    bdChange(d => { const x = bdGet(d, p); if (x.a === 'block') x.key = r.key; else { x.step = JSON.parse(JSON.stringify(x.step)); x.step.params = { ...(x.step.params || {}), workflow: r.key }; delete x.step.params.intent_key; } });
+    toast('This flow now uses its own copy. Make it live to start using it.', 'ok');
+  } catch (e) { toast(e.message, 'bad'); }
 }
 function bdMove(p, by) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(), arr = bdGet(d, ks.join('.')), j = i + by; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; }); }
 function bdRemove(p) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(); bdGet(d, ks.join('.')).splice(i, 1); }); }
@@ -472,7 +485,7 @@ function fxTip(p, s, o, probs, note) {
       s ? row('Uses', (inf.needs || []).length ? inf.needs.map(x => (x.ok ? '' : '⚠ ') + x.n).join(', ') : 'nothing from earlier steps') : null,
       s ? row('Gives', (inf.gives || []).length ? inf.gives.join(', ') : 'nothing new') : null,
       s ? row('Runs', o.runs || 'Always') : null,
-      B ? row('Shared', 'Used by ' + (B.used_by || 0) + ' flow' + (B.used_by === 1 ? '' : 's') + '. ' + (isSuper() ? 'Changing its steps changes all of them.' : 'A super admin changes its steps; you can make a copy just for this flow.')) : null),
+      B ? row('Shared', B.own ? 'No: this flow’s own copy.' : 'Used by ' + (B.used_by || 0) + ' flow' + (B.used_by === 1 ? '' : 's') + '. ' + (isSuper() ? 'Changing its steps changes all of them.' : 'A super admin changes its steps; you can make a copy just for this flow.')) : null),
     note ? h('div', { class: 'bd-prob warn' }, '⚠️ ' + note.text, h('div', { class: 'bd-row' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => { bdRemove(p); BD.sel = null; toast('Removed. Undo puts it back.', 'ok', { label: 'Undo', run: bdUndo }); } }, '🔧 Remove this step'))) : null,
     probs.map(pb => bdProblem(pb, p)),
     h('div', { class: 'muted small', style: { marginTop: '6px' } }, 'Click the box to change it.')));
@@ -486,7 +499,7 @@ function fxStep(s, p, num) {
   const extra = B ? [B.about ? h('div', { class: 'fx-about' }, B.about) : null,
     given.length ? h('div', { class: 'bd-given' }, h('b', null, 'This flow gives it: '), given.map(([kk, v]) => bdPretty(kk) + ' = ' + (String(typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 50))).join(' · ')) : null,
     B.steps.length ? h('button', { type: 'button', class: 'bd-toggle', onclick: e => { e.stopPropagation(); BD.open.has(p) ? BD.open.delete(p) : BD.open.add(p); BD.paintSide(); } },
-      (BD.open.has(p) ? '▾ Hide' : '▸ Show') + ' its ' + B.steps.length + ' step' + (B.steps.length > 1 ? 's' : '') + ' · shared with ' + Math.max(0, (B.used_by || 0) - 1) + ' other flow' + ((B.used_by || 0) - 1 === 1 ? '' : 's')) : null] : null;
+      (BD.open.has(p) ? '▾ Hide' : '▸ Show') + ' its ' + B.steps.length + ' step' + (B.steps.length > 1 ? 's' : '') + (B.own ? ' · this flow’s own copy' : ' · shared with ' + Math.max(0, (B.used_by || 0) - 1) + ' other flow' + ((B.used_by || 0) - 1 === 1 ? '' : 's'))) : null] : null;
   const box = fxBox(p, s, { cat, title, icon: B ? '🧩' : k.icon, words, band: runs !== 'Always' ? runs : '', runs, extra, num });
   if (!B) return box;
   return h('div', { class: 'fx-block' }, box, BD.open.has(p) ? h('ol', { class: 'bd-inside' }, B.steps.map(x => h('li', { style: '--c:' + BD_CATS[BD_OPCAT[x.op] || (/^notify\./.test(x.op || '') ? 'message' : /^(db|case)\./.test(x.op || '') ? 'save' : 'info')][0] },
@@ -554,7 +567,7 @@ function bdEditor() {
   const contract = (inf.needs || []).length || (inf.gives || []).length ? h('div', { class: 'bd-contract' },
     (inf.needs || []).length ? [h('span', { class: 'k' }, 'Uses'), inf.needs.map(x => h('span', { class: 'need ' + (x.ok ? 'ok' : 'bad') }, (x.ok ? '✓ ' : '✗ ') + x.n))] : null,
     (inf.gives || []).length ? [h('span', { class: 'k' }, 'Gives'), inf.gives.map(g => h('span', { class: 'give' }, g))] : null) : null;
-  return [head(cat, B ? B.name : s.a === 'engine' ? 'A step kept from the Advanced editor' : s.a === 'if' && bdIsOnly(s) ? 'Only if…' : k.label, B ? 'A building block: shared steps.' : k.hint),
+  return [head(cat, B ? B.name : s.a === 'engine' ? 'A step kept from the Advanced editor' : s.a === 'if' && bdIsOnly(s) ? 'Only if…' : k.label, B ? (B.own ? 'A building block: this flow’s own copy.' : 'A building block: steps shared between flows.') : k.hint),
     acts, note ? h('div', { class: 'bd-prob warn' }, '⚠️ ' + note.text, h('div', { class: 'bd-row' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => { bdRemove(p); BD.sel = null; BD.paintSide(); } }, '🔧 Remove this step'))) : null,
     BD.problems.filter(x => x.path === p).map(pb => bdProblem(pb, p)),
     h('div', { class: 'fx-ed-b' }, bdBody(s, p)), contract,
