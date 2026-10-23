@@ -48,6 +48,12 @@ for _name, _dummy in {
 for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
     os.environ[_k] = "http://127.0.0.1:9"
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+# openai.local.key next to this file (never committed): the real AI for this practice copy only. OpenAI is then the one
+# outside address it may reach; WhatsApp, Telegram and email stay blocked.
+_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "openai.local.key")
+if os.path.exists(_KEY_FILE):
+    os.environ["OPENAI_API_KEY"] = open(_KEY_FILE, encoding="utf-8").read().strip()
+    os.environ["NO_PROXY"] += ",api.openai.com"
 sys.path.insert(0, REPO)
 
 from contextlib import asynccontextmanager  # noqa: E402
@@ -83,6 +89,21 @@ app = FastAPI(title="Dashboard on the practice copy", lifespan=lifespan)
 from app.admin_panel import router as panel_router  # noqa: E402
 
 app.include_router(panel_router)
+
+# SKIP_SIGN_IN=1 (or a file named skip_signin.flag next to this one): this practice copy opens already signed in as a
+# made-up super admin, so the sign-in page never shows. Only here; the real app always asks.
+if os.environ.get("SKIP_SIGN_IN") or os.path.exists(os.path.join(os.path.dirname(__file__), "skip_signin.flag")):
+    import app.admin_panel.auth as _auth
+
+    _PRACTICE_ADMIN = _auth.Account(
+        id="00000000-0000-0000-0000-0000000000aa", email="kavya.rao@ux.test", name="Practice super admin",
+        level="super", source_keys=(), status="active",
+    )  # fmt: skip
+
+    async def _always_signed_in(token=None):
+        return _PRACTICE_ADMIN
+
+    _auth.account_for_session = _always_signed_in
 
 # ---- for the sign-in check: mail is kept here instead of sent, and chat messages are only noted
 MAILS: list = []

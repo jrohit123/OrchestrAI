@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "flow-builder-ai",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["docs/ux/tools/flow_ai_server.py"],
+      "port": 8766
+    },
+    {
       "name": "design-proto",
       "runtimeExecutable": "python",
       "runtimeArgs": [
