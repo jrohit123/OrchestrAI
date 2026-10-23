@@ -5,7 +5,7 @@ JS = r"""
 // Try it (a rehearsal on the real engine). The plain flow is what the AI and the admin edit; "Make it live" turns it
 // into engine steps on the server (build.py, flow_plain.py).
 const BD = { id: null, version: null, name: '', live: null, plain: null, versions: [], isActive: false, talk: [], log: [], pending: [],
-  problems: [], info: {}, ctx: null, busy: false, view: 'card', tech: false, undo: [], tried: null, draftSaved: true };
+  problems: [], notes: [], info: {}, ctx: null, busy: false, view: 'card', tech: false, undo: [], redo: [], open: new Set(), tried: null, draftSaved: true };
 const BD_EMPTY = () => ({ start: { type: 'chat', words: '' }, before: [], asks: [], steps: [] });
 const BD_KINDS = [['text', 'Words'], ['number', 'A number'], ['choice', 'Pick one'], ['date', 'A date'], ['time', 'A time'], ['yesno', 'Yes or no']];
 const BD_OPS = [['is', 'is'], ['not', 'is not'], ['oneof', 'is one of'], ['empty', 'is empty'], ['filled', 'is filled in'], ['more', 'is more than'], ['less', 'is less than']];
@@ -50,7 +50,7 @@ async function renderBuildList(root) {
 async function renderBuild(root, r) {
   const mine = S.renderId;
   Object.assign(BD, { id: r.q.f === 'new' ? null : r.q.f, version: null, name: '', live: null, plain: BD_EMPTY(), versions: [], isActive: false, talk: [], log: [], pending: [],
-    problems: [], info: {}, busy: false, view: 'card', undo: [], tried: null, draftSaved: true });
+    problems: [], notes: [], info: {}, busy: false, view: 'card', undo: [], redo: [], open: new Set(), tried: null, draftSaved: true });
   BD.ctx = await api.get('/build/context');
   if (BD.id) {
     try { await api.post('/build/' + BD.id + '/convert'); }
@@ -82,6 +82,7 @@ async function renderBuild(root, r) {
 // ----- every change: undo, check, keep the draft -----
 function bdChange(fn, quiet) {
   BD.undo.push(JSON.stringify(BD.plain)); if (BD.undo.length > 60) BD.undo.shift();
+  BD.redo = [];
   fn(BD.plain);
   bdAfter(quiet);
 }
@@ -95,7 +96,7 @@ async function bdCheck() {
   try {
     const r = await api.post('/build/check', { plain: BD.plain, pending_lists: BD.pending });
     if (mine !== bdCheckSeq) return;
-    BD.problems = r.problems || []; BD.info = r.info || {};
+    BD.problems = r.problems || []; BD.info = r.info || {}; BD.notes = r.notes || [];
     BD.paintSide();
   } catch (e) {}
 }
@@ -138,6 +139,8 @@ function bdTop(box) {
     h('span', { class: 'bd-sp' }), isSuper() ? h('button', { class: 'btn sm', type: 'button', onclick: () => openAdvanced(BD.id) }, 'Who can use it') : null);
   const tools = h('div', { class: 'bd-tools' },
     h('button', { class: 'btn sm', type: 'button', disabled: !BD.undo.length, onclick: bdUndo }, 'Undo'),
+    h('button', { class: 'btn sm', type: 'button', disabled: !BD.redo.length, onclick: bdRedo }, 'Redo'),
+    h('button', { class: 'btn sm', type: 'button', onclick: bdExplain }, 'Explain this flow'),
     BD.id ? h('button', { class: 'btn sm', type: 'button', onclick: bdVersions }, 'Versions (' + BD.versions.length + ')') : null);
   fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('workflows') }, '← Flows'), name, tools), spine, banner);
 }
@@ -155,7 +158,27 @@ function bdStartWords(st) {
   }
   return 'When someone writes' + (st.words ? ' “' + String(st.words).split(',')[0].trim() + '”' : '');
 }
-function bdUndo() { if (!BD.undo.length) return; BD.plain = JSON.parse(BD.undo.pop()); bdAfter(); toast('Undone.', 'ok'); }
+function bdUndo() { if (!BD.undo.length) return; BD.redo.push(JSON.stringify(BD.plain)); BD.plain = JSON.parse(BD.undo.pop()); bdAfter(); toast('Undone.', 'ok'); }
+function bdRedo() { if (!BD.redo.length) return; BD.undo.push(JSON.stringify(BD.plain)); BD.plain = JSON.parse(BD.redo.pop()); bdAfter(); toast('Done again.', 'ok'); }
+// the whole flow as numbered sentences, made from the steps themselves (no AI)
+function bdExplain() {
+  const p = BD.plain;
+  const lines = (list, path) => (list || []).map((s, i) => {
+    const sp = path + '.' + i, B = bdBlockOf(s), note = BD.notes.find(n => n.path === sp);
+    const when = s.a === 'engine' && s.when_words ? 'Only when ' + s.when_words + ': ' : '';
+    const text = B ? B.name + (B.about ? '. ' + B.about : '') : s.a === 'engine' ? (s.words || 'A step') : s.a === 'if' ? bdQ(s) : bdWords(s);
+    return h('li', null, when + text, note ? h('span', { class: 'bd-x-warn' }, ' ⚠ This never does anything here.') : null,
+      s.a === 'if' ? h('ul', null, h('li', null, h('b', null, 'If yes: '), (s.yes || []).length ? h('ol', null, lines(s.yes, sp + '.yes')) : 'nothing extra'),
+        h('li', null, h('b', null, 'Otherwise: '), (s.no || []).length ? h('ol', null, lines(s.no, sp + '.no')) : 'nothing extra')) : null);
+  });
+  modal({ title: 'This flow in plain words', wide: true, body: h('div', { class: 'stack bd-explain' },
+    h('div', null, h('b', null, 'Starts: '), bdStartWords(p.start || {})),
+    p.asks.length ? h('div', null, h('b', null, 'Asks: '), p.asks.map(a => a.label + (a.optional ? ' (can skip)' : '')).join(', ')) : null,
+    (p.before || []).length ? [h('b', null, 'Before the questions:'), h('ol', null, lines(p.before, 'before'))] : null,
+    p.report ? h('div', null, h('b', null, 'Then: '), 'looks up ' + p.report.words + ' and replies with it.') : [h('b', null, 'Then, top to bottom:'), h('ol', null, lines(p.steps, 'steps'))],
+    BD.problems.length ? notice(BD.problems.length + ' thing(s) to fix: ' + BD.problems.map(x => x.text).join(' '), 'warn') : null,
+    h('div', { class: 'muted small' }, 'Made from the steps themselves, without AI.')), actions: [{ label: 'Close' }] });
+}
 async function bdDiscard() {
   if (!await confirmBox('Throw away the draft? The flow goes back to live version ' + BD.version + '.', { ok: 'Throw it away', danger: true })) return;
   try { await api.del('/build/' + BD.id + '/draft'); } catch (e) {}
@@ -323,7 +346,7 @@ function bdCard() {
         h('div', { class: 'muted small' }, 'What it looks up is a saved question.' + (isSuper() ? ' Change it in the Advanced editor.' : ' A super admin changes it.')),
         isSuper() && BD.id ? h('div', null, h('button', { type: 'button', class: 'bd-pill', onclick: () => openAdvanced(BD.id) }, 'Open in the Advanced editor')) : null))
     : h('section', { class: 'bd-sec', id: 'bd-sec-steps' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '3'), h('b', null, 'What happens'), h('span', { class: 'hint' }, fixed ? 'Top to bottom' : 'After the questions, top to bottom')),
-      h('div', { class: 'bd-sec-b' }, bdList(p.steps, 'steps', 0)));
+      h('div', { class: 'bd-sec-b' }, bdLegend(), h('div', { class: 'muted small', style: { margin: '-2px 0 8px' } }, 'Hover a step to see what it does, what it uses and when it runs.'), bdList(p.steps, 'steps', 0)));
   return h('div', null, start, asks, steps);
 }
 function bdRename(d, old, now) {   // renaming an answer renames it wherever it is used
@@ -336,14 +359,34 @@ function bdRename(d, old, now) {   // renaming an answer renames it wherever it 
   });
   swap(d.before); swap(d.steps);
 }
+// one colour per kind of step, always shown with its word (the key sits above the steps)
+const BD_CATS = { info: ['#2563eb', 'Asks / finds', 'gets information'], decide: ['#ea580c', 'Decides', 'checks something'], calc: ['#ca8a04', 'Works out', 'sets or counts a value'],
+  save: ['#16a34a', 'Saves', 'adds or changes a record'], message: ['#db2777', 'Messages', 'tells someone'], stop: ['#dc2626', 'Stops', 'ends the flow'], block: ['#0d9488', 'Building block', 'shared steps'] };
+const BD_OPCAT = { run_workflow: 'block', 'flow.stop': 'stop', 'flow.decide': 'decide', require_permission: 'decide', 'case.authorize': 'decide', conflict_check: 'decide',
+  approval_gate: 'decide', otp_gate: 'decide', ask_approval: 'decide', derive_field: 'calc', compute: 'calc', 'flow.set': 'calc', ai_price_interpret: 'calc',
+  'flow.say': 'message', 'flow.tell': 'message', 'pdf.generate': 'message', 'case.route': 'info' };
+function bdCat(s) {
+  if (s.a === 'engine') { const op = (s.step || {}).op || ''; return BD_OPCAT[op] || (/^notify\./.test(op) ? 'message' : /^(db|case)\./.test(op) ? 'save' : 'info'); }
+  return { say: 'message', tell: 'message', find: 'info', save: 'save', set: 'calc', approve: 'decide', block: 'block', if: 'decide', stop: 'stop' }[s.a] || 'info';
+}
+function bdBlockOf(s) {    // a building block step (made here, or kept from the older editor): its name, what it does, its steps
+  const prm = s.a === 'engine' && (s.step || {}).op === 'run_workflow' ? (s.step.params || {}) : null;
+  const key = s.a === 'block' ? s.key : prm ? prm.workflow || prm.intent_key : null;
+  if (!key) return null;
+  const B = ((BD.ctx && BD.ctx.block_info) || {})[key];
+  return B ? { key, inputs: prm && prm.inputs || {}, ...B } : { key, inputs: prm && prm.inputs || {}, name: (BD.ctx.blocks || {})[key] || key, about: '', steps: [], used_by: 0 };
+}
+const bdPretty = k => String(k || '').replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+const bdLegend = () => h('div', { class: 'bd-legend' }, Object.values(BD_CATS).map(([c, w, m]) => h('span', { style: '--c:' + c, title: m }, h('i'), w)));
 function bdList(list, path, depth) {
-  return h('div', { class: 'bd-lst' }, (list || []).map((s, i) => bdStep(s, path + '.' + i, i, list.length, depth)),
+  return h('div', { class: 'bd-lst' }, (list || []).map((s, i) => bdStep(s, path + '.' + i, i, list.length, depth, path === 'steps' ? i + 1 : null)),
     (list || []).length ? null : h('div', { class: 'muted small' }, 'Nothing here yet.'),
     h('button', { type: 'button', class: 'bd-add', onclick: () => bdPick(path) }, '+ Add a step here'));
 }
-function bdStep(s, p, i, n, depth) {
+function bdStep(s, p, i, n, depth, num) {
   const k = BD_STEP[s.a] || { icon: '•', label: s.a }, inf = BD.info[p] || {}, known = inf.known || [];
-  const probs = BD.problems.filter(x => x.path === p);
+  const probs = BD.problems.filter(x => x.path === p), note = BD.notes.find(x => x.path === p), B = bdBlockOf(s);
+  const cat = B ? 'block' : bdCat(s), [color, catWord] = BD_CATS[cat];
   const at = (field, fn) => v => bdChange(d => fn(bdGet(d, p), v));
   const tools = h('div', { class: 'bd-tools' },
     h('button', { type: 'button', disabled: !i, title: 'Move up', onclick: () => bdMove(p, -1) }, '↑'),
@@ -366,10 +409,10 @@ function bdStep(s, p, i, n, depth) {
       s.a === 'find' ? [h('span', null, 'and call it'), bdInp(s.name, at('name', (x, v) => { x.name = v; }), { style: { width: '140px' } }), h('span', { class: 'muted small' }, 'for rows where')] : h('span', { class: 'muted small' }, 'with')),
       h('div', { class: 'bd-map' }, rows, addCol)];
   } else if (s.a === 'approve') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Ask everyone who is'), bdSel(roles, s.role, at('role', (x, v) => { x.role = v; })), h('span', null, 'to approve')), h('textarea', { class: 'bd-msgtxt', rows: 2, value: s.text || '', onchange: e => at('text', (x, v) => { x.text = v; })(e.target.value) }), bdChips(p, 'text', known)];
-  else if (s.a === 'block') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Use the building block'), bdSel(Object.entries(BD.ctx.blocks || {}).map(([kk, nm]) => [kk, nm]), s.key, at('key', (x, v) => { x.key = v; })))];
+  else if (s.a === 'block') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Use the building block'), bdSel(Object.entries(BD.ctx.blocks || {}).map(([kk, nm]) => [kk, nm]), s.key, at('key', (x, v) => { x.key = v; }))), B ? bdBlockBody(s, p, B).slice(1) : null];
   else if (s.a === 'stop') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Stop here'), h('span', { class: 'muted small' }, 'nothing after this runs'))];
+  else if (B) body = bdBlockBody(s, p, B);
   else if (s.a === 'engine') body = [h('div', { class: 'bd-sentence' }, h('b', null, s.words || 'A step')),
-    s.when_words ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'Only when '), s.when_words) : null,
     h('div', { class: 'muted small' }, 'Kept exactly as it was made in the Advanced editor. You can move or remove it here' + (isSuper() ? '; its settings change in the Advanced editor.' : '.')),
     isSuper() && BD.id ? h('button', { type: 'button', class: 'bd-pill', onclick: () => openAdvanced(BD.id) }, 'Open in the Advanced editor') : null];
   else if (s.a === 'if') {
@@ -390,8 +433,42 @@ function bdStep(s, p, i, n, depth) {
   const contract = (inf.needs || []).length || (inf.gives || []).length ? h('div', { class: 'bd-contract' },
     (inf.needs || []).length ? [h('span', { class: 'k' }, 'Needs'), inf.needs.map(x => h('span', { class: 'need ' + (x.ok ? 'ok' : 'bad') }, (x.ok ? '✓ ' : '✗ ') + x.n))] : null,
     (inf.gives || []).length ? [h('span', { class: 'k' }, 'Gives'), inf.gives.map(g => h('span', { class: 'give' }, g))] : null) : null;
-  return h('div', { class: 'bd-step' + (s.a === 'if' ? ' bd-if' : '') + (probs.length ? ' bad' : ''), id: 'bd-n-' + p },
-    h('div', { class: 'bd-step-h' }, h('span', { class: 'ic' }, k.icon), h('div', { class: 'grow' }, body, contract, probs.map(pb => bdProblem(pb, p)), BD.tech ? h('div', { class: 'bd-tech' }, JSON.stringify({ ...s, yes: undefined, no: undefined })) : null), tools));
+  const runs = bdRunsWords(s, B);
+  return h('div', { class: 'bd-step' + (s.a === 'if' ? ' bd-if' : '') + (probs.length ? ' bad' : ''), id: 'bd-n-' + p, style: '--c:' + color },
+    num ? h('span', { class: 'bd-num' }, num) : null,
+    note ? h('div', { class: 'bd-band never' }, '✗ Never does anything here') : runs !== 'Always' ? h('div', { class: 'bd-band' }, '⚡ ' + runs) : null,
+    h('div', { class: 'bd-step-h' }, h('span', { class: 'ic' }, B ? '🧩' : k.icon), h('div', { class: 'grow' }, h('span', { class: 'bd-cat' }, catWord), body, contract,
+      note ? h('div', { class: 'bd-prob warn' }, '⚠️ ' + note.text, h('div', { class: 'bd-row' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => { bdRemove(p); toast('Removed. Undo puts it back.', 'ok', { label: 'Undo', run: bdUndo }); } }, '🔧 Remove this step'))) : null,
+      probs.map(pb => bdProblem(pb, p)), BD.tech ? h('div', { class: 'bd-tech' }, JSON.stringify({ ...s, yes: undefined, no: undefined })) : null), tools),
+    bdTip(s, inf, B, runs, catWord));
+}
+// when a step runs, in words: its own "only when", and for a building block what its steps wait for
+function bdRunsWords(s, B) {
+  const parts = [];
+  if (s.a === 'engine' && s.when_words) parts.push('Only when ' + s.when_words);
+  if (B && B.steps.length && B.steps.every(x => x.when_words)) parts.push('Inside, it only acts when ' + [...new Set(B.steps.map(x => x.when_words))].join(', or '));
+  return parts.length ? parts.join('. ') : 'Always';
+}
+function bdBlockBody(s, p, B) {
+  const open = BD.open.has(p), others = Math.max(0, (B.used_by || 0) - 1), given = Object.entries(B.inputs || {});
+  const short = v => { const t = typeof v === 'string' ? v : JSON.stringify(v); return t.length > 60 ? t.slice(0, 58) + '…' : t; };
+  return [h('div', { class: 'bd-sentence' }, h('b', null, B.name)), B.about ? h('div', { class: 'muted small' }, B.about) : null,
+    given.length ? h('div', { class: 'bd-given' }, h('b', null, 'This flow gives it: '), given.map(([k, v]) => bdPretty(k) + ' = ' + short(v)).join(' · ')) : null,
+    B.steps.length ? h('button', { type: 'button', class: 'bd-toggle', onclick: () => { open ? BD.open.delete(p) : BD.open.add(p); BD.paintSide(); } },
+      (open ? '▾ Hide' : '▸ Show') + ' its ' + B.steps.length + ' step' + (B.steps.length > 1 ? 's' : '') + ' · shared with ' + others + ' other flow' + (others === 1 ? '' : 's')) : null,
+    open ? h('ol', { class: 'bd-inside' }, B.steps.map(x => h('li', { style: '--c:' + BD_CATS[BD_OPCAT[x.op] || (/^notify\./.test(x.op || '') ? 'message' : /^(db|case)\./.test(x.op || '') ? 'save' : 'info')][0] },
+      x.when_words ? h('span', { class: 'bd-only' }, 'only when ' + x.when_words + ': ') : null, x.words))) : null,
+    open ? h('div', { class: 'muted small' }, isSuper() ? 'These steps are shared: changing them changes every flow that uses this block. ' : 'These steps are shared between flows: a super admin changes them.',
+      isSuper() && B.id ? h('a', { href: href('workflows', '', { f: B.id }) }, 'Open the building block') : null) : null];
+}
+// hover: what it does, what it uses and gives, and when it runs
+function bdTip(s, inf, B, runs, catWord) {
+  const k = BD_STEP[s.a] || {};
+  const what = B ? (B.about || B.name) : s.a === 'engine' ? (s.words || 'A step') : s.a === 'if' ? 'Checks: ' + bdQ(s) : (k.label || '') + (k.hint ? ': ' + k.hint.toLowerCase() : '');
+  const needs = (inf.needs || []).map(x => (x.ok ? '' : '⚠ ') + x.n), gives = inf.gives || [];
+  const row = (a, b) => h('tr', null, h('td', null, a), h('td', null, b));
+  return h('div', { class: 'bd-tip' }, h('table', null, row('Kind', catWord), row('What it does', what), row('Uses', needs.length ? needs.join(', ') : 'nothing from earlier steps'),
+    row('Gives', gives.length ? gives.join(', ') : 'nothing new'), row('Runs', runs), B ? row('Shared', 'Used by ' + (B.used_by || 0) + ' flow' + (B.used_by === 1 ? '' : 's') + '. ' + (isSuper() ? 'Changing its steps changes all of them.' : 'A super admin changes its steps.')) : null));
 }
 function bdMove(p, by) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(), arr = bdGet(d, ks.join('.')), j = i + by; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; }); }
 function bdRemove(p) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(); bdGet(d, ks.join('.')).splice(i, 1); }); }

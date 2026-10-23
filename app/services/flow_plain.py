@@ -349,6 +349,64 @@ def engine_words(step: dict, names: dict, labels: dict) -> tuple[str, str]:
     return re.sub(r"‹([^›]+)›", named, describe_step(step, names)), guard_words(step.get("when"), labels)
 
 
+def _fixed(cond, given: dict):
+    """True or False when a "when" condition depends only on values a flow hands a building block, else None."""
+    if not isinstance(cond, dict):
+        return None
+    if "and" in cond or "or" in cond:
+        vals = [_fixed(c, given) for c in cond.get("and") or cond.get("or") or []]
+        if "and" in cond:
+            return False if False in vals else True if vals and all(v is True for v in vals) else None
+        return True if True in vals else False if vals and all(v is False for v in vals) else None
+    if "not" in cond:
+        v = _fixed(cond["not"], given)
+        return None if v is None else not v
+    f = str(cond.get("field") or "")
+    if not f.startswith("$fields.") or f[len("$fields.") :] not in given:
+        return None
+    v = given[f[len("$fields.") :]]
+    if isinstance(v, str) and ("$" in v or "{" in v):  # filled in while it runs
+        return None
+    if "equals" in cond:
+        return str(v) == str(cond["equals"])
+    if "not_equals" in cond:
+        return str(v) != str(cond["not_equals"])
+    if "in" in cond:
+        return str(v) in [str(x) for x in cond["in"]]
+    if "not_in" in cond:
+        return str(v) not in [str(x) for x in cond["not_in"]]
+    if "exists" in cond:
+        return bool(v) == bool(cond["exists"])
+    return None
+
+
+def never_runs(plain: dict, blocks: dict) -> list[dict]:
+    """Steps that run a building block whose every step waits for something this flow never gives it, so they do
+    nothing: [{path, text}]. blocks: {intent_key: the block's engine steps}."""
+    import json
+
+    out = []
+
+    def walk(steps, base):
+        for i, s in enumerate(steps or []):
+            p = f"{base}.{i}"
+            st = s.get("step") or {}
+            if s.get("a") == "engine" and st.get("op") == "run_workflow":
+                prm = st.get("params") or {}
+                given = prm.get("inputs") if isinstance(prm.get("inputs"), dict) else {}
+                inner = [x for x in blocks.get(prm.get("workflow") or prm.get("intent_key")) or [] if isinstance(x, dict)]
+                if given and inner and all(_fixed(x.get("when"), given) is False for x in inner):
+                    shown = ", ".join(f"{_pretty(k)} = {v}" for k, v in given.items() if any(f'"$fields.{k}"' in json.dumps(x.get("when")) for x in inner))
+                    out.append({"path": p, "text": "This step never does anything here: every step inside it waits for something this flow never gives it"
+                                + (f" (this flow gives {shown})" if shown else "") + "."})  # fmt: skip
+            walk(s.get("yes"), p + ".yes")
+            walk(s.get("no"), p + ".no")
+
+    walk(plain.get("before"), "before")
+    walk(plain.get("steps"), "steps")
+    return out
+
+
 def refresh_words(plain: dict, names: dict) -> dict:
     """The words of the kept steps, worked out again (block names or question labels may have changed)."""
     labels = {ask_key(a): a["label"] for a in plain.get("asks") or [] if a.get("label")}

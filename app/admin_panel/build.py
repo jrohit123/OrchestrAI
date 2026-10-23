@@ -76,7 +76,40 @@ async def _people(ctx) -> list[dict]:
 async def build_context(ctx: CtxDep):
     c = await _context(ctx)
     return {"lists": c["lists"], "roles": c["roles"], "blocks": c["blocks"], "people": await _people(ctx),
-            "can_add_lists": bool(ctx.caps.get("schema_editor"))}  # fmt: skip
+            "block_info": _block_info(await _all_flows(ctx)), "can_add_lists": bool(ctx.caps.get("schema_editor"))}  # fmt: skip
+
+
+def _calls(steps) -> list[str]:
+    """The building blocks a list of engine steps runs."""
+    return [
+        str((s.get("params") or {}).get("workflow") or (s.get("params") or {}).get("intent_key"))
+        for s in steps if isinstance(s, dict) and s.get("op") == "run_workflow"
+    ]  # fmt: skip
+
+
+def _block_info(flows: list[dict]) -> dict:
+    """Each building block in words, for the Card: what it is for, its steps (and when each runs), how many flows use it."""
+    names = {f["intent_key"]: f["name"] for f in flows}
+    uses: dict = {}
+    for f in flows:
+        for k in set(_calls(jb(f.get("steps"), []) or [])):
+            uses[k] = uses.get(k, 0) + 1
+    out = {}
+    for f in flows:
+        if (f.get("kind") or "workflow") != "block":
+            continue
+        schema = jb(f.get("entity_schema"), {}) or {}
+        labels = {k: v.get("label") or flow_plain._pretty(k) for k, v in schema.items() if isinstance(v, dict)}
+        steps = [s for s in jb(f.get("steps"), []) or [] if isinstance(s, dict)]
+        out[f["intent_key"]] = {
+            "id": str(f["id"]), "name": f["name"], "about": f.get("description") or "", "used_by": uses.get(f["intent_key"], 0),
+            "steps": [{"op": s.get("op"), "words": flow_plain.engine_words(s, names, labels)[0], "when_words": flow_plain.guard_words(s.get("when"), labels)} for s in steps],
+        }  # fmt: skip
+    return out
+
+
+def _block_steps(flows: list[dict]) -> dict:
+    return {f["intent_key"]: jb(f.get("steps"), []) or [] for f in flows if (f.get("kind") or "workflow") == "block"}
 
 
 async def _all_flows(ctx) -> list[dict]:
@@ -449,7 +482,8 @@ async def build_check(body: CheckBody, ctx: CtxDep):
     c = await _context(ctx)
     plain = _clean(body.plain, None)
     problems, info = flow_plain.analyse(plain, _lists_with(c["lists"], body.pending_lists), set(c["roles"]), set(c["blocks"]))
-    return {"problems": problems, "info": info}
+    # notes do not stop it going live: a step that never does anything is harmless, only confusing
+    return {"problems": problems, "info": info, "notes": flow_plain.never_runs(plain, _block_steps(await _all_flows(ctx)))}
 
 
 class TryBody(BaseModel):

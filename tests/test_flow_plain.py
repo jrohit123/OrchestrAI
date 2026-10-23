@@ -211,3 +211,35 @@ def test_a_building_block_and_a_ticket_button_keep_their_start():
     button, _ = flow_plain.from_workflow({**OLD_COMPLAINT, "kind": "case_action"}, {})
     assert block["start"]["type"] == "block" and button["start"]["type"] == "button"
     assert flow_plain.compile_flow(button, {})["training_phrases"] == OLD_COMPLAINT["training_phrases"]
+
+
+# a step that runs a building block whose every step waits for a value this flow never gives it (the live
+# "Assign a ticket": it sends Buttons = yes to both "tell everyone" blocks, so the one without buttons never acts)
+TELL_PLAIN = [{"op": "notify.parties", "params": {}, "when": {"field": "$fields.tell_buttons", "not_equals": "yes"}}]
+TELL_BUTTONS = [{"op": "notify.parties", "params": {}, "when": {"field": "$fields.tell_buttons", "equals": "yes"}}]
+
+
+def _call(key, **inputs):
+    return {"a": "engine", "step": {"op": "run_workflow", "params": {"workflow": key, "inputs": inputs}}, "words": key}
+
+
+def test_a_building_block_that_never_acts_here_is_named_with_the_value_it_waits_for():
+    plain = {"start": {"type": "chat"}, "asks": [], "steps": [_call("tell_buttons", tell_buttons="yes"), _call("tell_plain", tell_buttons="yes")]}
+    notes = flow_plain.never_runs(plain, {"tell_buttons": TELL_BUTTONS, "tell_plain": TELL_PLAIN})
+    assert [n["path"] for n in notes] == ["steps.1"]
+    assert "Tell buttons = yes" in notes[0]["text"]
+
+
+def test_a_block_whose_condition_depends_on_the_run_is_not_named():
+    plain = {"start": {"type": "chat"}, "asks": [], "steps": [_call("tell_plain", tell_buttons="$fields.buttons"), _call("tell_plain")]}
+    assert flow_plain.never_runs(plain, {"tell_plain": TELL_PLAIN}) == []
+    inside_a_lane = {"start": {"type": "chat"}, "asks": [], "steps": [{"a": "if", "tests": [], "yes": [_call("tell_plain", tell_buttons="yes")], "no": []}]}
+    assert [n["path"] for n in flow_plain.never_runs(inside_a_lane, {"tell_plain": TELL_PLAIN})] == ["steps.0.yes.0"]
+
+
+def test_fixed_conditions_follow_and_or_not():
+    given = {"a": "yes", "b": "no"}
+    assert flow_plain._fixed({"and": [{"field": "$fields.a", "equals": "yes"}, {"field": "$fields.b", "equals": "yes"}]}, given) is False
+    assert flow_plain._fixed({"or": [{"field": "$fields.a", "equals": "yes"}, {"field": "$case.x", "exists": True}]}, given) is True
+    assert flow_plain._fixed({"not": {"field": "$fields.b", "in": ["no"]}}, given) is False
+    assert flow_plain._fixed({"field": "$case.status", "equals": "open"}, given) is None

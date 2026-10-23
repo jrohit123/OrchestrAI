@@ -101,6 +101,29 @@ CSS = r"""
 .bd-acts button{text-align:left;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:8px 9px;cursor:pointer;color:var(--ink)}
 .bd-acts button:hover{border-color:var(--brand)}
 .bd-acts small{display:block;color:var(--muted)}
+/* colour per kind of step (always with its word), step numbers, "only when" bands, building blocks, hover info */
+.bd-legend{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;font-size:12px}
+.bd-legend span{display:inline-flex;gap:5px;align-items:center;border:1px solid var(--line);border-radius:99px;padding:1px 9px 1px 4px;background:var(--surface)}
+.bd-legend i{width:11px;height:11px;border-radius:50%;background:var(--c)}
+.bd-step{position:relative;border-left:5px solid var(--c,var(--line));background:color-mix(in srgb,var(--c,transparent) 5%,var(--bg))}
+.bd-cat{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:#fff;background:var(--c);border-radius:6px;padding:0 7px;line-height:18px}
+.bd-num{position:absolute;left:-30px;top:8px;width:22px;height:22px;border-radius:50%;background:var(--ink);color:var(--bg);font-size:11px;font-weight:700;display:grid;place-items:center}
+.bd-lst:has(> .bd-step > .bd-num){padding-left:26px}
+.bd-band{margin:-8px -10px 6px -10px;padding:3px 10px;border-radius:0 11px 0 0;font-size:12px;font-weight:600;background:var(--warn-soft);color:var(--t-warn)}
+.bd-band.never{background:var(--bad-soft);color:var(--t-bad)}
+.bd-prob.warn{background:var(--warn-soft)}
+.bd-given{font-size:12.5px;margin-top:4px;border:1px dashed var(--line);border-radius:8px;padding:3px 8px;background:var(--surface)}
+.bd-toggle{border:0;background:none;color:#0d9488;font-weight:600;font-size:12.5px;padding:2px 0;cursor:pointer}
+.bd-inside{margin:4px 0;padding-left:22px;font-size:13px}
+.bd-inside li{margin:3px 0;padding-left:6px;border-left:3px solid var(--c)}
+.bd-only{color:var(--t-warn);font-weight:600}
+.bd-tip{visibility:hidden;opacity:0;position:absolute;left:-1px;top:100%;margin-top:4px;z-index:30;width:min(420px,90vw);background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh2,0 10px 30px rgba(0,0,0,.2));padding:8px 12px;font-size:13px;transition:opacity .1s,visibility 0s .1s;pointer-events:none}
+.bd-step:hover:not(:has(.bd-step:hover)) > .bd-tip{visibility:visible;opacity:1;transition:opacity .15s .5s,visibility 0s .5s}
+.bd-tip table{border-collapse:collapse;width:100%}
+.bd-tip td{padding:2px 0;vertical-align:top}
+.bd-tip td:first-child{color:var(--muted);font-weight:600;width:96px}
+.bd-x-warn{color:var(--t-warn);font-weight:600}
+.bd-explain ol{margin:4px 0;padding-left:22px}.bd-explain li{margin:3px 0}.bd-explain ul{list-style:none;padding-left:8px;margin:2px 0}
 /* the Map */
 .mp{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px 12px;display:flex;flex-direction:column;align-items:center}
 .mp-node{display:block;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 12px;width:100%;max-width:380px;text-align:left;color:var(--ink);cursor:pointer}
