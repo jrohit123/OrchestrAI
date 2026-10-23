@@ -116,3 +116,11 @@ def test_a_block_says_what_it_does_how_many_flows_use_it_and_whether_it_is_a_cop
     assert info["tell"]["used_by"] == 2 and info["tell"]["about"] == "Messages everyone." and not info["tell"]["own"]
     assert info["tell"]["steps"][0]["when_words"] == "Buttons is yes"
     assert info["tell__own_1"]["own"] and info["tell__own_1"]["used_by"] == 0
+
+
+def test_an_admin_may_delete_a_flow_from_the_editor_with_the_usual_checks():
+    import inspect
+
+    assert ("DELETE", "/build/{workflow_id}") in access_rules.ADMIN_CALLS
+    src = inspect.getsource(build.build_delete)
+    assert "_need_block_rights" in src and "delete_workflow(" in src  # blocks stay with super admins; same checks as the Flows list

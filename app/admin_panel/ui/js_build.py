@@ -35,7 +35,8 @@ async function renderBuildList(root) {
     const d = await api.get('/build');
     const card = w => h('a', { class: 'card bd-card', href: href('workflows', '', { f: w.id }) },
       h('b', null, w.name), h('div', { class: 'muted small' }, (w.start && w.start.type === 'time' ? 'Runs by itself' : 'When someone writes' + (w.start && w.start.words ? ' “' + String(w.start.words).split(',')[0].trim() + '”' : ''))),
-      h('div', null, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : '')));
+      h('div', { class: 'row' }, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : ''),
+        h('button', { class: 'btn sm ghost danger', type: 'button', title: 'Delete this flow', onclick: e => { e.preventDefault(); e.stopPropagation(); bdDeleteFlow(w, () => renderBuildList(root)); } }, '🗑')));
     // a flow made in the Flows editor opens here after one check: its steps stay exactly as they are
     const other = w => h('div', { class: 'card bd-card' + (w.ok ? '' : ' bd-card-off') }, h('b', null, w.name),
       w.ok ? h('div', { class: 'muted small' }, 'Opening it changes nothing it does.') : h('div', { class: 'muted small' }, w.why),
@@ -145,8 +146,26 @@ function bdTop(box) {
     h('button', { class: 'btn sm', type: 'button', disabled: !BD.undo.length, onclick: bdUndo }, 'Undo'),
     h('button', { class: 'btn sm', type: 'button', disabled: !BD.redo.length, onclick: bdRedo }, 'Redo'),
     h('button', { class: 'btn sm', type: 'button', onclick: bdExplain }, 'Explain this flow'),
-    BD.id ? h('button', { class: 'btn sm', type: 'button', onclick: bdVersions }, 'Versions (' + BD.versions.length + ')') : null);
+    BD.id ? h('button', { class: 'btn sm', type: 'button', onclick: bdVersions }, 'Versions (' + BD.versions.length + ')') : null,
+    BD.id ? h('button', { class: 'btn sm danger', type: 'button', onclick: () => bdDeleteFlow({ id: BD.id, name: BD.name, is_active: BD.isActive }, () => go('workflows')) }, '🗑 Delete') : null);
   fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('workflows') }, '← Flows'), name, tools), spine, banner);
+}
+// delete a flow: it must be switched off, no other flow may use it, and it must not have made tickets (the server
+// checks all of it); a copy stays in the history
+async function bdDeleteFlow(w, after) {
+  if (w.is_active && !isSuper()) { toast('“' + w.name + '” is switched on, so people use it. A super admin switches it off first; then you can delete it.', 'bad'); return; }
+  const on = w.is_active;
+  if (!await confirmBox((on ? '“' + w.name + '” is switched on, so people use it right now. Switch it off and delete it?' : 'Delete “' + w.name + '”?') +
+    ' It goes out of the Flows list for good; a copy is kept in the history.', { ok: on ? 'Switch off and delete' : 'Delete', danger: true })) return;
+  try {
+    if (on) await api.post('/workflows/' + w.id + '/active', { is_active: false });
+    await api.del('/build/' + w.id);
+    try { sessionStorage.removeItem('build:' + w.id); } catch (e) {}
+    BD.draftSaved = true; toast('Deleted “' + w.name + '”.', 'ok'); after && after();
+  } catch (e) {
+    if (on) { try { await api.post('/workflows/' + w.id + '/active', { is_active: true }); } catch (x) {} }   // it could not go: it stays as it was
+    toast(e.message, 'bad');
+  }
 }
 function bdLiveBtn(ready) {
   const why = !BD.plain.report && !bdCount(BD.plain.steps) && !bdCount(BD.plain.before) ? 'Nothing to make live yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
@@ -282,10 +301,10 @@ function bdSide(box) {
       } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; }
     } }, 'Create it')));
   const loose = BD.problems.filter(p => !p.path || !bdGet(BD.plain, p.path));
-  const tabs = h('div', { class: 'bd-tabs' }, [['flow', '🧭 The flow'], ['try', '📱 Try it']].map(([k, l]) =>
+  const tabs = h('div', { class: 'bd-tabs' }, [['flow', '🛠️ Builder'], ['map', '🗺️ Map'], ['chart', '📊 Simple chart'], ['try', '📱 Try it']].map(([k, l]) =>
     h('button', { type: 'button', class: BD.view === k ? 'on' : '', onclick: () => { BD.view = k; BD.paintSide(); } }, l)),
     h('span', { class: 'bd-sp' }), h('button', { type: 'button', class: BD.chat ? 'on' : '', title: 'Build or change it by chatting with the AI', onclick: () => { BD.chat = !BD.chat; BD.paint(); } }, BD.chat ? '🤖 Hide the AI chat' : '🤖 Build with the AI'));
-  const view = BD.view === 'try' ? bdTry() : bdFlowView();
+  const view = BD.view === 'try' ? bdTry() : BD.view === 'map' ? bdMap() : BD.view === 'chart' ? bdChart(BD.plain) : bdFlowView();
   fill(box, lists.length ? h('div', { class: 'bd-lists' }, h('div', { class: 'muted small' }, 'The flow needs these lists. Create them to make it live.'), lists) : null,
     loose.length ? h('div', { class: 'bd-probs' }, h('b', null, 'Not ready yet'), h('ul', null, loose.map(p => h('li', null, p.text))), h('div', { class: 'muted small' }, 'Click the red box in the flow to fix it, or tell the AI.')) : null,
     tabs, view);
@@ -430,7 +449,7 @@ function bdWords(s) {
   return ({ say: 'Reply to them: “' + (s.text || '').slice(0, 70) + ((s.text || '').length > 70 ? '…' : '') + '”', tell: 'Tell everyone who is ' + (s.role || '?') + (s.text ? ': “' + s.text.slice(0, 60) + (s.text.length > 60 ? '…' : '') + '”' : ''), set: (s.name || '?') + ' = ' + (s.value || ''),
     _look: 'Look up: ' + ((BD.plain.report || {}).words || 'the saved question'),
     _reply: (BD.plain.report || {}).format === 'list' ? 'Reply with the list it found' : 'Reply with what it found (written up by the AI)',
-    engine: (s.words || 'A step') + (s.when_words ? ' (only when ' + s.when_words + ')' : ''),
+    engine: (bdBlockOf(s) ? '🧩 ' + bdBlockOf(s).name : (s.words || 'A step')) + (s.when_words ? ' (only when ' + s.when_words + ')' : ''),
     _ask: 'Ask: ' + BD.plain.asks.map(a => a.label).join(', '), find: 'Look in ' + (s.list || '?'), save: 'Save in ' + (s.list || '?'), approve: 'Ask ' + (s.role || '?') + ' to approve', block: 'Run “' + (blocks[s.key] || s.key) + '”' })[s.a] || s.a;
 }
 // ----- the flow as one chart (like the prototype): coloured boxes top to bottom, + on every line, checks split
@@ -736,6 +755,60 @@ function bdAskEdit(i) {
       h('button', { type: 'button', class: 'btn sm', disabled: i >= BD.plain.asks.length - 1, onclick: () => { bdChange(d => { [d.asks[i + 1], d.asks[i]] = [d.asks[i], d.asks[i + 1]]; }); BD.sel = 'asks.' + (i + 1); BD.paintSide(); } }, '↓'),
       h('button', { type: 'button', class: 'btn sm danger', onclick: () => { bdChange(d => { d.asks.splice(i, 1); }); BD.sel = null; BD.paintSide(); } }, '🗑 Remove the question')),
     BD.tech ? h('div', { class: 'bd-tech' }, '$fields.' + (a.key || bdLabelKey(a.label))) : null);
+}
+
+// ----- the Map: the same flow as boxes and lanes; click a box to change it -----
+function bdMap() {
+  const L = () => h('div', { class: 'mp-link' });
+  const node = (p, title, text, cls, color) => h('button', { type: 'button', class: 'mp-node' + (cls ? ' ' + cls : '') + (BD.problems.some(x => x.path === p) ? ' bad' : ''), style: color ? '--c:' + color : null, onclick: () => bdGo(p) }, h('span', { class: 't' }, title), text);
+  const seq = (arr, base) => (arr || []).map((s, i) => {
+    const p = base + '.' + i, k = BD_STEP[s.a] || { icon: '•', label: s.a };
+    if (s.a === 'if') return [L(), h('button', { type: 'button', class: 'mp-q', onclick: () => bdGo(p) }, '🔀 ' + bdQ(s)),
+      h('div', { class: 'mp-lanes' }, h('div', { class: 'mp-lane' }, h('span', { class: 'ch-yes' }, '✓ Yes'), seq(s.yes, p + '.yes').length ? seq(s.yes, p + '.yes') : h('span', { class: 'muted small' }, 'nothing')),
+        h('div', { class: 'mp-lane' }, h('span', { class: 'ch-no' }, '✗ Otherwise'), seq(s.no, p + '.no').length ? seq(s.no, p + '.no') : h('span', { class: 'muted small' }, 'nothing')))];
+    if (s.a === 'stop') return [L(), node(p, '⛔ Stop', 'End', 'end')];
+    const B = bdBlockOf(s), [color, word] = BD_CATS[B ? 'block' : bdCat(s)];
+    return [L(), node(p, B ? '🧩 Building block' : s.a === 'engine' ? word : k.icon + ' ' + k.label, bdWords(s).replace(/^🧩 /, ''), '', color)];
+  });
+  const p = BD.plain;
+  return h('div', { class: 'mp' }, node('start', '▶ Starts', bdStartWords(p.start || {}), 'start'),
+    (p.before || []).length ? [L(), h('div', { class: 'mp-band' }, 'Before the questions'), seq(p.before, 'before')] : null,
+    p.asks.length ? [L(), node('asks', '❓ Asks', p.asks.map(a => a.label).join(' · '))] : null,
+    p.report ? [L(), node('steps', '🔎 Looks up', p.report.words), L(), node('steps', '💬 Replies', p.report.format === 'list' ? 'With the list it found' : 'With what it found, written up by the AI')] : seq(p.steps, 'steps'),
+    L(), h('div', { class: 'mp-node end' }, '■ Done'), h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it in the Builder.'));
+}
+
+function bdChart(plain) {
+  const A = () => h('div', { class: 'ch-arrow' }, '↓');
+  const box = (t, cls, p) => h(p ? 'button' : 'div', { class: 'ch-box' + (cls ? ' ' + cls : '') + (p && BD.problems.some(x => x.path === p) ? ' bad' : ''), type: p ? 'button' : null, onclick: p ? () => bdGo(p) : null }, t);
+  const ends = l => l && l.length && l[l.length - 1].a === 'stop';
+  const lane = (label, cls, kids) => h('div', { class: 'ch-lane' }, h('span', { class: cls }, label), kids);
+  const seq = (arr, end) => {
+    const out = [];
+    for (let i = 0; i < (arr || []).length; i++) {
+      const s = arr[i], rest = arr.slice(i + 1);
+      if (s.a === 'if') {
+        const ys = ends(s.yes), ns = ends(s.no);
+        out.push(A(), h('button', { type: 'button', class: 'ch-q', onclick: () => bdGo(s.__p) }, bdQ(s)));
+        if (ys !== ns) { out.push(h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(ys ? s.yes : (s.yes || []).concat(rest), !ys && end)), lane('No', 'ch-no', seq(ns ? s.no : (s.no || []).concat(rest), !ns && end)))); return out; }
+        out.push(h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(s.yes, false).length ? seq(s.yes, false) : h('div', { class: 'ch-join' }, 'nothing extra')),
+          lane('No', 'ch-no', seq(s.no, false).length ? seq(s.no, false) : h('div', { class: 'ch-join' }, 'nothing extra'))), h('div', { class: 'ch-join' }, 'then both go on'));
+        continue;
+      }
+      if (s.a === 'approve') { out.push(A(), box(bdWords(s) + ': approved?', 'ch-q', s.__p), h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(rest, end)), lane('No', 'ch-no', [A(), box('End', 'ch-end')]))); return out; }
+      if (s.a === 'stop') { out.push(A(), box('End', 'ch-end')); return out; }
+      out.push(A(), box(bdWords(s), '', s.__p));
+    }
+    if (end) out.push(A(), box('Done', 'ch-end'));
+    return out;
+  };
+  if (!plain.report && !plain.asks.length && !plain.steps.length && !(plain.before || []).length) return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow will appear here'), h('div', { class: 'muted' }, 'Start by telling the AI what it should do.'));
+  // each step remembers where it is, so a click opens it in the Card
+  const tag = (l, base) => (l || []).map((s, i) => ({ ...s, __p: base + '.' + i, yes: tag(s.yes, base + '.' + i + '.yes'), no: tag(s.no, base + '.' + i + '.no') }));
+  const all = plain.report ? [...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), { a: '_look', __p: 'steps' }, { a: '_reply', __p: 'steps' }]
+    : [...tag(plain.before, 'before'), ...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), ...tag(plain.steps, 'steps')];
+  return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow at a glance'), box('▶ ' + bdStartWords(plain.start || {}), 'ch-start', 'start'), seq(all, true),
+    h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it.'));
 }
 
 // ----- Try it: the real engine, as one of your people; nothing is saved and nobody is messaged -----

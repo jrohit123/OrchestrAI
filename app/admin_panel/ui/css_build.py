@@ -1,4 +1,4 @@
-"""Styles for the Flows editor (classes start with bd-, fx- and bt-)."""
+"""Styles for the Flows editor (classes start with bd-, fx-, mp-, ch- and bt-)."""
 
 CSS = r"""
 .bd-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
@@ -180,6 +180,35 @@ CSS = r"""
 .fx-run{border:1px solid color-mix(in srgb,#ea580c 40%,var(--line));background:color-mix(in srgb,#ea580c 5%,var(--surface));border-radius:10px;padding:8px 10px;font-size:13px}
 .bd-flab{font-weight:600;font-size:13px;margin-top:4px}
 .btn.danger{color:var(--t-bad)}
+/* the Map */
+.mp{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px 12px;display:flex;flex-direction:column;align-items:center}
+.mp-node{display:block;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 12px;width:100%;max-width:380px;text-align:left;color:var(--ink);cursor:pointer}
+.mp-node:hover{border-color:var(--brand)} .mp-node.bad{border-color:var(--bad)}
+.mp-node .t{display:block;font-size:12px;color:var(--muted);font-weight:600}
+.mp-node[style]{border-left:5px solid var(--c)}
+.mp-node[style] .t{color:var(--c)}
+.mp-node.start{background:var(--brand-soft);border-color:var(--brand)}
+.mp-node.end{width:auto;background:var(--sunken);cursor:default}
+.mp-link{width:2px;height:16px;background:var(--brand);opacity:.45;flex:none}
+.mp-band{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.mp-q{background:var(--warn-soft);border:1px solid var(--warn);border-radius:10px;padding:6px 14px;font-size:13px;max-width:380px;cursor:pointer;color:var(--ink)}
+.mp-lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;width:100%;margin-top:6px;border-top:2px solid var(--line);padding-top:8px}
+.mp-lane{display:flex;flex-direction:column;align-items:center;min-width:0}
+/* the simple chart */
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:20px 14px 26px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.ch-title{font-weight:700;font-size:16px;margin-bottom:12px}
+.ch-box{background:var(--bg);border:2px solid var(--line);border-radius:12px;padding:8px 14px;min-width:180px;max-width:320px;font-weight:600;color:var(--ink);font:inherit;font-weight:600}
+button.ch-box{cursor:pointer} button.ch-box:hover{border-color:var(--brand)}
+.ch-box.bad{border-color:var(--bad)}
+.ch-start{background:var(--brand);border-color:var(--brand);color:var(--on-brand);border-radius:99px}
+.ch-end{background:var(--sunken);border-radius:99px;min-width:80px;color:var(--muted)}
+.ch-q{background:var(--warn-soft);border:2px solid var(--warn);border-radius:12px;padding:8px 14px;max-width:340px;font-weight:700;color:var(--ink);font:inherit;font-weight:700;cursor:pointer}
+.ch-arrow{color:var(--brand);font-size:18px;line-height:1.3}
+.ch-split{display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:660px;margin-top:4px}
+.ch-lane{display:flex;flex-direction:column;align-items:center;min-width:0}
+.ch-yes,.ch-no{font-size:12px;font-weight:700;border-radius:99px;padding:1px 10px}
+.ch-yes{color:var(--t-ok);background:var(--ok-soft)} .ch-no{color:var(--t-warn);background:var(--warn-soft)}
+.ch-join{font-size:12px;color:var(--muted)}
 /* Try it */
 .bt{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;height:560px}
 .bt-h{background:#075E54;color:#fff;padding:8px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -199,5 +228,5 @@ CSS = r"""
 .bt-in button{border:0;background:#075E54;color:#fff;border-radius:99px;width:40px;cursor:pointer}
 @media (max-width:1000px){.bd-spine{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1250px){.fx-wrap.with-ed{grid-template-columns:minmax(0,1fr)}.fx-ed{position:static;max-height:none}}
-@media (max-width:900px){.bd-grid{grid-template-columns:minmax(0,1fr)}.bd-chat{position:static;height:480px}.bd-lanes{grid-template-columns:minmax(0,1fr)}.bd-acts{grid-template-columns:1fr}.bd-spine{grid-template-columns:repeat(2,minmax(0,1fr))}.bd-q-row{flex-wrap:wrap}.bd-lab{width:100%}}
+@media (max-width:900px){.bd-grid{grid-template-columns:minmax(0,1fr)}.bd-chat{position:static;height:480px}.ch-split,.mp-lanes,.bd-lanes{grid-template-columns:minmax(0,1fr)}.bd-acts{grid-template-columns:1fr}.bd-spine{grid-template-columns:repeat(2,minmax(0,1fr))}.bd-q-row{flex-wrap:wrap}.bd-lab{width:100%}}
 """

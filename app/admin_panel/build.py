@@ -156,6 +156,23 @@ def _need_block_rights(ctx, row) -> None:
         ctx.need_super("change a building block")
 
 
+@router.delete("/build/{workflow_id}")
+async def build_delete(workflow_id: UUID, ctx: CtxDep):
+    """Delete a flow from the Flows editor, with the same checks as everywhere (workflows.delete_workflow): it is
+    switched off, no other flow runs it, it made no tickets; a copy is kept in the history. A shared building block
+    only a super admin deletes; a flow's own copy of one, its admins too."""
+    from app.admin_panel.workflows import delete_workflow
+
+    row = await fetch_one(
+        "SELECT settings, to_jsonb(w)->>'kind' AS kind FROM workflows w WHERE id = $1 AND org_id = $2",
+        workflow_id, ctx.org_id, source_key=ctx.source_key,
+    )  # fmt: skip
+    if not row:
+        raise HTTPException(404, "Flow not found")
+    _need_block_rights(ctx, dict(row))
+    return await delete_workflow(workflow_id, ctx)
+
+
 class CopyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str = Field(min_length=1, max_length=120)

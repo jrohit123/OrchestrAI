@@ -24,6 +24,7 @@ ADMIN_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/build/{workflow_id}/restore"),
         ("POST", "/build/{workflow_id}/convert"),
         ("POST", "/build/{workflow_id}/copy_block"),
+        ("DELETE", "/build/{workflow_id}"),
         ("POST", "/schema/undo/{change_id}"),
         ("POST", "/build/check"),
         ("POST", "/build/try"),
