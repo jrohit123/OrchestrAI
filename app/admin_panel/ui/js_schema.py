@@ -36,14 +36,19 @@ function changeBox(getOps, onApplied) {
   async function doApply() {
     modal({ title: 'Apply this change?', body: h('div', { class: 'stack' }, h('p', null, 'It was tried and undone first, and it only adds. Before a change on a live organisation, make sure a backup is taken.'), h('ul', { class: 'sch-ul' }, (last ? last.summary : []).map(x => h('li', null, x)))),
       actions: [{ label: 'Cancel' }, { label: 'Apply', primary: true, run: async () => {
-        await api.post('/schema/apply', { ops: getOps() });
-        toast('Applied and written in the history', 'ok'); S.lookups = null; await refreshBoot(); onApplied && onApplied();
+        const r = await api.post('/schema/apply', { ops: getOps() });
+        toast('Applied and written in the history', 'ok', r.change_id ? { label: 'Undo', run: () => schemaUndo(r.change_id, onApplied) } : null); S.lookups = null; await refreshBoot(); onApplied && onApplied();
       } }] });
   }
   fill(box, h('div', { class: 'card-h' }, 'Check and apply'), body);
   box.refresh = refresh;
   refresh();
   return box;
+}
+// undo one change from the history (the server checks it is safe: nothing holds data in it and no flow uses it)
+async function schemaUndo(id, after) {
+  try { await api.post('/schema/undo/' + id); toast('Undone, and written in the history.', 'ok'); S.lookups = null; await refreshBoot(); after && after(); }
+  catch (e) { toast(e.message, 'bad'); }
 }
 async function refreshBoot() { try { S.boot = await api.get('/bootstrap'); } catch (e) { /* the page still works */ } }
 
@@ -137,7 +142,7 @@ async function typePage(root, d, t, again) {
     h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Statuses', h('span', { class: 'sp' }), t.is_system ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => addStatusModal(t, again) }, '＋ Add a status')),
       h('div', { class: 'card-b' }, t.is_system ? h('div', { class: 'muted small' }, 'The statuses of ' + t.plural.toLowerCase() + ' are set by their own rules, under Tickets.') : h('div', { class: 'row' }, t.statuses.map((s, i) => [i ? '→' : null, badge(s.label, s.closed ? 'ok' : '')])))),
     t.table_name && !t.is_system ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Latest ' + t.plural.toLowerCase(), h('span', { class: 'sp' }), h('button', { class: 'btn sm', type: 'button', onclick: showRecords }, 'Show')), h('div', { class: 'card-b' }, rec)) : null,
-    h('div', { class: 'muted small' }, 'Flows use these fields in their steps. Make the flows in the use case’s box under Flows.'));
+    h('div', { class: 'muted small' }, '🔗 Linked to your people: every ' + word + ' keeps who added it (“Created it”). Flows use these fields in their steps; make them under Flows.'));
 }
 
 async function renderSchema(root, route) {
@@ -153,9 +158,11 @@ async function renderSchema(root, route) {
   const again = () => renderSchema(root, route);
   if (tab === 'history') {
     setTopAction(null);
-    fill(root, d.history.length ? h('div', { class: 'card' }, d.history.map(c => h('div', { class: 'sch-hist' }, h('div', { class: 'row' }, badge(c.status === 'applied' ? 'Applied' : 'Failed', c.status === 'applied' ? 'ok' : 'bad'), h('b', { class: 'small' }, c.by_label || '—'), h('span', { class: 'muted small' }, ago(c.created_at))), h('div', { class: 'small' }, c.summary), c.error ? notice(c.error, 'bad') : null,
+    fill(root, d.history.length ? h('div', { class: 'card' }, d.history.map(c => h('div', { class: 'sch-hist' }, h('div', { class: 'row' }, badge(c.status === 'applied' ? 'Applied' : 'Failed', c.status === 'applied' ? 'ok' : 'bad'), h('b', { class: 'small' }, c.by_label || '—'), h('span', { class: 'muted small' }, ago(c.created_at)), h('span', { class: 'sp' }),
+        c.undo && c.undo.done ? badge('↶ Undone') : c.undo ? (c.undo.ok ? h('button', { class: 'btn sm', type: 'button', onclick: async () => { if (await confirmBox('Undo this change? ' + c.summary, { ok: 'Undo it' })) schemaUndo(c.id, again); } }, '↶ Undo') : h('span', { class: 'muted small', title: c.undo.why }, 'Cannot undo: ' + c.undo.why)) : null),
+      h('div', { class: 'small' }, c.summary), c.error ? notice(c.error, 'bad') : null,
       c.sql_up ? h('details', null, h('summary', { class: 'muted small' }, 'The database change and the way back'), h('pre', { class: 'code' }, c.sql_up), h('pre', { class: 'code' }, c.sql_down || '—')) : null)))
-      : h('div', { class: 'card' }, h('div', { class: 'card-b' }, empty('No changes yet', 'Every change made here is written down, with the way back.'))));
+      : h('div', { class: 'card' }, h('div', { class: 'card-b' }, empty('No changes yet', 'Every change made here is written down, with the way back and an Undo while it is safe.'))));
     return;
   }
   if (tab === 'ai') {
@@ -201,7 +208,9 @@ async function renderSchema(root, route) {
   if (!cur) { fill(root, h('div', { class: 'card' }, h('div', { class: 'card-b' }, empty('No kinds of record yet', 'Add one, like Visitors or Parking.')))); return; }
   const page = h('div');
   fill(root, h('div', { class: 'sch-layout' },
-    h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Kinds of record'), h('div', { class: 'card-b stack s4' }, d.types.map(t => h('button', { class: 'sch-type' + (t.key === cur.key ? ' on' : ''), type: 'button', onclick: () => { SCH.sel = t.key; again(); } }, t.plural, h('span', { class: 'muted small' }, t.fields.length + ' fields'))))), page));
+    h('div', { class: 'stack' }, h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Kinds of record'), h('div', { class: 'card-b stack s4' }, d.types.map(t => h('button', { class: 'sch-type' + (t.key === cur.key ? ' on' : ''), type: 'button', onclick: () => { SCH.sel = t.key; again(); } }, t.plural, h('span', { class: 'muted small' }, t.fields.length + ' fields'))))),
+      (d.builtin || []).length ? h('div', { class: 'card' }, h('div', { class: 'card-h' }, 'Built in', badge('kept by the app')), h('div', { class: 'card-b stack s8' }, d.builtin.map(b => h('details', null, h('summary', null, h('b', null, b.label)), h('div', { class: 'muted small' }, b.columns.join(' · ')))),
+        h('div', { class: 'muted small' }, 'Read only here. New lists link to them: each record keeps the person who added it.'))) : null), page));
   fill(page, await typePage(root, d, cur, again));
 }
 

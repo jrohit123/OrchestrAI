@@ -601,6 +601,64 @@ function bdAskAI(p, s) {
   return h('div', { class: 'bd-aibox', style: { marginTop: '10px' } }, h('b', null, '🤖 Ask the AI to change this step'), ta,
     h('div', { class: 'bd-row' }, h('button', { type: 'button', class: 'btn sm primary', onclick: send }, 'Ask'), h('span', { class: 'muted small' }, 'It shows what it changed; Undo puts it back.')));
 }
+// make a missing list or column from inside a step, then go straight back with it picked (with an Undo)
+const BD_COL_KINDS = [['text', 'Words'], ['number', 'A number'], ['date', 'A date'], ['time', 'A time'], ['choice', 'One of a list'], ['phone', 'Phone number'], ['yesno', 'Yes / no'], ['person', 'A person']];
+const bdNorm = x => String(x || '').toLowerCase().trim().replace(/s$/, '');
+async function bdAfterSchema(r, msg) {
+  BD.ctx = await api.get('/build/context'); bdCheck(); BD.paintSide();
+  toast(msg, 'ok', r.change_id ? { label: 'Undo', run: async () => { try { await api.post('/schema/undo/' + r.change_id); BD.ctx = await api.get('/build/context'); bdCheck(); BD.paintSide(); toast('Undone.', 'ok'); } catch (e) { toast(e.message, 'bad'); } } } : null);
+}
+function bdColRows(cols) {
+  const box = h('div', { class: 'stack' });
+  const draw = () => fill(box, cols.map((c, i) => h('div', { class: 'bd-row' },
+    bdInp(c.label, v => { c.label = v; }, { placeholder: 'e.g. Car number', style: { flex: '1' } }),
+    bdSel(BD_COL_KINDS, c.kind, v => { c.kind = v; draw(); }),
+    c.kind === 'choice' ? bdInp((c.options || []).join(', '), v => { c.options = v.split(',').map(x => x.trim()).filter(Boolean); }, { placeholder: 'Choices: A, B, C', style: { flex: '1' } }) : null,
+    cols.length > 1 ? h('button', { type: 'button', class: 'bd-pill', onclick: () => { cols.splice(i, 1); draw(); } }, '×') : null)),
+    h('button', { type: 'button', class: 'bd-pill', style: { alignSelf: 'flex-start' }, onclick: () => { cols.push({ label: '', kind: 'text', options: [] }); draw(); } }, '+ another column'));
+  draw();
+  return box;
+}
+function bdNewList(p) {
+  const one = h('input', { type: 'text', placeholder: 'One of them, e.g. Parking slot' }), many = h('input', { type: 'text', placeholder: 'Many, e.g. Parking slots' });
+  const cols = [{ label: '', kind: 'text', options: [] }], same = h('div');
+  const lists = Object.values(bdLists());
+  let m;
+  const look = () => {   // reuse first: a list with almost the same name is offered before a new one is made
+    const n = bdNorm(many.value || one.value), hit = n.length > 2 && lists.find(t => [t.label, t.plural].some(x => bdNorm(x) === n || bdNorm(x).includes(n) || n.includes(bdNorm(x))));
+    fill(same, hit ? notice(h('span', null, 'You may already keep this in ', h('b', null, hit.plural), ' (' + hit.cols.join(', ') + '). ',
+      h('button', { type: 'button', class: 'btn sm', onclick: () => { m.close(); bdChange(d => { bdGet(d, p).list = hit.label; }); } }, 'Use ' + hit.plural)), 'warn') : null);
+  };
+  [one, many].forEach(x => x.addEventListener('input', look));
+  one.addEventListener('change', () => { if (!many.value.trim() && one.value.trim()) { many.value = one.value.trim() + 's'; look(); } });
+  m = modal({ title: 'A new list', wide: true, body: h('div', { class: 'stack' },
+    h('div', { class: 'muted small' }, 'A list keeps rows, like a table. Every row keeps who added it, so it is always linked to your people.'),
+    h('div', { class: 'grid2' }, h('label', { class: 'stack s4' }, h('b', { class: 'small' }, 'One of them is called'), one), h('label', { class: 'stack s4' }, h('b', { class: 'small' }, 'Many of them are called'), many)),
+    same, h('b', { class: 'small' }, 'Columns'), bdColRows(cols)),
+    actions: [{ label: 'Cancel' }, { label: 'Make it and use it', primary: true, run: async () => {
+      const label = one.value.trim(), plural = many.value.trim() || label;
+      if (!label) throw new Error('Give the list a name.');
+      const fields = cols.filter(c => c.label.trim()).map(c => ({ label: c.label.trim(), kind: c.kind, required: false, options: c.kind === 'choice' ? c.options || [] : [] }));
+      const r = await api.post('/schema/apply', { ops: [{ op: 'create_record_type', label, plural, fields }] });
+      bdChange(d => { bdGet(d, p).list = label; });
+      await bdAfterSchema(r, 'Made the list ' + plural + ' and picked it.');
+    } }] });
+}
+function bdNewColumn(p, L) {
+  const key = Object.entries((BD.ctx && BD.ctx.lists) || {}).find(([k, t]) => t.label === L.label);
+  if (!key) { toast('This list cannot take new columns here.', 'bad'); return; }
+  const cols = [{ label: '', kind: 'text', options: [] }];
+  modal({ title: 'A new column in ' + L.plural, wide: true, body: h('div', { class: 'stack' },
+    h('div', { class: 'muted small' }, 'It is added to every row of ' + L.plural + ', empty at first. Now: ' + L.cols.join(', ') + '.'), bdColRows(cols)),
+    actions: [{ label: 'Cancel' }, { label: 'Add it', primary: true, run: async () => {
+      const c = cols[0]; if (!c.label.trim()) throw new Error('Give the column a name.');
+      if (L.cols.some(x => bdNorm(x) === bdNorm(c.label))) throw new Error(L.plural + ' already has “' + c.label.trim() + '”.');
+      const r = await api.post('/schema/apply', { ops: [{ op: 'add_field', record_type: key[0], field: { label: c.label.trim(), kind: c.kind, required: false, options: c.kind === 'choice' ? c.options || [] : [] } }] });
+      const s = bdGet(BD.plain, p);
+      if (s && s.a === 'find') bdChange(d => { const x = bdGet(d, p); x.match = { ...(x.match || {}), [c.label.trim()]: '' }; });
+      await bdAfterSchema(r, 'Added “' + c.label.trim() + '” to ' + L.plural + '.');
+    } }] });
+}
 // the fields of one step
 function bdBody(s, p) {
   const inf = BD.info[p] || {}, known = inf.known || [], B = bdBlockOf(s);
@@ -628,9 +686,12 @@ function bdBody(s, p) {
       bdSel([['', '+ value'], ...known.map(v => ['[' + v + ']', v])], '', v => { if (v) at(key, x => { x[key] = x[key] || {}; x[key][c] = v; })(v); }, { class: 'bd-pickval', 'aria-label': 'Put in a value' }),
       s.a === 'find' ? h('button', { type: 'button', class: 'bd-pill', onclick: () => bdChange(d => { delete bdGet(d, p).match[c]; }) }, '×') : null));
     const addCol = s.a === 'find' && L ? bdSel([['', '+ another column'], ...L.cols.filter(c => !(c in vals)).map(c => [c, c])], '', v => { if (v) bdChange(d => { const x = bdGet(d, p); x.match = { ...(x.match || {}), [v]: '' }; }); }) : null;
-    return [h('div', { class: 'bd-sentence' }, h('b', null, s.a === 'find' ? 'Look in' : 'Save in'), bdSel(lists.map(t => [t.label, t.plural + (t.pending ? ' (new)' : '')]), s.list, at('list', (x, v) => { x.list = v; })),
+    const can = BD.ctx.can_add_lists;
+    const pickList = bdSel([...lists.map(t => [t.label, t.plural + (t.pending ? ' (new)' : '')]), ...(can ? [['__new', '＋ New list…']] : [])], s.list, v => { if (v === '__new') bdNewList(p); else at('list', (x, vv) => { x.list = vv; })(v); });
+    return [h('div', { class: 'bd-sentence' }, h('b', null, s.a === 'find' ? 'Look in' : 'Save in'), pickList,
       s.a === 'find' ? [h('span', null, 'and call it'), bdInp(s.name, at('name', (x, v) => { x.name = v; }), { style: { width: '130px' } }), h('span', { class: 'muted small' }, 'for rows where')] : h('span', { class: 'muted small' }, 'with')),
-      h('div', { class: 'bd-map' }, rows, addCol)];
+      h('div', { class: 'bd-map' }, rows, addCol),
+      can && L && !L.pending ? h('button', { type: 'button', class: 'bd-pill', style: { alignSelf: 'flex-start' }, onclick: () => bdNewColumn(p, L) }, '＋ New column in ' + L.plural + '…') : null];
   }
   return null;
 }
