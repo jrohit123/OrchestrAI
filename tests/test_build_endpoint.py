@@ -42,3 +42,16 @@ def test_a_check_on_a_role_that_does_not_exist_is_named():
 
     plain = {"asks": [], "steps": [{"a": "if", "tests": [{"q": "Role", "op": "oneof", "value": "Defaulter"}], "yes": [{"a": "stop"}], "no": []}]}
     assert [p["need"] for p in flow_plain.check(plain, {}, roles={"owner", "tenant"})] == ["Defaulter"]
+
+
+def test_unknown_or_leftover_steps_are_dropped_at_every_depth():
+    steps = [{"a": "say", "text": "hi"}, {"a": "HERE"},
+             {"a": "if", "tests": [{"q": "Role", "op": "is", "value": "Owner"}], "yes": [{"a": "wait"}, {"a": "stop"}], "no": "x"}]  # fmt: skip
+    out = build._known_steps(steps)
+    assert [s["a"] for s in out] == ["say", "if"] and out[1]["yes"] == [{"a": "stop"}] and out[1]["no"] == []
+
+
+def test_the_draft_and_try_it_are_open_to_admins():
+    for call in [("PUT", "/build/{workflow_id}/draft"), ("DELETE", "/build/{workflow_id}/draft"), ("POST", "/build/{workflow_id}/restore"),
+                 ("POST", "/build/check"), ("POST", "/build/try")]:  # fmt: skip
+        assert call in access_rules.ADMIN_CALLS

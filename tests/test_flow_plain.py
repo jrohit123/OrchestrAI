@@ -144,3 +144,12 @@ def test_a_stopping_precheck_tells_what_was_said():
     user = {"org_id": "00000000-0000-0000-0000-000000000001", "user_id": "u1", "user_name": "Priya", "role": "tenant", "source_key": "test"}
     res = asyncio.run(step_interpreter.run_workflow_steps({"name": "T", "intent_key": "t", "steps": pre}, {}, user, "1", dry_run=True))
     assert res["stopped"] and res["said"] == ["Only owners can book."]
+
+
+def test_the_card_gets_what_each_step_needs_gives_and_knows():
+    problems, info = flow_plain.analyse(BOOKING, LISTS, roles={"committee"})
+    assert problems == []
+    find = info["steps.0"]
+    assert {"n": "Place", "ok": True} in find["needs"] and find["gives"] == ["Clash found"]
+    assert "Clash found" in info["steps.1"]["known"]  # the check sees what the step before it gave
+    assert "Booking number" in [x["n"] for x in info["steps.3"]["needs"]]

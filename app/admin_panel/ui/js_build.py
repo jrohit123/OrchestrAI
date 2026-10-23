@@ -1,10 +1,31 @@
 JS = r"""
-// ───────────────────────── Build with AI: chat on the left, the flow as a simple chart on the right ─────────────────────────
-// #/workflows?build=new (or =<id>). The plain flow (questions and steps in words) is what the AI edits and the chart
-// draws; saving turns it into engine steps on the server (build.py, flow_plain.py).
-const BD = { id: null, version: null, name: '', plain: null, history: [], log: [], pending: [], problems: [], ctx: null, busy: false, dirty: false };
-const BD_EMPTY = () => ({ start: { type: 'chat', words: '' }, asks: [], steps: [] });
-const bdKeep = () => { try { sessionStorage.setItem('build:' + (BD.id || 'new'), JSON.stringify({ name: BD.name, plain: BD.plain, history: BD.history, log: BD.log, pending: BD.pending })); } catch (e) {} };
+// ───────────────────────── Build with AI ─────────────────────────
+// #/build (the list) and #/build?f=new or =<id> (one flow). On the left the chat with the AI; on the right the
+// progress bar, draft / live, and four views of the same plain flow: Card (edit every step), Map, Simple chart and
+// Try it (a rehearsal on the real engine). The plain flow is what the AI and the admin edit; "Make it live" turns it
+// into engine steps on the server (build.py, flow_plain.py).
+const BD = { id: null, version: null, name: '', live: null, plain: null, versions: [], isActive: false, talk: [], log: [], pending: [],
+  problems: [], info: {}, ctx: null, busy: false, view: 'card', tech: false, undo: [], tried: null, draftSaved: true };
+const BD_EMPTY = () => ({ start: { type: 'chat', words: '' }, before: [], asks: [], steps: [] });
+const BD_KINDS = [['text', 'Words'], ['number', 'A number'], ['choice', 'Pick one'], ['date', 'A date'], ['time', 'A time'], ['yesno', 'Yes or no']];
+const BD_OPS = [['is', 'is'], ['not', 'is not'], ['oneof', 'is one of'], ['empty', 'is empty'], ['filled', 'is filled in'], ['more', 'is more than'], ['less', 'is less than']];
+const BD_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const BD_STEP = {
+  say: { icon: '💬', label: 'Reply to the person', hint: 'In the chat they wrote from', g: 'Actions' },
+  tell: { icon: '📣', label: 'Tell everyone in a role', hint: 'Committee, Security guard…', g: 'Actions' },
+  find: { icon: '🔎', label: 'Look in a list', hint: 'Is there a row like this? Gives yes or no', g: 'Actions' },
+  save: { icon: '🗂️', label: 'Save in a list', hint: 'Adds a row, with a number', g: 'Actions' },
+  set: { icon: '✏️', label: 'Set a value', hint: 'Like Where = Wing [Wing]', g: 'Actions' },
+  approve: { icon: '✅', label: 'Ask for approval', hint: 'Everyone in a role; gives Approve or Reject', g: 'Actions' },
+  block: { icon: '🧩', label: 'Use a building block', hint: 'A ready-made part, like the ticket steps', g: 'Actions' },
+  if: { icon: '🔀', label: 'Check something', hint: 'Yes does one thing, otherwise another', g: 'Logic' },
+  stop: { icon: '⛔', label: 'Stop here', hint: 'Nothing after it runs', g: 'Logic' },
+};
+const bdKey = () => 'build:' + (BD.id || 'new');
+const bdKeep = () => { try { sessionStorage.setItem(bdKey(), JSON.stringify({ name: BD.name, plain: BD.id ? null : BD.plain, talk: BD.talk, log: BD.log, pending: BD.pending, tried: BD.tried })); } catch (e) {} };
+const bdGet = (o, p) => p.split('.').reduce((x, k) => x == null ? x : x[k], o);
+function bdSetPath(o, p, v) { const ks = p.split('.'), last = ks.pop(); bdGet(o, ks.join('.'))[last] = v; }
+const bdLabelKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 SECTIONS.build = {
   title: 'Build with AI', sub: 'Make a flow by chatting with the AI. It asks you the choices, makes the lists it needs and shows the flow as a simple chart.',
@@ -22,40 +43,157 @@ SECTIONS.build = {
 
 async function renderBuild(root, r) {
   const mine = S.renderId;
-  Object.assign(BD, { id: r.q.f === 'new' ? null : r.q.f, version: null, name: '', plain: BD_EMPTY(), history: [], log: [], pending: [], problems: [], busy: false, dirty: false });
+  Object.assign(BD, { id: r.q.f === 'new' ? null : r.q.f, version: null, name: '', live: null, plain: BD_EMPTY(), versions: [], isActive: false, talk: [], log: [], pending: [],
+    problems: [], info: {}, busy: false, view: 'card', undo: [], tried: null, draftSaved: true });
   BD.ctx = await api.get('/build/context');
   if (BD.id) {
     const f = await api.get('/build/' + BD.id);
-    Object.assign(BD, { name: f.name, version: f.version, plain: f.plain });
+    Object.assign(BD, { name: f.name, version: f.version, live: f.plain, plain: JSON.parse(JSON.stringify(f.draft || f.plain)), versions: f.history || [], isActive: f.is_active });
   }
   try {
-    const kept = JSON.parse(sessionStorage.getItem('build:' + (BD.id || 'new')) || 'null');
-    if (kept && (!BD.id || kept.plain)) Object.assign(BD, kept, { dirty: !!BD.id && JSON.stringify(kept.plain) !== JSON.stringify(BD.plain) });
+    const kept = JSON.parse(sessionStorage.getItem(bdKey()) || 'null');
+    if (kept) { Object.assign(BD, { talk: kept.talk || [], log: kept.log || [], pending: kept.pending || [], tried: kept.tried || null }); if (!BD.id) { BD.name = kept.name || ''; if (kept.plain) BD.plain = kept.plain; } }
   } catch (e) {}
+  BD.plain.before = BD.plain.before || [];
   if (mine !== S.renderId) return;
   const crumb = document.getElementById('crumbname'); if (crumb) crumb.textContent = BD.name || 'Build with AI';
-  S.leaveGuard = () => !BD.dirty || confirm('Leave without saving? The changes since the last save are lost.');
-  const chatBox = h('div', { class: 'bd-chat' }), side = h('div', { class: 'bd-side' });
-  fill(root, h('div', { class: 'bd' }, bdTop(), h('div', { class: 'bd-grid' }, chatBox, side)));
-  BD.paint = () => { bdChat(chatBox); bdSide(side); bdKeep(); };
+  S.leaveGuard = () => BD.draftSaved || confirm('Leave now? The last change is still being kept.');
+  const chatBox = h('div', { class: 'bd-chat' }), side = h('div', { class: 'bd-side' }), top = h('div');
+  fill(root, h('div', { class: 'bd' }, top, h('div', { class: 'bd-grid' }, chatBox, side)));
+  BD.paint = () => { bdTop(top); bdChat(chatBox); bdSide(side); bdKeep(); };
+  BD.paintSide = () => { bdTop(top); bdSide(side); bdKeep(); };
   BD.paint();
+  bdCheck();
 }
 
-function bdTop() {
+// ----- every change: undo, check, keep the draft -----
+function bdChange(fn, quiet) {
+  BD.undo.push(JSON.stringify(BD.plain)); if (BD.undo.length > 60) BD.undo.shift();
+  fn(BD.plain);
+  bdAfter(quiet);
+}
+function bdAfter(quiet) {
+  bdCheck(); bdDraftSoon();
+  if (!quiet) BD.paintSide();
+}
+let bdCheckSeq = 0, bdDraftTimer = null;
+async function bdCheck() {
+  const mine = ++bdCheckSeq;
+  try {
+    const r = await api.post('/build/check', { plain: BD.plain, pending_lists: BD.pending });
+    if (mine !== bdCheckSeq) return;
+    BD.problems = r.problems || []; BD.info = r.info || {};
+    BD.paintSide();
+  } catch (e) {}
+}
+function bdDraftSoon() {
+  if (!BD.id) return;   // a new flow is kept in this browser until it is made live the first time
+  BD.draftSaved = false; clearTimeout(bdDraftTimer);
+  bdDraftTimer = setTimeout(async () => {
+    try {
+      if (JSON.stringify(BD.plain) === JSON.stringify(BD.live)) await api.del('/build/' + BD.id + '/draft');
+      else await api.put('/build/' + BD.id + '/draft', { plain: BD.plain });
+      BD.draftSaved = true; BD.paintSide();
+    } catch (e) { toast('The draft could not be kept: ' + e.message, 'bad'); }
+  }, 700);
+}
+const bdIsDraft = () => !BD.id || JSON.stringify(BD.plain) !== JSON.stringify(BD.live);
+
+// ----- the top: name, progress bar, draft / live -----
+function bdTop(box) {
   const name = h('input', { type: 'text', class: 'bd-name', value: BD.name, placeholder: 'Name of the flow', 'aria-label': 'Name of the flow',
-    oninput: e => { BD.name = e.target.value; BD.dirty = true; bdKeep(); } });
-  const saveBtn = h('button', { class: 'btn primary', type: 'button', id: 'bd-save', onclick: bdSave }, 'Save');
-  return h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('build') }, '← All'), name, h('span', { class: 'bd-sp' }), saveBtn);
+    onchange: e => { BD.name = e.target.value; bdKeep(); BD.paintSide(); } });
+  const st = BD.plain.start || {}, nSteps = bdCount(BD.plain.steps) + bdCount(BD.plain.before), tried = BD.tried === JSON.stringify(BD.plain);
+  const ready = !BD.problems.length && !BD.pending.length && nSteps > 0;
+  const items = [
+    { k: 'start', cls: 'ok', t: 'When it starts', s: bdStartWords(st) },
+    { k: 'asks', cls: BD.plain.asks.length || st.type === 'time' ? 'ok' : 'todo', t: 'What it asks', s: BD.plain.asks.length ? BD.plain.asks.map(a => a.label).join(', ') : st.type === 'time' ? 'Nothing (it runs by itself)' : 'Add the questions' },
+    { k: 'steps', cls: !nSteps ? 'todo' : BD.problems.length || BD.pending.length ? 'bad' : 'ok', t: 'What happens', s: !nSteps ? 'Add the steps' : nSteps + ' steps' + (BD.problems.length ? ' · ' + BD.problems.length + ' to fix' : BD.pending.length ? ' · lists to create' : ' · all fit') },
+    { k: 'try', cls: tried ? 'ok' : 'todo', t: 'Try it', s: tried ? 'Tried this version' : 'Run it once' },
+    { k: 'live', cls: !bdIsDraft() ? 'ok' : ready ? 'todo' : 'bad', t: 'Make it live', s: !bdIsDraft() ? 'Live, version ' + BD.version + (BD.isActive ? '' : ' (switched off)') : ready ? 'Ready' : 'Not ready yet' },
+  ];
+  const spine = h('div', { class: 'bd-spine' }, items.map((x, i) => h('button', { type: 'button', class: 'bd-sp-i ' + x.cls, onclick: () => {
+    if (x.k === 'live') return bdPublish();
+    if (x.k === 'try') { BD.view = 'try'; return BD.paintSide(); }
+    BD.view = 'card'; BD.paintSide(); bdFlash(x.k === 'start' ? 'bd-sec-start' : x.k === 'asks' ? 'bd-sec-asks' : 'bd-sec-steps');
+  } }, h('b', null, h('span', { class: 'd' }, x.cls === 'ok' ? '✓' : x.cls === 'bad' ? '!' : String(i + 1)), x.t), h('span', null, x.s))));
+  let banner;
+  if (!BD.id) banner = h('div', { class: 'bd-banner draft' }, h('span', null, '✏️ ', h('b', null, 'New draft.'), ' Nobody can use it until you make it live.'), h('span', { class: 'bd-sp' }), bdLiveBtn(ready));
+  else if (bdIsDraft()) banner = h('div', { class: 'bd-banner draft' }, h('span', null, '✏️ ', h('b', null, 'Draft' + (BD.draftSaved ? '' : ' (keeping…)') + '.'), ' People still get live version ' + BD.version + '.'), h('span', { class: 'bd-sp' }),
+    h('button', { class: 'btn sm', type: 'button', onclick: bdDiscard }, 'Throw away draft'), bdLiveBtn(ready));
+  else banner = h('div', { class: 'bd-banner live' }, h('span', null, '✅ ', h('b', null, 'Live, version ' + BD.version + '.'), BD.isActive ? ' People use this one. Any change starts a draft.' : ' It is switched off: ' + (isSuper() ? 'switch it on and choose who can use it in the Flows editor.' : 'a super admin switches it on.')),
+    h('span', { class: 'bd-sp' }), isSuper() ? h('button', { class: 'btn sm', type: 'button', onclick: () => openWorkflow(BD.id) }, 'Who can use it') : null);
+  const tools = h('div', { class: 'bd-tools' },
+    h('button', { class: 'btn sm', type: 'button', disabled: !BD.undo.length, onclick: bdUndo }, 'Undo'),
+    BD.id ? h('button', { class: 'btn sm', type: 'button', onclick: bdVersions }, 'Versions (' + BD.versions.length + ')') : null);
+  fill(box, h('div', { class: 'bd-top' }, h('a', { class: 'btn ghost sm', href: href('build') }, '← All'), name, tools), spine, banner);
+}
+function bdLiveBtn(ready) {
+  const why = !bdCount(BD.plain.steps) && !bdCount(BD.plain.before) ? 'Nothing to make live yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
+  return h('button', { class: 'btn sm primary', type: 'button', disabled: !!why || BD.busy, title: why, onclick: bdPublish }, 'Make it live');
+}
+const bdCount = l => (l || []).reduce((n, s) => n + 1 + bdCount(s.yes) + bdCount(s.no), 0);
+function bdStartWords(st) {
+  if (st.type === 'time') {
+    const when = st.every === 'week' && (st.days || []).length ? ' on ' + st.days.map(d => BD_DAYS[d] || d).join(', ') : st.every === 'month' && st.day_of_month ? ' on day ' + st.day_of_month : '';
+    return 'By itself, every ' + (st.every || 'day') + when + (st.time ? ' at ' + st.time : '');
+  }
+  return 'When someone writes' + (st.words ? ' “' + String(st.words).split(',')[0].trim() + '”' : '');
+}
+function bdUndo() { if (!BD.undo.length) return; BD.plain = JSON.parse(BD.undo.pop()); bdAfter(); toast('Undone.', 'ok'); }
+async function bdDiscard() {
+  if (!await confirmBox('Throw away the draft? The flow goes back to live version ' + BD.version + '.', { ok: 'Throw it away', danger: true })) return;
+  try { await api.del('/build/' + BD.id + '/draft'); } catch (e) {}
+  BD.undo.push(JSON.stringify(BD.plain)); BD.plain = JSON.parse(JSON.stringify(BD.live)); BD.draftSaved = true; bdCheck(); BD.paintSide();
+}
+function bdVersions() {
+  const rows = BD.versions.slice().reverse();
+  const m = modal({ title: 'Versions', body: h('div', { class: 'stack' }, h('div', { class: 'muted small' }, 'Restore copies an old version into the draft. Nothing changes for people until you make it live.'),
+    rows.length ? rows.map(v => h('div', { class: 'bd-ver' }, h('b', null, 'v' + v.v), h('span', { class: 'muted small' }, v.at || ''), h('span', { class: 'grow' }, v.note || ''),
+      v.v === BD.version ? badge('live', 'ok') : h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+        const r = await api.post('/build/' + BD.id + '/restore', { v: v.v });
+        BD.undo.push(JSON.stringify(BD.plain)); BD.plain = r.plain; BD.plain.before = BD.plain.before || []; m.close(); bdAfter(); toast('Version ' + v.v + ' is now the draft.', 'ok');
+      } }, 'Restore'))) : h('div', { class: 'muted' }, 'Not made live yet.')), actions: [{ label: 'Close' }] });
+}
+function bdPublish() {
+  if (BD.pending.length) { toast('Create the new lists first.', 'bad'); return; }
+  if (BD.problems.length) { toast('Fix what is not ready first.', 'bad'); BD.view = 'card'; BD.paintSide(); return; }
+  if (!BD.name.trim() || BD.name.trim().length < 2) { toast('Give the flow a name first.', 'bad'); document.querySelector('.bd-name').focus(); return; }
+  const ch = [], d = BD.plain, l = BD.live;
+  if (!l) ch.push('It is made for the first time' + (isSuper() ? '' : '; a super admin switches it on.'));
+  else {
+    if (JSON.stringify(d.start) !== JSON.stringify(l.start)) ch.push('When it starts: ' + bdStartWords(d.start));
+    const qa = d.asks.map(a => a.label), ql = (l.asks || []).map(a => a.label);
+    qa.filter(q => !ql.includes(q)).forEach(q => ch.push('New question: ' + q)); ql.filter(q => !qa.includes(q)).forEach(q => ch.push('Question removed: ' + q));
+    if (JSON.stringify([d.before, d.steps]) !== JSON.stringify([l.before || [], l.steps])) ch.push('What happens has changed (see the Map)');
+    if (!ch.length) ch.push('Nothing is different from the live version');
+  }
+  const tried = BD.tried === JSON.stringify(BD.plain), note = h('input', { type: 'text', placeholder: 'A short note (optional)', style: { width: '100%' } });
+  modal({ title: 'Make it live?', body: h('div', { class: 'stack' },
+    h('div', { class: 'muted small' }, BD.id ? 'This becomes version ' + (BD.version + 1) + '. The old version is kept and can be restored.' : 'The flow is saved as version 1.'),
+    h('b', null, 'What changes for people'), h('ul', null, ch.map(c => h('li', null, c))),
+    tried ? notice('✓ You tried this version.', 'ok') : notice('You have not tried this version yet. Open “Try it” first, to be safe.', 'warn'), note),
+    actions: [{ label: 'Cancel' }, { label: 'Make it live', primary: true, run: async () => {
+      const first = !BD.id;
+      const r = await api.post('/build/save', { name: BD.name.trim(), plain: BD.plain, workflow_id: BD.id, base_version: BD.version, note: note.value.trim() });
+      if (first) { try { sessionStorage.removeItem(bdKey()); } catch (e) {} }
+      BD.id = r.id; BD.version = r.version; BD.live = JSON.parse(JSON.stringify(BD.plain)); BD.draftSaved = true;
+      const f = await api.get('/build/' + r.id); BD.versions = f.history || []; BD.isActive = f.is_active;
+      history.replaceState(null, '', href('build', '', { f: r.id })); bdKeep(); BD.paintSide();
+      toast(first ? 'Saved as version 1. ' + (isSuper() ? 'Switch it on and choose who can use it.' : 'A super admin switches it on.') : 'Live: version ' + r.version + '.', 'ok');
+    } }] });
 }
 
+// ----- the chat -----
 function bdChat(box) {
   const say = t => bdSend(t);
   const log = BD.log.length ? BD.log.map((m, i) => m.who === 'you' ? h('div', { class: 'bd-msg you' }, m.text) :
     h('div', { class: 'bd-msg ai' + (m.warn ? ' warn' : '') }, m.text,
       m.changes && m.changes.length ? h('ul', null, m.changes.map(c => h('li', null, c))) : null,
       m.questions && m.questions.length ? h('div', { class: 'bd-qs' }, m.questions.map(q => h('div', { class: 'bd-q' }, h('div', null, q.text),
-        q.options && q.options.length && i === BD.log.length - 1 ? h('div', { class: 'bd-opts' }, q.options.map((o, k) => h('button', { type: 'button', class: 'btn sm' + (k === 0 ? ' primary' : ''), onclick: () => say(o) }, o))) : null))) : null))
-    : [h('div', { class: 'bd-hello' }, h('b', null, 'Tell the AI what this flow should do.'), h('div', { class: 'muted' }, 'One thing at a time, like a WhatsApp message. It asks you when there is a choice to make, and draws the flow on the right.'),
+        q.options && q.options.length && i === BD.log.length - 1 ? h('div', { class: 'bd-opts' }, q.options.map((o, k) => h('button', { type: 'button', class: 'btn sm' + (k === 0 ? ' primary' : ''), onclick: () => say(o) }, o))) : null))) : null,
+      m.undo && i === BD.log.length - 1 ? h('div', null, h('button', { class: 'btn sm', type: 'button', onclick: () => { m.undo = false; bdUndo(); BD.paint(); } }, 'Undo this')) : null))
+    : [h('div', { class: 'bd-hello' }, h('b', null, 'Tell the AI what this flow should do.'), h('div', { class: 'muted' }, 'One thing at a time, like a WhatsApp message. It asks you when there is a choice to make. You can also change anything yourself in the Card.'),
        h('div', { class: 'bd-opts' }, ['Residents should be able to book the clubhouse', 'Visitors: a resident tells security who is coming', 'Every month remind flats with unpaid dues'].map(e => h('button', { type: 'button', class: 'btn sm', onclick: () => say(e) }, e))))];
   const input = h('textarea', { rows: 2, placeholder: BD.log.length ? 'Your next message' : 'For example: residents should be able to book the clubhouse for functions', disabled: BD.busy,
     onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go_(); } } });
@@ -66,22 +204,29 @@ function bdChat(box) {
   if (!BD.busy) setTimeout(() => input.focus(), 0);
 }
 
-async function bdSend(text) {
-  BD.log.push({ who: 'you', text }); BD.busy = true; BD.paint();
+// text: what the admin wrote. at: "+ Add a step" was pressed at this list (the AI writes the new step(s) there)
+async function bdSend(text, at) {
+  BD.log.forEach(m => { m.undo = false; });
+  BD.log.push({ who: 'you', text: at ? '(new step) ' + text : text }); BD.busy = true; BD.paint();
+  let flow = BD.plain, message = text;
+  if (at) {
+    flow = JSON.parse(JSON.stringify(BD.plain)); bdGet(flow, at).push({ a: 'HERE' });
+    message = 'The admin pressed "+ Add a step" where the flow has {"a": "HERE"}. Replace that one item with what they describe (one step, or a few if needed); keep everything else. They say: ' + text;
+  }
   try {
-    const r = await api.post('/build/chat', { message: text, history: BD.history.slice(-12), flow: BD.plain, pending_lists: BD.pending });
-    BD.history.push({ role: 'user', content: text }, { role: 'assistant', content: [r.reply, ...(r.questions || []).map(q => q.text)].filter(Boolean).join('\n') });
-    if (r.flow) { BD.plain = r.flow; BD.dirty = true; }
+    const r = await api.post('/build/chat', { message, history: BD.talk.slice(-12), flow, pending_lists: BD.pending });
+    BD.talk.push({ role: 'user', content: text }, { role: 'assistant', content: [r.reply, ...(r.questions || []).map(q => q.text)].filter(Boolean).join('\n') });
+    if (r.flow) { BD.undo.push(JSON.stringify(BD.plain)); BD.plain = r.flow; BD.plain.before = BD.plain.before || []; }
     BD.pending = r.new_lists || [];
-    BD.problems = r.problems || [];
-    BD.log.push({ who: 'ai', text: r.reply || (r.flow ? 'Done.' : 'Nothing changed.'), changes: r.changes, questions: r.questions, warn: (r.questions || []).length > 0 || BD.problems.length > 0 });
+    BD.problems = r.problems || []; BD.info = r.info || {};
+    BD.log.push({ who: 'ai', text: r.reply || (r.flow ? 'Done.' : 'Nothing changed.'), changes: r.changes, questions: r.questions, warn: (r.questions || []).length > 0 || BD.problems.length > 0, undo: !!r.flow });
     if (!BD.name && r.flow) BD.name = text.length > 60 ? text.slice(0, 58) + '…' : text.charAt(0).toUpperCase() + text.slice(1);
+    if (r.flow) bdDraftSoon();
   } catch (e) { BD.log.push({ who: 'ai', text: 'The AI could not answer: ' + e.message, warn: true }); }
   BD.busy = false; BD.paint();
-  const nm = document.querySelector('.bd-name'); if (nm && !nm.value && BD.name) nm.value = BD.name;
 }
 
-// ----- the right side: new lists to create, the chart, what does not fit yet -----
+// ----- the right side: lists to create, what is not ready, the four views -----
 function bdSide(box) {
   const lists = BD.pending.map((op, i) => h('div', { class: 'bd-list' },
     h('div', null, h('b', null, 'New list: ' + (op.plural || op.label)), op.about ? h('div', { class: 'muted small' }, op.about) : null,
@@ -91,19 +236,194 @@ function bdSide(box) {
       try {
         await api.post('/schema/apply', { ops: [op] });
         BD.pending.splice(i, 1); BD.ctx = await api.get('/build/context');
-        toast('Created the list ' + (op.plural || op.label) + '.', 'ok'); BD.paint();
+        toast('Created the list ' + (op.plural || op.label) + '.', 'ok'); bdCheck(); BD.paintSide();
       } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; }
     } }, 'Create it')));
-  const problems = BD.problems.length ? h('div', { class: 'bd-probs' }, h('b', null, 'Not ready yet'), h('ul', null, BD.problems.map(p => h('li', null, p.text))), h('div', { class: 'muted small' }, 'Tell the AI how to fix it' + (BD.problems[0].path && BD.problems[0].need ? ', for example: ask for ' + BD.problems[0].need : ', in your own words') + '.')) : null;
-  fill(box, lists.length ? h('div', { class: 'bd-lists' }, h('div', { class: 'muted small' }, 'The flow needs these lists. Create them to save the flow.'), lists) : null, problems, bdChart(BD.plain));
-  const btn = document.getElementById('bd-save');
-  if (btn) {
-    const why = !BD.plain.steps.length && !(BD.plain.before || []).length ? 'Nothing to save yet' : BD.pending.length ? 'Create the new lists first' : BD.problems.length ? 'Fix what is not ready first' : '';
-    btn.disabled = !!why || BD.busy; btn.title = why;
+  const loose = BD.problems.filter(p => !p.path || !bdGet(BD.plain, p.path));
+  const tabs = h('div', { class: 'bd-tabs' }, [['card', '✏️ Card'], ['map', '🗺️ Map'], ['chart', '📊 Simple chart'], ['try', '📱 Try it']].map(([k, l]) =>
+    h('button', { type: 'button', class: BD.view === k ? 'on' : '', onclick: () => { BD.view = k; BD.paintSide(); } }, l)),
+    h('span', { class: 'bd-sp' }), BD.view === 'card' ? h('label', { class: 'small muted' }, h('input', { type: 'checkbox', checked: BD.tech, onchange: e => { BD.tech = e.target.checked; BD.paintSide(); } }), ' Show technical names') : null);
+  const view = BD.view === 'map' ? bdMap() : BD.view === 'chart' ? bdChart(BD.plain) : BD.view === 'try' ? bdTry() : bdCard();
+  fill(box, lists.length ? h('div', { class: 'bd-lists' }, h('div', { class: 'muted small' }, 'The flow needs these lists. Create them to make it live.'), lists) : null,
+    loose.length ? h('div', { class: 'bd-probs' }, h('b', null, 'Not ready yet'), h('ul', null, loose.map(p => h('li', null, p.text))), h('div', { class: 'muted small' }, 'Tell the AI how to fix it, in your own words.')) : null,
+    tabs, view);
+}
+function bdFlash(id) {
+  setTimeout(() => { const el = document.getElementById(id); if (!el) return; el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bd-flash'); setTimeout(() => el.classList.remove('bd-flash'), 1500); }, 30);
+}
+const bdGo = p => { BD.view = 'card'; BD.paintSide(); bdFlash(p === 'asks' ? 'bd-sec-asks' : p === 'start' ? 'bd-sec-start' : 'bd-n-' + p); };
+
+// ----- the Card: every part of the flow in words, each step editable -----
+const bdSel = (opts, value, on, attrs) => h('select', { ...(attrs || {}), onchange: e => on(e.target.value) }, (opts.some(o => String(o[0]) === String(value)) || value == null || value === '' ? opts : [...opts, [value, value]]).map(([v, l]) => h('option', { value: v, selected: String(v) === String(value) }, l)));
+const bdInp = (value, on, attrs) => h('input', { type: 'text', value: value == null ? '' : value, onchange: e => on(e.target.value), ...(attrs || {}) });
+function bdLists() {
+  const out = {};
+  Object.entries((BD.ctx && BD.ctx.lists) || {}).forEach(([k, t]) => { out[t.label] = { label: t.label, plural: t.plural, cols: Object.values(t.fields || {}).map(f => f.label) }; });
+  BD.pending.forEach(op => { out[op.label] = { label: op.label, plural: op.plural, cols: (op.fields || []).map(f => f.label), pending: true }; });
+  return out;
+}
+function bdListOf(name) { const L = bdLists(), low = String(name || '').toLowerCase(); return Object.values(L).find(t => [t.label, t.plural].some(x => String(x).toLowerCase() === low)) || null; }
+function bdKnownAt(listPath) {     // what is known at the end of a list of steps: for "+ Add a step" and the value chips
+  const list = bdGet(BD.plain, listPath) || [];
+  if (list.length) { const last = BD.info[listPath + '.' + (list.length - 1)]; if (last) return [...new Set([...(last.known || []), ...(last.gives || [])])]; }
+  const parent = listPath.replace(/\.(yes|no)$/, '');
+  if (parent !== listPath && BD.info[parent]) return BD.info[parent].known || [];
+  return (BD.info[listPath] && BD.info[listPath].known) || [];
+}
+function bdChips(path, field, known) {
+  return h('div', { class: 'bd-ins' }, h('span', { class: 'muted small' }, 'Put in:'), (known || []).map(v => h('button', { type: 'button', onclick: () => bdChange(d => { const s = bdGet(d, path); s[field] = (s[field] || '') + '[' + v + ']'; }) }, v)));
+}
+function bdCard() {
+  const p = BD.plain, st = p.start || {};
+  const start = h('section', { class: 'bd-sec', id: 'bd-sec-start' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '1'), h('b', null, 'When it starts'), h('span', { class: 'hint' }, 'The trigger')),
+    h('div', { class: 'bd-sec-b bd-sentence' }, h('span', null, 'Start when'),
+      bdSel([['chat', 'someone writes to the chat bot'], ['time', 'it is time (a schedule)']], st.type || 'chat', v => bdChange(d => { d.start = v === 'time' ? { type: 'time', every: 'day', time: '09:00' } : { type: 'chat', words: '' }; })),
+      st.type === 'time' ? [h('span', null, ': every'), bdSel([['day', 'day'], ['week', 'week'], ['month', 'month']], st.every || 'day', v => bdChange(d => { d.start.every = v; if (v === 'week') d.start.days = d.start.days || [0]; if (v === 'month') d.start.day_of_month = d.start.day_of_month || 1; })),
+        st.every === 'week' ? h('span', { class: 'bd-days' }, BD_DAYS.map((dn, i) => h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: (st.days || []).includes(i), onchange: e => bdChange(d => { const s = new Set(d.start.days || []); e.target.checked ? s.add(i) : s.delete(i); d.start.days = [...s].sort(); }) }), dn.slice(0, 3)))) : null,
+        st.every === 'month' ? [h('span', null, 'on day'), bdSel(Array.from({ length: 28 }, (_, i) => [i + 1, String(i + 1)]), st.day_of_month || 1, v => bdChange(d => { d.start.day_of_month = +v; }))] : null,
+        h('span', null, 'at'), h('input', { type: 'time', value: st.time || '09:00', onchange: e => bdChange(d => { d.start.time = e.target.value; }) })]
+      : [h('span', null, ', for example'), bdInp(st.words, v => bdChange(d => { d.start.words = v; }), { placeholder: 'book clubhouse, club house', style: { minWidth: '220px' } })]));
+  const used = new Set();
+  const scan = l => (l || []).forEach(s => { JSON.stringify(s).replace(/\[([^\[\]]+)\]/g, (m, k) => used.add(k)); (s.tests || []).forEach(t => used.add(t.q)); scan(s.yes); scan(s.no); });
+  scan(p.before); scan(p.steps);
+  const asks = h('section', { class: 'bd-sec', id: 'bd-sec-asks' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '2'), h('b', null, 'What should the person tell us?'), h('span', { class: 'hint' }, 'Their name, phone, role and flat are known already')),
+    h('div', { class: 'bd-sec-b' },
+      h('div', { class: 'bd-sub' }, h('b', null, 'Checks before the questions'), h('span', { class: 'muted small' }, ' run on their first message; they can use Name, Phone, Role, Flat and lists'), bdList(p.before, 'before', 0)),
+      h('div', { class: 'bd-sub' }, h('b', null, 'The questions'), p.asks.map((a, i) => h('div', { class: 'bd-q-row' },
+        bdInp(a.label, v => bdChange(d => { const old = d.asks[i].label; d.asks[i].label = v; bdRename(d, old, v); }), { class: 'bd-lab', 'aria-label': 'Short name' }),
+        h('div', { class: 'grow' }, h('div', { class: 'bd-row' }, bdInp(a.q, v => bdChange(d => { d.asks[i].q = v; }), { style: { flex: '1', minWidth: '160px' }, 'aria-label': 'Question' }),
+          bdSel(BD_KINDS, a.kind || 'text', v => bdChange(d => { d.asks[i].kind = v; })),
+          h('label', { class: 'small muted' }, h('input', { type: 'checkbox', checked: !!a.optional, onchange: e => bdChange(d => { d.asks[i].optional = e.target.checked; }) }), ' can skip')),
+          a.kind === 'choice' ? h('div', { class: 'bd-row' }, h('span', { class: 'small muted' }, 'Choices:'), bdInp((a.options || []).join(', '), v => bdChange(d => { d.asks[i].options = v.split(',').map(x => x.trim()).filter(Boolean); }), { style: { flex: '1' } })) : null,
+          used.has(a.label) ? null : h('div', { class: 'muted small' }, 'No step uses this answer yet.'),
+          BD.tech ? h('div', { class: 'bd-tech' }, '$fields.' + bdLabelKey(a.label)) : null),
+        h('div', { class: 'bd-tools' }, h('button', { type: 'button', disabled: !i, title: 'Move up', onclick: () => bdChange(d => { [d.asks[i - 1], d.asks[i]] = [d.asks[i], d.asks[i - 1]]; }) }, '↑'),
+          h('button', { type: 'button', class: 'del', title: 'Remove', onclick: () => bdChange(d => { d.asks.splice(i, 1); }) }, '×')))),
+        h('button', { type: 'button', class: 'bd-add', onclick: () => bdChange(d => { d.asks.push({ label: 'New answer', q: 'Your question?', kind: 'text' }); }) }, '+ Add a question'))));
+  const steps = h('section', { class: 'bd-sec', id: 'bd-sec-steps' }, h('div', { class: 'bd-sec-h' }, h('span', { class: 'num' }, '3'), h('b', null, 'What happens'), h('span', { class: 'hint' }, 'After the questions, top to bottom')),
+    h('div', { class: 'bd-sec-b' }, bdList(p.steps, 'steps', 0)));
+  return h('div', null, start, asks, steps);
+}
+function bdRename(d, old, now) {   // renaming an answer renames it wherever it is used
+  if (!old || old === now) return;
+  const swap = l => (l || []).forEach(s => {
+    ['text', 'value'].forEach(k => { if (typeof s[k] === 'string') s[k] = s[k].split('[' + old + ']').join('[' + now + ']'); });
+    ['match', 'values'].forEach(k => { if (s[k]) Object.keys(s[k]).forEach(c => { if (s[k][c] === '[' + old + ']') s[k][c] = '[' + now + ']'; }); });
+    (s.tests || []).forEach(t => { if (t.q === old) t.q = now; });
+    swap(s.yes); swap(s.no);
+  });
+  swap(d.before); swap(d.steps);
+}
+function bdList(list, path, depth) {
+  return h('div', { class: 'bd-lst' }, (list || []).map((s, i) => bdStep(s, path + '.' + i, i, list.length, depth)),
+    (list || []).length ? null : h('div', { class: 'muted small' }, 'Nothing here yet.'),
+    h('button', { type: 'button', class: 'bd-add', onclick: () => bdPick(path) }, '+ Add a step here'));
+}
+function bdStep(s, p, i, n, depth) {
+  const k = BD_STEP[s.a] || { icon: '•', label: s.a }, inf = BD.info[p] || {}, known = inf.known || [];
+  const probs = BD.problems.filter(x => x.path === p);
+  const at = (field, fn) => v => bdChange(d => fn(bdGet(d, p), v));
+  const tools = h('div', { class: 'bd-tools' },
+    h('button', { type: 'button', disabled: !i, title: 'Move up', onclick: () => bdMove(p, -1) }, '↑'),
+    h('button', { type: 'button', disabled: i >= n - 1, title: 'Move down', onclick: () => bdMove(p, 1) }, '↓'),
+    h('button', { type: 'button', class: 'del', title: 'Remove', onclick: () => { bdRemove(p); toast('Removed. Undo puts it back.', 'ok', { label: 'Undo', run: bdUndo }); } }, '×'));
+  const lists = Object.values(bdLists()), roles = (BD.ctx.roles || []).map(r => [r, r]);
+  let body;
+  if (s.a === 'say') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Reply to the person')), h('textarea', { class: 'bd-msgtxt', rows: 2, value: s.text || '', onchange: e => at('text', (x, v) => { x.text = v; })(e.target.value) }), bdChips(p, 'text', known)];
+  else if (s.a === 'tell') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Tell everyone who is'), bdSel(roles, s.role, at('role', (x, v) => { x.role = v; }))), h('textarea', { class: 'bd-msgtxt', rows: 2, value: s.text || '', onchange: e => at('text', (x, v) => { x.text = v; })(e.target.value) }), bdChips(p, 'text', known)];
+  else if (s.a === 'set') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Set'), bdInp(s.name, at('name', (x, v) => { x.name = v; }), { style: { width: '140px' } }), h('span', null, 'to'), bdInp(s.value, at('value', (x, v) => { x.value = v; }), { style: { flex: '1', minWidth: '160px' } })), bdChips(p, 'value', known)];
+  else if (s.a === 'find' || s.a === 'save') {
+    const L = bdListOf(s.list), key = s.a === 'find' ? 'match' : 'values', vals = s[key] || {};
+    const cols = L ? L.cols : Object.keys(vals);
+    const rows = (s.a === 'save' ? cols : Object.keys(vals)).map(c => h('div', { class: 'bd-row' }, h('span', { class: 'bd-col' }, c),
+      h('span', { class: 'muted small' }, s.a === 'find' ? 'is' : '←'), bdInp(vals[c], at(key, (x, v) => { x[key] = x[key] || {}; if (v === '' && s.a === 'save') delete x[key][c]; else x[key][c] = v; }), { placeholder: s.a === 'save' ? '(leave empty)' : 'a value or [Answer]', style: { flex: '1', minWidth: '140px' } }),
+      bdSel([['', '+ value'], ...known.map(v => ['[' + v + ']', v])], '', v => { if (v) at(key, (x) => { x[key] = x[key] || {}; x[key][c] = v; })(v); }, { class: 'bd-pickval', 'aria-label': 'Put in a value' }),
+      s.a === 'find' ? h('button', { type: 'button', class: 'bd-pill', onclick: () => bdChange(d => { delete bdGet(d, p).match[c]; }) }, '×') : null));
+    const addCol = s.a === 'find' && L ? bdSel([['', '+ another column'], ...L.cols.filter(c => !(c in vals)).map(c => [c, c])], '', v => { if (v) bdChange(d => { const x = bdGet(d, p); x.match = { ...(x.match || {}), [v]: '' }; }); }) : null;
+    body = [h('div', { class: 'bd-sentence' }, h('b', null, s.a === 'find' ? 'Look in' : 'Save in'), bdSel(lists.map(t => [t.label, t.plural + (t.pending ? ' (new)' : '')]), s.list, at('list', (x, v) => { x.list = v; })),
+      s.a === 'find' ? [h('span', null, 'and call it'), bdInp(s.name, at('name', (x, v) => { x.name = v; }), { style: { width: '140px' } }), h('span', { class: 'muted small' }, 'for rows where')] : h('span', { class: 'muted small' }, 'with')),
+      h('div', { class: 'bd-map' }, rows, addCol)];
+  } else if (s.a === 'approve') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Ask everyone who is'), bdSel(roles, s.role, at('role', (x, v) => { x.role = v; })), h('span', null, 'to approve')), h('textarea', { class: 'bd-msgtxt', rows: 2, value: s.text || '', onchange: e => at('text', (x, v) => { x.text = v; })(e.target.value) }), bdChips(p, 'text', known)];
+  else if (s.a === 'block') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Use the building block'), bdSel(Object.entries(BD.ctx.blocks || {}).map(([kk, nm]) => [kk, nm]), s.key, at('key', (x, v) => { x.key = v; })))];
+  else if (s.a === 'stop') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Stop here'), h('span', { class: 'muted small' }, 'nothing after this runs'))];
+  else if (s.a === 'if') {
+    const tests = (s.tests || []).map((t, j) => {
+      const ask = BD.plain.asks.find(a => a.label === t.q), yn = / found$/.test(t.q || '');
+      const vals = yn ? [['yes', 'yes'], ['no', 'no']] : t.q === 'Approval' ? [['Approve', 'Approve'], ['Reject', 'Reject']] : t.q === 'Role' ? roles : ask && ask.kind === 'choice' ? (ask.options || []).map(o => [o, o]) : ask && ask.kind === 'yesno' ? [['Yes', 'Yes'], ['No', 'No']] : null;
+      const val = ['empty', 'filled'].includes(t.op) ? null : vals && t.op !== 'oneof' ? bdSel([['', '…'], ...vals], t.value, v => bdChange(d => { bdGet(d, p).tests[j].value = v; })) : bdInp(t.value, v => bdChange(d => { bdGet(d, p).tests[j].value = v; }), { placeholder: t.op === 'oneof' ? 'A, B, C' : 'value' });
+      return h('div', { class: 'bd-row' }, j ? h('span', { class: 'muted small' }, s.match === 'any' ? 'or' : 'and') : null,
+        bdSel(known.map(v => [v, v]), t.q, v => bdChange(d => { bdGet(d, p).tests[j].q = v; })), bdSel(BD_OPS, t.op || 'is', v => bdChange(d => { bdGet(d, p).tests[j].op = v; })), val,
+        (s.tests || []).length > 1 ? h('button', { type: 'button', class: 'bd-pill', onclick: () => bdChange(d => { bdGet(d, p).tests.splice(j, 1); }) }, '×') : null);
+    });
+    body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Check:'), (s.tests || []).length > 1 ? ['if', bdSel([['all', 'all'], ['any', 'any']], s.match || 'all', at('match', (x, v) => { x.match = v; })), 'of these are true'] : 'if'),
+      tests, h('button', { type: 'button', class: 'bd-pill', onclick: () => bdChange(d => { const x = bdGet(d, p); x.tests = [...(x.tests || []), { q: (x.tests[0] || {}).q || known[0], op: 'is', value: '' }]; }) }, '+ another check'),
+      h('div', { class: 'muted small' }, 'Checked once, here. Nothing inside a lane can move it to the other lane.'),
+      h('div', { class: 'bd-lanes' + (depth > 1 ? ' one' : '') }, h('div', { class: 'bd-lane yes' }, h('div', { class: 'lh' }, '✓ Yes'), bdList(s.yes, p + '.yes', depth + 1)),
+        h('div', { class: 'bd-lane no' }, h('div', { class: 'lh' }, '✗ Otherwise'), bdList(s.no, p + '.no', depth + 1)))];
   }
+  const contract = (inf.needs || []).length || (inf.gives || []).length ? h('div', { class: 'bd-contract' },
+    (inf.needs || []).length ? [h('span', { class: 'k' }, 'Needs'), inf.needs.map(x => h('span', { class: 'need ' + (x.ok ? 'ok' : 'bad') }, (x.ok ? '✓ ' : '✗ ') + x.n))] : null,
+    (inf.gives || []).length ? [h('span', { class: 'k' }, 'Gives'), inf.gives.map(g => h('span', { class: 'give' }, g))] : null) : null;
+  return h('div', { class: 'bd-step' + (s.a === 'if' ? ' bd-if' : '') + (probs.length ? ' bad' : ''), id: 'bd-n-' + p },
+    h('div', { class: 'bd-step-h' }, h('span', { class: 'ic' }, k.icon), h('div', { class: 'grow' }, body, contract, probs.map(pb => bdProblem(pb, p)), BD.tech ? h('div', { class: 'bd-tech' }, JSON.stringify({ ...s, yes: undefined, no: undefined })) : null), tools));
+}
+function bdMove(p, by) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(), arr = bdGet(d, ks.join('.')), j = i + by; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; }); }
+function bdRemove(p) { bdChange(d => { const ks = p.split('.'), i = +ks.pop(); bdGet(d, ks.join('.')).splice(i, 1); }); }
+
+// what does not fit, in words, with the fixes that make sense (the first is the suggested one)
+function bdProblem(pb, p) {
+  const ks = p.split('.'), idx = +ks.pop(), lp = ks.join('.'), list = bdGet(BD.plain, lp) || [], fixes = [];
+  const later = list.findIndex((x, i) => i > idx && ((BD.info[lp + '.' + i] || {}).gives || []).includes(pb.need));
+  if (later >= 0) fixes.push({ label: 'Move this step below “' + bdShort(list[later]) + '”', run: () => bdChange(d => { const arr = bdGet(d, lp); const [x] = arr.splice(idx, 1); arr.splice(later, 0, x); }) });
+  else if (pb.need && /nothing before it gives/.test(pb.text) && !/ found$|^Approval$| number$/.test(pb.need) && !lp.startsWith('before')) fixes.push({ label: 'Ask the person: “' + pb.need + '”', run: () => bdChange(d => { d.asks.push({ label: pb.need, q: pb.need + '?', kind: 'text' }); }) });
+  fixes.push({ label: 'Ask the AI to fix it', run: () => bdSend('Please fix this: ' + pb.text) });
+  fixes.push({ label: 'Remove this step', run: () => bdRemove(p) });
+  return h('div', { class: 'bd-prob' }, '⚠️ ' + pb.text, h('div', { class: 'bd-row' }, fixes.map((f, i) => h('button', { type: 'button', class: 'btn sm' + (i === 0 ? ' primary' : ''), onclick: f.run }, (i === 0 ? '🤖 Fix it: ' : '') + f.label))));
+}
+const bdShort = s => (BD_STEP[s.a] || {}).label || s.a;
+
+// "+ Add a step": describe it to the AI, or pick one
+function bdPick(listPath) {
+  const known = bdKnownAt(listPath), before = listPath.startsWith('before');
+  const words = h('input', { type: 'text', placeholder: 'For example: if the place is taken, tell them and stop', style: { flex: '1' } });
+  const defaults = {
+    say: { a: 'say', text: 'Done. Thank you!' }, tell: { a: 'tell', role: (BD.ctx.roles || [])[0] || '', text: '' },
+    find: { a: 'find', list: (Object.values(bdLists())[0] || {}).label || '', match: {}, name: 'Found' }, save: { a: 'save', list: (Object.values(bdLists())[0] || {}).label || '', values: {} },
+    set: { a: 'set', name: 'Value', value: '' }, approve: { a: 'approve', role: (BD.ctx.roles || [])[0] || '', text: 'Please approve.' },
+    block: { a: 'block', key: Object.keys(BD.ctx.blocks || {})[0] || '' }, if: { a: 'if', match: 'all', tests: [{ q: known[0] || 'Role', op: 'is', value: '' }], yes: [], no: [] }, stop: { a: 'stop' },
+  };
+  let m;
+  const groups = [['Actions', 'Actions: what it does'], ['Logic', 'Logic: checks and stopping']].map(([g, label]) => h('div', null, h('div', { class: 'bd-grp' }, label),
+    h('div', { class: 'bd-acts' }, Object.entries(BD_STEP).filter(([kk, x]) => x.g === g && !(kk === 'block' && !Object.keys(BD.ctx.blocks || {}).length)).map(([kk, x]) =>
+      h('button', { type: 'button', onclick: () => { m.close(); bdChange(d => { bdGet(d, listPath).push(JSON.parse(JSON.stringify(defaults[kk]))); }); bdFlash('bd-n-' + listPath + '.' + (bdGet(BD.plain, listPath).length - 1)); } },
+        x.icon + ' ', h('b', null, x.label), h('small', null, x.hint))))));
+  m = modal({ title: 'Add a step', wide: true, body: h('div', { class: 'stack' },
+    h('div', { class: 'bd-aibox' }, h('b', null, '🤖 Describe the step'), h('div', { class: 'bd-row' }, words, h('button', { class: 'btn primary', type: 'button', onclick: () => { const t = words.value.trim(); if (!t) return; m.close(); bdSend(t, listPath); } }, 'Add it'))),
+    h('div', { class: 'muted small' }, 'Or pick one. Known here: ' + (known.join(', ') || 'nothing yet') + (before ? '. (Before the questions, no answers are known.)' : '.')), groups),
+    actions: [{ label: 'Cancel' }] });
+  words.addEventListener('keydown', e => { if (e.key === 'Enter') { const t = words.value.trim(); if (t) { m.close(); bdSend(t, listPath); } } });
 }
 
-// ----- the simple chart: one plain line per box, checks as Yes / No side by side -----
+// ----- the Map: the same flow as boxes and lanes; click a box to change it -----
+function bdMap() {
+  const L = () => h('div', { class: 'mp-link' });
+  const node = (p, title, text, cls) => h('button', { type: 'button', class: 'mp-node' + (cls ? ' ' + cls : '') + (BD.problems.some(x => x.path === p) ? ' bad' : ''), onclick: () => bdGo(p) }, h('span', { class: 't' }, title), text);
+  const seq = (arr, base) => (arr || []).map((s, i) => {
+    const p = base + '.' + i, k = BD_STEP[s.a] || { icon: '•', label: s.a };
+    if (s.a === 'if') return [L(), h('button', { type: 'button', class: 'mp-q', onclick: () => bdGo(p) }, '🔀 ' + bdQ(s)),
+      h('div', { class: 'mp-lanes' }, h('div', { class: 'mp-lane' }, h('span', { class: 'ch-yes' }, '✓ Yes'), seq(s.yes, p + '.yes').length ? seq(s.yes, p + '.yes') : h('span', { class: 'muted small' }, 'nothing')),
+        h('div', { class: 'mp-lane' }, h('span', { class: 'ch-no' }, '✗ Otherwise'), seq(s.no, p + '.no').length ? seq(s.no, p + '.no') : h('span', { class: 'muted small' }, 'nothing')))];
+    if (s.a === 'stop') return [L(), node(p, '⛔ Stop', 'End', 'end')];
+    return [L(), node(p, k.icon + ' ' + k.label, bdWords(s))];
+  });
+  const p = BD.plain;
+  return h('div', { class: 'mp' }, node('start', '▶ Starts', bdStartWords(p.start || {}), 'start'),
+    (p.before || []).length ? [L(), h('div', { class: 'mp-band' }, 'Before the questions'), seq(p.before, 'before')] : null,
+    p.asks.length ? [L(), node('asks', '❓ Asks', p.asks.map(a => a.label).join(' · '))] : null,
+    seq(p.steps, 'steps'), L(), h('div', { class: 'mp-node end' }, '■ Done'), h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it in the Card.'));
+}
+
+// ----- the simple chart: one plain line per box, checks as Yes / No side by side; click a box to change it -----
 const BD_YESNO = { 'Approval': { approve: 'Approved?', reject: 'Not approved?' } };
 function bdQ(s) {
   return (s.tests || []).map(t => {
@@ -121,7 +441,7 @@ function bdWords(s) {
 }
 function bdChart(plain) {
   const A = () => h('div', { class: 'ch-arrow' }, '↓');
-  const box = (t, cls) => h('div', { class: 'ch-box' + (cls ? ' ' + cls : '') }, t);
+  const box = (t, cls, p) => h(p ? 'button' : 'div', { class: 'ch-box' + (cls ? ' ' + cls : '') + (p && BD.problems.some(x => x.path === p) ? ' bad' : ''), type: p ? 'button' : null, onclick: p ? () => bdGo(p) : null }, t);
   const ends = l => l && l.length && l[l.length - 1].a === 'stop';
   const lane = (label, cls, kids) => h('div', { class: 'ch-lane' }, h('span', { class: cls }, label), kids);
   const seq = (arr, end) => {
@@ -130,42 +450,99 @@ function bdChart(plain) {
       const s = arr[i], rest = arr.slice(i + 1);
       if (s.a === 'if') {
         const ys = ends(s.yes), ns = ends(s.no);
-        out.push(A(), h('div', { class: 'ch-q' }, bdQ(s)));
+        out.push(A(), h('button', { type: 'button', class: 'ch-q', onclick: () => bdGo(s.__p) }, bdQ(s)));
         if (ys !== ns) { out.push(h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(ys ? s.yes : (s.yes || []).concat(rest), !ys && end)), lane('No', 'ch-no', seq(ns ? s.no : (s.no || []).concat(rest), !ns && end)))); return out; }
         out.push(h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(s.yes, false).length ? seq(s.yes, false) : h('div', { class: 'ch-join' }, 'nothing extra')),
           lane('No', 'ch-no', seq(s.no, false).length ? seq(s.no, false) : h('div', { class: 'ch-join' }, 'nothing extra'))), h('div', { class: 'ch-join' }, 'then both go on'));
         continue;
       }
-      if (s.a === 'approve') { out.push(A(), h('div', { class: 'ch-q' }, bdWords(s) + ': approved?'), h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(rest, end)), lane('No', 'ch-no', [A(), box('End', 'ch-end')]))); return out; }
+      if (s.a === 'approve') { out.push(A(), box(bdWords(s) + ': approved?', 'ch-q', s.__p), h('div', { class: 'ch-split' }, lane('Yes', 'ch-yes', seq(rest, end)), lane('No', 'ch-no', [A(), box('End', 'ch-end')]))); return out; }
       if (s.a === 'stop') { out.push(A(), box('End', 'ch-end')); return out; }
-      out.push(A(), box(bdWords(s)));
+      out.push(A(), box(bdWords(s), '', s.__p));
     }
     if (end) out.push(A(), box('Done', 'ch-end'));
     return out;
   };
-  const st = plain.start || {};
-  const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const when = st.every === 'week' && (st.days || []).length ? ' on ' + st.days.map(d => DAYS[d] || d).join(', ') : st.every === 'month' && st.day_of_month ? ' on day ' + st.day_of_month : '';
-  const startText = st.type === 'time' ? 'By itself, every ' + (st.every || 'day') + when + (st.time ? ' at ' + st.time : '') : 'When someone writes' + (st.words ? ' “' + String(st.words).split(',')[0].trim() + '”' : '');
   if (!plain.asks.length && !plain.steps.length && !(plain.before || []).length) return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow will appear here'), h('div', { class: 'muted' }, 'Start by telling the AI what it should do.'));
-  // the checks before the questions, then the questions, then the steps: one sequence, so a stop on one side
-  // of an early check carries the questions and the rest into the other side
-  const all = [...(plain.before || []), ...(plain.asks.length ? [{ a: '_ask' }] : []), ...plain.steps];
-  return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow at a glance'), box('▶ ' + startText, 'ch-start'), seq(all, true));
+  // each step remembers where it is, so a click opens it in the Card
+  const tag = (l, base) => (l || []).map((s, i) => ({ ...s, __p: base + '.' + i, yes: tag(s.yes, base + '.' + i + '.yes'), no: tag(s.no, base + '.' + i + '.no') }));
+  const all = [...tag(plain.before, 'before'), ...(plain.asks.length ? [{ a: '_ask', __p: 'asks' }] : []), ...tag(plain.steps, 'steps')];
+  return h('div', { class: 'chart' }, h('div', { class: 'ch-title' }, 'Your flow at a glance'), box('▶ ' + bdStartWords(plain.start || {}), 'ch-start', 'start'), seq(all, true),
+    h('div', { class: 'muted small', style: { marginTop: '10px' } }, 'Click a box to change it.'));
 }
 
-async function bdSave() {
-  if (!BD.name.trim() || BD.name.trim().length < 2) { toast('Give the flow a name first.', 'bad'); document.querySelector('.bd-name').focus(); return; }
-  const btn = document.getElementById('bd-save'); btn.disabled = true;
+// ----- Try it: the real engine, as one of your people; nothing is saved and nobody is messaged -----
+const BT = { as: null, msgs: [], btns: null, waiter: null, tok: 0, auto: false, running: false };
+function bdTry() {
+  const people = (BD.ctx.people || []);
+  if (!BT.as && people.length) BT.as = (people.find(p => /owner|tenant|resident|member/i.test(p.role || '')) || people[0]).id;
+  const box = h('div', { class: 'bt-msgs', id: 'bt-msgs' });
+  const input = h('input', { type: 'text', placeholder: 'Type a message', 'aria-label': 'Message', onkeydown: e => { if (e.key === 'Enter' && input.value.trim()) { btAnswer(input.value.trim()); input.value = ''; } } });
+  const phone = h('div', { class: 'bt' }, h('div', { class: 'bt-h' }, h('b', null, '📱 Try it'), h('span', { class: 'small' }, 'as'),
+      bdSel(people.map(p => [p.id, p.name + (p.flat ? ' · ' + p.flat : '') + (p.role ? ' · ' + p.role : '')]), BT.as, v => { BT.as = v; btStart(); }, { 'aria-label': 'Try it as' }),
+      h('span', { class: 'bd-sp' }), h('button', { type: 'button', onclick: () => { btStart(true); } }, '⚡ Sample answers'), h('button', { type: 'button', onclick: () => btStart() }, 'Restart')),
+    box, h('div', { class: 'bt-in' }, input, h('button', { type: 'button', onclick: () => { if (input.value.trim()) { btAnswer(input.value.trim()); input.value = ''; } } }, '➤')),
+    h('div', { class: 'muted small', style: { padding: '6px 10px' } }, 'The real engine runs, and your lists are really looked in. Nothing is saved and nobody is messaged.'));
+  // a redraw of the screen keeps the chat; it starts again only when the flow or the person changed
+  setTimeout(() => { if (!BT.running && BT.key !== JSON.stringify(BD.plain) + BT.as) btStart(); else btDraw(); }, 0);
+  return phone;
+}
+const btSay = (c, t) => { BT.msgs.push({ c, t }); btDraw(); };
+function btDraw() {
+  const box = document.getElementById('bt-msgs'); if (!box) return;
+  fill(box, BT.msgs.map(m => h('div', { class: 'bt-b ' + m.c }, m.t)), BT.btns ? h('div', { class: 'bt-btns' }, BT.btns.map(b => h('button', { type: 'button', onclick: () => btAnswer(b) }, b))) : null);
+  box.scrollTop = box.scrollHeight;
+}
+function btAsk(btns, sample) {
+  BT.btns = btns; btDraw();
+  const t = BT.tok;
+  if (BT.auto && sample != null) setTimeout(() => { if (t === BT.tok && BT.waiter) btAnswer(sample); }, 200);
+  return new Promise(r => { BT.waiter = r; });
+}
+function btAnswer(text) { if (!BT.waiter) return; BT.msgs.push({ c: 'me', t: text }); const w = BT.waiter; BT.waiter = null; BT.btns = null; btDraw(); w(text); }
+function btDates() {
+  const d = new Date(), iso = x => x.toISOString().slice(0, 10), t = new Date(d); t.setDate(d.getDate() + 1);
+  const sat = new Date(d); sat.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7 || 7));
+  return [iso(t), iso(sat)];
+}
+async function btStart(auto) {
+  const tok = ++BT.tok; Object.assign(BT, { msgs: [], btns: null, waiter: null, auto: !!auto, running: true, key: JSON.stringify(BD.plain) + BT.as }); btDraw();
+  const chk = () => { if (tok !== BT.tok) throw 'stale'; };
+  const plain = JSON.parse(JSON.stringify(BD.plain)), st = plain.start || {};
   try {
-    const r = await api.post('/build/save', { name: BD.name.trim(), plain: BD.plain, workflow_id: BD.id, base_version: BD.version });
-    const first = !BD.id;
-    try { sessionStorage.removeItem('build:' + (BD.id || 'new')); } catch (e) {}
-    BD.id = r.id; BD.version = r.version; BD.dirty = false; bdKeep();
-    history.replaceState(null, '', href('build', '', { f: r.id }));
-    const next = isSuper() ? 'It is switched off until you switch it on and choose who can use it.' : 'A super admin switches it on and chooses who can use it.';
-    toast(first ? 'Saved. ' + next : 'Saved.', 'ok', isSuper() ? { label: 'Who can use it', run: () => openWorkflow(r.id) } : undefined);
-  } catch (x) { toast(x.message, 'bad'); }
-  BD.paint();
+    if (BD.problems.length || BD.pending.length) { btSay('sys', BD.pending.length ? 'Create the new lists first, then try it.' : 'Fix what is not ready first: ' + BD.problems[0].text); BT.running = false; return; }
+    if (!BT.as) { btSay('sys', 'There is nobody to try it as yet. Add people first.'); BT.running = false; return; }
+    if (st.type === 'time') { btSay('sys', 'It runs by itself: ' + bdStartWords(st) + '.'); await btAsk(['▶ Run it now (rehearsal)'], '▶ Run it now (rehearsal)'); chk(); }
+    else { const w = String(st.words || 'hi').split(',')[0].trim() || 'hi'; btSay('sys', 'Write something like “' + w + '”, or press ⚡ Sample answers.'); await btAsk(null, w); chk(); btSay('bot', 'Sure, I can help with “' + (BD.name || 'this') + '”.'); }
+    if ((plain.before || []).length) {
+      const r = await api.post('/build/try', { plain, as_user: BT.as, part: 'before' }); chk();
+      if (btShow(r, true)) { BT.running = false; return; }
+    }
+    const fields = {}, [d1, d2] = btDates();
+    for (const a of plain.asks) {
+      btSay('bot', a.q + (a.optional ? '\n(you can say skip)' : ''));
+      const opts = a.kind === 'choice' ? (a.options || []) : a.kind === 'date' ? [d1, d2] : a.kind === 'time' ? ['10 am', '6 pm'] : a.kind === 'yesno' ? ['Yes', 'No'] : a.optional ? ['Skip'] : null;
+      const sample = opts && opts.length ? opts[a.kind === 'time' ? 1 : 0] : a.kind === 'number' ? '2' : 'A sample answer';
+      const v = await btAsk(opts, sample); chk();
+      if (!/^skip$/i.test(v)) fields[a.label] = v;
+    }
+    btSay('sys', 'Running the flow…');
+    const r = await api.post('/build/try', { plain, as_user: BT.as, fields, part: 'all' }); chk();
+    BT.msgs.pop();
+    btShow(r);
+    if (r.status === 'preview') { BD.tried = JSON.stringify(BD.plain); bdKeep(); const top = document.querySelector('.bd-spine'); if (top) BD.paintSide(); }
+  } catch (e) { if (e !== 'stale') btSay('sys', 'It could not be tried: ' + (e.message || e)); }
+  BT.running = false;
+}
+function btShow(r, early) {           // true when the flow stopped; early: only the checks before the questions
+  if (r.status === 'not_ready' || r.status === 'error') { btSay('sys', r.message || 'It stopped.'); return true; }
+  (r.facts || []).forEach(f => {
+    if (/^Reply: /.test(f)) btSay('bot', f.slice(7));
+    else if (/^Would tell /.test(f)) btSay('other', f.replace(/^Would tell /, 'What ').replace(/^What ([^:]+): /, 'What $1 get:\n'));
+    else btSay('sys', f.replace(/^Looked in ([a-z_]+):/, (m, t) => '🔎 Looked in ' + t.replace(/_/g, ' ') + ':').replace(/^would save: /, '🗂️ Would save: '));
+  });
+  if (r.stopped) { btSay('sys', '⛔ The flow stopped here.'); return true; }
+  if (!early && r.status === 'preview' && !(r.facts || []).some(f => /^Reply: /.test(f))) btSay('sys', 'Done. (It did not say anything to the person.)');
+  return false;
 }
 """

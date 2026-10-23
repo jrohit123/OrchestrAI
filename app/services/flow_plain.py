@@ -96,13 +96,21 @@ def ends(lane: list) -> bool:
 
 def check(plain: dict, lists: dict, roles: set[str] | None = None, blocks: set[str] | None = None) -> list[dict]:
     """[{path, need, text}]: every place a step uses something that is not there. Empty when the flow fits."""
+    return analyse(plain, lists, roles, blocks)[0]
+
+
+def analyse(plain: dict, lists: dict, roles: set[str] | None = None, blocks: set[str] | None = None) -> tuple[list, dict]:
+    """(problems, info). info[path] = {needs: [{n, ok}], gives: [...], known: [...]} for every step, what the Card shows:
+    what it needs (and whether that is known there), what it gives, and every value known at that place."""
     problems: list[dict] = []
+    info: dict = {}
     roles_low = {r.lower() for r in (roles or set())}
 
     def walk(steps, path, known: set):
         for i, s in enumerate(steps or []):
             p = f"{path}.{i}"
             a = s.get("a")
+            info[p] = {"needs": [{"n": n, "ok": n in known} for n in needs(s)], "gives": gives(s, lists), "known": sorted(known)}
             for n in needs(s):
                 if n not in known:
                     problems.append({"path": p, "need": n, "text": f"This step uses {n}, and nothing before it gives that."})
@@ -134,10 +142,13 @@ def check(plain: dict, lists: dict, roles: set[str] | None = None, blocks: set[s
 
     known = set(BASICS)
     walk(plain.get("before"), "before", known)
+    info["before"] = {"known": sorted(known)}
     if ends(plain.get("before") or []):
         problems.append({"path": "before", "need": "", "text": "The checks before the questions always stop the flow, so nobody is ever asked anything."})
-    walk(plain.get("steps"), "steps", known | {a.get("label") for a in plain.get("asks") or []})
-    return problems
+    after = known | {a.get("label") for a in plain.get("asks") or []}
+    info["steps"] = {"known": sorted(after)}
+    walk(plain.get("steps"), "steps", after)
+    return problems, info
 
 
 # ───────────────────────── plain -> engine ─────────────────────────

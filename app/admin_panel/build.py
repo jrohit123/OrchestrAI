@@ -1,9 +1,15 @@
 """Build with AI: an admin builds a flow (and the lists it needs) by chatting, sees it as a simple chart, and saves it.
 
     GET  /build/context          the lists, roles and building blocks the flow can use
-    GET  /build/{workflow_id}    a flow made here: its plain form (workflows.settings.plain) and version
+    GET  /build/{workflow_id}    a flow made here: the live plain form, the draft, the versions
+    PUT  /build/{id}/draft       keep the draft (settings.plain_draft); people keep getting the live one
+    DELETE /build/{id}/draft     throw the draft away
+    POST /build/{id}/restore     copy an earlier version into the draft
     POST /build/chat             one message: the AI changes the plain flow (and may propose new lists, ask questions)
-    POST /build/save             compile the plain flow (flow_plain.py) into steps and save it through studio._save
+    POST /build/check            the checker: what does not fit, and what each step needs and gives (for the Card)
+    POST /build/try              a rehearsal on the real engine as one person: nothing is saved or sent
+    POST /build/save             make it live: compile the plain flow (flow_plain.py) into steps, save through
+                                 studio._save (a new version) and keep the plain form in the flow's history
 
 The plain flow is the source; the engine steps are made from it on every save. The AI is told about the organisation
 (platform.txt, then flow_builder.txt) and its answer is checked (flow_plain.check); when something does not fit it
@@ -49,10 +55,27 @@ async def _context(ctx) -> dict:
     return {"lists": lists, "roles": roles, "blocks": {b["intent_key"]: b["name"] for b in blocks}, "world": world}
 
 
+async def _people(ctx) -> list[dict]:
+    """People to try a flow as (Try it): name, role and flat."""
+    sql = (
+        "SELECT u.id, u.name, r.name AS role{flat} FROM users u LEFT JOIN roles r ON r.id = u.role_id "
+        "WHERE u.org_id = $1 AND coalesce(u.is_active, true) ORDER BY u.name LIMIT 80"
+    )
+    flat = ", (SELECT concat_ws('-', x.wing, x.flat_no) FROM residents x WHERE x.user_id = u.id LIMIT 1) AS flat"
+    for f in (flat, ""):
+        try:
+            found = await fetch_all(sql.replace("{flat}", f), ctx.org_id, source_key=ctx.source_key)
+            return [{"id": str(p["id"]), "name": p["name"], "role": p["role"], "flat": p.get("flat") or ""} for p in found]
+        except Exception as e:  # an organisation without flats
+            logger.info(f"build: people without flats ({e!r})")
+    return []
+
+
 @router.get("/build/context")
 async def build_context(ctx: CtxDep):
     c = await _context(ctx)
-    return {"lists": c["lists"], "roles": c["roles"], "blocks": c["blocks"], "can_add_lists": bool(ctx.caps.get("schema_editor"))}
+    return {"lists": c["lists"], "roles": c["roles"], "blocks": c["blocks"], "people": await _people(ctx),
+            "can_add_lists": bool(ctx.caps.get("schema_editor"))}  # fmt: skip
 
 
 @router.get("/build")
@@ -78,10 +101,61 @@ async def build_get(workflow_id: UUID, ctx: CtxDep):
     )
     if not row:
         raise HTTPException(404, "Flow not found")
-    plain = (jb(row["settings"], {}) or {}).get("plain")
-    if not plain:
+    st = jb(row["settings"], {}) or {}
+    if not st.get("plain"):
         raise HTTPException(409, "This flow was not made with “Build with AI”. Open it in the editor.")
-    return {"id": str(row["id"]), "name": row["name"], "version": row["version"], "is_active": row["is_active"], "plain": plain}
+    return {
+        "id": str(row["id"]), "name": row["name"], "version": row["version"], "is_active": row["is_active"],
+        "plain": st["plain"], "draft": st.get("plain_draft"),
+        "history": [{"v": h.get("v"), "at": h.get("at"), "note": h.get("note")} for h in st.get("plain_history") or []],
+    }  # fmt: skip
+
+
+class DraftBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plain: dict
+
+
+async def _set_draft(ctx, workflow_id: UUID, plain: dict | None) -> None:
+    """The draft lives in the flow's settings: no new version, nothing changes for people."""
+    sql = (
+        "UPDATE workflows SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{plain_draft}', $3::jsonb) "
+        "WHERE id = $1 AND org_id = $2 AND settings ? 'plain' RETURNING id"
+        if plain is not None
+        else "UPDATE workflows SET settings = coalesce(settings, '{}'::jsonb) - 'plain_draft' "
+        "WHERE id = $1 AND org_id = $2 AND settings ? 'plain' RETURNING id"
+    )
+    args = [workflow_id, ctx.org_id] + ([json.dumps(plain)] if plain is not None else [])
+    if not await fetch_one(sql, *args, source_key=ctx.source_key):
+        raise HTTPException(404, "Flow not found")
+
+
+@router.put("/build/{workflow_id}/draft")
+async def build_draft(workflow_id: UUID, body: DraftBody, ctx: CtxDep):
+    await _set_draft(ctx, workflow_id, _clean(body.plain, None))
+    return {"ok": True}
+
+
+@router.delete("/build/{workflow_id}/draft")
+async def build_draft_drop(workflow_id: UUID, ctx: CtxDep):
+    await _set_draft(ctx, workflow_id, None)
+    return {"ok": True}
+
+
+class RestoreBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    v: int
+
+
+@router.post("/build/{workflow_id}/restore")
+async def build_restore(workflow_id: UUID, body: RestoreBody, ctx: CtxDep):
+    """An earlier version becomes the draft; making it live is a separate step."""
+    row = await fetch_one("SELECT settings FROM workflows WHERE id = $1 AND org_id = $2", workflow_id, ctx.org_id, source_key=ctx.source_key)
+    found = [h for h in ((jb(row["settings"], {}) or {}).get("plain_history") or []) if h.get("v") == body.v] if row else []
+    if not found:
+        raise HTTPException(404, "That version was not found")
+    await _set_draft(ctx, workflow_id, found[0]["plain"])
+    return {"ok": True, "plain": found[0]["plain"]}
 
 
 class ChatBody(BaseModel):
@@ -133,14 +207,29 @@ def _fill_pending(flow: dict | None, ops: list[dict]) -> None:
     walk(flow.get("steps"))
 
 
+_PLAIN_STEPS = {"say", "tell", "set", "find", "save", "if", "stop", "approve", "block"}
+
+
+def _known_steps(steps) -> list[dict]:
+    """Only the kinds of step the plain flow has, at every depth (an AI answer may carry a leftover or made-up one)."""
+    out = []
+    for s in steps if isinstance(steps, list) else []:
+        if isinstance(s, dict) and s.get("a") in _PLAIN_STEPS:
+            if s["a"] == "if":
+                s = {**s, "yes": _known_steps(s.get("yes")), "no": _known_steps(s.get("no")),
+                     "tests": [t for t in s.get("tests") or [] if isinstance(t, dict)]}  # fmt: skip
+            out.append(s)
+    return out
+
+
 def _clean(flow: dict | None, current: dict | None) -> dict | None:
     if not isinstance(flow, dict):
         return None
     out = {
         "start": flow.get("start") if isinstance(flow.get("start"), dict) else (current or {}).get("start") or {"type": "chat", "words": ""},
         "asks": [a for a in flow.get("asks") or [] if isinstance(a, dict) and a.get("label")],
-        "steps": [s for s in flow.get("steps") or [] if isinstance(s, dict) and s.get("a")],
-        "before": [s for s in flow.get("before") or [] if isinstance(s, dict) and s.get("a")],
+        "steps": _known_steps(flow.get("steps")),
+        "before": _known_steps(flow.get("before")),
     }  # fmt: skip
     for a in out["asks"]:
         a["label"] = str(a["label"])[:40]
@@ -234,7 +323,9 @@ async def build_chat(body: ChatBody, ctx: CtxDep):
             questions.append({"text": q, "options": []})
         elif isinstance(q, dict) and (q.get("text") or q.get("question")):
             questions.append({"text": str(q.get("text") or q.get("question")), "options": [str(o) for o in q.get("options") or []][:4]})
+    info = flow_plain.analyse(flow, _lists_with(c["lists"], proposed), set(c["roles"]), set(c["blocks"]))[1] if flow else {}
     return {
+        "info": info,
         "reply": str(out.get("reply") or "").strip(),
         "changes": [str(x) for x in out.get("changes") or []][:12],
         "questions": questions[:3],
@@ -250,6 +341,62 @@ class SaveBody(BaseModel):
     plain: dict
     workflow_id: UUID | None = None
     base_version: int | None = None
+    note: str = Field(default="", max_length=200)
+
+
+class CheckBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plain: dict
+    pending_lists: list[dict] = Field(default_factory=list, max_length=5)
+
+
+@router.post("/build/check")
+async def build_check(body: CheckBody, ctx: CtxDep):
+    c = await _context(ctx)
+    plain = _clean(body.plain, None)
+    problems, info = flow_plain.analyse(plain, _lists_with(c["lists"], body.pending_lists), set(c["roles"]), set(c["blocks"]))
+    return {"problems": problems, "info": info}
+
+
+class TryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plain: dict
+    as_user: UUID
+    fields: dict = Field(default_factory=dict)
+    part: str = "all"  # "before": only the checks before the questions
+
+
+@router.post("/build/try")
+async def build_try(body: TryBody, ctx: CtxDep):
+    """A rehearsal on the real engine, as one person: lists are really looked in; nothing is saved and nobody is
+    messaged. Gives what would be said to them, what the others would get, and whether it stops."""
+    from app.admin_panel.acting import chat_user
+    from app.services.step_interpreter import run_workflow_steps
+
+    c = await _context(ctx)
+    plain = _clean(body.plain, None)
+    problems = flow_plain.check(plain, c["lists"], set(c["roles"]), set(c["blocks"]))
+    if problems:
+        return {"status": "not_ready", "message": "Fix what is not ready first: " + problems[0]["text"]}
+    user = await chat_user(ctx, user_id=body.as_user)
+    if not user:
+        raise HTTPException(404, "That person was not found, or has no role.")
+    out = flow_plain.compile_flow(plain, c["lists"])
+    steps = out["precheck"] if body.part == "before" else out["steps"]
+    fields = {flow_plain._key(k): v for k, v in body.fields.items() if v not in (None, "")}
+    wf = {"intent_key": "build_try", "name": "Try it", "steps": steps, "entity_schema": out["entity_schema"], "gates": [], "kind": "workflow"}
+    try:
+        res = await run_workflow_steps(wf, fields, user, user.get("phone") or "", dry_run=True)
+    except Exception as e:
+        logger.warning(f"build try failed: {e!r}")
+        return {"status": "error", "message": "It could not be tried: " + str(e)[:300]}
+    # what each step did, in order: looked in a list, would save (a rehearsal skips saving), replied, would tell
+    facts = [str(t["detail"]) for t in res.get("trace") or [] if t.get("status") in ("ran", "would") and t.get("detail")]
+    facts = facts or list(res.get("preview") or [])
+    return {
+        "status": res.get("status"), "message": res.get("message"), "facts": facts,
+        "said": res.get("said") or [], "stopped": bool(res.get("stopped")),
+    }  # fmt: skip
 
 
 @router.post("/build/save")
@@ -277,7 +424,11 @@ async def build_save(body: SaveBody, ctx: CtxDep):
         if not row:
             raise HTTPException(404, "Flow not found")
         base = body.base_version if body.base_version is not None else row["version"]
-    settings = {**(jb(row["settings"], {}) or {}), "plain": plain, "precheck": out["precheck"]}
+    old = jb(row["settings"], {}) or {}
+    note = body.note or ("First version" if body.workflow_id is None else "Changes")
+    history = [*(old.get("plain_history") or []), {"v": base + 1, "at": time.strftime("%Y-%m-%d %H:%M"), "note": note, "plain": plain}][-20:]
+    settings = {**old, "plain": plain, "precheck": out["precheck"], "plain_history": history}
+    settings.pop("plain_draft", None)
     changes = {"name": body.name, "settings": settings}
     if body.workflow_id is not None:
         changes.update(steps=out["steps"], entity_schema=out["entity_schema"], training_phrases=out["training_phrases"])
