@@ -18,6 +18,8 @@ Steps (a = what it is):
     stop     {}                                          end here
     approve  {role, text}                                ask everyone in a role to approve; gives "Approval" (Approve / Reject)
     block    {key}                                       run an existing building block
+    engine   {step, words, when_words}                   a step from the older editor, kept exactly as it is (a flow
+                                                         opened here from the Flows editor; see from_workflow)
 
 Values are written as [Name]: an answer's label, Name / Phone / Role / Flat of the person who asked, or what an
 earlier step gives. check() says, in plain words, which step needs a value nothing before it gives."""
@@ -87,7 +89,7 @@ def needs(step: dict) -> list[str]:
         return [r for v in (vals or {}).values() for r in refs(v)]
     if a == "if":
         return [t.get("q") for t in step.get("tests") or [] if t.get("q")]
-    return []
+    return []  # an "engine" step (from the older editor) works with its own names
 
 
 def ends(lane: list) -> bool:
@@ -159,7 +161,7 @@ class _Compiler:
         self.plain, self.lists = plain, lists
         self.paths = dict(BASICS)
         for a in plain.get("asks") or []:
-            self.paths[a["label"]] = f"$fields.{_key(a['label'])}"
+            self.paths[a["label"]] = f"$fields.{ask_key(a)}"
         self.steps: list[dict] = []
         self.n_if = 0
         self.n_tmp = 0
@@ -242,6 +244,12 @@ class _Compiler:
                 self.emit({"op": "run_workflow", "params": {"workflow": s.get("key")}}, when)
             elif a == "stop":
                 self.emit({"op": "flow.stop", "params": {}}, when)
+            elif a == "engine":
+                own = (s.get("step") or {}).get("when")
+                lane = list(when) + ([own] if own else [])
+                step = {k: v for k, v in (s.get("step") or {}).items() if k != "when"}
+                w = self.join(lane)
+                self.steps.append({**step, "when": w} if w else step)
             elif a == "if":
                 self.n_if += 1
                 flag = f"_if_{self.n_if}"
@@ -250,21 +258,35 @@ class _Compiler:
                 self.walk(s.get("no"), when + [{"field": f"$fields.{flag}", "equals": "no"}])
 
 
+def ask_key(a: dict) -> str:
+    return a.get("key") or _key(a["label"])
+
+
+def _seen(a: dict) -> dict:
+    """What the admin sees of a question; when none of it changed, a question from the older editor is kept as it was."""
+    return {"label": a.get("label"), "q": a.get("q"), "kind": a.get("kind"), "options": _options(a), "optional": bool(a.get("optional"))}
+
+
 def entity_schema(plain: dict) -> dict:
     out = {}
     for a in plain.get("asks") or []:
+        if a.get("spec") and a.get("seen") == _seen(a):
+            out[ask_key(a)] = a["spec"]
+            continue
         kind = a.get("kind") if a.get("kind") in KINDS else "text"
         f = {
+            **(a.get("spec") or {}),
             "type": {"number": "float", "date": "date", "yesno": "boolean"}.get(kind, "string"),
             "label": a["label"],
             "question": a.get("q") or a["label"],
             "required": not a.get("optional"),
         }
+        f.pop("enum", None)
         if kind == "date":
             f["format"] = "date"
         if kind == "choice" and _options(a):
             f["enum"] = _options(a)
-        out[_key(a["label"])] = f
+        out[ask_key(a)] = f
     return out
 
 
@@ -280,7 +302,131 @@ def compile_flow(plain: dict, lists: dict) -> dict:
         precheck = [{"op": "flow.my_flat", "params": {}}] + precheck if precheck else precheck
     start = plain.get("start") or {}
     words = [w.strip() for w in str(start.get("words") or "").split(",") if w.strip()]
+    if isinstance(start.get("phrases"), list):  # the exact phrases of a flow from the older editor, while not changed
+        words = start["phrases"]
     return {"entity_schema": entity_schema(plain), "steps": steps, "training_phrases": words, "precheck": precheck}
+
+
+# ───────────────────────── a flow from the older editor, opened here ─────────────────────────
+
+
+def _pretty(key: str) -> str:
+    return str(key or "").replace("_", " ").strip().capitalize()
+
+
+def guard_words(cond, labels: dict) -> str:
+    """A "when" condition in words: "Category is filled in and Priority is urgent"."""
+    if not isinstance(cond, dict):
+        return ""
+    if "and" in cond or "or" in cond:
+        parts = [guard_words(c, labels) for c in cond.get("and") or cond.get("or") or []]
+        return (" and " if "and" in cond else " or ").join(p for p in parts if p)
+    if "not" in cond:
+        return "not (" + guard_words(cond["not"], labels) + ")"
+    f = str(cond.get("field") or "")
+    name = labels.get(f[len("$fields."):]) if f.startswith("$fields.") else None
+    name = name or _pretty(f.lstrip("$").split(".")[-1])
+    for k, w in (("equals", "is"), ("not_equals", "is not"), ("gt", "is more than"), ("gte", "is at least"), ("lt", "is less than"), ("lte", "is at most")):
+        if k in cond:
+            return f"{name} {w} {cond[k]}"
+    if "in" in cond:
+        return f"{name} is one of {', '.join(str(x) for x in cond['in'])}"
+    if "not_in" in cond:
+        return f"{name} is not one of {', '.join(str(x) for x in cond['not_in'])}"
+    if "exists" in cond:
+        return f"{name} is {'filled in' if cond['exists'] else 'empty'}"
+    return name
+
+
+def engine_words(step: dict, names: dict, labels: dict) -> tuple[str, str]:
+    """(what a kept step does, when it runs) in words, with each answer called by its question's short name."""
+    from app.services.step_sql import describe_step
+
+    def named(m):
+        key = m.group(1).strip().replace(" ", "_")
+        return f"[{labels[key]}]" if key in labels else m.group(1)
+
+    return re.sub(r"‹([^›]+)›", named, describe_step(step, names)), guard_words(step.get("when"), labels)
+
+
+def refresh_words(plain: dict, names: dict) -> dict:
+    """The words of the kept steps, worked out again (block names or question labels may have changed)."""
+    labels = {ask_key(a): a["label"] for a in plain.get("asks") or [] if a.get("label")}
+
+    def walk(steps):
+        for s in steps or []:
+            if s.get("a") == "engine":
+                s["words"], s["when_words"] = engine_words(s.get("step") or {}, names, labels)
+            walk(s.get("yes"))
+            walk(s.get("no"))
+
+    walk(plain.get("before"))
+    walk(plain.get("steps"))
+    return plain
+
+
+def from_workflow(row: dict, names: dict, schedule: dict | None = None) -> tuple[dict | None, str | None]:
+    """(plain flow, None), or (None, the reason in words) when the flow cannot be opened here. Every step is kept exactly
+    as it is (an "engine" step, shown in words); the questions keep their own keys. The result is checked: it must give
+    back the very same steps, questions and phrases, or it is not used."""
+    import json
+
+    from app.services.step_catalog import normalize_steps
+
+    def jb(v, d):
+        if v is None:
+            return d
+        return json.loads(v) if isinstance(v, str) else v
+
+    if row.get("workflow_type") == "read":
+        return None, "It answers with a saved report, so it has no steps to show."
+    if (row.get("kind") or "workflow") != "workflow":
+        return None, "It is a building block or a button on a case; only flows people start open here."
+    steps = normalize_steps(jb(row.get("steps"), []))
+    if not isinstance(steps, list) or not steps:
+        return None, "It has no steps yet."
+    schema = jb(row.get("entity_schema"), {}) or {}
+    asks, labels, used = [], {}, set()
+    for key, spec in schema.items():
+        spec = spec if isinstance(spec, dict) else {}
+        label = str(spec.get("label") or _pretty(key))[:40]
+        if label in used or label in BASICS:
+            label = f"{label} ({key})"[:40]
+        used.add(label)
+        labels[key] = label
+        typ, kind = str(spec.get("type") or "string"), "text"
+        if spec.get("enum"):
+            kind = "choice"
+        elif typ == "date" or spec.get("format") == "date":
+            kind = "date"
+        elif typ == "boolean":
+            kind = "yesno"
+        elif typ in ("integer", "float", "number"):
+            kind = "number"
+        a = {"label": label, "q": str(spec.get("question") or spec.get("description") or label), "kind": kind, "key": key, "spec": spec}
+        if kind == "choice":
+            a["options"] = [str(o) for o in spec["enum"]]
+        if spec.get("required") is False:
+            a["optional"] = True
+        a["seen"] = _seen(a)
+        asks.append(a)
+    phrases = [str(p) for p in jb(row.get("training_phrases"), []) or []]
+    start = {"type": "time", **schedule} if schedule else {"type": "chat", "words": ", ".join(phrases), "phrases": phrases}
+    plain = {
+        "start": start,
+        "before": [],
+        "asks": asks,
+        "steps": [{"a": "engine", "step": st, "words": engine_words(st, names, labels)[0], "when_words": guard_words(st.get("when"), labels)} for st in steps],
+    }
+    out = compile_flow(plain, {})
+    same = (
+        json.dumps(out["steps"], sort_keys=True, default=str) == json.dumps(steps, sort_keys=True, default=str)
+        and json.dumps(out["entity_schema"], sort_keys=True, default=str) == json.dumps(schema, sort_keys=True, default=str)
+        and (schedule or out["training_phrases"] == phrases)
+    )
+    if not same:
+        return None, "It could not be turned into plain words without changing it, so it stays in the Flows editor."
+    return plain, None
 
 
 # ───────────────────────── what the AI is told about the organisation ─────────────────────────

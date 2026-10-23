@@ -27,6 +27,9 @@ STEPS (nothing else exists). A step may only use values that a question or an EA
 - {"a": "approve", "role": "<a role>", "text": "..."} Ask everyone in a role to approve. GIVES "Approval" (Approve or Reject).
 - {"a": "block", "key": "<building block key>"}      Run one of the building blocks listed below.
 In any text or value, put a known value in square brackets: [Place], [Date], [Name], [Booking number].
+- {"a": "engine", "step": {...}, "words": "...", "when_words": "..."}   A step made earlier in the Flows editor. Keep it
+  EXACTLY as it is (copy it unchanged). You may move or remove it when the admin asks; never change what is inside it.
+  You may add new steps before or after it.
 
 WHAT THIS ORGANISATION HAS
 Lists (tables) and their columns:

@@ -20,6 +20,7 @@ const BD_STEP = {
   block: { icon: '🧩', label: 'Use a building block', hint: 'A ready-made part, like the ticket steps', g: 'Actions' },
   if: { icon: '🔀', label: 'Check something', hint: 'Yes does one thing, otherwise another', g: 'Logic' },
   stop: { icon: '⛔', label: 'Stop here', hint: 'Nothing after it runs', g: 'Logic' },
+  engine: { icon: '⚙️', label: 'A step from the Flows editor', hint: '', g: '' },
 };
 const bdKey = () => 'build:' + (BD.id || 'new');
 const bdKeep = () => { try { sessionStorage.setItem(bdKey(), JSON.stringify({ name: BD.name, plain: BD.id ? null : BD.plain, talk: BD.talk, log: BD.log, pending: BD.pending, tried: BD.tried })); } catch (e) {} };
@@ -34,10 +35,21 @@ SECTIONS.build = {
     if (route.q.f) return renderBuild(root, route);
     setTopAction({ label: 'New flow', icon: 'spark', run: () => go('build', '', { f: 'new' }) });
     const d = await api.get('/build');
-    if (!d.rows.length) { fill(root, h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, h('b', null, 'No flows made here yet.'), h('div', { class: 'muted' }, 'Press New flow and tell the AI what the chat bot should do, for example “residents should be able to book the clubhouse”.'), h('div', null, h('button', { class: 'btn primary', type: 'button', onclick: () => go('build', '', { f: 'new' }) }, 'New flow'))))); return; }
-    fill(root, h('div', { class: 'bd-cards' }, d.rows.map(w => h('a', { class: 'card bd-card', href: href('build', '', { f: w.id }) },
+    const card = w => h('a', { class: 'card bd-card', href: href('build', '', { f: w.id }) },
       h('b', null, w.name), h('div', { class: 'muted small' }, (w.start && w.start.type === 'time' ? 'Runs by itself' : 'When someone writes' + (w.start && w.start.words ? ' “' + String(w.start.words).split(',')[0].trim() + '”' : ''))),
-      h('div', null, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : ''))))));
+      h('div', null, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : '')));
+    // a flow made in the Flows editor opens here after one check: its steps stay exactly as they are
+    const other = w => h('div', { class: 'card bd-card' + (w.ok ? '' : ' bd-card-off') }, h('b', null, w.name),
+      w.ok ? h('div', { class: 'muted small' }, 'Made in the Flows editor. Opening it here changes nothing it does.') : h('div', { class: 'muted small' }, w.why),
+      h('div', { class: 'row' }, badge(w.is_active ? 'On' : 'Off', w.is_active ? 'ok' : ''), w.ok ? h('button', { class: 'btn sm primary', type: 'button', onclick: async e => {
+        e.target.disabled = true;
+        try { await api.post('/build/' + w.id + '/convert'); go('build', '', { f: w.id }); } catch (x) { toast(x.message, 'bad'); e.target.disabled = false; }
+      } }, 'Open in Build with AI') : null));
+    fill(root, h('div', { class: 'stack' },
+      d.rows.length ? h('div', { class: 'bd-cards' }, d.rows.map(card))
+        : h('div', { class: 'card' }, h('div', { class: 'card-b stack' }, h('b', null, 'No flows made here yet.'), h('div', { class: 'muted' }, 'Press New flow and tell the AI what the chat bot should do, or open one of your flows below.'))),
+      (d.others || []).length ? [h('h3', { class: 'bd-h3' }, 'Your other flows'), h('div', { class: 'muted small' }, 'Open one here to see it as a chart, try it, and change it by chatting or by hand.'),
+        h('div', { class: 'bd-cards' }, d.others.map(other))] : null));
   },
 };
 
@@ -282,7 +294,7 @@ function bdCard() {
         st.every === 'week' ? h('span', { class: 'bd-days' }, BD_DAYS.map((dn, i) => h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: (st.days || []).includes(i), onchange: e => bdChange(d => { const s = new Set(d.start.days || []); e.target.checked ? s.add(i) : s.delete(i); d.start.days = [...s].sort(); }) }), dn.slice(0, 3)))) : null,
         st.every === 'month' ? [h('span', null, 'on day'), bdSel(Array.from({ length: 28 }, (_, i) => [i + 1, String(i + 1)]), st.day_of_month || 1, v => bdChange(d => { d.start.day_of_month = +v; }))] : null,
         h('span', null, 'at'), h('input', { type: 'time', value: st.time || '09:00', onchange: e => bdChange(d => { d.start.time = e.target.value; }) })]
-      : [h('span', null, ', for example'), bdInp(st.words, v => bdChange(d => { d.start.words = v; }), { placeholder: 'book clubhouse, club house', style: { minWidth: '220px' } })]));
+      : [h('span', null, ', for example'), bdInp(st.words, v => bdChange(d => { d.start.words = v; delete d.start.phrases; }), { placeholder: 'book clubhouse, club house', style: { minWidth: '220px' } })]));
   const used = new Set();
   const scan = l => (l || []).forEach(s => { JSON.stringify(s).replace(/\[([^\[\]]+)\]/g, (m, k) => used.add(k)); (s.tests || []).forEach(t => used.add(t.q)); scan(s.yes); scan(s.no); });
   scan(p.before); scan(p.steps);
@@ -346,6 +358,10 @@ function bdStep(s, p, i, n, depth) {
   } else if (s.a === 'approve') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Ask everyone who is'), bdSel(roles, s.role, at('role', (x, v) => { x.role = v; })), h('span', null, 'to approve')), h('textarea', { class: 'bd-msgtxt', rows: 2, value: s.text || '', onchange: e => at('text', (x, v) => { x.text = v; })(e.target.value) }), bdChips(p, 'text', known)];
   else if (s.a === 'block') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Use the building block'), bdSel(Object.entries(BD.ctx.blocks || {}).map(([kk, nm]) => [kk, nm]), s.key, at('key', (x, v) => { x.key = v; })))];
   else if (s.a === 'stop') body = [h('div', { class: 'bd-sentence' }, h('b', null, 'Stop here'), h('span', { class: 'muted small' }, 'nothing after this runs'))];
+  else if (s.a === 'engine') body = [h('div', { class: 'bd-sentence' }, h('b', null, s.words || 'A step')),
+    s.when_words ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'Only when '), s.when_words) : null,
+    h('div', { class: 'muted small' }, 'Kept exactly as it was made in the Flows editor. You can move or remove it here' + (isSuper() ? '; its settings change in the Flows editor.' : '.')),
+    isSuper() && BD.id ? h('button', { type: 'button', class: 'bd-pill', onclick: () => openWorkflow(BD.id) }, 'Open in the Flows editor') : null];
   else if (s.a === 'if') {
     const tests = (s.tests || []).map((t, j) => {
       const ask = BD.plain.asks.find(a => a.label === t.q), yn = / found$/.test(t.q || '');
@@ -437,6 +453,7 @@ function bdQ(s) {
 function bdWords(s) {
   const blocks = (BD.ctx && BD.ctx.blocks) || {};
   return ({ say: 'Reply to them: “' + (s.text || '').slice(0, 70) + ((s.text || '').length > 70 ? '…' : '') + '”', tell: 'Tell ' + (s.role || '?'), set: (s.name || '?') + ' = ' + (s.value || ''),
+    engine: (s.words || 'A step') + (s.when_words ? ' (only when ' + s.when_words + ')' : ''),
     _ask: 'Ask: ' + BD.plain.asks.map(a => a.label).join(', '), find: 'Look in ' + (s.list || '?'), save: 'Save in ' + (s.list || '?'), approve: 'Ask ' + (s.role || '?') + ' to approve', block: 'Run “' + (blocks[s.key] || s.key) + '”' })[s.a] || s.a;
 }
 function bdChart(plain) {
@@ -539,10 +556,11 @@ function btShow(r, early) {           // true when the flow stopped; early: only
   (r.facts || []).forEach(f => {
     if (/^Reply: /.test(f)) btSay('bot', f.slice(7));
     else if (/^Would tell /.test(f)) btSay('other', f.replace(/^Would tell /, 'What ').replace(/^What ([^:]+): /, 'What $1 get:\n'));
+    else if (/^would send the person the result/i.test(f)) btSay('sys', '📨 Would send them the confirmation');
     else btSay('sys', f.replace(/^Looked in ([a-z_]+):/, (m, t) => '🔎 Looked in ' + t.replace(/_/g, ' ') + ':').replace(/^would save: /, '🗂️ Would save: '));
   });
   if (r.stopped) { btSay('sys', '⛔ The flow stopped here.'); return true; }
-  if (!early && r.status === 'preview' && !(r.facts || []).some(f => /^Reply: /.test(f))) btSay('sys', 'Done. (It did not say anything to the person.)');
+  if (!early && r.status === 'preview' && !(r.facts || []).some(f => /^Reply: |send the person|would message|would tell/i.test(f))) btSay('sys', 'Done. (It did not say anything to the person.)');
   return false;
 }
 """

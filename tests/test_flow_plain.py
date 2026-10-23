@@ -153,3 +153,47 @@ def test_the_card_gets_what_each_step_needs_gives_and_knows():
     assert {"n": "Place", "ok": True} in find["needs"] and find["gives"] == ["Clash found"]
     assert "Clash found" in info["steps.1"]["known"]  # the check sees what the step before it gave
     assert "Booking number" in [x["n"] for x in info["steps.3"]["needs"]]
+
+
+OLD_COMPLAINT = {
+    "intent_key": "file_a_complaint", "name": "File a complaint", "kind": "workflow", "workflow_type": "action",
+    "training_phrases": ["complaint", "my tap, it leaks"],
+    "entity_schema": {"title": {"type": "string", "label": "Problem", "question": "What is the problem?", "required": True, "read_by": "typed"},
+                      "priority": {"type": "string", "enum": ["urgent", "high"], "label": "Priority", "question": "How urgent?"}},
+    "steps": [{"op": "case.categorize", "params": {"text_from": ["$fields.title"]}},
+              {"op": "run_workflow", "params": {"workflow": "case_save_new"}},
+              {"op": "run_workflow", "params": {"workflow": "case_give_to_routed_person"}, "when": {"field": "$route.assignee_id", "exists": True}}],
+}  # fmt: skip
+
+
+def test_a_flow_from_the_older_editor_opens_unchanged():
+    plain, why = flow_plain.from_workflow(OLD_COMPLAINT, {"case_save_new": "Save the case"})
+    assert why is None and [a["label"] for a in plain["asks"]] == ["Problem", "Priority"]
+    assert plain["steps"][1]["words"] == "Run “Save the case”" and "[Problem]" in flow_plain.engine_words({"op": "db.insert_row", "params": {"table": "cases", "values": {"title": "$fields.title"}}}, {}, {"title": "Problem"})[0]
+    assert plain["steps"][2]["when_words"] == "Assignee id is filled in"
+    out = flow_plain.compile_flow(plain, {})
+    assert out["steps"] == OLD_COMPLAINT["steps"] and out["entity_schema"] == OLD_COMPLAINT["entity_schema"]
+    assert out["training_phrases"] == ["complaint", "my tap, it leaks"]  # a phrase with a comma survives
+
+
+def test_a_new_step_after_older_ones_and_an_edited_question_compile():
+    plain, _ = flow_plain.from_workflow(OLD_COMPLAINT, {})
+    plain["asks"][0]["q"] = "What went wrong?"                       # edited: built afresh, keeping its key and extras
+    plain["steps"].append({"a": "say", "text": "Thanks, [Problem] is noted."})
+    out = flow_plain.compile_flow(plain, {})
+    assert out["entity_schema"]["title"]["question"] == "What went wrong?" and out["entity_schema"]["title"]["read_by"] == "typed"
+    assert out["steps"][-1] == {"op": "flow.say", "params": {"text": "Thanks, {$fields.title} is noted."}}
+
+
+def test_an_older_step_in_a_lane_keeps_its_own_condition_too():
+    plain, _ = flow_plain.from_workflow(OLD_COMPLAINT, {})
+    kept = plain["steps"].pop(2)
+    plain["steps"].append({"a": "if", "tests": [{"q": "Priority", "op": "is", "value": "urgent"}], "yes": [kept], "no": []})
+    last = flow_plain.compile_flow(plain, {})["steps"][-1]
+    assert last["when"] == {"and": [{"field": "$fields._if_1", "equals": "yes"}, {"field": "$route.assignee_id", "exists": True}]}
+
+
+def test_blocks_reports_and_empty_flows_stay_in_the_flows_editor():
+    assert flow_plain.from_workflow({**OLD_COMPLAINT, "kind": "block"}, {})[0] is None
+    assert flow_plain.from_workflow({**OLD_COMPLAINT, "workflow_type": "read"}, {})[0] is None
+    assert flow_plain.from_workflow({**OLD_COMPLAINT, "steps": []}, {})[0] is None

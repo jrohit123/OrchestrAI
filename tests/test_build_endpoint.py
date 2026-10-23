@@ -55,3 +55,12 @@ def test_the_draft_and_try_it_are_open_to_admins():
     for call in [("PUT", "/build/{workflow_id}/draft"), ("DELETE", "/build/{workflow_id}/draft"), ("POST", "/build/{workflow_id}/restore"),
                  ("POST", "/build/check"), ("POST", "/build/try")]:  # fmt: skip
         assert call in access_rules.ADMIN_CALLS
+
+
+def test_the_ai_may_not_change_a_step_kept_from_the_flows_editor():
+    kept = {"a": "engine", "step": {"op": "run_workflow", "params": {"workflow": "case_save_new"}}, "words": "Run"}
+    current = {"steps": [kept]}
+    moved = {"steps": [{"a": "say", "text": "hi"}, kept]}
+    changed = {"steps": [{**kept, "step": {"op": "run_workflow", "params": {"workflow": "something_else"}}}]}
+    assert build._engine_changed(moved, current) == [] and build._engine_changed({"steps": []}, current) == []
+    assert build._engine_changed(changed, current)

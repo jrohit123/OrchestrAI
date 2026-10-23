@@ -4,6 +4,9 @@ CSS = r"""
 .bd-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
 .bd-card{display:flex;flex-direction:column;gap:6px;padding:14px;color:var(--ink);text-decoration:none}
 .bd-card:hover{border-color:var(--brand)}
+.bd-card .row{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:auto}
+.bd-card-off{opacity:.75}
+.bd-h3{margin:12px 0 0;font-size:16px}
 .bd{display:flex;flex-direction:column;gap:12px;padding:12px 16px 24px}
 .bd-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .bd-name{font-size:20px;font-weight:700;border:1px solid transparent;background:transparent;border-radius:8px;padding:4px 8px;flex:1;min-width:200px;color:var(--ink)}

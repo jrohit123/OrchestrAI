@@ -5,6 +5,7 @@
     PUT  /build/{id}/draft       keep the draft (settings.plain_draft); people keep getting the live one
     DELETE /build/{id}/draft     throw the draft away
     POST /build/{id}/restore     copy an earlier version into the draft
+    POST /build/{id}/convert     open a flow from the Flows editor here: its steps are kept exactly, shown in words
     POST /build/chat             one message: the AI changes the plain flow (and may propose new lists, ask questions)
     POST /build/check            the checker: what does not fit, and what each step needs and gives (for the Card)
     POST /build/try              a rehearsal on the real engine as one person: nothing is saved or sent
@@ -78,17 +79,39 @@ async def build_context(ctx: CtxDep):
             "can_add_lists": bool(ctx.caps.get("schema_editor"))}  # fmt: skip
 
 
+async def _all_flows(ctx) -> list[dict]:
+    return [
+        dict(r)
+        for r in await fetch_all(
+            "SELECT *, to_jsonb(w)->>'kind' AS kind FROM workflows w WHERE org_id = $1 ORDER BY name",
+            ctx.org_id,
+            source_key=ctx.source_key,
+        )
+    ]
+
+
+async def _schedule(ctx, workflow_id) -> dict | None:
+    """The flow's timer, if it runs by itself, as the plain flow's start keeps it."""
+    if not ctx.caps.get("flow_triggers"):
+        return None
+    row = await fetch_one("SELECT cadence FROM flow_schedules WHERE workflow_id = $1", workflow_id, source_key=ctx.source_key)
+    return jb(row["cadence"], None) if row else None
+
+
 @router.get("/build")
 async def build_list(ctx: CtxDep):
-    """The flows made with Build with AI (the ones that keep a plain form)."""
-    found = await fetch_all(
-        "SELECT id, name, is_active, version, settings->'plain'->'start' AS start, "
-        "jsonb_array_length(coalesce(settings->'plain'->'steps', '[]'::jsonb)) AS steps "
-        "FROM workflows WHERE org_id = $1 AND settings ? 'plain' ORDER BY name",
-        ctx.org_id,
-        source_key=ctx.source_key,
-    )
-    return {"rows": [{**dict(r), "id": str(r["id"]), "start": jb(r["start"], {})} for r in found]}
+    """The flows made or opened here (they keep a plain form), and every other flow with whether it can be opened here."""
+    flows = await _all_flows(ctx)
+    names = {f["intent_key"]: f["name"] for f in flows}
+    rows, others = [], []
+    for f in flows:
+        st = jb(f.get("settings"), {}) or {}
+        if st.get("plain"):
+            rows.append({"id": str(f["id"]), "name": f["name"], "is_active": f["is_active"], "version": f["version"], "start": st["plain"].get("start") or {}})
+        elif (f.get("kind") or "workflow") == "workflow" and f.get("workflow_type") != "read":
+            plain, why = flow_plain.from_workflow(f, names)
+            others.append({"id": str(f["id"]), "name": f["name"], "is_active": f["is_active"], "ok": plain is not None, "why": why})
+    return {"rows": rows, "others": others}
 
 
 @router.get("/build/{workflow_id}")
@@ -104,11 +127,39 @@ async def build_get(workflow_id: UUID, ctx: CtxDep):
     st = jb(row["settings"], {}) or {}
     if not st.get("plain"):
         raise HTTPException(409, "This flow was not made with “Build with AI”. Open it in the editor.")
+    names = {r["intent_key"]: r["name"] for r in await fetch_all("SELECT intent_key, name FROM workflows WHERE org_id = $1", ctx.org_id, source_key=ctx.source_key)}
     return {
         "id": str(row["id"]), "name": row["name"], "version": row["version"], "is_active": row["is_active"],
-        "plain": st["plain"], "draft": st.get("plain_draft"),
+        "plain": flow_plain.refresh_words(st["plain"], names), "draft": flow_plain.refresh_words(st["plain_draft"], names) if st.get("plain_draft") else None,
         "history": [{"v": h.get("v"), "at": h.get("at"), "note": h.get("note")} for h in st.get("plain_history") or []],
     }  # fmt: skip
+
+
+@router.post("/build/{workflow_id}/convert")
+async def build_convert(workflow_id: UUID, ctx: CtxDep):
+    """Open a flow from the Flows editor here. Nothing it does changes: its steps are kept exactly (shown in words),
+    its questions keep their names, and the plain form is checked to give back the very same steps before it is kept."""
+    flows = await _all_flows(ctx)
+    row = next((f for f in flows if f["id"] == workflow_id), None)
+    if not row:
+        raise HTTPException(404, "Flow not found")
+    st = jb(row.get("settings"), {}) or {}
+    if st.get("plain"):
+        return {"ok": True, "already": True}
+    plain, why = flow_plain.from_workflow(row, {f["intent_key"]: f["name"] for f in flows}, await _schedule(ctx, workflow_id))
+    if plain is None:
+        raise HTTPException(409, why)
+    history = [{"v": row["version"], "at": time.strftime("%Y-%m-%d %H:%M"), "note": "Opened in Build with AI (nothing changed)", "plain": plain}]
+    done = await fetch_one(
+        "UPDATE workflows SET settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object('plain', $3::jsonb, 'plain_history', $4::jsonb) "
+        "WHERE id = $1 AND org_id = $2 AND version = $5 AND NOT (coalesce(settings, '{}'::jsonb) ? 'plain') RETURNING id",
+        workflow_id, ctx.org_id, json.dumps(plain), json.dumps(history), row["version"],
+        source_key=ctx.source_key,
+    )  # fmt: skip
+    if not done:
+        raise HTTPException(409, "Someone changed this flow just now. Try again.")
+    logger.info(f"build: opened {row['intent_key']} here (version {row['version']}, steps unchanged)")
+    return {"ok": True}
 
 
 class DraftBody(BaseModel):
@@ -207,7 +258,32 @@ def _fill_pending(flow: dict | None, ops: list[dict]) -> None:
     walk(flow.get("steps"))
 
 
-_PLAIN_STEPS = {"say", "tell", "set", "find", "save", "if", "stop", "approve", "block"}
+def _engine_changed(flow: dict, current: dict) -> list[dict]:
+    """A step kept from the Flows editor must come back exactly as it was (it may be moved or removed, never changed)."""
+    import json as _json
+
+    def engine(plain):
+        out = []
+
+        def walk(steps):
+            for s in steps or []:
+                if s.get("a") == "engine":
+                    out.append(_json.dumps(s.get("step"), sort_keys=True, default=str))
+                walk(s.get("yes"))
+                walk(s.get("no"))
+
+        walk((plain or {}).get("before"))
+        walk((plain or {}).get("steps"))
+        return out
+
+    was = set(engine(current))
+    return [
+        {"path": "", "need": "", "text": "A step from the Flows editor was changed; keep those steps exactly as they are."}
+        for x in engine(flow) if x not in was
+    ][:1]
+
+
+_PLAIN_STEPS = {"say", "tell", "set", "find", "save", "if", "stop", "approve", "block", "engine"}
 
 
 def _known_steps(steps) -> list[dict]:
@@ -278,7 +354,7 @@ async def build_chat(body: ChatBody, ctx: CtxDep):
     flow = _clean(out.get("flow"), current)
     _fill_pending(flow, new_lists)
     lists = _lists_with(c["lists"], new_lists)
-    problems = flow_plain.check(flow, lists, set(c["roles"]), set(c["blocks"])) if flow else []
+    problems = (flow_plain.check(flow, lists, set(c["roles"]), set(c["blocks"])) + _engine_changed(flow, current)) if flow else []
     if flow and problems:  # one more go, with what does not fit in plain words
         again = await _ask_ai([*msgs, {"role": "assistant", "content": json.dumps(out, ensure_ascii=False)},
                                {"role": "user", "content": "The flow you returned has problems:\n" + "\n".join("- " + p["text"] for p in problems)
@@ -288,7 +364,7 @@ async def build_chat(body: ChatBody, ctx: CtxDep):
         if flow2:
             nl2 = [*new_lists, *[o for o in again.get("new_lists") or [] if isinstance(o, dict)]]
             _fill_pending(flow2, nl2)
-            p2 = flow_plain.check(flow2, _lists_with(c["lists"], nl2), set(c["roles"]), set(c["blocks"]))
+            p2 = flow_plain.check(flow2, _lists_with(c["lists"], nl2), set(c["roles"]), set(c["blocks"])) + _engine_changed(flow2, current)
             if len(p2) < len(problems):
                 out = {**again, "changes": [*(out.get("changes") or []), *(again.get("changes") or [])], "reply": again.get("reply") or out.get("reply")}
                 flow, problems, new_lists = flow2, p2, nl2
@@ -383,7 +459,8 @@ async def build_try(body: TryBody, ctx: CtxDep):
         raise HTTPException(404, "That person was not found, or has no role.")
     out = flow_plain.compile_flow(plain, c["lists"])
     steps = out["precheck"] if body.part == "before" else out["steps"]
-    fields = {flow_plain._key(k): v for k, v in body.fields.items() if v not in (None, "")}
+    keys = {a["label"]: flow_plain.ask_key(a) for a in plain.get("asks") or []}
+    fields = {keys.get(k) or flow_plain._key(k): v for k, v in body.fields.items() if v not in (None, "")}
     wf = {"intent_key": "build_try", "name": "Try it", "steps": steps, "entity_schema": out["entity_schema"], "gates": [], "kind": "workflow"}
     try:
         res = await run_workflow_steps(wf, fields, user, user.get("phone") or "", dry_run=True)
